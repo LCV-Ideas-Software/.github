@@ -7,7 +7,7 @@
   <title>LCV Ideas &amp; Software</title>
   <meta name="description" content="Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge. Maintained by Leonardo Cardozo Vargas." />
   <link rel="canonical" href="https://www.lcv.app.br/" />
-  <link rel="icon" type="image/svg+xml" href="./assets/lcv-ideas-software-logo.svg" />
+  <link rel="icon" type="image/svg+xml" href="./assets/lcv-ideas-software-mark.svg" />
 
   <meta property="og:type" content="website" />
   <meta property="og:title" content="LCV Ideas &amp; Software" />
@@ -72,6 +72,18 @@
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
 
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+      border: 0;
+    }
+
     .topbar {
       position: sticky;
       top: 0;
@@ -95,7 +107,7 @@
       color: var(--fg);
       font-weight: 700;
     }
-    .brand img { width: 32px; height: 32px; border-radius: 8px; box-shadow: 0 6px 14px var(--shadow); }
+    .brand img { width: 32px; height: 32px; display: block; }
     .brand span { font-size: 15px; }
     .topbar nav {
       margin-left: auto;
@@ -116,23 +128,15 @@
       text-align: center;
       padding: 24px 0 44px;
     }
-    .hero img.mark {
-      width: 120px;
-      height: 120px;
-      border-radius: 28px;
-      box-shadow: 0 16px 40px var(--shadow);
-      background: var(--bg-elev);
-    }
-    .hero h1 {
-      margin: 24px 0 8px;
-      font-size: clamp(28px, 4.4vw, 44px);
-      line-height: 1.1;
-      letter-spacing: -0.01em;
-      font-weight: 770;
+    .hero img.banner {
+      display: block;
+      width: min(460px, 92%);
+      height: auto;
+      margin: 0 auto 8px;
     }
     .hero .tagline {
       max-width: 640px;
-      margin: 0 auto;
+      margin: 12px auto 0;
       color: var(--fg-muted);
       font-size: clamp(16px, 1.8vw, 19px);
     }
@@ -203,7 +207,6 @@
     .card p { color: var(--fg-muted); margin: 10px 0 12px; font-size: 14px; }
     .card .links { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; }
     .card .links a { color: var(--accent); }
-    .card .links .gh { color: var(--fg-muted); }
 
     .practices {
       background: var(--bg-elev);
@@ -252,14 +255,14 @@
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="#top">
-      <img src="./assets/lcv-ideas-software-logo.svg" alt="" />
+      <img src="./assets/lcv-ideas-software-mark.svg" alt="" />
       <span>LCV Ideas &amp; Software</span>
     </a>
     <nav>
       <a href="#products">Products</a>
       <a href="#tooling">Tooling</a>
       <a href="#stack">Stack</a>
-      <a href="https://github.com/LCV-Ideas-Software">GitHub</a>
+      <a href="https://github.com/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">GitHub</a>
     </nav>
   </div>
 </header>
@@ -267,13 +270,13 @@
 <main id="top">
 
   <section class="hero">
-    <img class="mark" src="./assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software logo" />
-    <h1>LCV Ideas &amp; Software</h1>
+    <img class="banner" src="./assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" />
+    <h1 class="sr-only">LCV Ideas &amp; Software</h1>
     <p class="tagline">Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge.</p>
     <div class="actions">
       <a class="btn primary" href="#products">Explore the products</a>
-      <a class="btn" href="https://github.com/LCV-Ideas-Software">GitHub organization</a>
-      <a class="btn" href="https://github.com/sponsors/lcv-leo">Sponsor</a>
+      <a class="btn" href="https://github.com/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">GitHub organization</a>
+      <a class="btn" href="https://github.com/sponsors/lcv-leo" target="_blank" rel="noopener noreferrer">Sponsor</a>
     </div>
   </section>
 
@@ -287,8 +290,7 @@
         <div class="repo">mainsite-app</div>
         <p>Public personal blog and companion services. Smart-polling reader, AI public chatbot (Gemini), comments and ratings with sentiment moderation, donations (SumUp + PIX), accessibility-first design.</p>
         <div class="links">
-          <a href="https://www.reflexosdaalma.blog">reflexosdaalma.blog →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/mainsite-app">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/mainsite-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -297,8 +299,7 @@
         <div class="repo">astrologo-app</div>
         <p>Birth chart generator and esoteric analysis with Gemini AI narrative. Deterministic astrometric calculation, throttling, optional auth, share-by-email.</p>
         <div class="links">
-          <a href="https://astrologo-app.lcv.app.br">astrologo-app.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/astrologo-app">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/astrologo-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -307,8 +308,7 @@
         <div class="repo">calculadora-app</div>
         <p>International FX simulator (credit card vs. multi-currency account) with AI-driven contextual analysis. Integrates PTAX (BCB), Spot, and Gemini.</p>
         <div class="links">
-          <a href="https://calculadora-app.lcv.app.br">calculadora-app.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/calculadora-app">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/calculadora-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -317,8 +317,7 @@
         <div class="repo">oraculo-financeiro</div>
         <p>IPCA-indexed fixed-income analysis dashboard (LCI/CDB IPCA+, Tesouro IPCA+) with Gemini contextual insights and a Cron Worker pre-warming taxa caches.</p>
         <div class="links">
-          <a href="https://oraculo-financeiro-app.lcv.app.br">oraculo-financeiro-app.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/oraculo-financeiro">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/oraculo-financeiro" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -327,8 +326,7 @@
         <div class="repo">apphub</div>
         <p>Static landing and PWA dispatcher routing visitors to the sub-application fleet via a configurable card-grid UI backed by D1.</p>
         <div class="links">
-          <a href="https://apphub.lcv.app.br">apphub.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/apphub">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/apphub" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -345,8 +343,7 @@
         <div class="repo">admin-app</div>
         <p>Operator control plane for the multi-app workspace: post editor, AI model selection, financial reports (SumUp), DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT, telemetry.</p>
         <div class="links">
-          <a href="https://admin-app.lcv.app.br">admin-app.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/admin-app">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/admin-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -355,8 +352,7 @@
         <div class="repo">adminapps</div>
         <p>Admin micro-modules on Cloudflare Pages with composable card-grid UI for compliance surfaces (license panel, third-party attribution).</p>
         <div class="links">
-          <a href="https://adminapps.lcv.app.br">adminapps.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/adminapps">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/adminapps" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -365,8 +361,7 @@
         <div class="repo">mtasts-motor</div>
         <p>Cloudflare Worker serving dynamic MTA-STS policies (RFC 8461) from a D1 backing store. Designed for multi-domain operators behind <code>mta-sts.&lt;domain&gt;</code>.</p>
         <div class="links">
-          <a href="https://mtasts-motor.lcv.app.br">mtasts-motor.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/mtasts-motor">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/mtasts-motor" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -383,9 +378,7 @@
         <div class="repo">cross-review-mcp · Apache-2.0</div>
         <p>MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, and Gemini CLI. Strict-only convergence — a session is READY only when caller and every responded peer return READY.</p>
         <div class="links">
-          <a href="https://cross-review-mcp.lcv.app.br">cross-review-mcp.lcv.app.br →</a>
-          <a href="https://www.npmjs.com/package/@lcv-ideas-software/cross-review-mcp">npm</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/cross-review-mcp">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/cross-review-mcp" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -394,8 +387,7 @@
         <div class="repo">maestro-app</div>
         <p>Portable Windows editorial workbench (Tauri 2 + React 19) for protocol-driven AI drafting, source verification, and multi-agent editorial convergence using Claude, Codex, Gemini, and DeepSeek.</p>
         <div class="links">
-          <a href="https://maestro-app.lcv.app.br">maestro-app.lcv.app.br →</a>
-          <a class="gh" href="https://github.com/LCV-Ideas-Software/maestro-app">GitHub</a>
+          <a href="https://github.com/LCV-Ideas-Software/maestro-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
         </div>
       </article>
 
@@ -439,10 +431,10 @@
 
 <footer>
   <div class="row">
-    <a href="https://github.com/LCV-Ideas-Software">GitHub</a>
-    <a href="https://www.reflexosdaalma.blog">Public blog</a>
+    <a href="https://github.com/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <a href="https://www.reflexosdaalma.blog" target="_blank" rel="noopener noreferrer">Public blog</a>
     <a href="mailto:github@lcvmail.com">github@lcvmail.com</a>
-    <a href="https://github.com/sponsors/lcv-leo">Sponsor</a>
+    <a href="https://github.com/sponsors/lcv-leo" target="_blank" rel="noopener noreferrer">Sponsor</a>
   </div>
   <div class="copy">© Leonardo Cardozo Vargas · Built on Cloudflare's edge · Reviewed by three AI peers.</div>
 </footer>
