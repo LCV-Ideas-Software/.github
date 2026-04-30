@@ -58,8 +58,8 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 
 | Repository | Live | What it does |
 | --- | --- | --- |
-| [**cross-review-mcp**](https://github.com/LCV-Ideas-Software/cross-review-mcp) | [cross-review-mcp.lcv.app.br](https://cross-review-mcp.lcv.app.br) | MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, and Gemini CLI. Strict-only convergence: a session is `READY` only when caller and every responded peer return `READY`. The canonical defense against single-model hallucinations. Published on npm as [`@lcv-ideas-software/cross-review-mcp`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-mcp). |
-| [**cross-review-mcp-sdk**](https://github.com/LCV-Ideas-Software/cross-review-mcp-sdk) | [cross-review-mcp-sdk.lcv.app.br](https://cross-review-mcp-sdk.lcv.app.br) | API/SDK-first MCP stdio server for multi-model cross-review using official provider SDKs/APIs for OpenAI, Anthropic, Gemini and DeepSeek. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review-mcp-sdk`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-mcp-sdk). |
+| [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | [cross-review-v1.lcv.app.br](https://cross-review-v1.lcv.app.br) | MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, and Gemini CLI. Strict-only convergence: a session is `READY` only when caller and every responded peer return `READY`. The canonical defense against single-model hallucinations. Published on npm as [`@lcv-ideas-software/cross-review-mcp`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-mcp). |
+| [**cross-review-v2**](https://github.com/LCV-Ideas-Software/cross-review-v2) | [cross-review-v2.lcv.app.br](https://cross-review-v2.lcv.app.br) | API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Gemini and DeepSeek. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2). |
 | [**maestro-app**](https://github.com/LCV-Ideas-Software/maestro-app) | [maestro-app.lcv.app.br](https://maestro-app.lcv.app.br) | *Maestro Editorial AI* — portable Windows editorial workbench (Tauri 2 + React 19) for protocol-driven AI drafting, source verification, and multi-agent editorial convergence using Claude, Codex, Gemini, and DeepSeek. Resumable sessions, NDJSON diagnostic logs, runtime data stays local. |
 
 ---
@@ -87,12 +87,12 @@ Desktop      Tauri 2  (Maestro)
 
 ## Engineering practices
 
-- **Trilateral cross-review before every merge.** No commit is pushed without a `cross-review-mcp` session reaching trilateral `READY` (caller + two peers). Even doc-only changes pass through the gate. Operator directive 2026-04-26.
-- **Frozen-public-surface semver** for tooling. `cross-review-mcp` v1.x ships additive patches only; minor bumps are reserved for new MCP tools; major bumps require a new trilateral cross-review session.
+- **Trilateral cross-review before every merge.** No commit is pushed without a `cross-review-v1` or `cross-review-v2` session reaching trilateral `READY` (caller + two peers). Even doc-only changes pass through the gate. Operator directive 2026-04-26.
+- **Frozen-public-surface semver** for tooling. `cross-review-v1` v1.x ships additive patches only; minor bumps are reserved for new MCP tools; major bumps require a new trilateral cross-review session.
 - **Sequential thinking is mandatory.** All planning passes through `ultrathink` and/or `code-reasoning` MCP servers before execution. Hard gate, not a suggestion.
 - **CodeQL Default Setup everywhere.** Advanced Setup requires explicit operator authorization. Branch protection on `main` requires `Analyze (javascript-typescript)` to pass.
 - **Conservative branch baseline.** Single deploy branch (`main`); `preview → main` automation via auto-merge with retry polling on required checks.
-- **Anti-drift smoke.** `cross-review-mcp` self-tests check that README ≡ `server.VERSION` ≡ `CHANGELOG` heading on every push.
+- **Anti-drift smoke.** `cross-review-v1` and `cross-review-v2` self-tests check that README, runtime version and CHANGELOG heading stay in lockstep on every push.
 - **Memory parity** across Claude Code, GitHub Copilot, and Gemini Code Assist. New directives propagate to all three agent ecosystems before being considered shipped.
 - **SHA-pinned GitHub Actions.** Supply-chain hardening baseline. `wrangler` is always invoked at `latest` in CI.
 
@@ -103,7 +103,7 @@ Desktop      Tauri 2  (Maestro)
 | License | Repositories |
 | --- | --- |
 | [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `apphub`, `admin-app`, `adminapps`, `mtasts-motor`, `maestro-app` |
-| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `cross-review-mcp`, `cross-review-mcp-sdk` |
+| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `cross-review-v1`, `cross-review-v2` |
 
 The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: running a modified fork as a public service obligates publication of the modifications under the same license. Each repository ships a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
 
