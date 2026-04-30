@@ -12,7 +12,7 @@
   <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-verified-blueviolet.svg" alt="verified org"></a>
   <a href="https://www.lcv.app.br"><img src="https://img.shields.io/badge/homepage-www.lcv.app.br-blue.svg" alt="www.lcv.app.br"></a>
   <img src="https://img.shields.io/badge/location-Brazil-green.svg" alt="Brazil">
-  <img src="https://img.shields.io/badge/repos-11%20public-informational.svg" alt="11 public repos">
+  <img src="https://img.shields.io/badge/repos-12%20public-informational.svg" alt="12 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-orange.svg" alt="Cloudflare">
   <img src="https://img.shields.io/badge/AI-Claude%20%2B%20Codex%20%2B%20Gemini-7c3aed.svg" alt="multi-agent AI">
   <a href="https://github.com/sponsors/lcv-leo"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor on GitHub"></a>
@@ -58,7 +58,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 
 | Repository | Live | What it does |
 | --- | --- | --- |
-| [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | [cross-review-v1.lcv.app.br](https://cross-review-v1.lcv.app.br) | MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, and Gemini CLI. Strict-only convergence: a session is `READY` only when caller and every responded peer return `READY`. The canonical defense against single-model hallucinations. Published on npm as [`@lcv-ideas-software/cross-review-mcp`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-mcp). |
+| [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | [cross-review-v1.lcv.app.br](https://cross-review-v1.lcv.app.br) | CLI-only MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, Gemini CLI, and the embedded DeepSeek CLI. Strict-only convergence: a session is `READY` only when caller and every responded peer return `READY`. Published on npm as [`@lcv-ideas-software/cross-review-v1`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v1). |
 | [**cross-review-v2**](https://github.com/LCV-Ideas-Software/cross-review-v2) | [cross-review-v2.lcv.app.br](https://cross-review-v2.lcv.app.br) | API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Gemini and DeepSeek. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2). |
 | [**maestro-app**](https://github.com/LCV-Ideas-Software/maestro-app) | [maestro-app.lcv.app.br](https://maestro-app.lcv.app.br) | *Maestro Editorial AI* — portable Windows editorial workbench (Tauri 2 + React 19) for protocol-driven AI drafting, source verification, and multi-agent editorial convergence using Claude, Codex, Gemini, and DeepSeek. Resumable sessions, NDJSON diagnostic logs, runtime data stays local. |
 
