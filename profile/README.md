@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-verified-blueviolet.svg" alt="verified org"></a>
-  <a href="https://www.lcv.app.br"><img src="https://img.shields.io/badge/homepage-www.lcv.app.br-blue.svg" alt="www.lcv.app.br"></a>
+  <a href="https://www.lcv.dev.br"><img src="https://img.shields.io/badge/homepage-www.lcv.dev.br-blue.svg" alt="www.lcv.dev.br"></a>
   <img src="https://img.shields.io/badge/location-Brazil-green.svg" alt="Brazil">
   <img src="https://img.shields.io/badge/repos-12%20public-informational.svg" alt="12 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-orange.svg" alt="Cloudflare">
@@ -18,7 +18,7 @@
   <a href="https://github.com/sponsors/lcv-leo"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor on GitHub"></a>
 </p>
 
-LCV Ideas &amp; Software is a software organization maintained by **Leonardo Cardozo Vargas**. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek). Org homepage: **[www.lcv.app.br](https://www.lcv.app.br)**.
+LCV Ideas &amp; Software is a software organization maintained by **Leonardo Cardozo Vargas**. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek). Org homepage: **[www.lcv.dev.br](https://www.lcv.dev.br)**.
 
 ---
 
@@ -119,7 +119,7 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 
 ## Contact and support
 
-- **Homepage**: [www.lcv.app.br](https://www.lcv.app.br)
+- **Homepage**: [www.lcv.dev.br](https://www.lcv.dev.br)
 - **Public blog**: [www.reflexosdaalma.blog](https://www.reflexosdaalma.blog) (the `mainsite-app` product)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
 - **Email**: [github@lcvmail.com](mailto:github@lcvmail.com) for org-wide topics.
