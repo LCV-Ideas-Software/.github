@@ -27,7 +27,7 @@ LCV Ideas &amp; Software is a software organization maintained by **Leonardo Car
 A small, opinionated portfolio organized in three layers, all sharing the same Cloudflare edge runtime and a single unified D1 database (`bigdata_db`):
 
 1. **Public products** — consumer-facing web apps with AI assistance, deployed on Cloudflare Pages with Worker backends.
-2. **Operator infrastructure** — the single-tenant control plane and admin micro-modules that govern the public products.
+2. **Operator infrastructure** — the single-tenant control plane and supporting services that govern the public products.
 3. **Developer tooling** — open-source MCP servers and editorial workbenches built around multi-agent AI convergence.
 
 Every repository is published on GitHub under the `LCV-Ideas-Software` organization and ships with its own Pages site under the `lcv.dev` zone (custom domains, HTTPS-enforced). Everything is delivered under a strict **trilateral cross-review discipline** (three independent top-tier AI peers — Claude, Codex, Gemini — must converge before any merge), version-pinned baselines, CodeQL Default Setup, Secret Scanning push protection, and SHA-pinned GitHub Actions.
@@ -50,7 +50,6 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | Repository | Live | What it does |
 | --- | --- | --- |
 | [**admin-app**](https://github.com/LCV-Ideas-Software/admin-app) | [admin-app.lcv.dev](https://admin-app.lcv.dev) | Operator admin dashboard for the multi-app Cloudflare workspace. Single-tenant by design. React 19 + Vite 8 on Pages + Hono Worker, gated by Cloudflare Access (Zero Trust JWT). 13 modules: post editor, AI model selection, financial reports (SumUp), DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT ingestion, operational telemetry. |
-| [**adminapps**](https://github.com/LCV-Ideas-Software/adminapps) | [adminapps.lcv.dev](https://adminapps.lcv.dev) | React-based admin micro-modules on Cloudflare Pages. Composable card-grid UI for compliance surfaces (license panel, third-party attribution). |
 | [**mtasts-motor**](https://github.com/LCV-Ideas-Software/mtasts-motor) | [mtasts-motor.lcv.dev](https://mtasts-motor.lcv.dev) | Cloudflare Worker serving dynamic [MTA-STS](https://datatracker.ietf.org/doc/html/rfc8461) policies from a D1 backing store. Designed for multi-domain operators behind the `mta-sts.<domain>` subdomain convention (RFC 8461). |
 
 ### 🤖 Developer tooling
@@ -65,7 +64,8 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 
 | Repository | Status | Note |
 | --- | --- | --- |
-| [**apphub**](https://github.com/LCV-Ideas-Software/apphub) | Archived | Discontinued Cloudflare Pages portal hub. The organization website at [www.lcv.dev](https://www.lcv.dev) is now the canonical public entry point. |
+| [**apphub**](https://github.com/LCV-Ideas-Software/apphub) | Archived | Discontinued because it no longer provided useful organizational value. The organization website at [www.lcv.dev](https://www.lcv.dev) is now the canonical public entry point. |
+| [**adminapps**](https://github.com/LCV-Ideas-Software/adminapps) | Archived | Discontinued after all admin surfaces were consolidated into [admin-app](https://github.com/LCV-Ideas-Software/admin-app). Continuing `adminapps` no longer makes operational sense. |
 
 ---
 
