@@ -44,7 +44,6 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | [**astrologo-app**](https://github.com/LCV-Ideas-Software/astrologo-app) | [astrologo-app.lcv.dev](https://astrologo-app.lcv.dev) | *Astrólogo* — birth chart generator and esoteric analysis via Gemini AI. React 19 + Vite 8 on Cloudflare Pages with D1 backing store. Deterministic astrometric calculation + AI narrative; throttling, optional auth, share-by-email. |
 | [**calculadora-app**](https://github.com/LCV-Ideas-Software/calculadora-app) | [calculadora-app.lcv.dev](https://calculadora-app.lcv.dev) | *Calculadora Financeira* — international FX simulator (credit card vs. multi-currency account) with AI-driven contextual analysis. React 19 + Vite 8 on Cloudflare Pages + D1. Integrates PTAX (BCB), Spot (AwesomeAPI), and Gemini AI. Modeled on Itaú's published methodology. |
 | [**oraculo-financeiro**](https://github.com/LCV-Ideas-Software/oraculo-financeiro) | [oraculo-financeiro-app.lcv.dev](https://oraculo-financeiro-app.lcv.dev) | *Oráculo Financeiro* — IPCA-indexed fixed-income analysis dashboard (LCI/CDB IPCA+, Tesouro IPCA+) with Gemini contextual insights. React 19 + Vite 8 on Cloudflare Pages + D1 + Cron Worker for daily IPCA rate pre-warming. |
-| [**apphub**](https://github.com/LCV-Ideas-Software/apphub) | [apphub.lcv.dev](https://apphub.lcv.dev) | Cloudflare Pages portal hub. Static landing + PWA dispatcher routing visitors to the sub-application fleet via a configurable card-grid UI backed by D1. |
 
 ### 🛠️ Operator infrastructure
 
@@ -61,6 +60,12 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | [cross-review-v1.lcv.dev](https://cross-review-v1.lcv.dev) | CLI-only MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, Gemini CLI, and the embedded DeepSeek CLI. Strict-only convergence: a session is `READY` only when caller and every responded peer return `READY`. Published on npm as [`@lcv-ideas-software/cross-review-v1`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v1). |
 | [**cross-review-v2**](https://github.com/LCV-Ideas-Software/cross-review-v2) | [cross-review-v2.lcv.dev](https://cross-review-v2.lcv.dev) | API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Gemini and DeepSeek. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2). |
 | [**maestro-app**](https://github.com/LCV-Ideas-Software/maestro-app) | [maestro-app.lcv.dev](https://maestro-app.lcv.dev) | *Maestro Editorial AI* — portable Windows editorial workbench (Tauri 2 + React 19) for protocol-driven AI drafting, source verification, and multi-agent editorial convergence using Claude, Codex, Gemini, and DeepSeek. Resumable sessions, NDJSON diagnostic logs, runtime data stays local. |
+
+### Archived / discontinued
+
+| Repository | Status | Note |
+| --- | --- | --- |
+| [**apphub**](https://github.com/LCV-Ideas-Software/apphub) | Archived | Discontinued Cloudflare Pages portal hub. The organization website at [www.lcv.dev](https://www.lcv.dev) is now the canonical public entry point. |
 
 ---
 
