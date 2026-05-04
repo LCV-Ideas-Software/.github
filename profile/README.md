@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/repos-13%20public-informational.svg" alt="13 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-orange.svg" alt="Cloudflare">
   <img src="https://img.shields.io/badge/AI-Claude%20%2B%20Codex%20%2B%20Gemini-7c3aed.svg" alt="multi-agent AI">
-  <a href="https://github.com/sponsors/lcv-leo"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor on GitHub"></a>
+  <a href="https://github.com/sponsors/LCV-Ideas-Software"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor on GitHub"></a>
 </p>
 
 LCV Ideas &amp; Software is a software organization maintained by **Leonardo Cardozo Vargas**. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek). Org homepage: **[www.lcv.dev](https://www.lcv.dev)**.
@@ -129,8 +129,8 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 - **Public blog**: [www.reflexosdaalma.blog](https://www.reflexosdaalma.blog) (the `mainsite-app` product)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
 - **Email**: [github@lcvmail.com](mailto:github@lcvmail.com) for org-wide topics.
-- **Sponsorship**: support the work via GitHub Sponsors → [github.com/sponsors/lcv-leo](https://github.com/sponsors/lcv-leo).
+- **Sponsorship**: support the work via GitHub Sponsors → [github.com/sponsors/LCV-Ideas-Software](https://github.com/sponsors/LCV-Ideas-Software).
 
 ---
 
-<p align="center"><sub>© Leonardo Cardozo Vargas — built on Cloudflare's edge, reviewed by three AI peers.</sub></p>
+<p align="center"><sub>© LCV Ideas &amp; Software<br>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713  - Pinheiros<br>São Paulo - SP<br>CEP 05.424-150<br>CNPJ: 66.584.678/0001-77<br>IM 05.424-150</sub></p>
