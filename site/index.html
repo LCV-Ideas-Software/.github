@@ -1,443 +1,721 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
-  <title>LCV Ideas &amp; Software</title>
-  <meta name="description" content="Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge. Maintained by Leonardo Cardozo Vargas." />
-  <link rel="canonical" href="https://www.lcv.dev/" />
-  <link rel="icon" type="image/svg+xml" href="./assets/lcv-ideas-software-mark.svg" />
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>LCV Ideas &amp; Software</title>
+    <meta
+      name="description"
+      content="Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge. Maintained by Leonardo Cardozo Vargas."
+    />
+    <link rel="canonical" href="https://www.lcv.dev/" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="./assets/lcv-ideas-software-mark.svg"
+    />
 
-  <meta property="og:type" content="website" />
-  <meta property="og:title" content="LCV Ideas &amp; Software" />
-  <meta property="og:description" content="Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge." />
-  <meta property="og:url" content="https://www.lcv.dev/" />
-  <meta property="og:image" content="https://www.lcv.dev/assets/lcv-ideas-software-logo.svg" />
-  <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="LCV Ideas &amp; Software" />
-  <meta name="twitter:description" content="Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge." />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="LCV Ideas &amp; Software" />
+    <meta
+      property="og:description"
+      content="Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge."
+    />
+    <meta property="og:url" content="https://www.lcv.dev/" />
+    <meta
+      property="og:image"
+      content="https://www.lcv.dev/assets/lcv-ideas-software-logo.svg"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="LCV Ideas &amp; Software" />
+    <meta
+      name="twitter:description"
+      content="Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge."
+    />
 
-  <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@type": "Organization",
-    "name": "LCV Ideas & Software",
-    "url": "https://www.lcv.dev/",
-    "logo": "https://www.lcv.dev/assets/lcv-ideas-software-logo.svg",
-    "founder": {
-      "@type": "Person",
-      "name": "Leonardo Cardozo Vargas"
-    },
-    "sameAs": [
-      "https://github.com/LCV-Ideas-Software",
-      "https://www.reflexosdaalma.blog"
-    ]
-  }
-  </script>
-
-  <style>
-    :root {
-      --bg: #f6f8fb;
-      --bg-elev: #ffffff;
-      --fg: #0f172a;
-      --fg-muted: #475569;
-      --border: #d8e0ea;
-      --accent: #2563eb;
-      --accent-strong: #0f766e;
-      --accent-warm: #f59e0b;
-      --shadow: rgba(15, 23, 42, 0.08);
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg: #0b1220;
-        --bg-elev: #111827;
-        --fg: #e7edf5;
-        --fg-muted: #9aa8ba;
-        --border: #253246;
-        --accent: #60a5fa;
-        --accent-strong: #2dd4bf;
-        --accent-warm: #fbbf24;
-        --shadow: rgba(0, 0, 0, 0.32);
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "LCV Ideas & Software",
+        "url": "https://www.lcv.dev/",
+        "logo": "https://www.lcv.dev/assets/lcv-ideas-software-logo.svg",
+        "founder": {
+          "@type": "Person",
+          "name": "Leonardo Cardozo Vargas"
+        },
+        "sameAs": [
+          "https://github.com/LCV-Ideas-Software",
+          "https://www.reflexosdaalma.blog"
+        ]
       }
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--fg);
-      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      min-height: 100vh;
-    }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    </script>
 
-    .sr-only {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0,0,0,0);
-      white-space: nowrap;
-      border: 0;
-    }
+    <style>
+      :root {
+        --bg: #f6f8fb;
+        --bg-elev: #ffffff;
+        --fg: #0f172a;
+        --fg-muted: #475569;
+        --border: #d8e0ea;
+        --accent: #2563eb;
+        --accent-strong: #0f766e;
+        --accent-warm: #f59e0b;
+        --shadow: rgba(15, 23, 42, 0.08);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b1220;
+          --bg-elev: #111827;
+          --fg: #e7edf5;
+          --fg-muted: #9aa8ba;
+          --border: #253246;
+          --accent: #60a5fa;
+          --accent-strong: #2dd4bf;
+          --accent-warm: #fbbf24;
+          --shadow: rgba(0, 0, 0, 0.32);
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          16px/1.55 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
+        min-height: 100vh;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
 
-    .topbar {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      background: color-mix(in srgb, var(--bg) 88%, transparent);
-      backdrop-filter: saturate(140%) blur(10px);
-      border-bottom: 1px solid var(--border);
-    }
-    .topbar-inner {
-      width: min(1080px, 100%);
-      margin: 0 auto;
-      padding: 14px 20px;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--fg);
-      font-weight: 700;
-    }
-    .brand img { width: 32px; height: 32px; display: block; }
-    .brand span { font-size: 15px; }
-    .topbar nav {
-      margin-left: auto;
-      display: flex;
-      gap: 18px;
-      font-size: 14px;
-    }
-    .topbar nav a { color: var(--fg-muted); }
-    .topbar nav a:hover { color: var(--fg); text-decoration: none; }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
 
-    main {
-      width: min(1080px, 100%);
-      margin: 0 auto;
-      padding: 56px 20px 80px;
-    }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: saturate(140%) blur(10px);
+        border-bottom: 1px solid var(--border);
+      }
+      .topbar-inner {
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        padding: 14px 20px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--fg);
+        font-weight: 700;
+      }
+      .brand img {
+        width: 32px;
+        height: 32px;
+        display: block;
+      }
+      .brand span {
+        font-size: 15px;
+      }
+      .topbar nav {
+        margin-left: auto;
+        display: flex;
+        gap: 18px;
+        font-size: 14px;
+      }
+      .topbar nav a {
+        color: var(--fg-muted);
+      }
+      .topbar nav a:hover {
+        color: var(--fg);
+        text-decoration: none;
+      }
 
-    .hero {
-      text-align: center;
-      padding: 24px 0 44px;
-    }
-    .hero img.banner {
-      display: block;
-      width: min(460px, 92%);
-      height: auto;
-      margin: 0 auto 8px;
-    }
-    .hero .tagline {
-      max-width: 640px;
-      margin: 12px auto 0;
-      color: var(--fg-muted);
-      font-size: clamp(16px, 1.8vw, 19px);
-    }
-    .hero .actions {
-      margin-top: 28px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      justify-content: center;
-    }
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 18px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: var(--bg-elev);
-      color: var(--fg);
-      font-weight: 600;
-      font-size: 14px;
-      transition: transform 120ms ease, border-color 120ms ease;
-    }
-    .btn:hover { text-decoration: none; transform: translateY(-1px); border-color: var(--accent); }
-    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .btn.primary:hover { border-color: var(--accent); filter: brightness(1.05); }
+      main {
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        padding: 56px 20px 80px;
+      }
 
-    .section { padding-top: 48px; }
-    .section h2 {
-      font-size: clamp(20px, 2.6vw, 24px);
-      margin: 0 0 6px;
-      letter-spacing: -0.005em;
-    }
-    .section .lead {
-      color: var(--fg-muted);
-      margin: 0 0 22px;
-      font-size: 15px;
-      max-width: 640px;
-    }
+      .hero {
+        text-align: center;
+        padding: 24px 0 44px;
+      }
+      .hero img.banner {
+        display: block;
+        width: min(460px, 92%);
+        height: auto;
+        margin: 0 auto 8px;
+      }
+      .hero .tagline {
+        max-width: 640px;
+        margin: 12px auto 0;
+        color: var(--fg-muted);
+        font-size: clamp(16px, 1.8vw, 19px);
+      }
+      .hero .actions {
+        margin-top: 28px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: center;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 18px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 14px;
+        transition:
+          transform 120ms ease,
+          border-color 120ms ease;
+      }
+      .btn:hover {
+        text-decoration: none;
+        transform: translateY(-1px);
+        border-color: var(--accent);
+      }
+      .btn.primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      .btn.primary:hover {
+        border-color: var(--accent);
+        filter: brightness(1.05);
+      }
 
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 16px;
-    }
-    .card {
-      background: var(--bg-elev);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 18px 20px;
-      transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
-    }
-    .card:hover {
-      border-color: var(--accent);
-      transform: translateY(-2px);
-      box-shadow: 0 12px 28px var(--shadow);
-    }
-    .card h3 {
-      margin: 0 0 4px;
-      font-size: 17px;
-      font-weight: 720;
-    }
-    .card .repo {
-      font-size: 12px;
-      color: var(--fg-muted);
-      font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
-    }
-    .card p { color: var(--fg-muted); margin: 10px 0 12px; font-size: 14px; }
-    .card .links { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; }
-    .card .links a { color: var(--accent); }
+      .section {
+        padding-top: 48px;
+      }
+      .section h2 {
+        font-size: clamp(20px, 2.6vw, 24px);
+        margin: 0 0 6px;
+        letter-spacing: -0.005em;
+      }
+      .section .lead {
+        color: var(--fg-muted);
+        margin: 0 0 22px;
+        font-size: 15px;
+        max-width: 640px;
+      }
 
-    .practices {
-      background: var(--bg-elev);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 28px 28px 24px;
-    }
-    .practices ul {
-      margin: 0;
-      padding-left: 1.1em;
-      color: var(--fg-muted);
-      font-size: 14.5px;
-      line-height: 1.7;
-    }
-    .practices ul strong { color: var(--fg); }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 16px;
+      }
+      .card {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 18px 20px;
+        transition:
+          border-color 120ms ease,
+          transform 120ms ease,
+          box-shadow 120ms ease;
+      }
+      .card:hover {
+        border-color: var(--accent);
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px var(--shadow);
+      }
+      .card h3 {
+        margin: 0 0 4px;
+        font-size: 17px;
+        font-weight: 720;
+      }
+      .card .repo {
+        font-size: 12px;
+        color: var(--fg-muted);
+        font-family:
+          ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas,
+          monospace;
+      }
+      .card p {
+        color: var(--fg-muted);
+        margin: 10px 0 12px;
+        font-size: 14px;
+      }
+      .card .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 13px;
+      }
+      .card .links a {
+        color: var(--accent);
+      }
 
-    .stack {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 10px 20px;
-      font-size: 14px;
-      color: var(--fg-muted);
-      list-style: none;
-      padding: 0;
-      margin: 18px 0 0;
-    }
-    .stack li b { display: block; color: var(--fg); font-size: 13px; font-weight: 700; margin-bottom: 2px; letter-spacing: 0.01em; text-transform: uppercase; }
+      .practices {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 28px 28px 24px;
+      }
+      .practices ul {
+        margin: 0;
+        padding-left: 1.1em;
+        color: var(--fg-muted);
+        font-size: 14.5px;
+        line-height: 1.7;
+      }
+      .practices ul strong {
+        color: var(--fg);
+      }
 
-    footer {
-      border-top: 1px solid var(--border);
-      margin-top: 64px;
-      padding: 32px 20px;
-      text-align: center;
-      color: var(--fg-muted);
-      font-size: 14px;
-    }
-    footer a { color: var(--fg-muted); }
-    footer a:hover { color: var(--fg); }
-    footer .row { display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }
-    footer .copy { margin-top: 14px; font-size: 12.5px; }
-  </style>
-</head>
+      .stack {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 10px 20px;
+        font-size: 14px;
+        color: var(--fg-muted);
+        list-style: none;
+        padding: 0;
+        margin: 18px 0 0;
+      }
+      .stack li b {
+        display: block;
+        color: var(--fg);
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 2px;
+        letter-spacing: 0.01em;
+        text-transform: uppercase;
+      }
 
-<body>
+      footer {
+        border-top: 1px solid var(--border);
+        margin-top: 64px;
+        padding: 32px 20px;
+        text-align: center;
+        color: var(--fg-muted);
+        font-size: 14px;
+      }
+      footer a {
+        color: var(--fg-muted);
+      }
+      footer a:hover {
+        color: var(--fg);
+      }
+      footer .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        justify-content: center;
+      }
+      footer .copy {
+        margin-top: 14px;
+        font-size: 12.5px;
+      }
+      footer .footer-brand {
+        display: block;
+        font-size: 1.5em;
+        line-height: 1.1;
+        margin-bottom: 0.125em;
+      }
+    </style>
+  </head>
 
-<header class="topbar">
-  <div class="topbar-inner">
-    <a class="brand" href="#top">
-      <img src="./assets/lcv-ideas-software-mark.svg" alt="" />
-      <span>LCV Ideas &amp; Software</span>
-    </a>
-    <nav>
-      <a href="#products">Products</a>
-      <a href="#tooling">Tooling</a>
-      <a href="#stack">Stack</a>
-      <a href="https://github.com/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">GitHub</a>
-    </nav>
-  </div>
-</header>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#top">
+          <img src="./assets/lcv-ideas-software-mark.svg" alt="" />
+          <span>LCV Ideas &amp; Software</span>
+        </a>
+        <nav>
+          <a href="#products">Products</a>
+          <a href="#tooling">Tooling</a>
+          <a href="#stack">Stack</a>
+          <a
+            href="https://github.com/LCV-Ideas-Software"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub</a
+          >
+        </nav>
+      </div>
+    </header>
 
-<main id="top">
-
-  <section class="hero">
-    <img class="banner" src="./assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" />
-    <h1 class="sr-only">LCV Ideas &amp; Software</h1>
-    <p class="tagline">Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge.</p>
-    <div class="actions">
-      <a class="btn primary" href="#products">Explore the products</a>
-      <a class="btn" href="https://github.com/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">GitHub organization</a>
-      <a class="btn" href="https://github.com/sponsors/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">Sponsor</a>
-    </div>
-  </section>
-
-  <section class="section" id="products">
-    <h2>🌐 Public-facing applications</h2>
-    <p class="lead">Consumer-facing web apps with AI assistance, deployed on Cloudflare Pages with Worker backends. Each app shares the unified <code>bigdata_db</code> Cloudflare D1 database.</p>
-    <div class="cards">
-
-      <article class="card">
-        <h3>Reflexos da Alma</h3>
-        <div class="repo">mainsite-app</div>
-        <p>Public personal blog and companion services. Smart-polling reader, AI public chatbot (Gemini), comments and ratings with sentiment moderation, donations (SumUp + PIX), accessibility-first design.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/mainsite-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
+    <main id="top">
+      <section class="hero">
+        <img
+          class="banner"
+          src="./assets/lcv-ideas-software-logo.svg"
+          alt="LCV Ideas &amp; Software"
+        />
+        <h1 class="sr-only">LCV Ideas &amp; Software</h1>
+        <p class="tagline">
+          Independent software studio building public web apps, operator
+          tooling, and AI agent infrastructure on Cloudflare's edge.
+        </p>
+        <div class="actions">
+          <a class="btn primary" href="#products">Explore the products</a>
+          <a
+            class="btn"
+            href="https://github.com/LCV-Ideas-Software"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub organization</a
+          >
+          <a
+            class="btn"
+            href="https://github.com/sponsors/LCV-Ideas-Software"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Sponsor</a
+          >
         </div>
-      </article>
+      </section>
 
-      <article class="card">
-        <h3>Astrólogo</h3>
-        <div class="repo">astrologo-app</div>
-        <p>Birth chart generator and esoteric analysis with Gemini AI narrative. Deterministic astrometric calculation, throttling, optional auth, share-by-email.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/astrologo-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
+      <section class="section" id="products">
+        <h2>🌐 Public-facing applications</h2>
+        <p class="lead">
+          Consumer-facing web apps with AI assistance, deployed on Cloudflare
+          Pages with Worker backends. Each app shares the unified
+          <code>bigdata_db</code> Cloudflare D1 database.
+        </p>
+        <div class="cards">
+          <article class="card">
+            <h3>Reflexos da Alma</h3>
+            <div class="repo">mainsite-app</div>
+            <p>
+              Public personal blog and companion services. Smart-polling reader,
+              AI public chatbot (Gemini), comments and ratings with sentiment
+              moderation, donations (SumUp + PIX), accessibility-first design.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/mainsite-app"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Astrólogo</h3>
+            <div class="repo">astrologo-app</div>
+            <p>
+              Birth chart generator and esoteric analysis with Gemini AI
+              narrative. Deterministic astrometric calculation, throttling,
+              optional auth, share-by-email.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/astrologo-app"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Calculadora Financeira</h3>
+            <div class="repo">calculadora-app</div>
+            <p>
+              International FX simulator (credit card vs. multi-currency
+              account) with AI-driven contextual analysis. Integrates PTAX
+              (BCB), Spot, and Gemini.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/calculadora-app"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Oráculo Financeiro</h3>
+            <div class="repo">oraculo-financeiro</div>
+            <p>
+              IPCA-indexed fixed-income analysis dashboard (LCI/CDB IPCA+,
+              Tesouro IPCA+) with Gemini contextual insights and a Cron Worker
+              pre-warming taxa caches.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/oraculo-financeiro"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
         </div>
-      </article>
+      </section>
 
-      <article class="card">
-        <h3>Calculadora Financeira</h3>
-        <div class="repo">calculadora-app</div>
-        <p>International FX simulator (credit card vs. multi-currency account) with AI-driven contextual analysis. Integrates PTAX (BCB), Spot, and Gemini.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/calculadora-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
+      <section class="section">
+        <h2>🛠️ Operator infrastructure</h2>
+        <p class="lead">
+          The single-tenant control plane and supporting services that govern
+          the public products. Cloudflare Access (Zero Trust JWT) gates all
+          operator surfaces.
+        </p>
+        <div class="cards">
+          <article class="card">
+            <h3>Admin Dashboard</h3>
+            <div class="repo">admin-app</div>
+            <p>
+              Operator control plane for the multi-app workspace: post editor,
+              AI model selection, financial reports (SumUp), DNS CRUD, Pages and
+              Workers lifecycle, MTA-STS, TLS-RPT, telemetry.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/admin-app"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>MTA-STS Motor</h3>
+            <div class="repo">mtasts-motor</div>
+            <p>
+              Cloudflare Worker serving dynamic MTA-STS policies (RFC 8461) from
+              a D1 backing store. Designed for multi-domain operators behind
+              <code>mta-sts.&lt;domain&gt;</code>.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/mtasts-motor"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
         </div>
-      </article>
+      </section>
 
-      <article class="card">
-        <h3>Oráculo Financeiro</h3>
-        <div class="repo">oraculo-financeiro</div>
-        <p>IPCA-indexed fixed-income analysis dashboard (LCI/CDB IPCA+, Tesouro IPCA+) with Gemini contextual insights and a Cron Worker pre-warming taxa caches.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/oraculo-financeiro" target="_blank" rel="noopener noreferrer">GitHub →</a>
+      <section class="section" id="tooling">
+        <h2>🤖 Developer tooling</h2>
+        <p class="lead">
+          Open-source MCP servers and editorial workbenches built around
+          multi-agent AI convergence.
+        </p>
+        <div class="cards">
+          <article class="card">
+            <h3>Cross Review v1</h3>
+            <div class="repo">cross-review-v1 · Apache-2.0</div>
+            <p>
+              CLI-only MCP stdio server orchestrating structured review sessions
+              between Claude Code, ChatGPT Codex, Gemini CLI, and the embedded
+              DeepSeek CLI. Strict-only convergence: a session is READY only
+              when caller and every responded peer return READY.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/cross-review-v1"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Cross Review v2</h3>
+            <div class="repo">cross-review-v2 · Apache-2.0</div>
+            <p>
+              API-first MCP stdio server for multi-model cross-review using
+              official provider APIs for OpenAI, Anthropic, Gemini and DeepSeek.
+              No CLI execution.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/cross-review-v2"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Grok CLI</h3>
+            <div class="repo">grok-cli · Apache-2.0</div>
+            <p>
+              LCV-maintained Grok CLI for terminal agent workflows, hardened MCP
+              server loading, xAI Responses API function calling, and automated
+              npmjs.com / GitHub Packages releases.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/grok-cli"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Maestro Editorial AI</h3>
+            <div class="repo">maestro-app</div>
+            <p>
+              Portable Windows editorial workbench (Tauri 2 + React 19) for
+              protocol-driven AI drafting, source verification, and multi-agent
+              editorial convergence using Claude, Codex, Gemini, and DeepSeek.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/maestro-app"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
         </div>
-      </article>
+      </section>
 
-    </div>
-  </section>
+      <section class="section" id="stack">
+        <h2>Shared platform</h2>
+        <p class="lead">
+          Every app in the portfolio runs on the same Cloudflare edge stack and
+          shares the unified D1 database. Cross-app reads use Cloudflare
+          bindings — never public URLs between sibling apps.
+        </p>
+        <ul class="stack">
+          <li><b>Frontend</b> React 19 + Vite 8 + TypeScript</li>
+          <li><b>Runtime</b> Cloudflare Pages + Workers (Hono)</li>
+          <li>
+            <b>Database</b> Cloudflare D1 (shared <code>bigdata_db</code>)
+          </li>
+          <li><b>Storage</b> Cloudflare R2</li>
+          <li><b>Auth</b> Cloudflare Access (Zero Trust JWT)</li>
+          <li><b>AI</b> Claude · Codex · Gemini · DeepSeek</li>
+          <li><b>Email</b> Resend</li>
+          <li><b>Payments</b> SumUp + PIX</li>
+          <li><b>Anti-abuse</b> Turnstile + GCP NL</li>
+          <li><b>Desktop</b> Tauri 2 (Maestro)</li>
+        </ul>
+      </section>
 
-  <section class="section">
-    <h2>🛠️ Operator infrastructure</h2>
-    <p class="lead">The single-tenant control plane and supporting services that govern the public products. Cloudflare Access (Zero Trust JWT) gates all operator surfaces.</p>
-    <div class="cards">
-
-      <article class="card">
-        <h3>Admin Dashboard</h3>
-        <div class="repo">admin-app</div>
-        <p>Operator control plane for the multi-app workspace: post editor, AI model selection, financial reports (SumUp), DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT, telemetry.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/admin-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
+      <section class="section">
+        <h2>How we ship</h2>
+        <p class="lead">
+          Engineering practices that make the portfolio cohere as a single
+          operator surface, despite thirteen independent repositories.
+        </p>
+        <div class="practices">
+          <ul>
+            <li>
+              <strong>Trilateral cross-review before every merge.</strong> No
+              commit ships without three independent top-tier AI peers (Claude,
+              Codex, Gemini) converging on READY. Even doc-only changes pass the
+              gate.
+            </li>
+            <li>
+              <strong>Frozen-public-surface semver</strong> for tooling (<code
+                >cross-review-v1</code
+              >
+              v1.x is patch-additive only).
+            </li>
+            <li>
+              <strong>Sequential thinking</strong> via
+              <code>ultrathink</code> and <code>code-reasoning</code> MCP
+              servers is mandatory before execution.
+            </li>
+            <li>
+              <strong>CodeQL Default Setup</strong> on every repo. Branch
+              protection on <code>main</code> requires the
+              <em>Analyze</em> check.
+            </li>
+            <li>
+              <strong>SHA-pinned GitHub Actions</strong>;
+              <code>wrangler</code> always at <code>latest</code> in CI.
+            </li>
+            <li>
+              <strong>Anti-drift smoke tests</strong> keep README, runtime
+              version, and CHANGELOG heading in lockstep.
+            </li>
+            <li>
+              <strong>AGPL-3.0-or-later</strong> for nine repos,
+              <strong>Apache-2.0</strong> for <code>cross-review-v1</code>,
+              <code>cross-review-v2</code>, and <code>grok-cli</code>. Forks
+              welcome under the respective terms.
+            </li>
+          </ul>
         </div>
-      </article>
+      </section>
+    </main>
 
-      <article class="card">
-        <h3>MTA-STS Motor</h3>
-        <div class="repo">mtasts-motor</div>
-        <p>Cloudflare Worker serving dynamic MTA-STS policies (RFC 8461) from a D1 backing store. Designed for multi-domain operators behind <code>mta-sts.&lt;domain&gt;</code>.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/mtasts-motor" target="_blank" rel="noopener noreferrer">GitHub →</a>
-        </div>
-      </article>
-
-    </div>
-  </section>
-
-  <section class="section" id="tooling">
-    <h2>🤖 Developer tooling</h2>
-    <p class="lead">Open-source MCP servers and editorial workbenches built around multi-agent AI convergence.</p>
-    <div class="cards">
-
-      <article class="card">
-        <h3>Cross Review v1</h3>
-        <div class="repo">cross-review-v1 · Apache-2.0</div>
-        <p>CLI-only MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, Gemini CLI, and the embedded DeepSeek CLI. Strict-only convergence: a session is READY only when caller and every responded peer return READY.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/cross-review-v1" target="_blank" rel="noopener noreferrer">GitHub →</a>
-        </div>
-      </article>
-
-      <article class="card">
-        <h3>Cross Review v2</h3>
-        <div class="repo">cross-review-v2 · Apache-2.0</div>
-        <p>API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Gemini and DeepSeek. No CLI execution.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/cross-review-v2" target="_blank" rel="noopener noreferrer">GitHub →</a>
-        </div>
-      </article>
-
-      <article class="card">
-        <h3>Grok CLI</h3>
-        <div class="repo">grok-cli · Apache-2.0</div>
-        <p>LCV-maintained Grok CLI for terminal agent workflows, hardened MCP server loading, xAI Responses API function calling, and automated npmjs.com / GitHub Packages releases.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/grok-cli" target="_blank" rel="noopener noreferrer">GitHub →</a>
-        </div>
-      </article>
-
-      <article class="card">
-        <h3>Maestro Editorial AI</h3>
-        <div class="repo">maestro-app</div>
-        <p>Portable Windows editorial workbench (Tauri 2 + React 19) for protocol-driven AI drafting, source verification, and multi-agent editorial convergence using Claude, Codex, Gemini, and DeepSeek.</p>
-        <div class="links">
-          <a href="https://github.com/LCV-Ideas-Software/maestro-app" target="_blank" rel="noopener noreferrer">GitHub →</a>
-        </div>
-      </article>
-
-    </div>
-  </section>
-
-  <section class="section" id="stack">
-    <h2>Shared platform</h2>
-    <p class="lead">Every app in the portfolio runs on the same Cloudflare edge stack and shares the unified D1 database. Cross-app reads use Cloudflare bindings — never public URLs between sibling apps.</p>
-    <ul class="stack">
-      <li><b>Frontend</b> React 19 + Vite 8 + TypeScript</li>
-      <li><b>Runtime</b> Cloudflare Pages + Workers (Hono)</li>
-      <li><b>Database</b> Cloudflare D1 (shared <code>bigdata_db</code>)</li>
-      <li><b>Storage</b> Cloudflare R2</li>
-      <li><b>Auth</b> Cloudflare Access (Zero Trust JWT)</li>
-      <li><b>AI</b> Claude · Codex · Gemini · DeepSeek</li>
-      <li><b>Email</b> Resend</li>
-      <li><b>Payments</b> SumUp + PIX</li>
-      <li><b>Anti-abuse</b> Turnstile + GCP NL</li>
-      <li><b>Desktop</b> Tauri 2 (Maestro)</li>
-    </ul>
-  </section>
-
-  <section class="section">
-    <h2>How we ship</h2>
-    <p class="lead">Engineering practices that make the portfolio cohere as a single operator surface, despite thirteen independent repositories.</p>
-    <div class="practices">
-      <ul>
-        <li><strong>Trilateral cross-review before every merge.</strong> No commit ships without three independent top-tier AI peers (Claude, Codex, Gemini) converging on READY. Even doc-only changes pass the gate.</li>
-        <li><strong>Frozen-public-surface semver</strong> for tooling (<code>cross-review-v1</code> v1.x is patch-additive only).</li>
-        <li><strong>Sequential thinking</strong> via <code>ultrathink</code> and <code>code-reasoning</code> MCP servers is mandatory before execution.</li>
-        <li><strong>CodeQL Default Setup</strong> on every repo. Branch protection on <code>main</code> requires the <em>Analyze</em> check.</li>
-        <li><strong>SHA-pinned GitHub Actions</strong>; <code>wrangler</code> always at <code>latest</code> in CI.</li>
-        <li><strong>Anti-drift smoke tests</strong> keep README, runtime version, and CHANGELOG heading in lockstep.</li>
-        <li><strong>AGPL-3.0-or-later</strong> for nine repos, <strong>Apache-2.0</strong> for <code>cross-review-v1</code>, <code>cross-review-v2</code>, and <code>grok-cli</code>. Forks welcome under the respective terms.</li>
-      </ul>
-    </div>
-  </section>
-
-</main>
-
-<footer>
-  <div class="row">
-    <a href="https://github.com/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">GitHub</a>
-    <a href="https://www.reflexosdaalma.blog" target="_blank" rel="noopener noreferrer">Public blog</a>
-    <a href="mailto:github@lcvmail.com">github@lcvmail.com</a>
-    <a href="https://github.com/sponsors/LCV-Ideas-Software" target="_blank" rel="noopener noreferrer">Sponsor</a>
-  </div>
-  <div class="copy">© LCV Ideas &amp; Software<br>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713  - Pinheiros<br>São Paulo - SP<br>CEP 05.424-150<br>CNPJ: 66.584.678/0001-77<br>IM 05.424-150</div>
-</footer>
-
-</body>
+    <footer>
+      <div class="row">
+        <a
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+          >GitHub</a
+        >
+        <a
+          href="https://www.reflexosdaalma.blog"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Public blog</a
+        >
+        <a href="mailto:github@lcvmail.com">github@lcvmail.com</a>
+        <a
+          href="https://github.com/sponsors/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Sponsor</a
+        >
+      </div>
+      <div class="copy">
+        <span class="footer-brand">© LCV Ideas &amp; Software</span>LEONARDO
+        CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br />Rua Pais Leme, 215
+        Conj 1713&nbsp;&nbsp;- Pinheiros<br />São Paulo - SP<br />CEP
+        05.424-150<br />CNPJ: 66.584.678/0001-77<br />IM 05.424-150
+      </div>
+    </footer>
+  </body>
 </html>
