@@ -12,7 +12,7 @@
   <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-verified-blueviolet.svg" alt="verified org"></a>
   <a href="https://www.lcv.dev"><img src="https://img.shields.io/badge/homepage-www.lcv.dev-blue.svg" alt="www.lcv.dev"></a>
   <img src="https://img.shields.io/badge/location-Brazil-green.svg" alt="Brazil">
-  <img src="https://img.shields.io/badge/repos-12%20public-informational.svg" alt="12 public repos">
+  <img src="https://img.shields.io/badge/repos-13%20public-informational.svg" alt="13 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-orange.svg" alt="Cloudflare">
   <img src="https://img.shields.io/badge/AI-Claude%20%2B%20Codex%20%2B%20Gemini-7c3aed.svg" alt="multi-agent AI">
   <a href="https://github.com/sponsors/lcv-leo"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor on GitHub"></a>
@@ -58,6 +58,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | --- | --- | --- |
 | [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | [cross-review-v1.lcv.dev](https://cross-review-v1.lcv.dev) | CLI-only MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, Gemini CLI, and the embedded DeepSeek CLI. Strict-only convergence: a session is `READY` only when caller and every responded peer return `READY`. Published on npm as [`@lcv-ideas-software/cross-review-v1`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v1). |
 | [**cross-review-v2**](https://github.com/LCV-Ideas-Software/cross-review-v2) | [cross-review-v2.lcv.dev](https://cross-review-v2.lcv.dev) | API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Gemini and DeepSeek. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2). |
+| [**grok-cli**](https://github.com/LCV-Ideas-Software/grok-cli) | [grok-cli.lcv.dev](https://grok-cli.lcv.dev) | LCV-maintained Grok CLI for terminal agent workflows, hardened MCP server loading, xAI Responses API function calling, and automated npmjs.com / GitHub Packages releases as [`@lcv-ideas-software/grok-cli`](https://www.npmjs.com/package/@lcv-ideas-software/grok-cli). |
 | [**maestro-app**](https://github.com/LCV-Ideas-Software/maestro-app) | [maestro-app.lcv.dev](https://maestro-app.lcv.dev) | *Maestro Editorial AI* — portable Windows editorial workbench (Tauri 2 + React 19) for protocol-driven AI drafting, source verification, and multi-agent editorial convergence using Claude, Codex, Gemini, and DeepSeek. Resumable sessions, NDJSON diagnostic logs, runtime data stays local. |
 
 ### Archived / discontinued
@@ -108,7 +109,7 @@ Desktop      Tauri 2  (Maestro)
 | License | Repositories |
 | --- | --- |
 | [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `apphub`, `admin-app`, `adminapps`, `mtasts-motor`, `maestro-app` |
-| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `cross-review-v1`, `cross-review-v2` |
+| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `cross-review-v1`, `cross-review-v2`, `grok-cli` |
 
 The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: running a modified fork as a public service obligates publication of the modifications under the same license. Each repository ships a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
 
