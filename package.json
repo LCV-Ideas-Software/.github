@@ -2,8 +2,8 @@
   "name": "@lcv-ideas-software/github-org-public-format",
   "private": true,
   "scripts": {
-    "format:public": "prettier --write \"**/README.md\" \"**/index.html\"",
-    "format:public:check": "prettier --check \"**/README.md\" \"**/index.html\""
+    "format:public": "prettier --write \"**/index.html\"",
+    "format:public:check": "prettier --check \"**/index.html\""
   },
   "devDependencies": {
     "prettier": "^3.8.3"
