@@ -13,3 +13,27 @@ updates:
       prefix: "deps"
       include: "scope"
     open-pull-requests-limit: 10
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "03:00"
+      timezone: "America/Sao_Paulo"
+    labels:
+      - "dependencies"
+      - "npm"
+      - "public-format"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    versioning-strategy: increase
+    groups:
+      public-format-tooling:
+        patterns:
+          - "prettier"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 10

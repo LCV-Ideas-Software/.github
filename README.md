@@ -12,6 +12,7 @@ This repository hosts the **organization profile** rendered at <https://github.c
 
 - The org-profile content lives in [`profile/README.md`](./profile/README.md). GitHub renders it on the organization landing page automatically.
 - The static organization site lives in [`site/`](./site/) and is deployed from that directory as the root of the Cloudflare Pages project `org-site`, whose canonical public domain is <https://www.lcv.dev>.
+- Dependabot covers GitHub Actions plus the root npm toolchain used for public-site formatting checks.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
 - This repository intentionally does **not** carry a product-style release-history table, because it does not represent a standalone shipped application or package.
 
