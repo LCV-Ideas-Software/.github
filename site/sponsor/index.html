@@ -259,29 +259,6 @@
         cursor: not-allowed;
         opacity: 0.62;
       }
-      .wallet-option {
-        margin-top: 18px;
-        border-top: 1px solid var(--border);
-        padding-top: 16px;
-      }
-      .wallet-option p {
-        margin-bottom: 10px;
-      }
-      .wallet-button {
-        width: 100%;
-        border: 1px solid color-mix(in srgb, #00a650 60%, var(--border));
-        border-radius: 999px;
-        padding: 11px 14px;
-        background: color-mix(in srgb, #00a650 12%, var(--bg));
-        color: var(--fg);
-        cursor: pointer;
-        font: inherit;
-        font-weight: 750;
-      }
-      .wallet-button:disabled {
-        cursor: wait;
-        opacity: 0.7;
-      }
       .status {
         margin-top: 16px;
         border: 1px solid var(--border);
@@ -560,15 +537,6 @@
               class="payment-brick"
               aria-live="polite"
             ></div>
-            <div class="wallet-option">
-              <p>
-                Prefere usar saldo, cartões salvos ou login da sua conta Mercado
-                Pago?
-              </p>
-              <button id="wallet-button" class="wallet-button" type="button">
-                Pagar com minha conta Mercado Pago
-              </button>
-            </div>
           </div>
           <div
             id="status"
@@ -641,7 +609,6 @@
         var firstPurchaseOnlineInput = document.getElementById(
           "first-purchase-online",
         );
-        var walletButton = document.getElementById("wallet-button");
         var statusBox = document.getElementById("status");
         var challengeBox = document.getElementById("challenge");
         var challengeFrame = document.getElementById("challenge-frame");
@@ -956,57 +923,6 @@
             });
         }
 
-        function payWithMercadoPagoAccount() {
-          var identity;
-          try {
-            identity = sponsorIdentity();
-          } catch (error) {
-            status(error.message, "error");
-            return;
-          }
-          var amountCents = parseAmountCents(amountInput.value);
-          if (amountCents === null) {
-            status("Informe um valor entre R$ 1,00 e R$ 10.000,00.", "error");
-            return;
-          }
-
-          walletButton.disabled = true;
-          status("Abrindo pagamento seguro na conta Mercado Pago...");
-          fetch(API_BASE_URL + "/api/preferences", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "omit",
-            body: JSON.stringify({
-              project: projectSelect.value,
-              amount: amountInput.value,
-              name: identity.firstName + " " + identity.lastName,
-              email: identity.email,
-              walletOnly: true,
-            }),
-          })
-            .then(function (response) {
-              return response.json().then(function (data) {
-                if (!response.ok)
-                  throw new Error(data.error || "Falha ao abrir Mercado Pago.");
-                return data;
-              });
-            })
-            .then(function (data) {
-              var target = data.initPoint || data.sandboxInitPoint;
-              if (!target) throw new Error("Mercado Pago não retornou link.");
-              window.location.assign(target);
-            })
-            .catch(function (error) {
-              walletButton.disabled = false;
-              status(
-                error && error.message
-                  ? error.message
-                  : "Não foi possível abrir o Mercado Pago.",
-                "error",
-              );
-            });
-        }
-
         function handleOrderResult(data) {
           currentReference = data.externalReference || "";
           var paymentStatus = data.paymentStatus || data.status || "";
@@ -1046,6 +962,7 @@
             status(
               "Order criada. A confirmação final será registrada pelo webhook do Mercado Pago.",
             );
+            if (currentReference) refreshPaymentStatus(currentReference, 0);
           }
         }
 
@@ -1106,7 +1023,6 @@
         emailInput.addEventListener("blur", function () {
           renderBrick(true);
         });
-        walletButton.addEventListener("click", payWithMercadoPagoAccount);
         window.addEventListener("message", function (event) {
           if (
             event.data &&
