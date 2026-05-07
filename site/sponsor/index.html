@@ -117,13 +117,13 @@
         font-size: 14px;
       }
       .hero {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
-        gap: 28px;
-        align-items: start;
+        display: block;
       }
       .intro {
         padding: 20px 0 0;
+        max-width: 820px;
+        margin: 0 auto;
+        text-align: center;
       }
       .eyebrow {
         display: inline-flex;
@@ -144,6 +144,7 @@
       }
       .lede {
         max-width: 650px;
+        margin: 0 auto;
         color: var(--fg-muted);
         font-size: clamp(17px, 2vw, 20px);
         text-align: justify;
@@ -152,9 +153,11 @@
       .panel {
         border: 1px solid var(--border);
         border-radius: 26px;
-        padding: 24px;
+        padding: 28px;
         background: color-mix(in srgb, var(--bg-elev) 94%, transparent);
         box-shadow: 0 18px 50px var(--shadow);
+        max-width: 720px;
+        margin: 36px auto 0;
       }
       .panel h2 {
         margin: 0 0 4px;
@@ -214,7 +217,7 @@
       .field-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0 12px;
+        gap: 0 16px;
       }
       .field-grid .full {
         grid-column: 1 / -1;
@@ -232,7 +235,7 @@
       }
       .amounts {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(5, 1fr);
         gap: 8px;
         margin-top: 10px;
       }
@@ -248,6 +251,9 @@
       .amounts button {
         color: var(--fg);
         background: var(--bg);
+        padding: 8px 6px;
+        font-size: 13px;
+        letter-spacing: -0.01em;
       }
       .amounts button[aria-pressed="true"] {
         color: var(--accent);
@@ -328,8 +334,9 @@
         margin-bottom: 0.125em;
       }
       @media (max-width: 820px) {
-        .hero {
-          grid-template-columns: 1fr;
+        .panel {
+          padding: 22px;
+          margin-top: 28px;
         }
         .amounts {
           grid-template-columns: repeat(2, 1fr);
@@ -359,15 +366,15 @@
             >.
           </h1>
           <p class="lede">
-            Sua contribuição ajuda a manter aplicações públicas, ferramentas MCP
-            e infraestrutura open-source evoluindo com revisão rigorosa,
-            documentação viva e deploys verdes.
+            Sua contribuição ajuda a manter as aplicações e ferramentas públicas
+            e open-source sempre evoluindo com revisão rigorosa e documentação
+            atualizada.
           </p>
         </div>
 
         <section class="panel" aria-labelledby="payment-title">
           <div class="payment-header">
-            <h2 id="payment-title">Apoiar agora</h2>
+            <h2 id="payment-title">Apoie-nos!</h2>
             <a
               class="mp-logo"
               href="https://www.mercadopago.com.br"
@@ -386,26 +393,32 @@
             </a>
           </div>
           <p>
-            Escolha o projeto e o valor. O pagamento acontece nesta página com
-            campos seguros do Mercado Pago e processamento via Orders API.
+            Escolha o projeto e o valor. O apoio é processado por Mercado Pago
+            de forma segura.
           </p>
           <div id="sponsor-form">
-            <label for="project">Projeto</label>
-            <select id="project" name="project" autocomplete="off"></select>
-
-            <label for="amount">Valor em reais</label>
-            <input
-              id="amount"
-              name="amount"
-              inputmode="decimal"
-              autocomplete="off"
-              placeholder="25,00"
-              required
-            />
+            <div class="field-grid">
+              <div>
+                <label for="project">Projeto</label>
+                <select id="project" name="project" autocomplete="off"></select>
+              </div>
+              <div>
+                <label for="amount">Valor em reais</label>
+                <input
+                  id="amount"
+                  name="amount"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  placeholder="25,00"
+                  required
+                />
+              </div>
+            </div>
             <div class="amounts" aria-label="Valores sugeridos">
               <button type="button" data-amount="10">R$ 10</button>
               <button type="button" data-amount="25">R$ 25</button>
               <button type="button" data-amount="50">R$ 50</button>
+              <button type="button" data-amount="75">R$ 75</button>
               <button type="button" data-amount="100">R$ 100</button>
             </div>
 
@@ -585,11 +598,10 @@
             ></iframe>
           </div>
           <p class="note">
-            A LCV Ideas &amp; Software não coleta nem processa número, validade
-            ou CVV do cartão. Nome, e-mail, telefone quando informado e endereço
-            são enviados ao Mercado Pago somente para análise
-            antifraude/qualidade da transação; no banco interno, a LCV registra
-            apenas hashes técnicos.
+            A LCV Ideas &amp; Software não coleta nem processa os dados do
+            titular do cartão de crédito. Todo o processamento é realizado pelo
+            Mercado Pago que também realiza análise antifraude/qualidade da
+            transação.
           </p>
         </section>
       </section>
