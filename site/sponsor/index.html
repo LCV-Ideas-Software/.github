@@ -149,28 +149,6 @@
         text-align: justify;
         hyphens: auto;
       }
-      .trust {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-        margin-top: 28px;
-      }
-      .trust div {
-        border: 1px solid var(--border);
-        border-radius: 16px;
-        padding: 14px;
-        background: color-mix(in srgb, var(--bg-elev) 78%, transparent);
-      }
-      .trust b {
-        display: block;
-        font-size: 13px;
-      }
-      .trust span {
-        display: block;
-        margin-top: 4px;
-        color: var(--fg-muted);
-        font-size: 12.5px;
-      }
       .panel {
         border: 1px solid var(--border);
         border-radius: 26px;
@@ -185,6 +163,8 @@
       .panel p {
         margin: 0 0 18px;
         color: var(--fg-muted);
+        text-align: justify;
+        hyphens: auto;
       }
       /* MP integration recommendation: display the official
        * Mercado Pago logo near the payment area to identify the
@@ -329,6 +309,8 @@
         margin-top: 16px;
         color: var(--fg-muted);
         font-size: 12.5px;
+        text-align: justify;
+        hyphens: auto;
       }
       footer {
         margin-top: 56px;
@@ -347,9 +329,6 @@
       }
       @media (max-width: 820px) {
         .hero {
-          grid-template-columns: 1fr;
-        }
-        .trust {
           grid-template-columns: 1fr;
         }
         .amounts {
@@ -380,23 +359,6 @@
             e infraestrutura open-source evoluindo com revisão rigorosa,
             documentação viva e deploys verdes.
           </p>
-          <div class="trust" aria-label="Garantias do fluxo de apoio">
-            <div>
-              <b>Secure Fields</b>
-              <span>Dados de cartão capturados pelo MercadoPago.js V2.</span>
-            </div>
-            <div>
-              <b>Backend isolado</b>
-              <span>`sponsor-motor`, separado do MainSite e do Admin.</span>
-            </div>
-            <div>
-              <b>Auditoria mínima</b>
-              <span
-                >Status técnico gravado no `bigdata_db` sem dados de
-                cartão.</span
-              >
-            </div>
-          </div>
         </div>
 
         <section class="panel" aria-labelledby="payment-title">
