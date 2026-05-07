@@ -7,7 +7,7 @@
     <title>Sponsor LCV Ideas &amp; Software</title>
     <meta
       name="description"
-      content="Apoie os projetos open-source da LCV Ideas & Software com checkout seguro pelo Mercado Pago."
+      content="Apoie os projetos open-source da LCV Ideas & Software com campos seguros do Mercado Pago."
     />
     <link rel="canonical" href="https://www.lcv.dev/sponsor" />
     <link
@@ -19,7 +19,7 @@
     <meta property="og:title" content="Sponsor LCV Ideas &amp; Software" />
     <meta
       property="og:description"
-      content="Apoie os projetos open-source da LCV Ideas & Software com checkout seguro pelo Mercado Pago."
+      content="Apoie os projetos open-source da LCV Ideas & Software com campos seguros do Mercado Pago."
     />
     <meta property="og:url" content="https://www.lcv.dev/sponsor" />
     <meta
@@ -256,6 +256,30 @@
         color: var(--success);
         border-color: color-mix(in srgb, var(--success) 50%, var(--border));
       }
+      .payment-brick {
+        margin-top: 18px;
+      }
+      .challenge {
+        margin-top: 18px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 16px;
+        background: var(--bg);
+      }
+      .challenge h3 {
+        margin: 0 0 6px;
+        font-size: 18px;
+      }
+      .challenge p {
+        margin: 0 0 12px;
+      }
+      .challenge iframe {
+        width: 100%;
+        min-height: 460px;
+        border: 0;
+        border-radius: 12px;
+        background: var(--bg-elev);
+      }
       .note {
         margin-top: 16px;
         color: var(--fg-muted);
@@ -310,8 +334,8 @@
           </p>
           <div class="trust" aria-label="Garantias do fluxo de apoio">
             <div>
-              <b>Checkout seguro</b>
-              <span>Pagamento finalizado no ambiente Mercado Pago.</span>
+              <b>Secure Fields</b>
+              <span>Dados de cartão capturados pelo MercadoPago.js V2.</span>
             </div>
             <div>
               <b>Backend isolado</b>
@@ -330,10 +354,10 @@
         <section class="panel" aria-labelledby="payment-title">
           <h2 id="payment-title">Apoiar agora</h2>
           <p>
-            Escolha o projeto e o valor. Você será levado diretamente ao
-            checkout seguro do Mercado Pago.
+            Escolha o projeto e o valor. O pagamento acontece nesta página com
+            campos seguros do Mercado Pago e processamento via Orders API.
           </p>
-          <form id="sponsor-form" autocomplete="on">
+          <div id="sponsor-form">
             <label for="project">Projeto</label>
             <select id="project" name="project"></select>
 
@@ -377,10 +401,12 @@
               placeholder="voce@email.com"
             />
 
-            <button id="submit" class="primary" type="submit">
-              Prosseguir para o Mercado Pago
-            </button>
-          </form>
+            <div
+              id="cardPaymentBrick_container"
+              class="payment-brick"
+              aria-live="polite"
+            ></div>
+          </div>
           <div
             id="status"
             class="status"
@@ -388,9 +414,22 @@
             aria-live="polite"
             hidden
           ></div>
+          <div id="challenge" class="challenge" hidden>
+            <h3>Autenticação adicional</h3>
+            <p>
+              Seu banco pediu uma validação extra. Conclua a etapa abaixo para
+              finalizar o apoio.
+            </p>
+            <iframe
+              id="challenge-frame"
+              title="Autenticação 3DS Mercado Pago"
+              loading="lazy"
+            ></iframe>
+          </div>
           <p class="note">
-            A LCV Ideas &amp; Software não coleta nem processa dados de cartão.
-            O pagamento é concluído no checkout seguro do Mercado Pago.
+            A LCV Ideas &amp; Software não coleta nem processa número, validade
+            ou CVV do cartão. Esses campos são renderizados e tokenizados pelo
+            Mercado Pago.
           </p>
         </section>
       </section>
@@ -403,6 +442,7 @@
       </footer>
     </main>
 
+    <script src="https://sdk.mercadopago.com/js/v2"></script>
     <script>
       (function () {
         "use strict";
@@ -422,16 +462,21 @@
           ["mtasts-motor", "MTA-STS Motor"],
           ["oraculo-financeiro", "Oraculo Financeiro"],
         ];
-        var form = document.getElementById("sponsor-form");
         var projectSelect = document.getElementById("project");
         var amountInput = document.getElementById("amount");
         var nameInput = document.getElementById("name");
         var emailInput = document.getElementById("email");
-        var submitButton = document.getElementById("submit");
         var statusBox = document.getElementById("status");
+        var challengeBox = document.getElementById("challenge");
+        var challengeFrame = document.getElementById("challenge-frame");
         var amountButtons = Array.prototype.slice.call(
           document.querySelectorAll("[data-amount]"),
         );
+        var bricksBuilder = null;
+        var cardPaymentBrickController = null;
+        var currentBrickKey = "";
+        var currentReference = "";
+        var renderTimer = null;
 
         function status(message, kind) {
           statusBox.hidden = false;
@@ -439,11 +484,9 @@
           statusBox.textContent = message;
         }
 
-        function setBusy(isBusy) {
-          submitButton.disabled = isBusy;
-          submitButton.textContent = isBusy
-            ? "Preparando checkout..."
-            : "Prosseguir para o Mercado Pago";
+        function clearStatus() {
+          statusBox.hidden = true;
+          statusBox.textContent = "";
         }
 
         function formatAmount(value) {
@@ -453,11 +496,35 @@
           });
         }
 
+        function parseAmountCents(value) {
+          var text = String(value || "")
+            .trim()
+            .replace(/\s/g, "")
+            .replace(/\./g, "")
+            .replace(",", ".");
+          var amount = Number(text);
+          if (!Number.isFinite(amount)) return null;
+          var cents = Math.round(amount * 100);
+          if (cents < 100 || cents > 1000000) return null;
+          return cents;
+        }
+
+        function normalizedEmail() {
+          return String(emailInput.value || "")
+            .trim()
+            .toLowerCase();
+        }
+
         function selectedProjectFromUrl() {
           var params = new URLSearchParams(window.location.search);
           return String(
             params.get("project") || "lcv-ideas-software",
           ).toLowerCase();
+        }
+
+        function selectedAmountFromUrl() {
+          var params = new URLSearchParams(window.location.search);
+          return params.get("amount") || "25";
         }
 
         function initProjects() {
@@ -469,6 +536,22 @@
             if (project[0] === selected) option.selected = true;
             projectSelect.appendChild(option);
           });
+        }
+
+        function syncAmountButtons() {
+          var cents = parseAmountCents(amountInput.value);
+          amountButtons.forEach(function (button) {
+            var buttonCents = parseAmountCents(button.dataset.amount || "");
+            button.setAttribute(
+              "aria-pressed",
+              cents !== null && buttonCents === cents ? "true" : "false",
+            );
+          });
+        }
+
+        function initAmount() {
+          amountInput.value = formatAmount(selectedAmountFromUrl());
+          syncAmountButtons();
         }
 
         function handleReturn() {
@@ -491,73 +574,285 @@
               "error",
             );
           }
-          if (ref) {
-            fetch(API_BASE_URL + "/api/status/" + encodeURIComponent(ref), {
-              credentials: "omit",
-            }).catch(function () {});
-          }
+          if (ref) refreshPaymentStatus(ref, 0);
         }
 
-        amountButtons.forEach(function (button) {
-          button.setAttribute("aria-pressed", "false");
-          button.addEventListener("click", function () {
-            amountButtons.forEach(function (candidate) {
-              candidate.setAttribute("aria-pressed", "false");
-            });
-            button.setAttribute("aria-pressed", "true");
-            amountInput.value = formatAmount(button.dataset.amount || 0);
-            amountInput.focus();
-          });
-        });
-
-        amountInput.addEventListener("input", function () {
-          amountButtons.forEach(function (button) {
-            button.setAttribute("aria-pressed", "false");
-          });
-        });
-
-        form.addEventListener("submit", function (event) {
-          event.preventDefault();
-          setBusy(true);
-          status("Criando checkout seguro no Mercado Pago...");
-          fetch(API_BASE_URL + "/api/preferences", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "omit",
-            body: JSON.stringify({
-              project: projectSelect.value,
-              amount: amountInput.value,
-              name: nameInput.value,
-              email: emailInput.value,
-            }),
-          })
+        function ensureMercadoPago() {
+          if (bricksBuilder) return Promise.resolve(bricksBuilder);
+          if (!window.MercadoPago) {
+            return Promise.reject(
+              new Error("MercadoPago.js V2 não foi carregado."),
+            );
+          }
+          return fetch(API_BASE_URL + "/api/config", { credentials: "omit" })
             .then(function (response) {
               return response.json().then(function (data) {
                 if (!response.ok)
-                  throw new Error(data.error || "Falha ao criar checkout.");
+                  throw new Error(
+                    data.error || "Falha ao carregar Public Key.",
+                  );
                 return data;
               });
             })
             .then(function (data) {
-              if (!data.initPoint)
-                throw new Error("Mercado Pago não retornou checkout válido.");
-              window.location.href = data.initPoint;
+              var mp = new window.MercadoPago(data.publicKey, {
+                locale: data.locale || "pt-BR",
+              });
+              bricksBuilder = mp.bricks();
+              return bricksBuilder;
+            });
+        }
+
+        function unmountBrick() {
+          if (
+            !cardPaymentBrickController ||
+            typeof cardPaymentBrickController.unmount !== "function"
+          ) {
+            return Promise.resolve();
+          }
+          var controller = cardPaymentBrickController;
+          cardPaymentBrickController = null;
+          return Promise.resolve(controller.unmount()).catch(function () {});
+        }
+
+        function renderBrick(force) {
+          var cents = parseAmountCents(amountInput.value);
+          if (cents === null) {
+            currentBrickKey = "";
+            return unmountBrick().then(function () {
+              status("Informe um valor entre R$ 1,00 e R$ 10.000,00.", "error");
+            });
+          }
+
+          var amount = cents / 100;
+          var key = String(cents) + "|" + normalizedEmail();
+          if (!force && cardPaymentBrickController && key === currentBrickKey) {
+            return Promise.resolve();
+          }
+
+          return ensureMercadoPago()
+            .then(function (builder) {
+              return unmountBrick().then(function () {
+                var initialization = { amount: amount };
+                var email = normalizedEmail();
+                if (email) initialization.payer = { email: email };
+
+                status("Carregando formulário seguro do Mercado Pago...");
+                challengeBox.hidden = true;
+                challengeFrame.removeAttribute("src");
+                return builder
+                  .create("cardPayment", "cardPaymentBrick_container", {
+                    initialization: initialization,
+                    callbacks: {
+                      onReady: function () {
+                        currentBrickKey = key;
+                        clearStatus();
+                      },
+                      onSubmit: function (formData, additionalData) {
+                        return submitOrder(formData, additionalData);
+                      },
+                      onError: function (error) {
+                        console.error(error);
+                        status(
+                          "O formulário seguro do Mercado Pago reportou um erro. Atualize a página e tente novamente.",
+                          "error",
+                        );
+                      },
+                    },
+                  })
+                  .then(function (controller) {
+                    cardPaymentBrickController = controller;
+                  });
+              });
             })
             .catch(function (error) {
               status(
                 error && error.message
                   ? error.message
-                  : "Não foi possível iniciar o pagamento.",
+                  : "Não foi possível carregar o formulário seguro.",
                 "error",
               );
-            })
-            .finally(function () {
-              setBusy(false);
             });
+        }
+
+        function scheduleBrickRender() {
+          window.clearTimeout(renderTimer);
+          renderTimer = window.setTimeout(function () {
+            renderBrick(true);
+          }, 500);
+        }
+
+        function submitOrder(formData, additionalData) {
+          var payer = formData.payer || {};
+          var email = normalizedEmail() || String(payer.email || "").trim();
+          var identification = payer.identification || null;
+          var payload = {
+            project: projectSelect.value,
+            amount: amountInput.value,
+            name: nameInput.value,
+            email: email,
+            token: formData.token,
+            paymentMethodId: formData.payment_method_id,
+            paymentType:
+              additionalData && additionalData.paymentTypeId
+                ? additionalData.paymentTypeId
+                : "credit_card",
+            installments: Number(formData.installments || 1),
+          };
+
+          if (!email) {
+            status(
+              "Informe um e-mail válido para processar o pagamento.",
+              "error",
+            );
+            return Promise.reject(new Error("E-mail obrigatório."));
+          }
+          if (identification && identification.type && identification.number) {
+            payload.identification = identification;
+          }
+
+          status("Criando order segura no Mercado Pago...");
+          return fetch(API_BASE_URL + "/api/orders", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "omit",
+            body: JSON.stringify(payload),
+          })
+            .then(function (response) {
+              return response.json().then(function (data) {
+                if (!response.ok)
+                  throw new Error(data.error || "Falha ao criar order.");
+                return data;
+              });
+            })
+            .then(function (data) {
+              handleOrderResult(data);
+            })
+            .catch(function (error) {
+              status(
+                error && error.message
+                  ? error.message
+                  : "Não foi possível processar o pagamento.",
+                "error",
+              );
+              return Promise.reject(error);
+            });
+        }
+
+        function handleOrderResult(data) {
+          currentReference = data.externalReference || "";
+          var paymentStatus = data.paymentStatus || data.status || "";
+          var statusDetail =
+            data.paymentStatusDetail || data.statusDetail || "";
+
+          if (data.challengeUrl) {
+            challengeFrame.src = data.challengeUrl;
+            challengeBox.hidden = false;
+            status(
+              "Autenticação adicional iniciada. Conclua a validação do banco para finalizar o apoio.",
+            );
+            return;
+          }
+
+          challengeBox.hidden = true;
+          challengeFrame.removeAttribute("src");
+          if (paymentStatus === "processed" || statusDetail === "accredited") {
+            status(
+              "Apoio aprovado. Obrigado por fortalecer os projetos!",
+              "success",
+            );
+          } else if (paymentStatus === "action_required") {
+            status(
+              "O banco solicitou uma validação adicional. Aguarde as instruções do Mercado Pago.",
+            );
+          } else if (
+            paymentStatus === "failed" ||
+            paymentStatus === "cancelled" ||
+            paymentStatus === "canceled"
+          ) {
+            status(
+              "Pagamento não aprovado pelo Mercado Pago. Confira os dados ou tente outro cartão.",
+              "error",
+            );
+          } else {
+            status(
+              "Order criada. A confirmação final será registrada pelo webhook do Mercado Pago.",
+            );
+          }
+        }
+
+        function refreshPaymentStatus(reference, attempt) {
+          fetch(API_BASE_URL + "/api/status/" + encodeURIComponent(reference), {
+            credentials: "omit",
+          })
+            .then(function (response) {
+              if (!response.ok) return null;
+              return response.json();
+            })
+            .then(function (data) {
+              if (!data) return;
+              if (
+                data.status === "processed" ||
+                data.status_detail === "accredited"
+              ) {
+                status(
+                  "Apoio aprovado. Obrigado por fortalecer os projetos!",
+                  "success",
+                );
+                return;
+              }
+              if (
+                data.status === "failed" ||
+                data.status === "cancelled" ||
+                data.status === "canceled"
+              ) {
+                status("Pagamento não aprovado pelo Mercado Pago.", "error");
+                return;
+              }
+              if (attempt < 6) {
+                window.setTimeout(function () {
+                  refreshPaymentStatus(reference, attempt + 1);
+                }, 2500);
+              }
+            })
+            .catch(function () {});
+        }
+
+        amountButtons.forEach(function (button) {
+          button.setAttribute("aria-pressed", "false");
+          button.addEventListener("click", function () {
+            amountInput.value = formatAmount(button.dataset.amount || 0);
+            syncAmountButtons();
+            renderBrick(true);
+          });
+        });
+
+        amountInput.addEventListener("input", function () {
+          syncAmountButtons();
+          scheduleBrickRender();
+        });
+        amountInput.addEventListener("blur", function () {
+          syncAmountButtons();
+          renderBrick(true);
+        });
+        emailInput.addEventListener("blur", function () {
+          renderBrick(true);
+        });
+        window.addEventListener("message", function (event) {
+          if (
+            event.data &&
+            event.data.status === "COMPLETE" &&
+            currentReference
+          ) {
+            status("Validação concluída. Consultando status da order...");
+            refreshPaymentStatus(currentReference, 0);
+          }
         });
 
         initProjects();
+        initAmount();
         handleReturn();
+        renderBrick(true);
       })();
     </script>
   </body>
