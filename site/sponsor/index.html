@@ -184,6 +184,24 @@
         margin: 0 0 18px;
         color: var(--fg-muted);
       }
+      /* MP integration recommendation: display the official Mercado
+       * Pago logo near the payment area to reinforce trust. The
+       * artwork is served from MercadoLibre's official CDN. */
+      .payment-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 6px;
+      }
+      .mp-logo {
+        display: inline-flex;
+        align-items: center;
+      }
+      .mp-logo img {
+        height: 28px;
+        width: auto;
+      }
       label {
         display: block;
         font-weight: 700;
@@ -374,7 +392,25 @@
         </div>
 
         <section class="panel" aria-labelledby="payment-title">
-          <h2 id="payment-title">Apoiar agora</h2>
+          <div class="payment-header">
+            <h2 id="payment-title">Apoiar agora</h2>
+            <a
+              class="mp-logo"
+              href="https://www.mercadopago.com.br"
+              target="_blank"
+              rel="noreferrer noopener"
+              title="Pagamento processado por Mercado Pago"
+              aria-label="Pagamento processado por Mercado Pago"
+            >
+              <img
+                src="https://http2.mlstatic.com/frontend-assets/mp-web-navigation/ui-navigation/6.6.108/mercadopago/logo__small@2x.png"
+                width="120"
+                height="32"
+                alt="Mercado Pago"
+                loading="lazy"
+              />
+            </a>
+          </div>
           <p>
             Escolha o projeto e o valor. O pagamento acontece nesta página com
             campos seguros do Mercado Pago e processamento via Orders API.
