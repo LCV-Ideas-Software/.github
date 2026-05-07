@@ -420,7 +420,7 @@
             <p>
               Public personal blog and companion services. Smart-polling reader,
               AI public chatbot (Gemini), comments and ratings with sentiment
-              moderation, sponsorship via Mercado Pago Checkout Pro,
+              moderation, sponsor links routed to sponsor-motor,
               accessibility-first design.
             </p>
             <div class="links">
@@ -526,6 +526,25 @@
             <div class="links">
               <a
                 href="https://github.com/LCV-Ideas-Software/mtasts-motor"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card">
+            <h3>Sponsor Motor</h3>
+            <div class="repo">sponsor-motor</div>
+            <p>
+              Dedicated Cloudflare Worker for the organization sponsor flow.
+              Creates Mercado Pago Checkout Pro preferences, validates webhooks,
+              and stores minimal audit metadata in
+              <code>bigdata_db</code>.
+            </p>
+            <div class="links">
+              <a
+                href="https://github.com/LCV-Ideas-Software/sponsor-motor"
                 target="_blank"
                 rel="noopener noreferrer"
                 >GitHub →</a
@@ -650,9 +669,9 @@
           </li>
           <li><b>Storage</b> Cloudflare R2</li>
           <li><b>Auth</b> Cloudflare Access (Zero Trust JWT)</li>
-          <li><b>AI</b> Claude · Codex · Gemini · DeepSeek</li>
+          <li><b>AI</b> Claude · Codex · Gemini · DeepSeek · Grok</li>
           <li><b>Email</b> Resend</li>
-          <li><b>Sponsorship</b> Mercado Pago Checkout Pro</li>
+          <li><b>Sponsorship</b> sponsor-motor + Mercado Pago Wallet Brick</li>
           <li><b>Anti-abuse</b> Turnstile + GCP NL</li>
           <li><b>Desktop</b> Tauri 2 (Maestro)</li>
         </ul>

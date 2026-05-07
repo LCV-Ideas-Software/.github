@@ -256,6 +256,25 @@
         color: var(--success);
         border-color: color-mix(in srgb, var(--success) 50%, var(--border));
       }
+      .wallet {
+        margin-top: 16px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 14px;
+        background: var(--bg);
+      }
+      .wallet[hidden] {
+        display: none;
+      }
+      .fallback-link {
+        display: inline-flex;
+        margin-top: 12px;
+        color: var(--fg-muted);
+        font-size: 12.5px;
+      }
+      .fallback-link[hidden] {
+        display: none;
+      }
       .note {
         margin-top: 16px;
         color: var(--fg-muted);
@@ -330,8 +349,8 @@
         <section class="panel" aria-labelledby="payment-title">
           <h2 id="payment-title">Apoiar agora</h2>
           <p>
-            Escolha o projeto e o valor. Você será redirecionado ao Mercado
-            Pago.
+            Escolha o projeto e o valor. O botão seguro do Mercado Pago será
+            exibido aqui.
           </p>
           <form id="sponsor-form" autocomplete="on">
             <label for="project">Projeto</label>
@@ -388,9 +407,24 @@
             aria-live="polite"
             hidden
           ></div>
+          <div
+            id="walletBrick_container"
+            class="wallet"
+            aria-label="Botão de pagamento Mercado Pago"
+            hidden
+          ></div>
+          <a
+            id="checkout-fallback"
+            class="fallback-link"
+            target="_blank"
+            rel="noopener noreferrer"
+            hidden
+            >Abrir checkout seguro em uma nova aba</a
+          >
           <p class="note">
             A LCV Ideas &amp; Software não coleta nem processa dados de cartão.
-            O pagamento é concluído no checkout seguro do Mercado Pago.
+            O pagamento é concluído com MercadoPago.js v2 e checkout seguro do
+            Mercado Pago.
           </p>
         </section>
       </section>
@@ -403,6 +437,7 @@
       </footer>
     </main>
 
+    <script src="https://sdk.mercadopago.com/js/v2"></script>
     <script>
       (function () {
         "use strict";
@@ -429,9 +464,13 @@
         var emailInput = document.getElementById("email");
         var submitButton = document.getElementById("submit");
         var statusBox = document.getElementById("status");
+        var walletContainer = document.getElementById("walletBrick_container");
+        var fallbackLink = document.getElementById("checkout-fallback");
         var amountButtons = Array.prototype.slice.call(
           document.querySelectorAll("[data-amount]"),
         );
+        var mercadoPagoPromise = null;
+        var walletController = null;
 
         function status(message, kind) {
           statusBox.hidden = false;
@@ -444,6 +483,84 @@
           submitButton.textContent = isBusy
             ? "Preparando checkout..."
             : "Prosseguir para o Mercado Pago";
+        }
+
+        function resetWallet() {
+          if (
+            walletController &&
+            typeof walletController.unmount === "function"
+          ) {
+            walletController.unmount();
+          }
+          walletController = null;
+          walletContainer.hidden = true;
+          walletContainer.innerHTML = "";
+          fallbackLink.hidden = true;
+          fallbackLink.removeAttribute("href");
+        }
+
+        function getMercadoPago() {
+          if (mercadoPagoPromise) return mercadoPagoPromise;
+          mercadoPagoPromise = fetch(API_BASE_URL + "/api/config", {
+            credentials: "omit",
+          })
+            .then(function (response) {
+              return response.json().then(function (data) {
+                if (!response.ok)
+                  throw new Error(
+                    data.error || "Falha ao carregar credenciais públicas.",
+                  );
+                return data;
+              });
+            })
+            .then(function (config) {
+              if (!window.MercadoPago)
+                throw new Error("MercadoPago.js v2 não foi carregado.");
+              if (!config.publicKey)
+                throw new Error("Public Key do Mercado Pago indisponível.");
+              return new window.MercadoPago(config.publicKey, {
+                locale: config.locale || "pt-BR",
+              });
+            });
+          return mercadoPagoPromise;
+        }
+
+        function renderWallet(data) {
+          resetWallet();
+          if (!data.preferenceId)
+            throw new Error("Mercado Pago não retornou preferência válida.");
+
+          return getMercadoPago()
+            .then(function (mp) {
+              var bricksBuilder = mp.bricks();
+              walletContainer.hidden = false;
+              fallbackLink.href = data.initPoint;
+              fallbackLink.hidden = false;
+              return bricksBuilder.create("wallet", "walletBrick_container", {
+                initialization: {
+                  preferenceId: data.preferenceId,
+                  redirectMode: "self",
+                },
+              });
+            })
+            .then(function (controller) {
+              walletController = controller;
+              status(
+                "Checkout seguro criado. Use o botão do Mercado Pago abaixo para finalizar.",
+                "success",
+              );
+            })
+            .catch(function (error) {
+              resetWallet();
+              if (data.initPoint) {
+                status(
+                  "MercadoPago.js v2 não carregou aqui; abrindo o checkout seguro do Mercado Pago.",
+                );
+                window.location.href = data.initPoint;
+                return;
+              }
+              throw error;
+            });
         }
 
         function formatAmount(value) {
@@ -518,6 +635,7 @@
 
         form.addEventListener("submit", function (event) {
           event.preventDefault();
+          resetWallet();
           setBusy(true);
           status("Criando checkout seguro no Mercado Pago...");
           fetch(API_BASE_URL + "/api/preferences", {
@@ -541,7 +659,7 @@
             .then(function (data) {
               if (!data.initPoint)
                 throw new Error("Mercado Pago não retornou checkout válido.");
-              window.location.href = data.initPoint;
+              return renderWallet(data);
             })
             .catch(function (error) {
               status(
