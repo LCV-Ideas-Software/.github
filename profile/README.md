@@ -51,7 +51,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | --- | --- | --- |
 | [**admin-app**](https://github.com/LCV-Ideas-Software/admin-app) | [admin-app.lcv.dev](https://admin-app.lcv.dev) | Operator admin dashboard for the multi-app Cloudflare workspace. Single-tenant by design. React 19 + Vite 8 on Pages + Hono Worker, gated by Cloudflare Access (Zero Trust JWT). Modules include post editor, AI model selection, DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT ingestion, and operational telemetry. |
 | [**mtasts-motor**](https://github.com/LCV-Ideas-Software/mtasts-motor) | [mtasts-motor.lcv.dev](https://mtasts-motor.lcv.dev) | Cloudflare Worker serving dynamic [MTA-STS](https://datatracker.ietf.org/doc/html/rfc8461) policies from a D1 backing store. Designed for multi-domain operators behind the `mta-sts.<domain>` subdomain convention (RFC 8461). |
-| [**sponsor-motor**](https://github.com/LCV-Ideas-Software/sponsor-motor) | [sponsor-motor.lcv.app.br](https://sponsor-motor.lcv.app.br) | Dedicated Cloudflare Worker for the organization sponsor flow. Creates Mercado Pago Checkout Pro preferences through the official backend SDK, records minimal `sponsor_*` audit data in `bigdata_db`, validates signed webhooks, and backs the Wallet Brick page at [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor). |
+| [**sponsor-motor**](https://github.com/LCV-Ideas-Software/sponsor-motor) | [sponsor-motor.lcv.app.br](https://sponsor-motor.lcv.app.br) | Dedicated Cloudflare Worker for the organization sponsor flow. Creates Mercado Pago Checkout Pro preferences through the official backend SDK, records minimal `sponsor_*` audit data in `bigdata_db`, validates signed webhooks, and backs the sponsor page at [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor). |
 
 ### 🤖 Developer tooling
 
@@ -82,7 +82,7 @@ Storage      Cloudflare R2   (mainsite-media bucket)
 Auth         Cloudflare Access (Zero Trust JWT) — operator surfaces
 AI           Claude Code · ChatGPT Codex · Gemini CLI · DeepSeek · Grok
 Email        Resend
-Sponsorship  sponsor-motor + Mercado Pago Checkout Pro / Wallet Brick
+Sponsorship  sponsor-motor + Mercado Pago Checkout Pro
 Anti-abuse   Cloudflare Turnstile + GCP Natural Language
 Desktop      Tauri 2  (Maestro)
 ```
