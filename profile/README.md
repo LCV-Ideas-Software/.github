@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/repos-13%20public-informational.svg" alt="13 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-orange.svg" alt="Cloudflare">
   <img src="https://img.shields.io/badge/AI-Claude%20%2B%20Codex%20%2B%20Gemini-7c3aed.svg" alt="multi-agent AI">
-  <a href="https://github.com/sponsors/LCV-Ideas-Software"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor on GitHub"></a>
+  <a href="https://www.lcv.dev/sponsor"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor LCV Ideas & Software"></a>
 </p>
 
 LCV Ideas &amp; Software is a software organization maintained by **Leonardo Cardozo Vargas**. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek). Org homepage: **[www.lcv.dev](https://www.lcv.dev)**.
@@ -40,7 +40,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 
 | Repository | Live | What it does |
 | --- | --- | --- |
-| [**mainsite-app**](https://github.com/LCV-Ideas-Software/mainsite-app) | [reflexosdaalma.blog](https://www.reflexosdaalma.blog) | *Reflexos da Alma* — public personal blog + companion services. React 19 + Vite 8 SPA on Cloudflare Pages + Hono Worker. Post reader with smart polling, comments and ratings with GCP NL sentiment moderation, Gemini AI public chatbot, share-by-email, donations (SumUp + PIX), SSR OG and JSON-LD metadata, R2 media. |
+| [**mainsite-app**](https://github.com/LCV-Ideas-Software/mainsite-app) | [reflexosdaalma.blog](https://www.reflexosdaalma.blog) | *Reflexos da Alma* — public personal blog + companion services. React 19 + Vite 8 SPA on Cloudflare Pages + Hono Worker. Post reader with smart polling, comments and ratings with GCP NL sentiment moderation, Gemini AI public chatbot, share-by-email, sponsorship via Mercado Pago Checkout Pro, SSR OG and JSON-LD metadata, R2 media. |
 | [**astrologo-app**](https://github.com/LCV-Ideas-Software/astrologo-app) | [astrologo-app.lcv.dev](https://astrologo-app.lcv.dev) | *Astrólogo* — birth chart generator and esoteric analysis via Gemini AI. React 19 + Vite 8 on Cloudflare Pages with D1 backing store. Deterministic astrometric calculation + AI narrative; throttling, optional auth, share-by-email. |
 | [**calculadora-app**](https://github.com/LCV-Ideas-Software/calculadora-app) | [calculadora-app.lcv.dev](https://calculadora-app.lcv.dev) | *Calculadora Financeira* — international FX simulator (credit card vs. multi-currency account) with AI-driven contextual analysis. React 19 + Vite 8 on Cloudflare Pages + D1. Integrates PTAX (BCB), Spot (AwesomeAPI), and Gemini AI. Modeled on Itaú's published methodology. |
 | [**oraculo-financeiro**](https://github.com/LCV-Ideas-Software/oraculo-financeiro) | [oraculo-financeiro-app.lcv.dev](https://oraculo-financeiro-app.lcv.dev) | *Oráculo Financeiro* — IPCA-indexed fixed-income analysis dashboard (LCI/CDB IPCA+, Tesouro IPCA+) with Gemini contextual insights. React 19 + Vite 8 on Cloudflare Pages + D1 + Cron Worker for daily IPCA rate pre-warming. |
@@ -49,7 +49,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 
 | Repository | Live | What it does |
 | --- | --- | --- |
-| [**admin-app**](https://github.com/LCV-Ideas-Software/admin-app) | [admin-app.lcv.dev](https://admin-app.lcv.dev) | Operator admin dashboard for the multi-app Cloudflare workspace. Single-tenant by design. React 19 + Vite 8 on Pages + Hono Worker, gated by Cloudflare Access (Zero Trust JWT). 13 modules: post editor, AI model selection, financial reports (SumUp), DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT ingestion, operational telemetry. |
+| [**admin-app**](https://github.com/LCV-Ideas-Software/admin-app) | [admin-app.lcv.dev](https://admin-app.lcv.dev) | Operator admin dashboard for the multi-app Cloudflare workspace. Single-tenant by design. React 19 + Vite 8 on Pages + Hono Worker, gated by Cloudflare Access (Zero Trust JWT). 13 modules: post editor, AI model selection, DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT ingestion, operational telemetry. |
 | [**mtasts-motor**](https://github.com/LCV-Ideas-Software/mtasts-motor) | [mtasts-motor.lcv.dev](https://mtasts-motor.lcv.dev) | Cloudflare Worker serving dynamic [MTA-STS](https://datatracker.ietf.org/doc/html/rfc8461) policies from a D1 backing store. Designed for multi-domain operators behind the `mta-sts.<domain>` subdomain convention (RFC 8461). |
 
 ### 🤖 Developer tooling
@@ -80,7 +80,7 @@ Storage      Cloudflare R2   (mainsite-media bucket)
 Auth         Cloudflare Access (Zero Trust JWT) — operator surfaces
 AI           Claude Code · ChatGPT Codex · Gemini CLI · DeepSeek
 Email        Resend
-Payments     SumUp + PIX
+Sponsorship  Mercado Pago Checkout Pro
 Anti-abuse   Cloudflare Turnstile + GCP Natural Language
 Desktop      Tauri 2  (Maestro)
 ```
@@ -129,7 +129,7 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 - **Public blog**: [www.reflexosdaalma.blog](https://www.reflexosdaalma.blog) (the `mainsite-app` product)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
 - **Email**: [github@lcvmail.com](mailto:github@lcvmail.com) for org-wide topics.
-- **Sponsorship**: support the work via GitHub Sponsors → [github.com/sponsors/LCV-Ideas-Software](https://github.com/sponsors/LCV-Ideas-Software).
+- **Sponsorship**: support the work via GitHub Sponsors → [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor).
 
 ---
 
