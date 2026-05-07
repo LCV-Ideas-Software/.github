@@ -731,7 +731,7 @@
           if (!returnedStatus) return;
           if (returnedStatus === "success") {
             status(
-              "Obrigado pelo apoio! A confirmação final será registrada pelo webhook do Mercado Pago.",
+              "Obrigado pelo apoio! Estamos finalizando a confirmação do pagamento com o Mercado Pago.",
               "success",
             );
           } else if (returnedStatus === "pending") {
@@ -895,7 +895,7 @@
             payload.identification = identification;
           }
 
-          status("Criando order segura no Mercado Pago...");
+          status("Preparando pagamento seguro no Mercado Pago...");
           return fetch(API_BASE_URL + "/api/orders", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -905,7 +905,9 @@
             .then(function (response) {
               return response.json().then(function (data) {
                 if (!response.ok)
-                  throw new Error(data.error || "Falha ao criar order.");
+                  throw new Error(
+                    data.error || "Não foi possível iniciar o pagamento.",
+                  );
                 return data;
               });
             })
@@ -960,7 +962,7 @@
             );
           } else {
             status(
-              "Order criada. A confirmação final será registrada pelo webhook do Mercado Pago.",
+              "Pagamento enviado. Estamos aguardando a confirmação do Mercado Pago; esta tela será atualizada automaticamente.",
             );
             if (currentReference) refreshPaymentStatus(currentReference, 0);
           }
