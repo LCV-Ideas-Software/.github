@@ -184,15 +184,20 @@
         margin: 0 0 18px;
         color: var(--fg-muted);
       }
-      /* MP integration recommendation: display the official Mercado
-       * Pago logo near the payment area to reinforce trust. The
-       * artwork is served from MercadoLibre's official CDN. */
+      /* MP integration recommendation: display the official
+       * Mercado Pago logo near the payment area to identify the
+       * processor. The artwork is the official RGB digital asset
+       * from MP's brand kit (mercadopago.com.br/mp/logo-oficial,
+       * "Logos Mercado Pago 2025"), self-hosted in
+       * site/sponsor/assets/ to avoid hotlinking the MP CDN
+       * (which returns 403 outside MP properties). */
       .payment-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 16px;
         margin-bottom: 6px;
+        flex-wrap: wrap;
       }
       .mp-logo {
         display: inline-flex;
@@ -201,6 +206,7 @@
       .mp-logo img {
         height: 28px;
         width: auto;
+        display: block;
       }
       label {
         display: block;
@@ -403,9 +409,9 @@
               aria-label="Pagamento processado por Mercado Pago"
             >
               <img
-                src="https://http2.mlstatic.com/frontend-assets/mp-web-navigation/ui-navigation/6.6.108/mercadopago/logo__small@2x.png"
-                width="120"
-                height="32"
+                src="./assets/mercadopago-oficial.png"
+                width="69"
+                height="28"
                 alt="Mercado Pago"
                 loading="lazy"
               />
