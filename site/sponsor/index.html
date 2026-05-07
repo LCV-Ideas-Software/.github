@@ -205,6 +205,25 @@
         outline: 3px solid color-mix(in srgb, var(--accent) 22%, transparent);
         border-color: var(--accent);
       }
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0 12px;
+      }
+      .field-grid .full {
+        grid-column: 1 / -1;
+      }
+      .checkline {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 14px;
+        color: var(--fg-muted);
+        font-size: 13px;
+      }
+      .checkline input {
+        width: auto;
+      }
       .amounts {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
@@ -239,6 +258,29 @@
       .primary:disabled {
         cursor: not-allowed;
         opacity: 0.62;
+      }
+      .wallet-option {
+        margin-top: 18px;
+        border-top: 1px solid var(--border);
+        padding-top: 16px;
+      }
+      .wallet-option p {
+        margin-bottom: 10px;
+      }
+      .wallet-button {
+        width: 100%;
+        border: 1px solid color-mix(in srgb, #00a650 60%, var(--border));
+        border-radius: 999px;
+        padding: 11px 14px;
+        background: color-mix(in srgb, #00a650 12%, var(--bg));
+        color: var(--fg);
+        cursor: pointer;
+        font: inherit;
+        font-weight: 750;
+      }
+      .wallet-button:disabled {
+        cursor: wait;
+        opacity: 0.7;
       }
       .status {
         margin-top: 16px;
@@ -310,6 +352,9 @@
         .amounts {
           grid-template-columns: repeat(2, 1fr);
         }
+        .field-grid {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -377,16 +422,34 @@
               <button type="button" data-amount="100">R$ 100</button>
             </div>
 
-            <label for="name">Nome</label>
-            <input
-              id="name"
-              name="name"
-              type="text"
-              autocomplete="name"
-              autocapitalize="words"
-              enterkeyhint="next"
-              placeholder="Seu nome"
-            />
+            <div class="field-grid">
+              <div>
+                <label for="first-name">Nome</label>
+                <input
+                  id="first-name"
+                  name="firstName"
+                  type="text"
+                  autocomplete="given-name"
+                  autocapitalize="words"
+                  enterkeyhint="next"
+                  placeholder="Seu nome"
+                  required
+                />
+              </div>
+              <div>
+                <label for="last-name">Sobrenome</label>
+                <input
+                  id="last-name"
+                  name="lastName"
+                  type="text"
+                  autocomplete="family-name"
+                  autocapitalize="words"
+                  enterkeyhint="next"
+                  placeholder="Seu sobrenome"
+                  required
+                />
+              </div>
+            </div>
 
             <label for="email">E-mail</label>
             <input
@@ -401,11 +464,111 @@
               placeholder="voce@email.com"
             />
 
+            <div class="field-grid">
+              <div>
+                <label for="zip-code">CEP</label>
+                <input
+                  id="zip-code"
+                  name="zipCode"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="postal-code"
+                  placeholder="05424-150"
+                  required
+                />
+              </div>
+              <div>
+                <label for="state">UF</label>
+                <input
+                  id="state"
+                  name="state"
+                  type="text"
+                  autocomplete="address-level1"
+                  autocapitalize="characters"
+                  maxlength="2"
+                  placeholder="SP"
+                  required
+                />
+              </div>
+              <div class="full">
+                <label for="street-name">Rua</label>
+                <input
+                  id="street-name"
+                  name="streetName"
+                  type="text"
+                  autocomplete="address-line1"
+                  autocapitalize="words"
+                  placeholder="Rua Pais Leme"
+                  required
+                />
+              </div>
+              <div>
+                <label for="street-number">Número</label>
+                <input
+                  id="street-number"
+                  name="streetNumber"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="215"
+                  required
+                />
+              </div>
+              <div>
+                <label for="neighborhood">Bairro</label>
+                <input
+                  id="neighborhood"
+                  name="neighborhood"
+                  type="text"
+                  autocomplete="address-level3"
+                  autocapitalize="words"
+                  placeholder="Pinheiros"
+                  required
+                />
+              </div>
+              <div>
+                <label for="city">Cidade</label>
+                <input
+                  id="city"
+                  name="city"
+                  type="text"
+                  autocomplete="address-level2"
+                  autocapitalize="words"
+                  placeholder="São Paulo"
+                  required
+                />
+              </div>
+              <div>
+                <label for="complement">Complemento</label>
+                <input
+                  id="complement"
+                  name="complement"
+                  type="text"
+                  autocomplete="address-line2"
+                  autocapitalize="words"
+                  placeholder="Conj 1713"
+                />
+              </div>
+            </div>
+
+            <label class="checkline" for="first-purchase-online">
+              <input id="first-purchase-online" type="checkbox" checked />
+              Este é meu primeiro apoio online à LCV Ideas &amp; Software.
+            </label>
+
             <div
               id="cardPaymentBrick_container"
               class="payment-brick"
               aria-live="polite"
             ></div>
+            <div class="wallet-option">
+              <p>
+                Prefere usar saldo, cartões salvos ou login da sua conta Mercado
+                Pago?
+              </p>
+              <button id="wallet-button" class="wallet-button" type="button">
+                Pagar com minha conta Mercado Pago
+              </button>
+            </div>
           </div>
           <div
             id="status"
@@ -428,8 +591,9 @@
           </div>
           <p class="note">
             A LCV Ideas &amp; Software não coleta nem processa número, validade
-            ou CVV do cartão. Esses campos são renderizados e tokenizados pelo
-            Mercado Pago.
+            ou CVV do cartão. Nome, e-mail e endereço são enviados ao Mercado
+            Pago somente para análise antifraude/qualidade da transação; no
+            banco interno, a LCV registra apenas hashes técnicos.
           </p>
         </section>
       </section>
@@ -464,8 +628,20 @@
         ];
         var projectSelect = document.getElementById("project");
         var amountInput = document.getElementById("amount");
-        var nameInput = document.getElementById("name");
+        var firstNameInput = document.getElementById("first-name");
+        var lastNameInput = document.getElementById("last-name");
         var emailInput = document.getElementById("email");
+        var zipCodeInput = document.getElementById("zip-code");
+        var stateInput = document.getElementById("state");
+        var streetNameInput = document.getElementById("street-name");
+        var streetNumberInput = document.getElementById("street-number");
+        var neighborhoodInput = document.getElementById("neighborhood");
+        var cityInput = document.getElementById("city");
+        var complementInput = document.getElementById("complement");
+        var firstPurchaseOnlineInput = document.getElementById(
+          "first-purchase-online",
+        );
+        var walletButton = document.getElementById("wallet-button");
         var statusBox = document.getElementById("status");
         var challengeBox = document.getElementById("challenge");
         var challengeFrame = document.getElementById("challenge-frame");
@@ -477,6 +653,7 @@
         var currentBrickKey = "";
         var currentReference = "";
         var renderTimer = null;
+        var sponsorSessionStartedAt = new Date().toISOString();
 
         function status(message, kind) {
           statusBox.hidden = false;
@@ -513,6 +690,32 @@
           return String(emailInput.value || "")
             .trim()
             .toLowerCase();
+        }
+
+        function requiredValue(input, label) {
+          var value = String(input.value || "").trim();
+          if (!value) throw new Error("Preencha o campo " + label + ".");
+          return value;
+        }
+
+        function sponsorIdentity() {
+          return {
+            firstName: requiredValue(firstNameInput, "nome"),
+            lastName: requiredValue(lastNameInput, "sobrenome"),
+            email: requiredValue(emailInput, "e-mail").toLowerCase(),
+          };
+        }
+
+        function sponsorAddress() {
+          return {
+            zipCode: requiredValue(zipCodeInput, "CEP"),
+            streetName: requiredValue(streetNameInput, "rua"),
+            streetNumber: requiredValue(streetNumberInput, "número"),
+            neighborhood: requiredValue(neighborhoodInput, "bairro"),
+            city: requiredValue(cityInput, "cidade"),
+            state: requiredValue(stateInput, "UF").toUpperCase(),
+            complement: String(complementInput.value || "").trim(),
+          };
         }
 
         function selectedProjectFromUrl() {
@@ -684,12 +887,23 @@
 
         function submitOrder(formData, additionalData) {
           var payer = formData.payer || {};
-          var email = normalizedEmail() || String(payer.email || "").trim();
+          var identity;
+          var address;
+          try {
+            identity = sponsorIdentity();
+            address = sponsorAddress();
+          } catch (error) {
+            status(error.message, "error");
+            return Promise.reject(error);
+          }
+          var email = identity.email || String(payer.email || "").trim();
           var identification = payer.identification || null;
           var payload = {
             project: projectSelect.value,
             amount: amountInput.value,
-            name: nameInput.value,
+            name: identity.firstName + " " + identity.lastName,
+            firstName: identity.firstName,
+            lastName: identity.lastName,
             email: email,
             token: formData.token,
             paymentMethodId: formData.payment_method_id,
@@ -698,6 +912,9 @@
                 ? additionalData.paymentTypeId
                 : "credit_card",
             installments: Number(formData.installments || 1),
+            address: address,
+            payerRegistrationDate: sponsorSessionStartedAt,
+            firstPurchaseOnline: firstPurchaseOnlineInput.checked,
           };
 
           if (!email) {
@@ -736,6 +953,57 @@
                 "error",
               );
               return Promise.reject(error);
+            });
+        }
+
+        function payWithMercadoPagoAccount() {
+          var identity;
+          try {
+            identity = sponsorIdentity();
+          } catch (error) {
+            status(error.message, "error");
+            return;
+          }
+          var amountCents = parseAmountCents(amountInput.value);
+          if (amountCents === null) {
+            status("Informe um valor entre R$ 1,00 e R$ 10.000,00.", "error");
+            return;
+          }
+
+          walletButton.disabled = true;
+          status("Abrindo pagamento seguro na conta Mercado Pago...");
+          fetch(API_BASE_URL + "/api/preferences", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "omit",
+            body: JSON.stringify({
+              project: projectSelect.value,
+              amount: amountInput.value,
+              name: identity.firstName + " " + identity.lastName,
+              email: identity.email,
+              walletOnly: true,
+            }),
+          })
+            .then(function (response) {
+              return response.json().then(function (data) {
+                if (!response.ok)
+                  throw new Error(data.error || "Falha ao abrir Mercado Pago.");
+                return data;
+              });
+            })
+            .then(function (data) {
+              var target = data.initPoint || data.sandboxInitPoint;
+              if (!target) throw new Error("Mercado Pago não retornou link.");
+              window.location.assign(target);
+            })
+            .catch(function (error) {
+              walletButton.disabled = false;
+              status(
+                error && error.message
+                  ? error.message
+                  : "Não foi possível abrir o Mercado Pago.",
+                "error",
+              );
             });
         }
 
@@ -838,6 +1106,7 @@
         emailInput.addEventListener("blur", function () {
           renderBrick(true);
         });
+        walletButton.addEventListener("click", payWithMercadoPagoAccount);
         window.addEventListener("message", function (event) {
           if (
             event.data &&
