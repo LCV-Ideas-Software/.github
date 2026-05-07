@@ -396,7 +396,15 @@
             Escolha o projeto e o valor. O apoio é processado por Mercado Pago
             de forma segura.
           </p>
-          <div id="sponsor-form">
+          <form
+            id="sponsor-form"
+            novalidate
+            autocomplete="on"
+            onsubmit="
+              event.preventDefault();
+              return false;
+            "
+          >
             <div class="field-grid">
               <div>
                 <label for="project">Projeto</label>
@@ -577,7 +585,7 @@
               class="payment-brick"
               aria-live="polite"
             ></div>
-          </div>
+          </form>
           <div
             id="status"
             class="status"
