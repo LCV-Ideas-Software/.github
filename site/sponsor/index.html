@@ -381,7 +381,7 @@
           </p>
           <div id="sponsor-form">
             <label for="project">Projeto</label>
-            <select id="project" name="project"></select>
+            <select id="project" name="project" autocomplete="off"></select>
 
             <label for="amount">Valor em reais</label>
             <input
@@ -406,7 +406,7 @@
                   id="first-name"
                   name="firstName"
                   type="text"
-                  autocomplete="given-name"
+                  autocomplete="billing given-name"
                   autocapitalize="words"
                   enterkeyhint="next"
                   placeholder="Seu nome"
@@ -419,7 +419,7 @@
                   id="last-name"
                   name="lastName"
                   type="text"
-                  autocomplete="family-name"
+                  autocomplete="billing family-name"
                   autocapitalize="words"
                   enterkeyhint="next"
                   placeholder="Seu sobrenome"
@@ -434,11 +434,21 @@
               name="email"
               type="email"
               inputmode="email"
-              autocomplete="email"
+              autocomplete="billing email"
               autocapitalize="none"
               spellcheck="false"
               enterkeyhint="done"
               placeholder="voce@email.com"
+            />
+
+            <label for="phone">Telefone com DDD</label>
+            <input
+              id="phone"
+              name="phone"
+              type="tel"
+              inputmode="tel"
+              autocomplete="billing tel-national"
+              placeholder="(11) 98765-4321"
             />
 
             <div class="field-grid">
@@ -449,7 +459,7 @@
                   name="zipCode"
                   type="text"
                   inputmode="numeric"
-                  autocomplete="postal-code"
+                  autocomplete="billing postal-code"
                   placeholder="05424-150"
                   required
                 />
@@ -460,7 +470,7 @@
                   id="state"
                   name="state"
                   type="text"
-                  autocomplete="address-level1"
+                  autocomplete="billing address-level1"
                   autocapitalize="characters"
                   maxlength="2"
                   placeholder="SP"
@@ -473,7 +483,7 @@
                   id="street-name"
                   name="streetName"
                   type="text"
-                  autocomplete="address-line1"
+                  autocomplete="billing address-line1"
                   autocapitalize="words"
                   placeholder="Rua Pais Leme"
                   required
@@ -486,6 +496,7 @@
                   name="streetNumber"
                   type="text"
                   inputmode="numeric"
+                  autocomplete="billing address-line2"
                   placeholder="215"
                   required
                 />
@@ -496,7 +507,7 @@
                   id="neighborhood"
                   name="neighborhood"
                   type="text"
-                  autocomplete="address-level3"
+                  autocomplete="billing address-level3"
                   autocapitalize="words"
                   placeholder="Pinheiros"
                   required
@@ -508,7 +519,7 @@
                   id="city"
                   name="city"
                   type="text"
-                  autocomplete="address-level2"
+                  autocomplete="billing address-level2"
                   autocapitalize="words"
                   placeholder="São Paulo"
                   required
@@ -520,7 +531,7 @@
                   id="complement"
                   name="complement"
                   type="text"
-                  autocomplete="address-line2"
+                  autocomplete="billing address-line3"
                   autocapitalize="words"
                   placeholder="Conj 1713"
                 />
@@ -528,7 +539,13 @@
             </div>
 
             <label class="checkline" for="first-purchase-online">
-              <input id="first-purchase-online" type="checkbox" checked />
+              <input
+                id="first-purchase-online"
+                name="firstPurchaseOnline"
+                type="checkbox"
+                autocomplete="off"
+                checked
+              />
               Este é meu primeiro apoio online à LCV Ideas &amp; Software.
             </label>
 
@@ -559,9 +576,10 @@
           </div>
           <p class="note">
             A LCV Ideas &amp; Software não coleta nem processa número, validade
-            ou CVV do cartão. Nome, e-mail e endereço são enviados ao Mercado
-            Pago somente para análise antifraude/qualidade da transação; no
-            banco interno, a LCV registra apenas hashes técnicos.
+            ou CVV do cartão. Nome, e-mail, telefone quando informado e endereço
+            são enviados ao Mercado Pago somente para análise
+            antifraude/qualidade da transação; no banco interno, a LCV registra
+            apenas hashes técnicos.
           </p>
         </section>
       </section>
@@ -599,6 +617,7 @@
         var firstNameInput = document.getElementById("first-name");
         var lastNameInput = document.getElementById("last-name");
         var emailInput = document.getElementById("email");
+        var phoneInput = document.getElementById("phone");
         var zipCodeInput = document.getElementById("zip-code");
         var stateInput = document.getElementById("state");
         var streetNameInput = document.getElementById("street-name");
@@ -657,6 +676,10 @@
           return String(emailInput.value || "")
             .trim()
             .toLowerCase();
+        }
+
+        function normalizedPhone() {
+          return String(phoneInput.value || "").trim();
         }
 
         function requiredValue(input, label) {
@@ -872,6 +895,7 @@
             firstName: identity.firstName,
             lastName: identity.lastName,
             email: email,
+            phone: normalizedPhone(),
             token: formData.token,
             paymentMethodId: formData.payment_method_id,
             paymentType:
@@ -1031,7 +1055,7 @@
             event.data.status === "COMPLETE" &&
             currentReference
           ) {
-            status("Validação concluída. Consultando status da order...");
+            status("Validação concluída. Confirmando o pagamento...");
             refreshPaymentStatus(currentReference, 0);
           }
         });
