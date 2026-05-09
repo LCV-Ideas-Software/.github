@@ -785,7 +785,8 @@
           var trimmed = String(rawName || "").trim();
           if (!trimmed) return { firstName: "", lastName: "" };
           var parts = trimmed.split(/\s+/);
-          if (parts.length === 1) return { firstName: parts[0], lastName: parts[0] };
+          if (parts.length === 1)
+            return { firstName: parts[0], lastName: parts[0] };
           var firstName = parts.shift();
           var lastName = parts.join(" ");
           return { firstName: firstName, lastName: lastName };
@@ -1013,7 +1014,9 @@
             );
             return Promise.reject(new Error("Nome do titular obrigatório."));
           }
-          var email = String(payer.email || "").trim().toLowerCase();
+          var email = String(payer.email || "")
+            .trim()
+            .toLowerCase();
           if (!email) {
             status(
               "Informe um e-mail válido no formulário seguro do Mercado Pago.",
