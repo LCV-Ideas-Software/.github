@@ -24,13 +24,13 @@ LCV Ideas &amp; Software is a software organization maintained by **Leonardo Car
 
 ## What we build
 
-A small, opinionated portfolio organized in three layers, all sharing the same Cloudflare edge runtime and a single unified D1 database (`bigdata_db`):
+A small, opinionated portfolio organized in three layers, all sharing the same Cloudflare edge runtime and a single unified D1 database:
 
 1. **Public products** — consumer-facing web apps with AI assistance, deployed on Cloudflare Pages with Worker backends.
 2. **Operator infrastructure** — the single-tenant control plane and supporting services that govern the public products.
 3. **Developer tooling** — open-source MCP servers and editorial workbenches built around multi-agent AI convergence.
 
-Every repository is published on GitHub under the `LCV-Ideas-Software` organization and ships with its own public surface or operational endpoint under the `lcv.dev` / `lcv.app.br` zones (custom domains, HTTPS-enforced). Everything is delivered under strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL Default Setup, Secret Scanning push protection, and SHA-pinned GitHub Actions.
+Every repository is published on GitHub under the `LCV-Ideas-Software` organization and ships with its own public surface or operational endpoint under custom domains zones (custom domains, HTTPS-enforced). Everything is delivered under strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL Default Setup, Secret Scanning push protection, and SHA-pinned GitHub Actions.
 
 ---
 
@@ -51,7 +51,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | --- | --- | --- |
 | [**admin-app**](https://github.com/LCV-Ideas-Software/admin-app) | [admin-app.lcv.dev](https://admin-app.lcv.dev) | Operator admin dashboard for the multi-app Cloudflare workspace. Single-tenant by design. React 19 + Vite 8 on Pages + Hono Worker, gated by Cloudflare Access (Zero Trust JWT). Modules include post editor, AI model selection, DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT ingestion, and operational telemetry. |
 | [**mtasts-motor**](https://github.com/LCV-Ideas-Software/mtasts-motor) | [mtasts-motor.lcv.dev](https://mtasts-motor.lcv.dev) | Cloudflare Worker serving dynamic [MTA-STS](https://datatracker.ietf.org/doc/html/rfc8461) policies from a D1 backing store. Designed for multi-domain operators behind the `mta-sts.<domain>` subdomain convention (RFC 8461). |
-| [**sponsor-motor**](https://github.com/LCV-Ideas-Software/sponsor-motor) | [sponsor-motor.lcv.app.br](https://sponsor-motor.lcv.app.br) | Dedicated Cloudflare Worker for the organization sponsor flow. Processes Mercado Pago Checkout Transparente orders through the official backend SDK, records minimal `sponsor_*` audit data in `bigdata_db`, validates signed webhooks, and backs the secure sponsor page at [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor). |
+| [**sponsor-motor**](https://github.com/LCV-Ideas-Software/sponsor-motor) | [sponsor-motor.lcv.app.br](https://sponsor-motor.lcv.app.br) | Dedicated Cloudflare Worker for the organization sponsor flow. Processes Mercado Pago Checkout Transparente orders through the official backend SDK, records minimal `sponsor_*` audit data in `Claudflare DB1`, validates signed webhooks, and backs the secure sponsor page at [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor). |
 
 ### 🤖 Developer tooling
 
@@ -77,7 +77,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 ```
 Frontend     React 19 + Vite 8 + TypeScript
 Runtime      Cloudflare Pages (static + SSR) + Cloudflare Workers (Hono)
-Database     Cloudflare D1   (single shared bigdata_db)
+Database     Cloudflare D1   (single shared Claudflare DB1)
 Storage      Cloudflare R2   (mainsite-media bucket)
 Auth         Cloudflare Access (Zero Trust JWT) — operator surfaces
 AI           Claude Code · ChatGPT Codex · Gemini CLI · DeepSeek · Grok
@@ -87,7 +87,7 @@ Anti-abuse   Cloudflare Turnstile + GCP Natural Language
 Desktop      Tauri 2  (Maestro)
 ```
 
-- **One database.** All consumer products and the operator control plane share `bigdata_db`. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
+- **One database.** All consumer products and the operator control plane share `Claudflare DB1`. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
 - **One bucket.** `mainsite-media` (R2) is shared by `mainsite-app` and `admin-app`. Magic-byte sniffing, allowlisted MIME types, 10 MB cap, SVG-sandboxed legacy fallback.
 - **Defense in depth.** Cloudflare Access gates *who* enters admin surfaces; CSP gates *what* the browser can execute on public surfaces; Turnstile gates form anti-abuse; GCP Natural Language scores comment moderation.
 
