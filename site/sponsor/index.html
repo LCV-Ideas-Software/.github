@@ -536,47 +536,11 @@
               <button type="button" data-amount="100">R$ 100</button>
             </div>
 
-            <div class="field-grid">
-              <div>
-                <label for="first-name">Nome</label>
-                <input
-                  id="first-name"
-                  name="firstName"
-                  type="text"
-                  autocomplete="billing given-name"
-                  autocapitalize="words"
-                  enterkeyhint="next"
-                  placeholder="Seu nome"
-                  required
-                />
-              </div>
-              <div>
-                <label for="last-name">Sobrenome</label>
-                <input
-                  id="last-name"
-                  name="lastName"
-                  type="text"
-                  autocomplete="billing family-name"
-                  autocapitalize="words"
-                  enterkeyhint="next"
-                  placeholder="Seu sobrenome"
-                  required
-                />
-              </div>
-            </div>
-
-            <label for="email">E-mail</label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              inputmode="email"
-              autocomplete="billing email"
-              autocapitalize="none"
-              spellcheck="false"
-              enterkeyhint="done"
-              placeholder="voce@email.com"
-            />
+            <div
+              id="cardPaymentBrick_container"
+              class="payment-brick"
+              aria-live="polite"
+            ></div>
 
             <label for="phone">Telefone com DDD</label>
             <input
@@ -685,12 +649,6 @@
               />
               Este é meu primeiro apoio online à LCV Ideas &amp; Software.
             </label>
-
-            <div
-              id="cardPaymentBrick_container"
-              class="payment-brick"
-              aria-live="polite"
-            ></div>
           </form>
           <div
             id="status"
@@ -751,9 +709,6 @@
         ];
         var projectSelect = document.getElementById("project");
         var amountInput = document.getElementById("amount");
-        var firstNameInput = document.getElementById("first-name");
-        var lastNameInput = document.getElementById("last-name");
-        var emailInput = document.getElementById("email");
         var phoneInput = document.getElementById("phone");
         var zipCodeInput = document.getElementById("zip-code");
         var stateInput = document.getElementById("state");
@@ -782,6 +737,13 @@
           statusBox.hidden = false;
           statusBox.className = "status" + (kind ? " " + kind : "");
           statusBox.textContent = message;
+          if (kind === "error" || kind === "success") {
+            try {
+              statusBox.scrollIntoView({ behavior: "smooth", block: "center" });
+            } catch (_) {
+              statusBox.scrollIntoView();
+            }
+          }
         }
 
         function clearStatus() {
@@ -809,12 +771,6 @@
           return cents;
         }
 
-        function normalizedEmail() {
-          return String(emailInput.value || "")
-            .trim()
-            .toLowerCase();
-        }
-
         function normalizedPhone() {
           return String(phoneInput.value || "").trim();
         }
@@ -825,12 +781,14 @@
           return value;
         }
 
-        function sponsorIdentity() {
-          return {
-            firstName: requiredValue(firstNameInput, "nome"),
-            lastName: requiredValue(lastNameInput, "sobrenome"),
-            email: requiredValue(emailInput, "e-mail").toLowerCase(),
-          };
+        function splitCardholderName(rawName) {
+          var trimmed = String(rawName || "").trim();
+          if (!trimmed) return { firstName: "", lastName: "" };
+          var parts = trimmed.split(/\s+/);
+          if (parts.length === 1) return { firstName: parts[0], lastName: parts[0] };
+          var firstName = parts.shift();
+          var lastName = parts.join(" ");
+          return { firstName: firstName, lastName: lastName };
         }
 
         function sponsorAddress() {
@@ -955,7 +913,7 @@
           }
 
           var amount = cents / 100;
-          var key = String(cents) + "|" + normalizedEmail();
+          var key = String(cents);
           if (!force && cardPaymentBrickController && key === currentBrickKey) {
             return Promise.resolve();
           }
@@ -964,8 +922,6 @@
             .then(function (builder) {
               return unmountBrick().then(function () {
                 var initialization = { amount: amount };
-                var email = normalizedEmail();
-                if (email) initialization.payer = { email: email };
 
                 status("Carregando formulário seguro do Mercado Pago...");
                 challengeBox.hidden = true;
@@ -1038,23 +994,40 @@
 
         function submitOrder(formData, additionalData) {
           var payer = formData.payer || {};
-          var identity;
           var address;
           try {
-            identity = sponsorIdentity();
             address = sponsorAddress();
           } catch (error) {
             status(error.message, "error");
             return Promise.reject(error);
           }
-          var email = identity.email || String(payer.email || "").trim();
+          var cardholderName =
+            (additionalData && additionalData.cardholderName) ||
+            (formData.cardholder && formData.cardholder.name) ||
+            "";
+          var nameParts = splitCardholderName(cardholderName);
+          if (!nameParts.firstName) {
+            status(
+              "Informe o nome do titular do cartão no formulário seguro.",
+              "error",
+            );
+            return Promise.reject(new Error("Nome do titular obrigatório."));
+          }
+          var email = String(payer.email || "").trim().toLowerCase();
+          if (!email) {
+            status(
+              "Informe um e-mail válido no formulário seguro do Mercado Pago.",
+              "error",
+            );
+            return Promise.reject(new Error("E-mail obrigatório."));
+          }
           var identification = payer.identification || null;
           var payload = {
             project: projectSelect.value,
             amount: amountInput.value,
-            name: identity.firstName + " " + identity.lastName,
-            firstName: identity.firstName,
-            lastName: identity.lastName,
+            name: nameParts.firstName + " " + nameParts.lastName,
+            firstName: nameParts.firstName,
+            lastName: nameParts.lastName,
             email: email,
             phone: normalizedPhone(),
             token: formData.token,
@@ -1069,13 +1042,6 @@
             firstPurchaseOnline: firstPurchaseOnlineInput.checked,
           };
 
-          if (!email) {
-            status(
-              "Informe um e-mail válido para processar o pagamento.",
-              "error",
-            );
-            return Promise.reject(new Error("E-mail obrigatório."));
-          }
           if (identification && identification.type && identification.number) {
             payload.identification = identification;
           }
@@ -1205,9 +1171,6 @@
         });
         amountInput.addEventListener("blur", function () {
           syncAmountButtons();
-          renderBrick(true);
-        });
-        emailInput.addEventListener("blur", function () {
           renderBrick(true);
         });
         window.addEventListener("message", function (event) {
