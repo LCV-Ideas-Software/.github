@@ -12,7 +12,7 @@
   <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-verified-38bdf8.svg" alt="verified org"></a>
   <a href="https://www.lcv.dev"><img src="https://img.shields.io/badge/homepage-www.lcv.dev-2563eb.svg" alt="www.lcv.dev"></a>
   <img src="https://img.shields.io/badge/location-Brazil-34d399.svg" alt="Brazil">
-  <img src="https://img.shields.io/badge/repos-12%20public-7dd3fc.svg" alt="12 public repos">
+  <img src="https://img.shields.io/badge/repos-13%20public-7dd3fc.svg" alt="13 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg" alt="Cloudflare">
   <img src="https://img.shields.io/badge/AI-5%20agent%20stack-34d399.svg" alt="5-agent AI stack">
   <a href="https://www.lcv.dev/sponsor"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor LCV Ideas & Software"></a>
