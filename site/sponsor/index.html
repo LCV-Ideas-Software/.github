@@ -973,6 +973,30 @@
                 return builder
                   .create("cardPayment", "cardPaymentBrick_container", {
                     initialization: initialization,
+                    customization: {
+                      visual: {
+                        style: {
+                          theme: "dark",
+                          customVariables: {
+                            formBackgroundColor: "#0d1a2e",
+                            inputBackgroundColor: "#050b18",
+                            baseColor: "#38bdf8",
+                            baseColorFirstVariant: "#2563eb",
+                            baseColorSecondVariant: "#06b6d4",
+                            textPrimaryColor: "#f1f5fb",
+                            textSecondaryColor: "#c5d3e6",
+                            errorColor: "#f87171",
+                            successColor: "#34d399",
+                            outlinePrimaryColor: "#38bdf8",
+                            outlineSecondaryColor: "#2563eb",
+                            buttonTextColor: "#050b18",
+                            borderRadiusMedium: "12px",
+                            borderRadiusLarge: "18px",
+                            formPadding: "18px",
+                          },
+                        },
+                      },
+                    },
                     callbacks: {
                       onReady: function () {
                         currentBrickKey = key;
