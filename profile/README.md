@@ -78,7 +78,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 Frontend     React 19 + Vite 8 + TypeScript
 Runtime      Cloudflare Pages (static + SSR) + Cloudflare Workers (Hono)
 Database     Cloudflare D1   (single shared Claudflare DB1)
-Storage      Cloudflare R2   (mainsite-media bucket)
+Storage      Cloudflare R2   (Cloudflare R2 bucket)
 Auth         Cloudflare Access (Zero Trust JWT) — operator surfaces
 AI           Claude Code · ChatGPT Codex · Gemini CLI · DeepSeek · Grok
 Email        Resend
@@ -88,7 +88,7 @@ Desktop      Tauri 2  (Maestro)
 ```
 
 - **One database.** All consumer products and the operator control plane share `Claudflare DB1`. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
-- **One bucket.** `mainsite-media` (R2) is shared by `mainsite-app` and `admin-app`. Magic-byte sniffing, allowlisted MIME types, 10 MB cap, SVG-sandboxed legacy fallback.
+- **One bucket.** `Cloudflare R2` (R2) is shared by `mainsite-app` and `admin-app`. Magic-byte sniffing, allowlisted MIME types, 10 MB cap, SVG-sandboxed legacy fallback.
 - **Defense in depth.** Cloudflare Access gates *who* enters admin surfaces; CSP gates *what* the browser can execute on public surfaces; Turnstile gates form anti-abuse; GCP Natural Language scores comment moderation.
 
 ---
@@ -128,9 +128,8 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 ## Contact and support
 
 - **Homepage**: [www.lcv.dev](https://www.lcv.dev)
-- **Public blog**: [www.reflexosdaalma.blog](https://www.reflexosdaalma.blog) (the `mainsite-app` product)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
-- **Email**: [github@lcvmail.com](mailto:github@lcvmail.com) for org-wide topics.
+- **Email**: [lcv@lcv.dev](mailto:lcv@lcv.dev) for general topics.
 - **Sponsorship**: support the work through the secure sponsor page → [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor).
 
 ---
