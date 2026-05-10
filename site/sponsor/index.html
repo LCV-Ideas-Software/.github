@@ -385,6 +385,66 @@
       .payment-brick {
         margin-top: 18px;
       }
+      .card-fieldset {
+        margin-top: 18px;
+        padding: 18px 18px 6px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(8, 20, 40, 0.7);
+      }
+      .card-fieldset legend {
+        padding: 0 8px;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--fg-soft);
+      }
+      .card-fieldset label {
+        color: var(--fg-soft);
+      }
+      .card-fieldset input,
+      .card-fieldset select {
+        background: #ffffff;
+        color: #050b18;
+        border: 1px solid var(--border);
+      }
+      .card-fieldset input::placeholder {
+        color: color-mix(in srgb, #050b18 45%, transparent);
+      }
+      .card-fieldset input:focus,
+      .card-fieldset select:focus {
+        background: #ffffff;
+        border-color: var(--accent);
+        box-shadow:
+          0 0 0 3px rgba(56, 189, 248, 0.22),
+          0 8px 20px var(--glow-cyan);
+      }
+      .card-secure-field {
+        width: 100%;
+        height: 46px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #ffffff;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        transition:
+          border-color 160ms ease,
+          box-shadow 160ms ease;
+      }
+      .card-secure-field:focus-within {
+        border-color: var(--accent);
+        box-shadow:
+          0 0 0 3px rgba(56, 189, 248, 0.22),
+          0 8px 20px var(--glow-cyan);
+      }
+      .card-secure-field iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        display: block;
+      }
       .challenge {
         margin-top: 18px;
         border: 1px solid var(--border);
@@ -536,11 +596,93 @@
               <button type="button" data-amount="100">R$ 100</button>
             </div>
 
-            <div
-              id="cardPaymentBrick_container"
-              class="payment-brick"
-              aria-live="polite"
-            ></div>
+            <fieldset class="card-fieldset">
+              <legend>Cartão de crédito ou débito</legend>
+
+              <label for="form-checkout__cardNumber">Número do cartão</label>
+              <div
+                id="form-checkout__cardNumber"
+                class="card-secure-field"
+              ></div>
+
+              <div class="field-grid">
+                <div>
+                  <label for="form-checkout__expirationDate">Vencimento</label>
+                  <div
+                    id="form-checkout__expirationDate"
+                    class="card-secure-field"
+                  ></div>
+                </div>
+                <div>
+                  <label for="form-checkout__securityCode"
+                    >Código de segurança</label
+                  >
+                  <div
+                    id="form-checkout__securityCode"
+                    class="card-secure-field"
+                  ></div>
+                </div>
+              </div>
+
+              <label for="form-checkout__cardholderName"
+                >Nome do titular como aparece no cartão</label
+              >
+              <input
+                id="form-checkout__cardholderName"
+                name="cardholderName"
+                type="text"
+                autocomplete="cc-name"
+                autocapitalize="characters"
+                placeholder="MARIA SANTOS PEREIRA"
+                required
+              />
+
+              <label for="form-checkout__cardholderEmail">E-mail</label>
+              <input
+                id="form-checkout__cardholderEmail"
+                name="cardholderEmail"
+                type="email"
+                inputmode="email"
+                autocomplete="email"
+                autocapitalize="none"
+                spellcheck="false"
+                placeholder="voce@email.com"
+                required
+              />
+
+              <div class="field-grid">
+                <div>
+                  <label for="form-checkout__identificationType"
+                    >Documento</label
+                  >
+                  <select
+                    id="form-checkout__identificationType"
+                    name="identificationType"
+                  ></select>
+                </div>
+                <div>
+                  <label for="form-checkout__identificationNumber"
+                    >Número</label
+                  >
+                  <input
+                    id="form-checkout__identificationNumber"
+                    name="identificationNumber"
+                    type="text"
+                    inputmode="numeric"
+                    placeholder="999.999.999-99"
+                    required
+                  />
+                </div>
+              </div>
+
+              <label for="form-checkout__installments">Parcelas</label>
+              <select
+                id="form-checkout__installments"
+                name="installments"
+              ></select>
+
+              <select id="form-checkout__issuer" name="issuer" hidden></select>
+            </fieldset>
 
             <label for="phone">Telefone com DDD</label>
             <input
@@ -650,7 +792,14 @@
               Este é meu primeiro apoio online à LCV Ideas &amp; Software.
             </label>
 
-            <button id="custom-pay" type="button" class="primary">Pagar</button>
+            <button
+              id="custom-pay"
+              type="submit"
+              form="sponsor-form"
+              class="primary"
+            >
+              Pagar
+            </button>
           </form>
           <div
             id="status"
@@ -689,6 +838,11 @@
     </main>
 
     <script src="https://sdk.mercadopago.com/js/v2"></script>
+    <script
+      src="https://www.mercadopago.com/v2/security.js"
+      view="checkout"
+      output="deviceId"
+    ></script>
     <script>
       (function () {
         "use strict";
@@ -729,9 +883,9 @@
         var amountButtons = Array.prototype.slice.call(
           document.querySelectorAll("[data-amount]"),
         );
-        var bricksBuilder = null;
-        var cardPaymentBrickController = null;
-        var currentBrickKey = "";
+        var mpInstance = null;
+        var cardForm = null;
+        var currentMountedAmountCents = 0;
         var currentReference = "";
         var renderTimer = null;
         var sponsorSessionStartedAt = new Date().toISOString();
@@ -869,8 +1023,8 @@
           if (ref) refreshPaymentStatus(ref, 0);
         }
 
-        function ensureMercadoPago() {
-          if (bricksBuilder) return Promise.resolve(bricksBuilder);
+        function ensureMercadoPagoSdk() {
+          if (mpInstance) return Promise.resolve(mpInstance);
           if (!window.MercadoPago) {
             return Promise.reject(
               new Error("MercadoPago.js V2 não foi carregado."),
@@ -887,98 +1041,153 @@
               });
             })
             .then(function (data) {
-              var mp = new window.MercadoPago(data.publicKey, {
+              mpInstance = new window.MercadoPago(data.publicKey, {
                 locale: data.locale || "pt-BR",
               });
-              bricksBuilder = mp.bricks();
-              return bricksBuilder;
+              return mpInstance;
             });
         }
 
-        function unmountBrick() {
-          if (
-            !cardPaymentBrickController ||
-            typeof cardPaymentBrickController.unmount !== "function"
-          ) {
-            return Promise.resolve();
+        function unmountCardForm() {
+          if (!cardForm || typeof cardForm.unmount !== "function") {
+            cardForm = null;
+            return;
           }
-          var controller = cardPaymentBrickController;
-          cardPaymentBrickController = null;
-          return Promise.resolve(controller.unmount()).catch(function () {});
+          try {
+            cardForm.unmount();
+          } catch (_) {
+            // ignore unmount errors
+          }
+          cardForm = null;
         }
 
-        function renderBrick(force) {
+        function mountCardForm(force) {
           var cents = parseAmountCents(amountInput.value);
           if (cents === null) {
-            currentBrickKey = "";
-            return unmountBrick().then(function () {
-              status("Informe um valor entre R$ 1,00 e R$ 10.000,00.", "error");
-            });
-          }
-
-          var amount = cents / 100;
-          var key = String(cents);
-          if (!force && cardPaymentBrickController && key === currentBrickKey) {
+            unmountCardForm();
+            currentMountedAmountCents = 0;
+            status("Informe um valor entre R$ 1,00 e R$ 10.000,00.", "error");
             return Promise.resolve();
           }
 
-          return ensureMercadoPago()
-            .then(function (builder) {
-              return unmountBrick().then(function () {
-                var initialization = { amount: amount };
+          if (!force && cardForm && cents === currentMountedAmountCents) {
+            return Promise.resolve();
+          }
 
-                status("Carregando formulário seguro do Mercado Pago...");
-                challengeBox.hidden = true;
-                challengeFrame.removeAttribute("src");
-                return builder
-                  .create("cardPayment", "cardPaymentBrick_container", {
-                    initialization: initialization,
-                    customization: {
-                      visual: {
-                        hidePaymentButton: true,
-                        style: {
-                          theme: "dark",
-                          customVariables: {
-                            formBackgroundColor: "#0d1a2e",
-                            inputBackgroundColor: "#ffffff",
-                            formInputsTextColor: "#050b18",
-                            inputTextColor: "#050b18",
-                            secureFieldsTextColor: "#050b18",
-                            baseColor: "#38bdf8",
-                            baseColorFirstVariant: "#2563eb",
-                            baseColorSecondVariant: "#06b6d4",
-                            successColor: "#16a34a",
-                            errorColor: "#dc2626",
-                            outlinePrimaryColor: "#38bdf8",
-                            outlineSecondaryColor: "#2563eb",
-                            borderRadiusMedium: "12px",
-                            borderRadiusLarge: "18px",
-                            formPadding: "18px",
-                          },
-                        },
-                      },
+          return ensureMercadoPagoSdk()
+            .then(function (mp) {
+              unmountCardForm();
+              status("Carregando formulário seguro do Mercado Pago...");
+              challengeBox.hidden = true;
+              challengeFrame.removeAttribute("src");
+              cardForm = mp.cardForm({
+                amount: (cents / 100).toFixed(2),
+                iframe: true,
+                form: {
+                  id: "sponsor-form",
+                  cardNumber: {
+                    id: "form-checkout__cardNumber",
+                    placeholder: "0000 0000 0000 0000",
+                    style: {
+                      color: "#050b18",
+                      fontSize: "16px",
+                      fontFamily: "inherit",
+                      placeholderColor: "#94a3b8",
                     },
-                    callbacks: {
-                      onReady: function () {
-                        currentBrickKey = key;
-                        clearStatus();
-                      },
-                      onSubmit: function (formData, additionalData) {
-                        return submitOrder(formData, additionalData);
-                      },
-                      onError: function (error) {
-                        console.error(error);
-                        status(
-                          "O formulário seguro do Mercado Pago reportou um erro. Atualize a página e tente novamente.",
-                          "error",
-                        );
-                      },
+                  },
+                  expirationDate: {
+                    id: "form-checkout__expirationDate",
+                    placeholder: "MM/AA",
+                    style: {
+                      color: "#050b18",
+                      fontSize: "16px",
+                      fontFamily: "inherit",
+                      placeholderColor: "#94a3b8",
                     },
-                  })
-                  .then(function (controller) {
-                    cardPaymentBrickController = controller;
-                  });
+                  },
+                  securityCode: {
+                    id: "form-checkout__securityCode",
+                    placeholder: "Código de segurança",
+                    style: {
+                      color: "#050b18",
+                      fontSize: "16px",
+                      fontFamily: "inherit",
+                      placeholderColor: "#94a3b8",
+                    },
+                  },
+                  cardholderName: {
+                    id: "form-checkout__cardholderName",
+                    placeholder: "MARIA SANTOS PEREIRA",
+                  },
+                  cardholderEmail: {
+                    id: "form-checkout__cardholderEmail",
+                    placeholder: "voce@email.com",
+                  },
+                  identificationType: {
+                    id: "form-checkout__identificationType",
+                  },
+                  identificationNumber: {
+                    id: "form-checkout__identificationNumber",
+                    placeholder: "999.999.999-99",
+                  },
+                  installments: {
+                    id: "form-checkout__installments",
+                  },
+                  issuer: {
+                    id: "form-checkout__issuer",
+                  },
+                },
+                callbacks: {
+                  onFormMounted: function (error) {
+                    if (error) {
+                      console.warn("cardForm mount error:", error);
+                      status(
+                        "Falha ao montar o formulário seguro: " +
+                          (error.message || error),
+                        "error",
+                      );
+                      return;
+                    }
+                    currentMountedAmountCents = cents;
+                    clearStatus();
+                  },
+                  onSubmit: function (event) {
+                    event.preventDefault();
+                    customPayButton.disabled = true;
+                    customPayButton.textContent = "Processando...";
+                    var restoreButton = function () {
+                      customPayButton.disabled = false;
+                      customPayButton.textContent = "Pagar";
+                    };
+                    return Promise.resolve(submitFromCardForm()).then(
+                      restoreButton,
+                      restoreButton,
+                    );
+                  },
+                  onFetching: function (resource) {
+                    if (resource === "cardToken") {
+                      status("Validando dados do cartão...");
+                    }
+                  },
+                  onCardTokenReceived: function (errorData) {
+                    if (errorData) {
+                      console.warn("cardToken error:", errorData);
+                    }
+                  },
+                  onValidityChange: function () {
+                    // intentionally empty: cardForm manages internal validity state
+                  },
+                  onError: function (errorData) {
+                    if (errorData && errorData.message) {
+                      status(
+                        "Erro do formulário: " + errorData.message,
+                        "error",
+                      );
+                    }
+                  },
+                },
               });
+              return cardForm;
             })
             .catch(function (error) {
               status(
@@ -990,15 +1199,21 @@
             });
         }
 
-        function scheduleBrickRender() {
+        function scheduleCardFormMount() {
           window.clearTimeout(renderTimer);
           renderTimer = window.setTimeout(function () {
-            renderBrick(true);
+            mountCardForm(true);
           }, 500);
         }
 
-        function submitOrder(formData, additionalData) {
-          var payer = formData.payer || {};
+        function submitFromCardForm() {
+          if (!cardForm) {
+            status(
+              "Aguarde o formulário seguro do Mercado Pago carregar antes de pagar.",
+              "error",
+            );
+            return Promise.reject(new Error("cardForm não disponível."));
+          }
           var address;
           try {
             address = sponsorAddress();
@@ -1006,29 +1221,34 @@
             status(error.message, "error");
             return Promise.reject(error);
           }
-          var cardholderName =
-            (additionalData && additionalData.cardholderName) ||
-            (formData.cardholder && formData.cardholder.name) ||
-            "";
+          var data = cardForm.getCardFormData();
+          if (!data || !data.token) {
+            status("Verifique os dados do cartão e tente novamente.", "error");
+            return Promise.reject(new Error("Token não obtido."));
+          }
+          var cardholderName = String(data.cardholderName || "").trim();
           var nameParts = splitCardholderName(cardholderName);
           if (!nameParts.firstName) {
             status(
-              "Informe o nome do titular do cartão no formulário seguro.",
+              "Informe o nome do titular como aparece no cartão.",
               "error",
             );
             return Promise.reject(new Error("Nome do titular obrigatório."));
           }
-          var email = String(payer.email || "")
+          var email = String(data.cardholderEmail || "")
             .trim()
             .toLowerCase();
           if (!email) {
-            status(
-              "Informe um e-mail válido no formulário seguro do Mercado Pago.",
-              "error",
-            );
+            status("Informe um e-mail válido.", "error");
             return Promise.reject(new Error("E-mail obrigatório."));
           }
-          var identification = payer.identification || null;
+          var deviceId =
+            (window.MP_DEVICE_SESSION_ID || "") +
+            "" +
+            (typeof window.deviceId === "string" ? window.deviceId : "");
+          // The MP security script writes the device id into a global named
+          // by the `output` attribute (here: `deviceId`). Either form is
+          // forwarded to the backend; the worker prefers MP_DEVICE_SESSION_ID.
           var payload = {
             project: projectSelect.value,
             amount: amountInput.value,
@@ -1037,20 +1257,25 @@
             lastName: nameParts.lastName,
             email: email,
             phone: normalizedPhone(),
-            token: formData.token,
-            paymentMethodId: formData.payment_method_id,
-            paymentType:
-              additionalData && additionalData.paymentTypeId
-                ? additionalData.paymentTypeId
-                : "credit_card",
-            installments: Number(formData.installments || 1),
+            token: data.token,
+            paymentMethodId: data.paymentMethodId,
+            paymentType: data.paymentTypeId || "credit_card",
+            installments: Number(data.installments || 1),
             address: address,
             payerRegistrationDate: sponsorSessionStartedAt,
             firstPurchaseOnline: firstPurchaseOnlineInput.checked,
           };
-
-          if (identification && identification.type && identification.number) {
-            payload.identification = identification;
+          if (data.identificationType && data.identificationNumber) {
+            payload.identification = {
+              type: data.identificationType,
+              number: data.identificationNumber,
+            };
+          }
+          if (data.issuerId) {
+            payload.issuerId = data.issuerId;
+          }
+          if (deviceId) {
+            payload.deviceId = deviceId;
           }
 
           status("Preparando pagamento seguro no Mercado Pago...");
@@ -1168,54 +1393,22 @@
           button.addEventListener("click", function () {
             amountInput.value = formatAmount(button.dataset.amount || 0);
             syncAmountButtons();
-            renderBrick(true);
+            mountCardForm(true);
           });
         });
 
         amountInput.addEventListener("input", function () {
           syncAmountButtons();
-          scheduleBrickRender();
+          scheduleCardFormMount();
         });
         amountInput.addEventListener("blur", function () {
           syncAmountButtons();
-          renderBrick(true);
+          mountCardForm(true);
         });
-        customPayButton.addEventListener("click", function () {
-          if (customPayButton.disabled) return;
-          if (!cardPaymentBrickController) {
-            status(
-              "Aguarde o formulário seguro do Mercado Pago carregar antes de pagar.",
-              "error",
-            );
-            return;
-          }
-          customPayButton.disabled = true;
-          customPayButton.textContent = "Processando...";
-          var restoreButton = function () {
-            customPayButton.disabled = false;
-            customPayButton.textContent = "Pagar";
-          };
-          Promise.resolve(cardPaymentBrickController.getFormData())
-            .then(function (cardFormData) {
-              if (
-                !cardFormData ||
-                typeof cardFormData !== "object" ||
-                !cardFormData.formData
-              ) {
-                throw new Error(
-                  "Preencha os dados do cartão no formulário seguro acima.",
-                );
-              }
-              return submitOrder(
-                cardFormData.formData,
-                cardFormData.additionalData || {},
-              );
-            })
-            .catch(function (error) {
-              if (error && error.message) status(error.message, "error");
-            })
-            .then(restoreButton, restoreButton);
-        });
+        // The Pagar button is `type="submit" form="sponsor-form"` — clicking
+        // it natively submits the form, cardForm intercepts via its onSubmit
+        // callback (which runs tokenization + dispatch), and the callback
+        // restores the button. No separate click handler needed here.
         window.addEventListener("message", function (event) {
           if (
             event.data &&
@@ -1230,7 +1423,7 @@
         initProjects();
         initAmount();
         handleReturn();
-        renderBrick(true);
+        mountCardForm(true);
       })();
     </script>
   </body>
