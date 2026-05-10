@@ -18,7 +18,7 @@
   <a href="https://www.lcv.dev/sponsor"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor LCV Ideas & Software"></a>
 </p>
 
-LCV Ideas &amp; Software is a software organization maintained by **Leonardo Cardozo Vargas**. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, sponsor infrastructure, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek, Grok). Org homepage: **[www.lcv.dev](https://www.lcv.dev)**.
+LCV Ideas &amp; Software is a vibe coding independente studio. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, sponsor infrastructure, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek, Grok). Org homepage: **[www.lcv.dev](https://www.lcv.dev)**.
 
 ---
 
