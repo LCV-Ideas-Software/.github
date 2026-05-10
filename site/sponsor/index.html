@@ -1088,6 +1088,15 @@
                 iframe: true,
                 form: {
                   id: "sponsor-form",
+                  // Per github.com/mercadopago/sdk-js/blob/main/docs/fields.md#style
+                  // (canonical SDK source-of-truth), the accepted style props
+                  // for Secure Fields are ONLY: color, font-family/fontFamily,
+                  // font-size/fontSize, font-style/fontStyle, font-variant/fontVariant,
+                  // font-weight/fontWeight, height, margin/margin-*, padding/padding-*,
+                  // placeholder-color/placeholderColor, text-align/textAlign, width.
+                  // `background`/`backgroundColor` are NOT in the list — MP enforces
+                  // a white iframe body background as a PCI-compliance constraint.
+                  // The only legibility lever we have is the text color.
                   cardNumber: {
                     id: "form-checkout__cardNumber",
                     placeholder: "0000 0000 0000 0000",
@@ -1096,8 +1105,6 @@
                       fontSize: "16px",
                       fontFamily: "inherit",
                       placeholderColor: "#475569",
-                      backgroundColor: "transparent",
-                      background: "transparent",
                     },
                   },
                   expirationDate: {
@@ -1108,8 +1115,6 @@
                       fontSize: "16px",
                       fontFamily: "inherit",
                       placeholderColor: "#475569",
-                      backgroundColor: "transparent",
-                      background: "transparent",
                     },
                   },
                   securityCode: {
@@ -1120,8 +1125,6 @@
                       fontSize: "16px",
                       fontFamily: "inherit",
                       placeholderColor: "#475569",
-                      backgroundColor: "transparent",
-                      background: "transparent",
                     },
                   },
                   cardholderName: {
