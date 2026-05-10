@@ -1233,12 +1233,31 @@
             status(error.message, "error");
             return Promise.reject(error);
           }
-          var data = cardForm.getCardFormData();
-          if (!data || !data.token) {
-            status("Verifique os dados do cartão e tente novamente.", "error");
-            return Promise.reject(new Error("Token não obtido."));
-          }
-          var cardholderName = String(data.cardholderName || "").trim();
+          // Non-secure fields (cardholderName, cardholderEmail, identification,
+          // installments) are regular HTML inputs/selects that we control —
+          // read them directly from DOM. cardForm.getCardFormData() omits or
+          // delays these in some SDK versions/timings; trusting the DOM is
+          // both more reliable AND PCI-safe (these are not card-data fields).
+          // cardForm remains the source-of-truth ONLY for secure-field-derived
+          // data: token, paymentMethodId, paymentTypeId, issuerId.
+          var cardholderNameEl = document.getElementById(
+            "form-checkout__cardholderName",
+          );
+          var cardholderEmailEl = document.getElementById(
+            "form-checkout__cardholderEmail",
+          );
+          var identificationTypeEl = document.getElementById(
+            "form-checkout__identificationType",
+          );
+          var identificationNumberEl = document.getElementById(
+            "form-checkout__identificationNumber",
+          );
+          var installmentsEl = document.getElementById(
+            "form-checkout__installments",
+          );
+          var cardholderName = String(
+            (cardholderNameEl && cardholderNameEl.value) || "",
+          ).trim();
           var nameParts = splitCardholderName(cardholderName);
           if (!nameParts.firstName) {
             status(
@@ -1247,12 +1266,31 @@
             );
             return Promise.reject(new Error("Nome do titular obrigatório."));
           }
-          var email = String(data.cardholderEmail || "")
+          var email = String(
+            (cardholderEmailEl && cardholderEmailEl.value) || "",
+          )
             .trim()
             .toLowerCase();
           if (!email) {
             status("Informe um e-mail válido.", "error");
             return Promise.reject(new Error("E-mail obrigatório."));
+          }
+          var identificationType = String(
+            (identificationTypeEl && identificationTypeEl.value) || "",
+          ).trim();
+          var identificationNumber = String(
+            (identificationNumberEl && identificationNumberEl.value) || "",
+          ).trim();
+          var installmentsValue = Number(
+            (installmentsEl && installmentsEl.value) || 1,
+          );
+          if (!Number.isFinite(installmentsValue) || installmentsValue < 1) {
+            installmentsValue = 1;
+          }
+          var data = cardForm.getCardFormData();
+          if (!data || !data.token) {
+            status("Verifique os dados do cartão e tente novamente.", "error");
+            return Promise.reject(new Error("Token não obtido."));
           }
           var deviceId =
             (window.MP_DEVICE_SESSION_ID || "") +
@@ -1272,15 +1310,15 @@
             token: data.token,
             paymentMethodId: data.paymentMethodId,
             paymentType: data.paymentTypeId || "credit_card",
-            installments: Number(data.installments || 1),
+            installments: installmentsValue,
             address: address,
             payerRegistrationDate: sponsorSessionStartedAt,
             firstPurchaseOnline: firstPurchaseOnlineInput.checked,
           };
-          if (data.identificationType && data.identificationNumber) {
+          if (identificationType && identificationNumber) {
             payload.identification = {
-              type: data.identificationType,
-              number: data.identificationNumber,
+              type: identificationType,
+              number: identificationNumber,
             };
           }
           if (data.issuerId) {
