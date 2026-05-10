@@ -1,0 +1,21 @@
+# Targeted code owners for sensitive and source changes.
+# Single-operator baseline: no repository-wide wildcard, so Dependabot manifest
+# updates can still auto-merge without manual CODEOWNERS approval.
+
+# Agent and repository governance
+/AGENTS.md @lcv-leo
+/CLAUDE.md @lcv-leo
+/GEMINI.md @lcv-leo
+/.ai/ @lcv-leo
+/.agents/ @lcv-leo
+/.gemini/ @lcv-leo
+/.github/CODEOWNERS @lcv-leo
+/.github/copilot-instructions.md @lcv-leo
+/.github/dependabot.yml @lcv-leo
+/.github/workflows/ @lcv-leo
+
+# Public organization surfaces
+/profile/ @lcv-leo
+/site/ @lcv-leo
+/package.json @lcv-leo
+/package-lock.json @lcv-leo
