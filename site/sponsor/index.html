@@ -649,6 +649,8 @@
               />
               Este é meu primeiro apoio online à LCV Ideas &amp; Software.
             </label>
+
+            <button id="custom-pay" type="button" class="primary">Pagar</button>
           </form>
           <div
             id="status"
@@ -720,6 +722,7 @@
         var firstPurchaseOnlineInput = document.getElementById(
           "first-purchase-online",
         );
+        var customPayButton = document.getElementById("custom-pay");
         var statusBox = document.getElementById("status");
         var challengeBox = document.getElementById("challenge");
         var challengeFrame = document.getElementById("challenge-frame");
@@ -932,6 +935,7 @@
                     initialization: initialization,
                     customization: {
                       visual: {
+                        hidePaymentButton: true,
                         style: {
                           theme: "dark",
                           customVariables: {
@@ -1175,6 +1179,42 @@
         amountInput.addEventListener("blur", function () {
           syncAmountButtons();
           renderBrick(true);
+        });
+        customPayButton.addEventListener("click", function () {
+          if (customPayButton.disabled) return;
+          if (!cardPaymentBrickController) {
+            status(
+              "Aguarde o formulário seguro do Mercado Pago carregar antes de pagar.",
+              "error",
+            );
+            return;
+          }
+          customPayButton.disabled = true;
+          customPayButton.textContent = "Processando...";
+          var restoreButton = function () {
+            customPayButton.disabled = false;
+            customPayButton.textContent = "Pagar";
+          };
+          Promise.resolve(cardPaymentBrickController.getFormData())
+            .then(function (cardFormData) {
+              if (
+                !cardFormData ||
+                typeof cardFormData !== "object" ||
+                !cardFormData.formData
+              ) {
+                throw new Error(
+                  "Preencha os dados do cartão no formulário seguro acima.",
+                );
+              }
+              return submitOrder(
+                cardFormData.formData,
+                cardFormData.additionalData || {},
+              );
+            })
+            .catch(function (error) {
+              if (error && error.message) status(error.message, "error");
+            })
+            .then(restoreButton, restoreButton);
         });
         window.addEventListener("message", function (event) {
           if (
