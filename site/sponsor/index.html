@@ -405,16 +405,16 @@
       }
       .card-fieldset input,
       .card-fieldset select {
-        background: #ffffff;
-        color: #050b18;
+        background: var(--bg-input);
+        color: var(--fg);
         border: 1px solid var(--border);
       }
       .card-fieldset input::placeholder {
-        color: color-mix(in srgb, #050b18 45%, transparent);
+        color: color-mix(in srgb, var(--fg-muted) 70%, transparent);
       }
       .card-fieldset input:focus,
       .card-fieldset select:focus {
-        background: #ffffff;
+        background: rgba(13, 26, 46, 0.85);
         border-color: var(--accent);
         box-shadow:
           0 0 0 3px rgba(56, 189, 248, 0.22),
@@ -425,15 +425,17 @@
         height: 46px;
         border: 1px solid var(--border);
         border-radius: 14px;
-        background: #ffffff;
+        background: var(--bg-input);
         padding: 0 12px;
         display: flex;
         align-items: center;
         transition:
           border-color 160ms ease,
-          box-shadow 160ms ease;
+          box-shadow 160ms ease,
+          background 160ms ease;
       }
       .card-secure-field:focus-within {
+        background: rgba(13, 26, 46, 0.85);
         border-color: var(--accent);
         box-shadow:
           0 0 0 3px rgba(56, 189, 248, 0.22),
@@ -444,6 +446,7 @@
         height: 100%;
         border: 0;
         display: block;
+        background: transparent;
       }
       .challenge {
         margin-top: 18px;
@@ -1089,30 +1092,30 @@
                     id: "form-checkout__cardNumber",
                     placeholder: "0000 0000 0000 0000",
                     style: {
-                      color: "#050b18",
+                      color: "#f1f5fb",
                       fontSize: "16px",
                       fontFamily: "inherit",
-                      placeholderColor: "#94a3b8",
+                      placeholderColor: "#8aa0bd",
                     },
                   },
                   expirationDate: {
                     id: "form-checkout__expirationDate",
                     placeholder: "MM/AA",
                     style: {
-                      color: "#050b18",
+                      color: "#f1f5fb",
                       fontSize: "16px",
                       fontFamily: "inherit",
-                      placeholderColor: "#94a3b8",
+                      placeholderColor: "#8aa0bd",
                     },
                   },
                   securityCode: {
                     id: "form-checkout__securityCode",
                     placeholder: "Código de segurança",
                     style: {
-                      color: "#050b18",
+                      color: "#f1f5fb",
                       fontSize: "16px",
                       fontFamily: "inherit",
-                      placeholderColor: "#94a3b8",
+                      placeholderColor: "#8aa0bd",
                     },
                   },
                   cardholderName: {
