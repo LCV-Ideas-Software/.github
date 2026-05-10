@@ -1292,13 +1292,19 @@
             status("Verifique os dados do cartão e tente novamente.", "error");
             return Promise.reject(new Error("Token não obtido."));
           }
-          var deviceId =
-            (window.MP_DEVICE_SESSION_ID || "") +
-            "" +
-            (typeof window.deviceId === "string" ? window.deviceId : "");
-          // The MP security script writes the device id into a global named
-          // by the `output` attribute (here: `deviceId`). Either form is
-          // forwarded to the backend; the worker prefers MP_DEVICE_SESSION_ID.
+          // MP exposes the Device ID via two possible globals:
+          // - `window.MP_DEVICE_SESSION_ID`: set automatically when the
+          //   page constructs `new MercadoPago(publicKey, ...)` (legacy
+          //   automatic global from the V2 SDK)
+          // - `window.deviceId`: set by the manual security.js script when
+          //   loaded with `output="deviceId"` attribute
+          // Both reference the SAME logical device ID. We pick ONE
+          // deterministically with clear precedence (SDK-auto first; manual
+          // script as fallback) — concatenation would produce a malformed
+          // identifier if both happen to be populated.
+          var explicitDeviceId =
+            typeof window.deviceId === "string" ? window.deviceId : "";
+          var deviceId = window.MP_DEVICE_SESSION_ID || explicitDeviceId;
           var payload = {
             project: projectSelect.value,
             amount: amountInput.value,
