@@ -12,7 +12,7 @@
   <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-verified-38bdf8.svg" alt="verified org"></a>
   <a href="https://www.lcv.dev"><img src="https://img.shields.io/badge/homepage-www.lcv.dev-2563eb.svg" alt="www.lcv.dev"></a>
   <img src="https://img.shields.io/badge/location-Brazil-34d399.svg" alt="Brazil">
-  <img src="https://img.shields.io/badge/repos-13%20public-7dd3fc.svg" alt="13 public repos">
+  <img src="https://img.shields.io/badge/repos-14%20public-7dd3fc.svg" alt="14 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg" alt="Cloudflare">
   <img src="https://img.shields.io/badge/AI-5%20agent%20stack-34d399.svg" alt="5-agent AI stack">
   <a href="https://www.lcv.dev/sponsor"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor LCV Ideas & Software"></a>
@@ -57,6 +57,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 
 | Repository | Live | What it does |
 | --- | --- | --- |
+| [**ultrabrain-mcp**](https://github.com/LCV-Ideas-Software/ultrabrain-mcp) | [ultrabrain-mcp.lcv.dev](https://ultrabrain-mcp.lcv.dev) | LCV-created local MCP reasoning gate for structured engineering thought, validation, branch synthesis, quality metrics, bias checks, prompts, resources, and review readiness. Published as [`@lcv-ideas-software/ultrabrain-mcp`](https://www.npmjs.com/package/@lcv-ideas-software/ultrabrain-mcp). |
 | [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | [cross-review-v1.lcv.dev](https://cross-review-v1.lcv.dev) | CLI-only MCP stdio server orchestrating structured review sessions between Claude Code, ChatGPT Codex, Gemini CLI, and the embedded DeepSeek CLI. Strict-only convergence: a session is `READY` only when caller and every responded peer return `READY`. Published on npm as [`@lcv-ideas-software/cross-review-v1`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v1). |
 | [**cross-review-v2**](https://github.com/LCV-Ideas-Software/cross-review-v2) | [cross-review-v2.lcv.dev](https://cross-review-v2.lcv.dev) | API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Gemini and DeepSeek. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review-v2`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v2). |
 | [**deepseek-cli**](https://github.com/LCV-Ideas-Software/deepseek-cli) | [deepseek-cli.lcv.dev](https://deepseek-cli.lcv.dev) | Standalone DeepSeek API agentic CLI with MCP host capability. Forked from `cross-review-v1`'s embedded DeepSeek peer CLI to serve as an LCV-maintained native MCP host, published as [`@lcv-ideas-software/deepseek-cli`](https://www.npmjs.com/package/@lcv-ideas-software/deepseek-cli). |
@@ -95,9 +96,9 @@ Desktop      Tauri 2  (Maestro)
 
 ## Engineering practices
 
-- **Multi-peer cross-review before every merge.** No substantive change is closed without the applicable `cross-review-v1` and `cross-review-v2` gates when available. The caller can never review its own work; reviewer/relator self-review is invalid by policy.
+- **Ultrabrain + cross-review before every merge.** No substantive engineering change is closed without `ultrabrain` reasoning plus the applicable `cross-review-v2` gate. `cross-review-v1` remains configured as the fallback for v2. The caller can never review its own work; reviewer/relator self-review is invalid by policy.
 - **Frozen-public-surface semver** for tooling. `cross-review-v1` v1.x ships additive patches only; minor bumps are reserved for new MCP tools; major bumps require a new trilateral cross-review session.
-- **Sequential thinking is mandatory.** All planning passes through `ultrathink` and/or `code-reasoning` MCP servers before execution. Hard gate, not a suggestion.
+- **Structured reasoning is mandatory.** Planning and implementation passes through the LCV `ultrabrain` MCP server before execution. Hard gate, not a suggestion.
 - **CodeQL Default Setup everywhere.** Advanced Setup requires explicit operator authorization. Branch protection on `main` requires `Analyze (javascript-typescript)` to pass.
 - **Conservative branch baseline.** Single deploy branch (`main`); `preview → main` automation via auto-merge with retry polling on required checks.
 - **Anti-drift smoke.** `cross-review-v1` and `cross-review-v2` self-tests check that README, runtime version and CHANGELOG heading stay in lockstep on every push.
@@ -111,7 +112,7 @@ Desktop      Tauri 2  (Maestro)
 | License | Repositories |
 | --- | --- |
 | [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `apphub`, `admin-app`, `adminapps`, `mtasts-motor`, `maestro-app`, `sponsor-motor` |
-| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `cross-review-v1`, `cross-review-v2`, `deepseek-cli`, `grok-cli` |
+| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `ultrabrain-mcp`, `cross-review-v1`, `cross-review-v2`, `deepseek-cli`, `grok-cli` |
 
 The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: running a modified fork as a public service obligates publication of the modifications under the same license. Each repository ships a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
 
