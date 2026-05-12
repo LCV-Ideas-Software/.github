@@ -1462,11 +1462,32 @@
           syncAmountButtons();
           mountCardForm(true);
         });
+
+        function isAllowedMercadoPagoMessageOrigin(origin) {
+          var url;
+          try {
+            url = new URL(origin);
+          } catch {
+            return false;
+          }
+          return (
+            url.protocol === "https:" &&
+            (url.hostname === "www.mercadopago.com" ||
+              url.hostname === "www.mercadopago.com.br" ||
+              url.hostname === "sdk.mercadopago.com" ||
+              url.hostname.endsWith(".mercadopago.com") ||
+              url.hostname.endsWith(".mercadopago.com.br"))
+          );
+        }
+
         // The Pagar button is `type="submit" form="sponsor-form"` — clicking
         // it natively submits the form, cardForm intercepts via its onSubmit
         // callback (which runs tokenization + dispatch), and the callback
         // restores the button. No separate click handler needed here.
         window.addEventListener("message", function (event) {
+          if (!isAllowedMercadoPagoMessageOrigin(event.origin)) {
+            return;
+          }
           if (
             event.data &&
             event.data.status === "COMPLETE" &&

@@ -540,7 +540,7 @@
         -webkit-text-fill-color: transparent;
         letter-spacing: -0.02em;
       }
-      .contact-link[data-u][data-d]::before {
+      .contact-link::before {
         content: "Contato";
       }
     </style>
@@ -969,8 +969,6 @@
         >
         <a
           class="contact-link"
-          data-u="bGN2"
-          data-d="bGN2LmRldg=="
           href="#contact"
           aria-label="Contato por email"
         ></a>
@@ -986,20 +984,14 @@
 
     <script>
       (() => {
-        const links = document.querySelectorAll(
-          ".contact-link[data-u][data-d]",
-        );
+        const links = document.querySelectorAll(".contact-link");
         for (const el of links) {
           try {
-            const u = atob(el.getAttribute("data-u"));
-            const d = atob(el.getAttribute("data-d"));
-            const addr = `${u}@${d}`;
+            const addr = "lcv@lcv.dev";
             el.setAttribute("href", `mailto:${addr}`);
             el.textContent = addr;
-            el.removeAttribute("data-u");
-            el.removeAttribute("data-d");
           } catch {
-            /* ignore decode errors */
+            /* ignore email-link initialization errors */
           }
         }
       })();
