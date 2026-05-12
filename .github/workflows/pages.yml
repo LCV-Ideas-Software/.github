@@ -4,6 +4,7 @@ on:
     branches: ["main"]
   workflow_dispatch:
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
@@ -35,5 +36,54 @@ jobs:
           path: site
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          artifact_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts")"
+          artifact_count="$(python3 -c 'import json,sys; data=json.load(sys.stdin); print(sum(1 for artifact in data.get("artifacts", []) if artifact.get("name") == "github-pages" and artifact.get("expired") is False))' <<< "$artifact_json")"
+          if [ "$artifact_count" -eq 0 ]; then
+            echo "::error::github-pages artifact not found for run ${GITHUB_RUN_ID}"
+            exit 1
+          fi
+          if [ "$artifact_count" -gt 1 ]; then
+            echo "::error::Multiple non-expired github-pages artifacts found for run ${GITHUB_RUN_ID}"
+            exit 1
+          fi
+          artifact_id="$(python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(artifact["id"] for artifact in data.get("artifacts", []) if artifact.get("name") == "github-pages" and artifact.get("expired") is False))' <<< "$artifact_json")"
+
+          oidc_response="$(
+            curl -sSfL \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}"
+          )"
+          oidc_token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$oidc_response")"
+
+          deployment_json="$(
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/pages/deployments" \
+              -F artifact_id="$artifact_id" \
+              -F pages_build_version="$GITHUB_SHA" \
+              -F oidc_token="$oidc_token"
+          )"
+          deployment_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<< "$deployment_json")"
+          page_url="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("page_url", ""))' <<< "$deployment_json")"
+
+          for attempt in {1..120}; do
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/pages/deployments/${deployment_id}" --jq '.status')"
+            case "$status" in
+              succeed)
+                echo "page_url=${page_url}" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+              failed|errored|cancelled|deployment_failed|deployment_content_failed|deployment_endpoint_failed|deployment_endpoint_failed_permanent|deployment_attempt_error|deployment_lost)
+                echo "::error::GitHub Pages deployment ${deployment_id} ended with status ${status}"
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+
+          echo "::error::Timed out waiting for GitHub Pages deployment ${deployment_id}"
+          exit 1
     timeout-minutes: 30
