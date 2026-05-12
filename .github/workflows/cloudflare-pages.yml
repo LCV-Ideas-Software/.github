@@ -35,7 +35,7 @@ jobs:
         run: npm run format:public:check
       - name: Deploy site to Cloudflare Pages
         run: |
-          npx wrangler@${WRANGLER_VERSION} pages deploy site --project-name=org-site --branch=main --commit-dirty=true
+          npx --registry=https://registry.npmjs.org/ wrangler@${WRANGLER_VERSION} pages deploy site --project-name=org-site --branch=main --commit-dirty=true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
