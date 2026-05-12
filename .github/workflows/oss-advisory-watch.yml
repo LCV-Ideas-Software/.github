@@ -1,0 +1,166 @@
+name: OSS Advisory Watch
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: oss-advisory-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Cross-reference recent NPM advisories vs org dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 20
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Gather org NPM dependencies (root + known frontend subpaths)
+        id: deps
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG: LCV-Ideas-Software
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/deps
+          repos=$(gh repo list "$ORG" --limit 50 --json name -q '.[].name')
+          for r in $repos; do
+            for path in "package-lock.json" "mainsite-frontend/package-lock.json" "astrologo-frontend/package-lock.json" "src-tauri/Cargo.lock"; do
+              safe=$(echo "$r-$path" | tr '/' '_')
+              if gh api "repos/$ORG/$r/contents/$path" --jq '.content' 2>/dev/null | base64 -d > "/tmp/deps/$safe" 2>/dev/null; then
+                if [ ! -s "/tmp/deps/$safe" ]; then rm -f "/tmp/deps/$safe"; fi
+              else
+                rm -f "/tmp/deps/$safe"
+              fi
+            done
+          done
+          # Aggregate npm packages: package-lock v3 format under .packages
+          ls /tmp/deps/*.json 2>/dev/null | while read f; do
+            jq -r '.packages // .dependencies // {} | to_entries[] | "\(.key | split("/node_modules/") | last)\t\(.value.version // .value)"' "$f" 2>/dev/null
+          done | grep -v '^	' | grep -v '^$' | sort -u > /tmp/all-deps.tsv
+          count=$(wc -l < /tmp/all-deps.tsv)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Found $count unique pkg/version pairs across org NPM lockfiles"
+
+      - name: Query GHAS for NPM advisories (last 30 days)
+        id: advisories
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          since=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          gh api graphql -f query='
+            query($since: DateTime!) {
+              securityAdvisories(first: 100, publishedSince: $since, orderBy: {field: PUBLISHED_AT, direction: DESC}) {
+                nodes {
+                  ghsaId
+                  summary
+                  severity
+                  publishedAt
+                  permalink
+                  vulnerabilities(first: 20, ecosystem: NPM) {
+                    nodes {
+                      package { name }
+                      vulnerableVersionRange
+                      firstPatchedVersion { identifier }
+                    }
+                  }
+                }
+              }
+            }' -f since="$since" > /tmp/adv-raw.json
+          jq '[.data.securityAdvisories.nodes[] | select(.vulnerabilities.nodes | length > 0)]' /tmp/adv-raw.json > /tmp/adv-npm.json
+          count=$(jq 'length' /tmp/adv-npm.json)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Fetched $count NPM-affecting advisories published in last 30 days"
+
+      - name: Cross-reference
+        id: match
+        run: |
+          set -euo pipefail
+          # Build pkg name lookup from installed deps
+          awk -F'\t' '{print $1}' /tmp/all-deps.tsv | sort -u > /tmp/installed-names.txt
+          # For each advisory, keep only those whose vulnerable packages match an installed pkg
+          jq --rawfile installed /tmp/installed-names.txt '
+            ($installed | split("\n") | map(select(. != "")) | unique) as $names
+            | [
+                .[] as $a
+                | $a.vulnerabilities.nodes[]
+                | select(.package.name as $p | $names | index($p))
+                | {
+                    ghsaId: $a.ghsaId,
+                    severity: $a.severity,
+                    package: .package.name,
+                    vulnerable_range: .vulnerableVersionRange,
+                    first_patched: (.firstPatchedVersion.identifier // null),
+                    summary: $a.summary,
+                    permalink: $a.permalink,
+                    publishedAt: $a.publishedAt
+                  }
+              ]
+          ' /tmp/adv-npm.json > /tmp/findings.json
+          count=$(jq 'length' /tmp/findings.json)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" != "0" ]; then
+            echo "===== findings preview ====="
+            jq '.' /tmp/findings.json | head -50
+          fi
+
+      - name: Report findings (open or update issue)
+        if: steps.match.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Build markdown body
+          body=$(jq -r '
+            "## OSS Advisory Watch — \(length) findings against org NPM dependencies\n\n"
+            + "_Source: GitHub Security Advisory database (NPM ecosystem, last 30 days)._\n"
+            + "_Generated: \(now | strftime("%Y-%m-%dT%H:%M:%SZ"))_\n\n"
+            + (group_by(.severity) | sort_by(
+                if .[0].severity == "CRITICAL" then 0
+                elif .[0].severity == "HIGH" then 1
+                elif .[0].severity == "MODERATE" then 2
+                elif .[0].severity == "LOW" then 3
+                else 4 end
+              ) | map(
+                "### \(.[0].severity) (\(length))\n\n"
+                + (map(
+                    "- **\(.package)** — [\(.ghsaId)](\(.permalink))\n"
+                    + "  - Vulnerable: `\(.vulnerable_range)`\n"
+                    + "  - First patched: `\(.first_patched // "n/a")`\n"
+                    + "  - Published: \(.publishedAt)\n"
+                    + "  - Summary: \(.summary)\n"
+                  ) | join(""))
+                + "\n"
+              ) | join(""))
+          ' /tmp/findings.json)
+          # Find existing open issue with title prefix
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "OSS Advisory Watch in:title" --json number -q '.[0].number' 2>/dev/null || echo "")
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$body"
+            echo "Commented on existing #$existing"
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "OSS Advisory Watch — $(date -u +%Y-%m-%d)" \
+              --body "$body"
+          fi
+
+      - name: Summary
+        run: |
+          echo "Installed NPM unique pkg/version pairs: ${{ steps.deps.outputs.count }}"
+          echo "GHAS NPM advisories (last 30d): ${{ steps.advisories.outputs.count }}"
+          echo "Cross-ref findings: ${{ steps.match.outputs.count }}"
