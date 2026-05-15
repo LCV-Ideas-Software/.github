@@ -59,8 +59,6 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | --- | --- | --- |
 | [**ultrabrain-mcp**](https://github.com/LCV-Ideas-Software/ultrabrain-mcp) | [ultrabrain-mcp.lcv.dev](https://ultrabrain-mcp.lcv.dev) | LCV-created local MCP reasoning gate for structured engineering thought, validation, branch synthesis, quality metrics, bias checks, prompts, resources, and review readiness. Published as [`@lcv-ideas-software/ultrabrain-mcp`](https://www.npmjs.com/package/@lcv-ideas-software/ultrabrain-mcp). |
 | [**cross-review**](https://github.com/LCV-Ideas-Software/cross-review) | [cross-review.lcv.dev](https://cross-review.lcv.dev) | API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Google Gemini, DeepSeek, xAI Grok and Perplexity. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review). |
-| [**deepseek-cli**](https://github.com/LCV-Ideas-Software/deepseek-cli) | [deepseek-cli.lcv.dev](https://deepseek-cli.lcv.dev) | Standalone DeepSeek API agentic CLI with MCP host capability. Forked from `cross-review-v1`'s embedded DeepSeek peer CLI to serve as an LCV-maintained native MCP host, published as [`@lcv-ideas-software/deepseek-cli`](https://www.npmjs.com/package/@lcv-ideas-software/deepseek-cli). |
-| [**grok-cli**](https://github.com/LCV-Ideas-Software/grok-cli) | [grok-cli.lcv.dev](https://grok-cli.lcv.dev) | LCV-maintained Grok CLI for terminal agent workflows, hardened MCP server loading, xAI Responses API function calling, and automated npmjs.com / GitHub Packages releases as [`@lcv-ideas-software/grok-cli`](https://www.npmjs.com/package/@lcv-ideas-software/grok-cli). |
 | [**maestro-app**](https://github.com/LCV-Ideas-Software/maestro-app) | [maestro-app.lcv.dev](https://maestro-app.lcv.dev) | *Maestro Editorial AI* — portable Windows editorial workbench (Tauri 2 + React 19) for protocol-driven AI drafting, source verification, and multi-agent editorial convergence using Claude, Codex, Gemini, and DeepSeek. Resumable sessions, NDJSON diagnostic logs, runtime data stays local. |
 
 ### Archived / discontinued
@@ -69,7 +67,9 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 | --- | --- | --- |
 | [**apphub**](https://github.com/LCV-Ideas-Software/apphub) | Archived | Discontinued because it no longer provided useful organizational value. The organization website at [www.lcv.dev](https://www.lcv.dev) is now the canonical public entry point. |
 | [**adminapps**](https://github.com/LCV-Ideas-Software/adminapps) | Archived | Discontinued after all admin surfaces were consolidated into [admin-app](https://github.com/LCV-Ideas-Software/admin-app). Continuing `adminapps` no longer makes operational sense. |
-| [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | Archived 2026-05-15 | Discontinued in favor of [`cross-review`](https://github.com/LCV-Ideas-Software/cross-review). The CLI-only MCP server was the first incarnation (Claude/Codex/Gemini/DeepSeek/Grok CLIs); the API-first rewrite under the same package family is the canonical implementation going forward. npm `@lcv-ideas-software/cross-review-v1@1.12.11` remains published for historical use but receives no further updates. |
+| [**cross-review-v1**](https://github.com/LCV-Ideas-Software/cross-review-v1) | Archived 2026-05-15 | Discontinued in favor of [`cross-review`](https://github.com/LCV-Ideas-Software/cross-review). The CLI-only MCP server was the first incarnation; the API-first rewrite under the canonical package name is the implementation going forward. npm `@lcv-ideas-software/cross-review-v1@1.12.11` remains published for historical use but is marked deprecated and receives no further updates. |
+| [**grok-cli**](https://github.com/LCV-Ideas-Software/grok-cli) | Archived 2026-05-15 | Discontinued. The npm package `@lcv-ideas-software/grok-cli` is published through version `1.6.5` and marked deprecated on npm; the GitHub repository is read-only. Existing installs continue to function as-is. |
+| [**deepseek-cli**](https://github.com/LCV-Ideas-Software/deepseek-cli) | Archived 2026-05-15 | Discontinued. The npm package `@lcv-ideas-software/deepseek-cli` is published through version `0.3.3` and marked deprecated on npm; the GitHub repository is read-only. Existing installs continue to function as-is. |
 
 ---
 
@@ -96,13 +96,13 @@ Desktop      Tauri 2  (Maestro)
 
 ## Engineering practices
 
-- **Ultrabrain + cross-review before every merge.** No substantive engineering change is closed without `ultrabrain` reasoning plus the applicable `cross-review-v2` gate. `cross-review-v1` remains configured as the fallback for v2. The caller can never review its own work; reviewer/relator self-review is invalid by policy.
-- **Frozen-public-surface semver** for tooling. `cross-review-v1` v1.x ships additive patches only; minor bumps are reserved for new MCP tools; major bumps require a new trilateral cross-review session.
+- **Ultrabrain + cross-review before every merge.** No substantive engineering change is closed without `ultrabrain` reasoning plus the `cross-review` MCP gate. The caller can never review its own work; reviewer/relator self-review is invalid by policy.
+- **4-gate quality.** Every code change passes eslint + biome + prettier + cross-review before commit, tag, release, deploy, or publish.
 - **Structured reasoning is mandatory.** Planning and implementation passes through the LCV `ultrabrain` MCP server before execution. Hard gate, not a suggestion.
 - **CodeQL Default Setup everywhere.** Advanced Setup requires explicit operator authorization. Branch protection on `main` requires `Analyze (javascript-typescript)` to pass.
 - **Conservative branch baseline.** Single deploy branch (`main`); `preview → main` automation via auto-merge with retry polling on required checks.
-- **Anti-drift smoke.** `cross-review-v1` and `cross-review-v2` self-tests check that README, runtime version and CHANGELOG heading stay in lockstep on every push.
-- **Memory parity** across Claude Code, GitHub Copilot, and Gemini Code Assist. New directives propagate to all three agent ecosystems before being considered shipped.
+- **Anti-drift smoke.** `cross-review` self-tests check that README, runtime version and CHANGELOG heading stay in lockstep on every push.
+- **Memory parity** across Claude Code, ChatGPT Codex, and Gemini Code Assist. New directives propagate to all three active agent ecosystems before being considered shipped.
 - **SHA-pinned GitHub Actions.** Supply-chain hardening baseline. `wrangler` is always invoked at `latest` in CI.
 
 ---
@@ -112,7 +112,7 @@ Desktop      Tauri 2  (Maestro)
 | License | Repositories |
 | --- | --- |
 | [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `apphub`, `admin-app`, `adminapps`, `mtasts-motor`, `maestro-app`, `sponsor-motor` |
-| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `ultrabrain-mcp`, `cross-review-v1`, `cross-review-v2`, `deepseek-cli`, `grok-cli` |
+| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) | `ultrabrain-mcp`, `cross-review`, `cross-review-v1` (archived), `deepseek-cli` (archived), `grok-cli` (archived) |
 
 The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: running a modified fork as a public service obligates publication of the modifications under the same license. Each repository ships a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
 
