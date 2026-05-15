@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LCV-Ideas-Software/cross-review-v2/main/.github/assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="520" />
+  <img src="https://raw.githubusercontent.com/LCV-Ideas-Software/cross-review/main/.github/assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="520" />
 </p>
 
 # `.github` — LCV Ideas &amp; Software
