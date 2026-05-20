@@ -143,7 +143,7 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 - **Homepage**: [www.lcv.dev](https://www.lcv.dev)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
 - **Email**: [lcv@lcv.dev](mailto:lcv@lcv.dev) for general topics.
-- - **Phones**: [+55 (21) 3955-0883](https://wa.me/552139550883) / [+55 (21) 99152-4643](https://wa.me/5521991524643)
+- **Phones**: [+55 (21) 3955-0883](https://wa.me/552139550883) / [+55 (21) 99152-4643](https://wa.me/5521991524643)
 - **Sponsorship**: support the work through the secure sponsor page → [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor).
 
 ## Repository conventions
