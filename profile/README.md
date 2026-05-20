@@ -22,6 +22,16 @@ LCV Ideas &amp; Software is a vibe coding independente studio. It builds AI-assi
 
 ---
 
+## Change History
+
+The version history at a glance:
+
+| Change  | Notes                                                                                                 |
+| ------- | ----------------------------------------------------------------------------------------------------- |
+| Current | Organization profile and repository catalog for LCV Ideas & Software public repositories and services. |
+
+---
+
 ## What we build
 
 A small, opinionated portfolio organized in three layers, all sharing the same Cloudflare edge runtime and a single unified D1 database:
@@ -40,7 +50,7 @@ Every repository is published on GitHub under the `LCV-Ideas-Software` organizat
 
 | Repository                                                                         | Live                                                                     | What it does                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**mainsite-app**](https://github.com/LCV-Ideas-Software/mainsite-app)             | [reflexosdaalma.blog](https://www.reflexosdaalma.blog)                   | _Reflexos da Alma_ — public personal blog + companion services. React 19 + Vite 8 SPA on Cloudflare Pages + Hono Worker. Post reader with smart polling, comments and ratings with GCP NL sentiment moderation, Gemini AI public chatbot, share-by-email, SSR OG and JSON-LD metadata, R2 media. Sponsor/payment handling lives outside MainSite in `sponsor-motor`. |
+| [**mainsite-app**](https://github.com/LCV-Ideas-Software/mainsite-app)             | [example-blog.invalid](https://example-blog.invalid)                     | _Example Content Site_ — public content site + companion services. React 19 + Vite 8 SPA on Cloudflare Pages + Hono Worker. Post reader with smart polling, comments and ratings with GCP NL sentiment moderation, Gemini AI public chatbot, share-by-email, SSR OG and JSON-LD metadata, R2 media. Sponsor/payment handling lives outside MainSite in `sponsor-motor`.     |
 | [**astrologo-app**](https://github.com/LCV-Ideas-Software/astrologo-app)           | [astrologo-app.lcv.dev](https://astrologo-app.lcv.dev)                   | _Astrólogo_ — birth chart generator and esoteric analysis via Gemini AI. React 19 + Vite 8 on Cloudflare Pages with D1 backing store. Deterministic astrometric calculation + AI narrative; throttling, optional auth, share-by-email.                                                                                                                               |
 | [**calculadora-app**](https://github.com/LCV-Ideas-Software/calculadora-app)       | [calculadora-app.lcv.dev](https://calculadora-app.lcv.dev)               | _Calculadora Financeira_ — international FX simulator (credit card vs. multi-currency account) with AI-driven contextual analysis. React 19 + Vite 8 on Cloudflare Pages + D1. Integrates PTAX (BCB), Spot (AwesomeAPI), and Gemini AI. Modeled on Itaú's published methodology.                                                                                     |
 | [**oraculo-financeiro**](https://github.com/LCV-Ideas-Software/oraculo-financeiro) | [oraculo-financeiro-app.lcv.dev](https://oraculo-financeiro-app.lcv.dev) | _Oráculo Financeiro_ — IPCA-indexed fixed-income analysis dashboard (LCI/CDB IPCA+, Tesouro IPCA+) with Gemini contextual insights. React 19 + Vite 8 on Cloudflare Pages + D1 + Cron Worker for daily IPCA rate pre-warming.                                                                                                                                        |

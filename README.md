@@ -15,7 +15,12 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - The sponsor landing page lives in [`site/sponsor/`](./site/sponsor/) and renders MercadoPago.js V2 Card Payment Brick secure fields backed by the dedicated `sponsor-motor` Worker at `https://sponsor-motor.lcv.app.br`.
 - Dependabot covers GitHub Actions plus the root npm toolchain used for public-site formatting checks.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
-- This repository intentionally does **not** carry a product-style release-history table, because it does not represent a standalone shipped application or package.
+
+The version history at a glance:
+
+| Change  | Notes                                                                                                                     |
+| ------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Current | Active institutional repository for the org profile, static organization site, sponsor page, and shared community defaults. |
 
 For product-specific documentation, see each repository in the [organization listing](https://github.com/orgs/LCV-Ideas-Software/repositories).
 
