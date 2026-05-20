@@ -1,36 +1,33 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Supported status
 
-Please do not open a public issue for security vulnerabilities. Report privately to the maintainer instead.
+Current main branch and the deployed organization profile/site are supported. This repository is organizational infrastructure, not a versioned product surface.
 
-**Contact:** alert@lcvmail.com
+## Reporting a vulnerability
 
-Include:
-- affected repository and component
-- impact and exploitability
-- reproduction steps or proof of concept, if safe to share
-- suggested fix, if available
+Please do not open a public issue for suspected vulnerabilities, credential leaks, private data exposure, authentication bypasses, payment-flow issues, supply-chain issues, or deployment misconfiguration.
 
-The maintainer will triage as soon as practical. Critical reports that may expose user data, credentials, payment flows, deployment credentials, or CI/CD integrity are prioritized.
+Report privately by email:
 
-## Supported Versions
+- lcv@lcv.dev
 
-| Version | Supported |
-| --- | --- |
-| Latest release / `main` | Yes |
-| Older releases | Security updates only when operationally practical |
+If GitHub private vulnerability reporting is enabled for this repository, that channel is also acceptable.
 
-## Operational Baseline
+Please include:
 
-This repository follows the LCV Ideas & Software single-operator security baseline:
-- GitHub secret scanning and push protection
-- Dependabot alerts and security updates
-- CodeQL/default code scanning where supported
-- SHA-pinned GitHub Actions
-- least-privilege workflow permissions
-- no long-lived secrets in source control
+- affected repository, component, route, package, workflow, or public surface;
+- affected version, release tag, commit SHA, or deployment URL when known;
+- impact and exploitability;
+- reproduction steps or a safe proof of concept, if available;
+- whether any credential, personal data, payment data, private editorial material, or operational secret may be involved.
 
-## Automation Policy
+## Scope
 
-Dependabot patch and minor updates are intended to auto-merge after CI passes. Do not add reviewer gates that force manual approval for routine Dependabot updates unless a specific incident requires it.
+In scope: application code, Workers/Pages functions, package publication, GitHub Actions, dependency and supply-chain configuration, repository publication boundaries, security documentation, and public service configuration documented in this repository.
+
+Out of scope: social engineering, physical attacks, denial-of-service testing without prior written authorization, spam, automated noisy scanning, and reports that rely only on outdated browser or dependency versions without a concrete vulnerable path in this repository.
+
+## Coordinated disclosure
+
+LCV Ideas & Software will triage reports privately, request clarification when needed, and coordinate remediation before public disclosure. Public disclosure should wait until a fix or mitigation is available, unless there is an immediate user-safety reason to do otherwise.

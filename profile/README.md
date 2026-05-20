@@ -12,13 +12,15 @@
   <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-verified-38bdf8.svg" alt="verified org"></a>
   <a href="https://www.lcv.dev"><img src="https://img.shields.io/badge/homepage-www.lcv.dev-2563eb.svg" alt="www.lcv.dev"></a>
   <img src="https://img.shields.io/badge/location-Brazil-34d399.svg" alt="Brazil">
-  <img src="https://img.shields.io/badge/repos-14%20public-7dd3fc.svg" alt="14 public repos">
+  <img src="https://img.shields.io/badge/repos-11%20public-7dd3fc.svg" alt="11 public repos">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg" alt="Cloudflare">
-  <img src="https://img.shields.io/badge/AI-5%20agent%20stack-34d399.svg" alt="5-agent AI stack">
+  <img src="https://img.shields.io/badge/AI-6%20agent%20stack-34d399.svg" alt="6-agent AI stack">
+  <a href="../SECURITY.md"><img src="https://img.shields.io/badge/security-CodeQL%20%2B%20private%20reporting-brightgreen.svg" alt="security policy"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="AGPL-3.0-or-later"></a>
   <a href="https://www.lcv.dev/sponsor"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor LCV Ideas & Software"></a>
 </p>
 
-LCV Ideas &amp; Software is a vibe coding independente studio. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, sponsor infrastructure, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek, Grok). Org homepage: **[www.lcv.dev](https://www.lcv.dev)**.
+LCV Ideas &amp; Software is a vibe coding independente studio. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, sponsor infrastructure, and developer utilities — all on a shared Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek, Grok, Perplexity). Org homepage: **[www.lcv.dev](https://www.lcv.dev)**.
 
 ---
 
@@ -132,7 +134,7 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 
 - **Security**: GitHub Secret Scanning, Code Scanning (CodeQL), and Dependabot are active across all repositories. Vulnerability disclosures follow each repository's `SECURITY.md`.
 - **Contributing**: Each repository carries its own `CONTRIBUTING.md`. PRs require green CI gates locally before submission.
-- **Code of Conduct**: Contributor Covenant 2.1. See each repository's `CODE_OF_CONDUCT.md`.
+- **Code of Conduct**: Contributor Covenant 3.0. See each repository's `CODE_OF_CONDUCT.md`.
 
 ---
 
@@ -141,18 +143,29 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 - **Homepage**: [www.lcv.dev](https://www.lcv.dev)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
 - **Email**: [lcv@lcv.dev](mailto:lcv@lcv.dev) for general topics.
-- **Phone**: [+55 (21) 3955-0883](tel:+552139550883)
+- - **Phones**: [+55 (21) 3955-0883](https://wa.me/552139550883) / [+55 (21) 99152-4643](https://wa.me/5521991524643)
 - **Sponsorship**: support the work through the secure sponsor page → [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor).
 
+## Repository conventions
+
+- **License**: [AGPL-3.0-or-later](../LICENSE). Network-service trigger applies: running a modified fork as a public service obligates you to publish modifications.
+- **Notices**: see [NOTICE](../NOTICE) and [THIRDPARTY](../THIRDPARTY.md).
+- **Security disclosure**: see [SECURITY.md](../SECURITY.md).
+- **Code of conduct**: see [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).
+- **Contributing**: see [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **Sponsorship**: see the repo's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor).
+- **Action pinning**: all GitHub Actions are pinned by full SHA per supply-chain hardening baseline.
+- **Code owners**: [.github/CODEOWNERS](../.github/CODEOWNERS).
 
 ## Links
+
 - Site: [https://www.lcv.dev](https://www.lcv.dev)
 - GitHub: [https://github.com/LCV-Ideas-Software/.github](https://github.com/LCV-Ideas-Software/.github)
 - Sponsors: [https://github.com/sponsors/LCV-Ideas-Software](https://github.com/sponsors/LCV-Ideas-Software)
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](../LICENSE).
+AGPL-3.0-or-later. See [LICENSE](../LICENSE), [NOTICE](../NOTICE), and [THIRDPARTY](../THIRDPARTY.md).
 
 ---
 
