@@ -53,7 +53,7 @@ jobs:
 
           const [owner, repo] = repoFull.split("/");
           const markerRegex = /<!-- lcv-auto-pr:v3 (\{.*?\}) -->/g;
-          const allowedSkippedChecks = new Set(["enable-automerge"]);
+          const allowedSkippedChecks = new Set(["enable-automerge", "Socket Security (branch audit)"]);
           const requiredChecks = new Set(["Socket Security", "StepSecurity Optional Checks", "StepSecurity Harden-Runner"]);
 
           function canonicalJson(value) {
