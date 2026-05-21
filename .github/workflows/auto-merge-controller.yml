@@ -73,7 +73,16 @@ jobs:
                 },
               });
               const text = await response.text();
-              const body = text ? JSON.parse(text) : null;
+              let body = null;
+              if (text) {
+                try {
+                  body = JSON.parse(text);
+                } catch (error) {
+                  if (response.ok) {
+                    throw new Error(`${options.method || "GET"} ${path} returned invalid JSON: ${error.message}`);
+                  }
+                }
+              }
 
               if (response.ok) {
                 return body;
@@ -259,6 +268,7 @@ jobs:
               body: JSON.stringify({
                 commit_title: beforeMerge.title,
                 merge_method: "squash",
+                sha: beforeMerge.head.sha,
               }),
             });
 
