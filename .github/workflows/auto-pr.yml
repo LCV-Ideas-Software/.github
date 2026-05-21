@@ -34,8 +34,8 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           HEAD_SHA: ${{ github.sha }}
         run: |
-          node <<'NODE'
-          const crypto = require("node:crypto");
+          node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
 
           const token = process.env.LCV_AUTOMATION_TOKEN;
           const hmacKey = process.env.LCV_AUTOMATION_HMAC_KEY;
