@@ -11,7 +11,7 @@
 [![license: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 Institutional repository for the organization profile and shared community-health defaults across LCV Ideas & Software repositories.
 
-**Status.** Active institutional repository. This repo is intentionally treated as organizational infrastructure, not as a versioned product surface.
+**Status.** Active institutional repository. Current release: **not versioned**. See the version-history table below for the full change history.
 
 This repository hosts the **organization profile** rendered at <https://github.com/LCV-Ideas-Software> and any community health files (issue templates, code of conduct, contributing guides, etc.) shared as defaults across the organization.
 

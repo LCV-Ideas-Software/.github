@@ -26,6 +26,8 @@ LCV Ideas &amp; Software is a vibe coding independente studio. It builds AI-assi
 
 ## Change History
 
+**Status.** Active organization profile. Current release: **not versioned**. See the version-history table below for the full change history.
+
 The version history at a glance:
 
 | Change  | Notes                                                                                                 |
