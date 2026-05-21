@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="320">
+  <img src="./assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="520" />
 </p>
 
 <h1 align="center">LCV Ideas &amp; Software</h1>
