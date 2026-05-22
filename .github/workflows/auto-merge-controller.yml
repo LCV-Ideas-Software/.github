@@ -6,8 +6,10 @@ on:
   workflow_run:
     workflows:
       - Auto PR
+      - CI
       - CodeQL
       - Dependency Review
+      - Deploy
       - Public Format
       - Socket Security
     types: [completed]
@@ -53,8 +55,16 @@ jobs:
 
           const [owner, repo] = repoFull.split("/");
           const markerRegex = /<!-- lcv-auto-pr:v3 (\{.*?\}) -->/g;
-          const allowedSkippedChecks = new Set(["enable-automerge", "Socket Security (branch audit)"]);
-          const requiredChecks = new Set(["Socket Security", "StepSecurity Optional Checks", "StepSecurity Harden-Runner"]);
+          const passingConclusions = new Set(["success", "neutral", "skipped"]);
+          const requiredSuccessChecks = [
+            { label: "Socket Security", matches: (name) => name === "Socket Security" },
+            { label: "StepSecurity Optional Checks", matches: (name) => name === "StepSecurity Optional Checks" },
+            { label: "StepSecurity Harden-Runner", matches: (name) => name === "StepSecurity Harden-Runner" },
+            { label: "CodeQL", matches: (name) => name === "CodeQL" },
+            { label: "Dependency Review", matches: (name) => name === "Dependency Review" },
+          ];
+          const missingRequiredCheckTimeoutMs = 60 * 60 * 1000;
+          const blockedCommentMarker = "<!-- lcv-auto-merge-controller:blocked -->";
           const mergeReadyStates = new Set(["clean", "has_hooks"]);
 
           function sleep(ms) {
@@ -175,6 +185,40 @@ jobs:
             });
           }
 
+          async function listIssueComments(prNumber) {
+            const comments = [];
+            for (let page = 1; page <= 10; page += 1) {
+              const batch = await api(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`);
+              comments.push(...batch);
+              if (batch.length < 100) {
+                break;
+              }
+            }
+            return comments;
+          }
+
+          async function upsertBlockedComment(prNumber, automationLogin, lines) {
+            const body = `${blockedCommentMarker}\nAutomation blocked by failing checks:\n\n${lines
+              .map((line) => `- ${line}`)
+              .join("\n")}`;
+            const comments = await listIssueComments(prNumber);
+            const existing = comments.find(
+              (item) => item.user?.login === automationLogin && (item.body || "").includes(blockedCommentMarker),
+            );
+
+            if (!existing) {
+              await comment(prNumber, body);
+              return;
+            }
+
+            if (existing.body !== body) {
+              await api(`/repos/${owner}/${repo}/issues/comments/${existing.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({ body }),
+              });
+            }
+          }
+
           async function addLabel(prNumber, label) {
             await api(`/repos/${owner}/${repo}/issues/${prNumber}/labels`, {
               method: "POST",
@@ -195,43 +239,116 @@ jobs:
               return [pr];
             }
 
-            const pulls = await api(`/repos/${owner}/${repo}/pulls?state=open&base=main&per_page=50&sort=updated&direction=asc`);
-            return pulls
-              .filter((pr) => pr.labels?.some((label) => label.name === "automation: lcv-auto-pr"))
-              .slice(0, 20);
+            const pulls = [];
+            for (let page = 1; page <= 5; page += 1) {
+              const batch = await api(
+                `/repos/${owner}/${repo}/pulls?state=open&base=main&per_page=100&page=${page}&sort=updated&direction=desc`,
+              );
+              pulls.push(...batch);
+              if (batch.length < 100) {
+                break;
+              }
+            }
+
+            return pulls.filter((pr) => pr.labels?.some((label) => label.name === "automation: lcv-auto-pr")).slice(0, 50);
           }
 
-          async function getCheckRuns(sha) {
-            const result = await api(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`);
-            return result.check_runs || [];
+          function checkRefsForPr(pr) {
+            const refs = new Map([["head", pr.head.sha]]);
+            if (pr.merge_commit_sha && pr.merge_commit_sha !== pr.head.sha) {
+              refs.set("merge", pr.merge_commit_sha);
+            }
+            return [...refs.entries()].map(([source, ref]) => ({ source, ref }));
           }
 
-          async function getStatuses(sha) {
-            const result = await api(`/repos/${owner}/${repo}/commits/${sha}/status`);
-            return result.statuses || [];
+          async function getCheckRuns({ source, ref }) {
+            try {
+              const checkRuns = [];
+              for (let page = 1; page <= 10; page += 1) {
+                const result = await api(
+                  `/repos/${owner}/${repo}/commits/${encodeRefPath(ref)}/check-runs?per_page=100&page=${page}&filter=latest`,
+                );
+                const batch = result.check_runs || [];
+                checkRuns.push(...batch);
+                if (batch.length < 100) {
+                  break;
+                }
+              }
+              return checkRuns.map((check) => ({ ...check, source }));
+            } catch (error) {
+              if (source === "merge" && error.message.includes(" 404 ")) {
+                console.log(`Merge ref ${ref} has no check runs yet.`);
+                return [];
+              }
+              throw error;
+            }
           }
 
-          function evaluateChecks(checkRuns, statuses) {
-            const names = new Map();
+          async function getStatuses({ source, ref }) {
+            try {
+              const statuses = [];
+              for (let page = 1; page <= 10; page += 1) {
+                const result = await api(`/repos/${owner}/${repo}/commits/${encodeRefPath(ref)}/status?per_page=100&page=${page}`);
+                const batch = result.statuses || [];
+                statuses.push(...batch);
+                if (batch.length < 100) {
+                  break;
+                }
+              }
+              return statuses.map((status) => ({ ...status, source }));
+            } catch (error) {
+              if (source === "merge" && error.message.includes(" 404 ")) {
+                console.log(`Merge ref ${ref} has no statuses yet.`);
+                return [];
+              }
+              throw error;
+            }
+          }
+
+          function latestTimestamp(item) {
+            return Date.parse(item.completed_at || item.started_at || item.updated_at || item.created_at || "") || 0;
+          }
+
+          function latestBy(items, keyFor) {
+            const latest = new Map();
+            for (const item of items) {
+              const key = keyFor(item);
+              const current = latest.get(key);
+              if (!current || latestTimestamp(item) >= latestTimestamp(current)) {
+                latest.set(key, item);
+              }
+            }
+            return latest;
+          }
+
+          async function getPrSignals(pr) {
+            const refs = checkRefsForPr(pr);
+            const [checkRunGroups, statusGroups] = await Promise.all([
+              Promise.all(refs.map((ref) => getCheckRuns(ref))),
+              Promise.all(refs.map((ref) => getStatuses(ref))),
+            ]);
+
+            return {
+              checkRuns: [...latestBy(checkRunGroups.flat(), (check) => check.name).values()],
+              statuses: [...latestBy(statusGroups.flat(), (status) => status.context).values()],
+            };
+          }
+
+          function evaluateChecks(pr, marker, checkRuns, statuses) {
             const failures = [];
             const pending = [];
+            const missingRequired = [];
 
             for (const check of checkRuns) {
-              if (!names.has(check.name)) {
-                names.set(check.name, 0);
-              }
-              names.set(check.name, names.get(check.name) + 1);
-
               if (check.status !== "completed") {
                 pending.push(`${check.name}: ${check.status}`);
                 continue;
               }
 
-              if (allowedSkippedChecks.has(check.name) && check.conclusion === "skipped") {
-                continue;
-              }
-
-              if (check.conclusion !== "success") {
+              const isRequired = requiredSuccessChecks.some((required) => required.matches(check.name));
+              if (isRequired && check.conclusion !== "success") {
+                failures.push(`${check.name}: ${check.conclusion}`);
+              } else if (!isRequired && !passingConclusions.has(check.conclusion)) {
                 failures.push(`${check.name}: ${check.conclusion}`);
               }
             }
@@ -244,14 +361,37 @@ jobs:
               }
             }
 
-            for (const required of requiredChecks) {
-              if (!names.has(required) && !statuses.some((status) => status.context === required)) {
-                failures.push(`${required}: missing`);
+            for (const required of requiredSuccessChecks) {
+              const requiredCheck = checkRuns.find((check) => required.matches(check.name));
+              const requiredStatus = statuses.find((status) => required.matches(status.context));
+
+              if (!requiredCheck && !requiredStatus) {
+                missingRequired.push(`${required.label}: missing`);
+                continue;
               }
+
+              if (requiredCheck?.status && requiredCheck.status !== "completed") {
+                continue;
+              }
+              if (requiredCheck?.conclusion === "success" || requiredStatus?.state === "success") {
+                continue;
+              }
+              if (requiredStatus?.state === "pending") {
+                pending.push(`${required.label}: pending`);
+                continue;
+              }
+
+              failures.push(`${required.label}: not successful`);
             }
 
-            if ((names.get("Socket Security") || 0) !== 1) {
-              failures.push(`Socket Security: expected exactly one PR-head check, found ${names.get("Socket Security") || 0}`);
+            if (missingRequired.length > 0) {
+              const issuedAt = Date.parse(marker.issued_at);
+              const ageMs = Number.isFinite(issuedAt) ? Date.now() - issuedAt : Date.now() - Date.parse(pr.created_at);
+              if (ageMs < missingRequiredCheckTimeoutMs) {
+                pending.push(...missingRequired);
+              } else {
+                failures.push(...missingRequired);
+              }
             }
 
             return { failures, pending };
@@ -346,15 +486,15 @@ jobs:
               return;
             }
 
-            const [checkRuns, statuses] = await Promise.all([getCheckRuns(pr.head.sha), getStatuses(pr.head.sha)]);
-            const evaluation = evaluateChecks(checkRuns, statuses);
+            const { checkRuns, statuses } = await getPrSignals(pr);
+            const evaluation = evaluateChecks(pr, marker.marker, checkRuns, statuses);
             if (evaluation.pending.length > 0) {
               console.log(`PR #${pr.number} still has pending checks: ${evaluation.pending.join("; ")}`);
               return;
             }
             if (evaluation.failures.length > 0) {
               await addLabel(pr.number, "automation: blocked");
-              await comment(pr.number, `Automation blocked by failing checks:\n\n${evaluation.failures.map((line) => `- ${line}`).join("\n")}`);
+              await upsertBlockedComment(pr.number, automationLogin, evaluation.failures);
               return;
             }
 
@@ -374,7 +514,9 @@ jobs:
 
             if (pr.mergeable_state === "dirty") {
               await addLabel(pr.number, "automation: blocked");
-              await comment(pr.number, "Automation blocked: this PR has merge conflicts and needs human resolution.");
+              await upsertBlockedComment(pr.number, automationLogin, [
+                "This PR has merge conflicts and needs human resolution.",
+              ]);
               return;
             }
 
