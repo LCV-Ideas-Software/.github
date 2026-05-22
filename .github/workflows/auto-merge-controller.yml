@@ -55,6 +55,15 @@ jobs:
           const markerRegex = /<!-- lcv-auto-pr:v3 (\{.*?\}) -->/g;
           const allowedSkippedChecks = new Set(["enable-automerge", "Socket Security (branch audit)"]);
           const requiredChecks = new Set(["Socket Security", "StepSecurity Optional Checks", "StepSecurity Harden-Runner"]);
+          const mergeReadyStates = new Set(["clean", "has_hooks"]);
+
+          function sleep(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+          }
+
+          function encodeRefPath(ref) {
+            return ref.split("/").map(encodeURIComponent).join("/");
+          }
 
           function canonicalJson(value) {
             const sorted = {};
@@ -100,7 +109,7 @@ jobs:
                 throw new Error(`${options.method || "GET"} ${path} failed: ${response.status} ${text}`);
               }
 
-              await new Promise((resolve) => setTimeout(resolve, [30000, 120000, 300000][attempt]));
+              await sleep([30000, 120000, 300000][attempt]);
             }
           }
 
@@ -264,6 +273,31 @@ jobs:
             });
           }
 
+          async function waitForMergeReadyPr(pr) {
+            let current = pr;
+            const delays = [15000, 30000, 60000, 60000, 60000];
+
+            for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+              if (mergeReadyStates.has(current.mergeable_state) || ["dirty", "behind"].includes(current.mergeable_state)) {
+                return current;
+              }
+
+              if (attempt === delays.length) {
+                return current;
+              }
+
+              console.log(
+                `PR #${current.number} mergeable_state=${current.mergeable_state || "null"}; rechecking after ${
+                  delays[attempt] / 1000
+                }s.`,
+              );
+              await sleep(delays[attempt]);
+              current = await getPr(current.number);
+            }
+
+            return current;
+          }
+
           async function mergeAndDelete(pr) {
             const beforeMerge = await getPr(pr.number);
             if (beforeMerge.head.sha !== pr.head.sha) {
@@ -281,7 +315,7 @@ jobs:
             });
 
             try {
-              await api(`/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(beforeMerge.head.ref)}`, {
+              await api(`/repos/${owner}/${repo}/git/refs/heads/${encodeRefPath(beforeMerge.head.ref)}`, {
                 method: "DELETE",
               });
               console.log(`Merged PR #${pr.number} and deleted ${beforeMerge.head.ref}.`);
@@ -291,7 +325,7 @@ jobs:
           }
 
           async function processPr(candidate, automationLogin) {
-            const pr = await getPr(candidate.number);
+            let pr = await getPr(candidate.number);
 
             if (pr.state !== "open" || pr.draft || pr.base.ref !== "main" || pr.head.repo.full_name !== repoFull) {
               console.log(`Skipping PR #${pr.number}: not an eligible same-repo main PR.`);
@@ -312,23 +346,6 @@ jobs:
               return;
             }
 
-            if (pr.mergeable_state === "dirty") {
-              await addLabel(pr.number, "automation: blocked");
-              await comment(pr.number, "Automation blocked: this PR has merge conflicts and needs human resolution.");
-              return;
-            }
-
-            if (pr.mergeable_state === "behind") {
-              await updateBranch(pr);
-              console.log(`Requested branch update for PR #${pr.number}; waiting for new checks.`);
-              return;
-            }
-
-            if (!["clean", "has_hooks"].includes(pr.mergeable_state)) {
-              console.log(`PR #${pr.number} mergeable_state=${pr.mergeable_state}; waiting for GitHub readiness.`);
-              return;
-            }
-
             const [checkRuns, statuses] = await Promise.all([getCheckRuns(pr.head.sha), getStatuses(pr.head.sha)]);
             const evaluation = evaluateChecks(checkRuns, statuses);
             if (evaluation.pending.length > 0) {
@@ -342,6 +359,36 @@ jobs:
             }
 
             await assertNoCodeScanningAlerts(pr.number);
+
+            pr = await waitForMergeReadyPr(pr);
+            if (pr.state !== "open" || pr.draft || pr.base.ref !== "main" || pr.head.repo.full_name !== repoFull) {
+              console.log(`Skipping PR #${pr.number}: PR changed while waiting for GitHub readiness.`);
+              return;
+            }
+
+            const liveMarker = verifyMarker(pr);
+            if (!liveMarker.ok) {
+              console.log(`Skipping PR #${pr.number}: ${liveMarker.reason}.`);
+              return;
+            }
+
+            if (pr.mergeable_state === "dirty") {
+              await addLabel(pr.number, "automation: blocked");
+              await comment(pr.number, "Automation blocked: this PR has merge conflicts and needs human resolution.");
+              return;
+            }
+
+            if (pr.mergeable_state === "behind") {
+              await updateBranch(pr);
+              console.log(`Requested branch update for PR #${pr.number}; waiting for new checks.`);
+              return;
+            }
+
+            if (!mergeReadyStates.has(pr.mergeable_state)) {
+              console.log(`PR #${pr.number} mergeable_state=${pr.mergeable_state}; waiting for GitHub readiness.`);
+              return;
+            }
+
             await mergeAndDelete(pr);
           }
 
