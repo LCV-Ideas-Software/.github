@@ -6,6 +6,7 @@ on:
   workflow_run:
     workflows:
       - Auto PR
+      - Auto PR Request
       - CI
       - CodeQL
       - Dependency Review
@@ -64,7 +65,7 @@ jobs:
             { label: "Dependency Review", matches: (name) => name === "Dependency Review" },
           ];
           const requiredPrWorkflowNames = [
-            "Auto PR",
+            "Auto PR Request",
             "CI",
             "CodeQL",
             "Dependency Review",
@@ -163,9 +164,6 @@ jobs:
             const issuedAt = Date.parse(marker.issued_at);
             if (!Number.isFinite(issuedAt)) {
               return { ok: false, reason: "marker issued_at is invalid" };
-            }
-            if (Date.now() - issuedAt > 72 * 60 * 60 * 1000) {
-              return { ok: false, reason: "marker is older than 72 hours" };
             }
 
             const expected = {
@@ -472,9 +470,13 @@ jobs:
             const pending = [];
             const missingRequired = [];
             const latestWorkflowRuns = latestBy(workflowRuns, workflowIdentity);
+            const requiredWorkflowIdentities = new Set(activeRequiredPrWorkflows.map(workflowIdentity));
 
             for (const run of latestWorkflowRuns.values()) {
               const label = workflowIdentity(run);
+              if (!requiredWorkflowIdentities.has(label)) {
+                continue;
+              }
               if (run.status !== "completed") {
                 pending.push(`${label}: ${run.status}`);
                 continue;
@@ -668,6 +670,10 @@ jobs:
           console.log(`Controller found ${candidates.length} candidate PR(s).`);
 
           for (const pr of candidates) {
-            await processPr(pr, automationLogin);
+            try {
+              await processPr(pr, automationLogin);
+            } catch (error) {
+              console.log(`Failed to process PR #${pr.number}: ${error.message}`);
+            }
           }
           NODE
