@@ -60,7 +60,7 @@ jobs:
             { label: "Socket Security", matches: (name) => name === "Socket Security" },
             { label: "StepSecurity Optional Checks", matches: (name) => name === "StepSecurity Optional Checks" },
             { label: "StepSecurity Harden-Runner", matches: (name) => name === "StepSecurity Harden-Runner" },
-            { label: "CodeQL", matches: (name) => name === "CodeQL" },
+            { label: "CodeQL", matches: (name) => name === "CodeQL" || name.startsWith("Analyze ") },
             { label: "Dependency Review", matches: (name) => name === "Dependency Review" },
           ];
           const missingRequiredCheckTimeoutMs = 60 * 60 * 1000;
@@ -220,10 +220,30 @@ jobs:
           }
 
           async function addLabel(prNumber, label) {
+            await ensureLabel(label);
             await api(`/repos/${owner}/${repo}/issues/${prNumber}/labels`, {
               method: "POST",
               body: JSON.stringify({ labels: [label] }),
             });
+          }
+
+          async function ensureLabel(label) {
+            const encoded = encodeURIComponent(label);
+            try {
+              await api(`/repos/${owner}/${repo}/labels/${encoded}`);
+            } catch (error) {
+              if (!error.message.includes(" 404 ")) {
+                throw error;
+              }
+              await api(`/repos/${owner}/${repo}/labels`, {
+                method: "POST",
+                body: JSON.stringify({
+                  name: label,
+                  color: "b60205",
+                  description: "Automation PR is blocked by checks or repository merge requirements.",
+                }),
+              });
+            }
           }
 
           async function getPr(number) {
@@ -328,9 +348,14 @@ jobs:
               Promise.all(refs.map((ref) => getStatuses(ref))),
             ]);
 
+            const currentHeadCheckRuns = checkRunGroups
+              .flat()
+              .filter((check) => check.source === "head" || check.head_sha === pr.head.sha);
+            const currentHeadStatuses = statusGroups.flat().filter((status) => status.source === "head");
+
             return {
-              checkRuns: [...latestBy(checkRunGroups.flat(), (check) => check.name).values()],
-              statuses: [...latestBy(statusGroups.flat(), (status) => status.context).values()],
+              checkRuns: [...latestBy(currentHeadCheckRuns, (check) => check.name).values()],
+              statuses: [...latestBy(currentHeadStatuses, (status) => status.context).values()],
             };
           }
 
@@ -523,6 +548,14 @@ jobs:
             if (pr.mergeable_state === "behind") {
               await updateBranch(pr);
               console.log(`Requested branch update for PR #${pr.number}; waiting for new checks.`);
+              return;
+            }
+
+            if (pr.mergeable_state === "blocked") {
+              await addLabel(pr.number, "automation: blocked");
+              await upsertBlockedComment(pr.number, automationLogin, [
+                "GitHub reports this PR is blocked by repository merge requirements. Required checks are green, but a review, conversation, branch protection rule, or repository rule still needs to clear before automation can merge.",
+              ]);
               return;
             }
 
