@@ -290,7 +290,9 @@ jobs:
             }
           }
 
-          async function processPr(pr, automationLogin) {
+          async function processPr(candidate, automationLogin) {
+            const pr = await getPr(candidate.number);
+
             if (pr.state !== "open" || pr.draft || pr.base.ref !== "main" || pr.head.repo.full_name !== repoFull) {
               console.log(`Skipping PR #${pr.number}: not an eligible same-repo main PR.`);
               return;
