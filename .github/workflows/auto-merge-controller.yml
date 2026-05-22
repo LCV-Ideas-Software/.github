@@ -63,6 +63,14 @@ jobs:
             { label: "CodeQL", matches: (name) => name === "CodeQL" || name.startsWith("Analyze ") },
             { label: "Dependency Review", matches: (name) => name === "Dependency Review" },
           ];
+          const requiredPrWorkflowNames = [
+            "Auto PR",
+            "CI",
+            "CodeQL",
+            "Dependency Review",
+            "Public Format",
+            "Socket Security",
+          ];
           const missingRequiredCheckTimeoutMs = 60 * 60 * 1000;
           const blockedCommentMarker = "<!-- lcv-auto-merge-controller:blocked -->";
           const mergeReadyStates = new Set(["clean", "has_hooks"]);
@@ -325,6 +333,43 @@ jobs:
             }
           }
 
+          async function listActiveRequiredPrWorkflows() {
+            const workflows = [];
+            for (let page = 1; ; page += 1) {
+              const result = await api(`/repos/${owner}/${repo}/actions/workflows?per_page=100&page=${page}`);
+              const batch = result.workflows || [];
+              workflows.push(...batch);
+              if (batch.length < 100) {
+                break;
+              }
+            }
+            return workflows.filter(
+              (workflow) =>
+                workflow.state === "active" &&
+                workflow.path.startsWith(".github/workflows/") &&
+                requiredPrWorkflowNames.includes(workflow.name),
+            );
+          }
+
+          async function listWorkflowRunsForHead(sha) {
+            const runs = [];
+            for (let page = 1; ; page += 1) {
+              const result = await api(
+                `/repos/${owner}/${repo}/actions/runs?head_sha=${sha}&per_page=100&page=${page}`,
+              );
+              const batch = result.workflow_runs || [];
+              runs.push(...batch);
+              if (batch.length < 100) {
+                break;
+              }
+            }
+            return runs;
+          }
+
+          function workflowIdentity({ name, path }) {
+            return `${name} @ ${(path || "").split("@")[0]}`;
+          }
+
           function latestTimestamp(item) {
             return Date.parse(item.completed_at || item.started_at || item.updated_at || item.created_at || "") || 0;
           }
@@ -407,6 +452,43 @@ jobs:
               }
 
               failures.push(`${required.label}: not successful`);
+            }
+
+            if (missingRequired.length > 0) {
+              const issuedAt = Date.parse(marker.issued_at);
+              const ageMs = Number.isFinite(issuedAt) ? Date.now() - issuedAt : Date.now() - Date.parse(pr.created_at);
+              if (ageMs < missingRequiredCheckTimeoutMs) {
+                pending.push(...missingRequired);
+              } else {
+                failures.push(...missingRequired);
+              }
+            }
+
+            return { failures, pending };
+          }
+
+          function evaluateWorkflowRuns(pr, marker, workflowRuns, activeRequiredPrWorkflows) {
+            const failures = [];
+            const pending = [];
+            const missingRequired = [];
+            const latestWorkflowRuns = latestBy(workflowRuns, workflowIdentity);
+
+            for (const run of latestWorkflowRuns.values()) {
+              const label = workflowIdentity(run);
+              if (run.status !== "completed") {
+                pending.push(`${label}: ${run.status}`);
+                continue;
+              }
+              if (!passingConclusions.has(run.conclusion)) {
+                failures.push(`${label}: ${run.conclusion}`);
+              }
+            }
+
+            for (const workflow of activeRequiredPrWorkflows) {
+              const label = workflowIdentity(workflow);
+              if (!latestWorkflowRuns.has(label)) {
+                missingRequired.push(`${label}: missing workflow run for current head`);
+              }
             }
 
             if (missingRequired.length > 0) {
@@ -511,8 +593,22 @@ jobs:
               return;
             }
 
-            const { checkRuns, statuses } = await getPrSignals(pr);
-            const evaluation = evaluateChecks(pr, marker.marker, checkRuns, statuses);
+            const [{ checkRuns, statuses }, workflowRuns, activeRequiredPrWorkflows] = await Promise.all([
+              getPrSignals(pr),
+              listWorkflowRunsForHead(pr.head.sha),
+              listActiveRequiredPrWorkflows(),
+            ]);
+            const checkEvaluation = evaluateChecks(pr, marker.marker, checkRuns, statuses);
+            const workflowEvaluation = evaluateWorkflowRuns(
+              pr,
+              marker.marker,
+              workflowRuns,
+              activeRequiredPrWorkflows,
+            );
+            const evaluation = {
+              failures: [...checkEvaluation.failures, ...workflowEvaluation.failures],
+              pending: [...checkEvaluation.pending, ...workflowEvaluation.pending],
+            };
             if (evaluation.pending.length > 0) {
               console.log(`PR #${pr.number} still has pending checks: ${evaluation.pending.join("; ")}`);
               return;
