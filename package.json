@@ -6,6 +6,6 @@
     "format:public:check": "prettier --check \"**/index.html\""
   },
   "devDependencies": {
-    "prettier": "^3.8.4"
+    "prettier": "^3.9.1"
   }
 }
