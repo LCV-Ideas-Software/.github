@@ -510,7 +510,7 @@ async function compareWithMain(owner, repo, mainSha, headSha, token) {
   return payload;
 }
 
-async function requestDependabotRebase(
+async function requestDependabotRefresh(
   owner,
   repo,
   number,
@@ -518,8 +518,15 @@ async function requestDependabotRebase(
   mainSha,
   readToken,
   automationToken,
+  command,
 ) {
-  const marker = `<!-- lcv-dependabot-rebase:${headSha}:${mainSha} -->`;
+  if (!new Set(["rebase", "recreate"]).has(command)) {
+    throw new Error("Unsupported Dependabot refresh command");
+  }
+  const marker =
+    command === "rebase"
+      ? `<!-- lcv-dependabot-rebase:${headSha}:${mainSha} -->`
+      : `<!-- lcv-dependabot-refresh:recreate:${headSha}:${mainSha} -->`;
   const { payload: automationActor } = await github("/user", {
     token: automationToken,
   });
@@ -540,14 +547,14 @@ async function requestDependabotRebase(
   );
   if (alreadyRequested) {
     log(
-      `PR #${number}: waiting for Dependabot to process the existing guarded rebase request.`,
+      `PR #${number}: waiting for Dependabot to process the existing guarded ${command} request.`,
     );
     return false;
   }
   await github(`/repos/${owner}/${repo}/issues/${number}/comments`, {
     token: automationToken,
     method: "POST",
-    body: { body: `@dependabot rebase\n\n${marker}` },
+    body: { body: `@dependabot ${command}\n\n${marker}` },
   });
   return true;
 }
@@ -557,13 +564,10 @@ async function inspectPullCandidate(owner, repo, pull, token) {
     `/repos/${owner}/${repo}/pulls/${pull.number}/commits`,
     token,
   );
-  if (!hasExpectedDependabotCommitShape(commits, pull.head.sha)) {
-    return {
-      eligible: false,
-      reason:
-        "commit set does not match the expected single-commit Dependabot shape",
-    };
-  }
+  const hasExpectedCommitShape = hasExpectedDependabotCommitShape(
+    commits,
+    pull.head.sha,
+  );
 
   const files = await paginated(
     `/repos/${owner}/${repo}/pulls/${pull.number}/files`,
@@ -583,7 +587,10 @@ async function inspectPullCandidate(owner, repo, pull, token) {
   }
   return {
     eligible: true,
-    reason: "expected commit shape and dependency-only paths",
+    hasExpectedCommitShape,
+    reason: hasExpectedCommitShape
+      ? "expected commit shape and dependency-only paths"
+      : "dependency-only paths with a noncanonical commit set",
   };
 }
 
@@ -695,6 +702,76 @@ export async function runController(env = process.env) {
       continue;
     }
 
+    if (!candidate.hasExpectedCommitShape) {
+      const reviews = await paginated(
+        `/repos/${owner}/${repo}/pulls/${pull.number}/reviews`,
+        githubToken,
+      );
+      if (evaluateExactHeadReviews(reviews, pull.head.sha).vetoed) {
+        log(
+          `PR #${pull.number}: noncanonical commit set has an active CHANGES_REQUESTED veto; recreation blocked.`,
+        );
+        continue;
+      }
+      const threads = await readReviewThreads(
+        owner,
+        repo,
+        pull.number,
+        githubToken,
+      );
+      const blockingThreads = findBlockingConnectorReviewThreads(threads);
+      if (blockingThreads.length > 0) {
+        log(
+          `PR #${pull.number}: noncanonical commit set has unresolved connector feedback; recreation blocked: ${blockingThreads.join(", ")}`,
+        );
+        continue;
+      }
+      const { payload: refreshedPull } = await github(
+        `/repos/${owner}/${repo}/pulls/${pull.number}`,
+        { token: githubToken },
+      );
+      if (
+        !isTrustedPullRequest(refreshedPull, repository) ||
+        refreshedPull.head.sha !== pull.head.sha
+      ) {
+        log(
+          `PR #${pull.number}: identity or head changed before recreation; deferred.`,
+        );
+        return {
+          action: "deferred",
+          pull: pull.number,
+          head: pull.head.sha,
+        };
+      }
+      log(
+        `PR #${pull.number}: commit set is not the expected single verified Dependabot commit; requesting a Dependabot-authored recreation before any approval.`,
+      );
+      if (dryRun) {
+        return {
+          action: "would-request-recreate",
+          pull: pull.number,
+          head: pull.head.sha,
+        };
+      }
+      const requested = await requestDependabotRefresh(
+        owner,
+        repo,
+        pull.number,
+        pull.head.sha,
+        mainSha,
+        githubToken,
+        automationToken,
+        "recreate",
+      );
+      return requested
+        ? {
+            action: "requested-recreate",
+            pull: pull.number,
+            head: pull.head.sha,
+          }
+        : { action: "none" };
+    }
+
     const comparison = await compareWithMain(
       owner,
       repo,
@@ -721,7 +798,7 @@ export async function runController(env = process.env) {
           head: pull.head.sha,
         };
       }
-      const requested = await requestDependabotRebase(
+      const requested = await requestDependabotRefresh(
         owner,
         repo,
         pull.number,
@@ -729,6 +806,7 @@ export async function runController(env = process.env) {
         mainSha,
         githubToken,
         automationToken,
+        "rebase",
       );
       if (requested) {
         return {

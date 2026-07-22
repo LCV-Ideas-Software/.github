@@ -15,10 +15,13 @@ wrapper and an exact list of stack-specific required checks.
 - A pull request is eligible only when it is open, non-draft, authored by
   `dependabot[bot]`, originates in the same repository, targets `main`, uses a
   `dependabot/` branch and has a verified 40-character head commit.
-- The full PR commit set must be exactly one verified Dependabot-authored commit
-  with one parent. Changed paths are restricted to the dependency manifests,
-  lockfiles, pre-commit configuration and GitHub Actions workflows used by the
-  ecosystems configured in this organization.
+- Approval and merge require the full PR commit set to be exactly one verified
+  Dependabot-authored commit with one parent. A PR with extra commits is never
+  approved: after path checks and veto/connector checks, the controller asks
+  Dependabot to `recreate` it, which restores bot authorship while overwriting
+  the noncanonical edits. Changed paths are restricted to the dependency
+  manifests, lockfiles, pre-commit configuration and GitHub Actions workflows
+  used by the ecosystems configured in this organization.
 - Every configured required check must be present and successful on the exact
   head SHA. Every other attached check must be successful, skipped or neutral.
   Missing and pending checks fail closed.
@@ -28,16 +31,20 @@ wrapper and an exact list of stack-specific required checks.
 The pinned JavaScript Action and its wrapper serialize the whole repository and
 perform at most one queue mutation per run.
 
-1. If the oldest eligible PR is behind `main`, the automation credential posts a
-   guarded `@dependabot rebase` command, de-duplicated against the exact login
-   and numeric ID resolved from the automation token. Dependabot therefore
+1. If the oldest candidate contains extra commits, the automation credential
+   posts a guarded `@dependabot recreate` command. This recovers branches changed
+   by GitHub's update button or by manual edits; no approval is possible until
+   Dependabot replaces the head with its canonical single verified commit.
+2. If the oldest eligible PR is behind `main`, the credential posts a guarded
+   `@dependabot rebase` command. Both commands are de-duplicated against the exact
+   login and numeric ID resolved from the automation token. Dependabot therefore
    authors the replacement head and triggers the normal restricted Dependabot CI
    path; the privileged controller does not rewrite the branch itself.
-2. If the exact head is current and green, `GITHUB_TOKEN` records the approval.
-3. The controller re-reads `main`, the PR head and all checks after approval.
-4. The automation credential squash-merges only that exact head SHA. GitHub's
+3. If the exact head is current and green, `GITHUB_TOKEN` records the approval.
+4. The controller re-reads `main`, the PR head and all checks after approval.
+5. The automation credential squash-merges only that exact head SHA. GitHub's
    repository-level delete-after-merge setting owns branch deletion.
-5. The resulting `main` update makes the remaining PRs behind; the next run asks
+6. The resulting `main` update makes the remaining PRs behind; the next run asks
    Dependabot to rebase one of them. An hourly schedule recovers missed events.
 
 The final REST merge guard accepts an expected head SHA but GitHub does not offer
@@ -78,5 +85,6 @@ active repositories.
 - [Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)
 - [Automating Dependabot with GitHub Actions](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions)
 - [Dependabot comment commands](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/managing-pull-requests-for-dependency-updates#comment-commands-for-dependabot)
+- [Managing Dependabot PRs and extra commits](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/manage-dependabot-prs#allowing-dependabot-to-rebase-and-force-push-over-extra-commits)
 - [REST pull-request endpoints](https://docs.github.com/en/rest/pulls/pulls)
 - [Authenticating with a GitHub App installation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation)
