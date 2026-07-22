@@ -55,28 +55,62 @@ jobs:
           enable-cache: false
           github-token: ""
 
-      - name: Analyze workflows without repository credentials
+      - name: Analyze workflows and capture the enforcement result
+        id: audit
         shell: bash
         run: |
           set -euo pipefail
-          uvx \
+          zizmor=(
+            uvx
             --isolated \
             --no-cache \
             --no-config \
             --no-env-file \
             --from "zizmor==${ZIZMOR_VERSION}" \
-            zizmor \
+            zizmor
             --offline \
             --persona=auditor \
             --strict-collection \
             --collect=all \
+            --color=never
+          )
+
+          # SARIF intentionally exits zero even when findings exist. Capture the
+          # normal formatter's exit status as the independent enforcement gate,
+          # while still producing SARIF before the job is allowed to fail.
+          set +e
+          "${zizmor[@]}" . 2>&1 | tee zizmor-findings.txt
+          zizmor_exit="${PIPESTATUS[0]}"
+          set -e
+
+          "${zizmor[@]}" \
             --format=sarif \
-            --color=never \
             . > zizmor-results.sarif
           test -s zizmor-results.sarif
+          if [[ ! "$zizmor_exit" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid zizmor exit code: $zizmor_exit" >&2
+            exit 1
+          fi
+          printf 'exit_code=%s\n' "$zizmor_exit" >> "$GITHUB_OUTPUT"
 
       - name: Upload SARIF to code scanning
         uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
         with:
           sarif_file: zizmor-results.sarif
           category: zizmor
+
+      - name: Enforce zero active zizmor findings
+        shell: bash
+        env:
+          ZIZMOR_EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$ZIZMOR_EXIT_CODE" =~ ^[0-9]+$ ]]; then
+            echo "::error::Missing or invalid zizmor enforcement result." >&2
+            exit 1
+          fi
+          if [ "$ZIZMOR_EXIT_CODE" -ne 0 ]; then
+            echo "::error::zizmor reported active findings; see the analyzer output and SARIF results." >&2
+            exit "$ZIZMOR_EXIT_CODE"
+          fi
+          echo "zizmor reported zero active findings."
