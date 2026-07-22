@@ -819,6 +819,7 @@ function createControllerHarness(options = {}) {
   let compareReads = 0;
   let reviewReads = 0;
   let threadReads = 0;
+  let pullReads = 0;
 
   const fetch = async (input, init = {}) => {
     const url = new URL(String(input));
@@ -854,12 +855,15 @@ function createControllerHarness(options = {}) {
       url.pathname === "/repos/owner/repo/pulls/7" &&
       method === "GET"
     ) {
-      payload = pull;
+      pullReads += 1;
+      payload = options.pullForRead
+        ? options.pullForRead(pullReads, pull)
+        : pull;
     } else if (
       url.pathname === "/repos/owner/repo/pulls/7/commits" &&
       method === "GET"
     ) {
-      payload = [commit];
+      payload = options.commits ?? [commit];
     } else if (
       url.pathname === "/repos/owner/repo/pulls/7/files" &&
       method === "GET"
@@ -976,6 +980,7 @@ function createControllerHarness(options = {}) {
     main,
     advancedMain,
     pull,
+    commit,
     requests,
     fetch,
     state: {
@@ -990,6 +995,9 @@ function createControllerHarness(options = {}) {
       },
       get threadReads() {
         return threadReads;
+      },
+      get pullReads() {
+        return pullReads;
       },
     },
   };
@@ -1108,6 +1116,193 @@ test("a behind PR gets one identity-bound Dependabot rebase command", async () =
     assert.deepEqual(commentWrite?.body, {
       body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${harness.head}:${harness.main} -->`,
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("extra commits trigger an identity-bound Dependabot recreation without approval or merge", async () => {
+  const seed = createControllerHarness();
+  const originalDependabotCommit = {
+    ...seed.commit,
+    sha: "d".repeat(40),
+  };
+  const integrationCommit = {
+    sha: seed.head,
+    author: { id: 42, login: "operator" },
+    committer: { id: 19864447, login: "web-flow" },
+    commit: {
+      author: {
+        email: "operator@users.noreply.github.com",
+      },
+      verification: { verified: true },
+    },
+    parents: [{ sha: originalDependabotCommit.sha }, { sha: seed.main }],
+  };
+  const harness = createControllerHarness({
+    commits: [originalDependabotCommit, integrationCommit],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.deepEqual(result, {
+      action: "requested-recreate",
+      pull: 7,
+      head: harness.head,
+    });
+    const commentWrite = harness.requests.find(
+      (request) =>
+        request.method === "POST" &&
+        request.pathname === "/repos/owner/repo/issues/7/comments",
+    );
+    assert.equal(commentWrite?.authorization, "Bearer automation-token");
+    assert.deepEqual(commentWrite?.body, {
+      body: `@dependabot recreate\n\n<!-- lcv-dependabot-refresh:recreate:${harness.head}:${harness.main} -->`,
+    });
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/pulls/7/reviews",
+      ),
+      false,
+    );
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "PUT" &&
+          request.pathname === "/repos/owner/repo/pulls/7/merge",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an active review veto blocks recreation of a noncanonical branch", async () => {
+  const seed = createControllerHarness();
+  const harness = createControllerHarness({
+    commits: [
+      { ...seed.commit, sha: "d".repeat(40) },
+      {
+        ...seed.commit,
+        author: { id: 42, login: "operator" },
+        parents: [{ sha: "d".repeat(40) }, { sha: seed.main }],
+      },
+    ],
+    reviewsForRead: () => [
+      {
+        id: 99,
+        user: { id: 7, login: "reviewer" },
+        commit_id: seed.head,
+        state: "CHANGES_REQUESTED",
+      },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      { action: "none" },
+    );
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/issues/7/comments",
+      ),
+      false,
+    );
+    assert.equal(harness.state.threadReads, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a recent exact-identity recreate marker suppresses duplicate recreation", async () => {
+  const seed = createControllerHarness();
+  const marker = `<!-- lcv-dependabot-refresh:recreate:${seed.head}:${seed.main} -->`;
+  const harness = createControllerHarness({
+    commits: [
+      { ...seed.commit, sha: "d".repeat(40) },
+      {
+        ...seed.commit,
+        author: { id: 42, login: "operator" },
+        parents: [{ sha: "d".repeat(40) }, { sha: seed.main }],
+      },
+    ],
+    issueComments: [
+      {
+        user: { id: 42, login: "operator" },
+        body: `@dependabot recreate\n\n${marker}`,
+        created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      { action: "none" },
+    );
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/issues/7/comments",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a head change at the recreation boundary defers without overwriting it", async () => {
+  const seed = createControllerHarness();
+  const harness = createControllerHarness({
+    commits: [
+      { ...seed.commit, sha: "d".repeat(40) },
+      {
+        ...seed.commit,
+        author: { id: 42, login: "operator" },
+        parents: [{ sha: "d".repeat(40) }, { sha: seed.main }],
+      },
+    ],
+    pullForRead: (read, pull) =>
+      read === 1
+        ? pull
+        : {
+            ...pull,
+            head: { ...pull.head, sha: "e".repeat(40) },
+          },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      {
+        action: "deferred",
+        pull: 7,
+        head: seed.head,
+      },
+    );
+    assert.equal(harness.state.pullReads, 2);
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/issues/7/comments",
+      ),
+      false,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
