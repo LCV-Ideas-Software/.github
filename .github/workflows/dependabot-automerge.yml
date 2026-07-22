@@ -15,22 +15,23 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch:
 
-permissions:
-  checks: read
-  contents: read
-  pull-requests: write
-  statuses: read
+permissions: write-all
 
 jobs:
   dependabot-automerge:
     name: Process Dependabot pull requests
     runs-on: ubuntu-latest
+    permissions: write-all
+    environment: dependabot-automation
     timeout-minutes: 10
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          disable-telemetry: true
+          allowed-endpoints: |
+            api.github.com:443
 
       - name: Process one guarded queue mutation
         uses: LCV-Ideas-Software/.github/dependabot-automerge@dc4626e4d6745f87e5705a69632e0d387516806c
@@ -41,4 +42,5 @@ jobs:
 
 concurrency:
   group: dependabot-automerge-${{ github.repository }}
+  queue: max
   cancel-in-progress: false

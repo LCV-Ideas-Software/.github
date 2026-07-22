@@ -3,13 +3,13 @@ description: Validates, rebases, approves and squash-merges trusted Dependabot p
 
 inputs:
   github_token:
-    description: Ephemeral GITHUB_TOKEN used for checks and approval.
+    description: Ephemeral GITHUB_TOKEN used for Actions provenance, checks and approval.
     required: true
   automation_token:
     description: Automation credential used only for rebase commands and exact-head merge.
     required: true
   required_checks_json:
-    description: JSON array of exact check-run names that must conclude success.
+    description: JSON array of exact {name,app_id} check identities that must conclude success.
     required: true
 
 runs:

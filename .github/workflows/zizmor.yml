@@ -1,0 +1,82 @@
+name: Zizmor
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: "43 5 * * 1"
+  workflow_dispatch:
+
+permissions: write-all
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  UV_VERSION: "0.11.31"
+  ZIZMOR_VERSION: "1.28.0"
+
+concurrency:
+  group: zizmor-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: Run zizmor
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden the runner (Block unapproved outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          disable-telemetry: true
+          allowed-endpoints: >
+            api.github.com:443
+            files.pythonhosted.org:443
+            github.com:443
+            pypi.org:443
+            raw.githubusercontent.com:443
+            releases.astral.sh:443
+
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install hash-verified uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+          github-token: ""
+
+      - name: Analyze workflows without repository credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          uvx \
+            --isolated \
+            --no-cache \
+            --no-config \
+            --no-env-file \
+            --from "zizmor==${ZIZMOR_VERSION}" \
+            zizmor \
+            --offline \
+            --persona=auditor \
+            --strict-collection \
+            --collect=all \
+            --format=sarif \
+            --color=never \
+            . > zizmor-results.sarif
+          test -s zizmor-results.sarif
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+        with:
+          sarif_file: zizmor-results.sarif
+          category: zizmor
