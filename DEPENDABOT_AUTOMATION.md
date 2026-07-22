@@ -61,9 +61,8 @@ active repositories.
 
 ## Deployment and rollback
 
-1. Test the controller with `node --test
-   scripts/dependabot-automerge-controller.test.mjs` and lint every workflow with
-   `actionlint`.
+1. Test the controller with `node --test dependabot-automerge/main.test.mjs` and
+   lint every workflow with `actionlint`.
 2. Merge this repository first.
 3. Pin both the reusable workflow reference and `controller_ref` in every
    consumer wrapper to the same reviewed commit SHA.

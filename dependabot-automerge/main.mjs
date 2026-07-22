@@ -452,12 +452,17 @@ export async function runController(env = process.env) {
   if (!owner || !repo || extra)
     throw new Error("GITHUB_REPOSITORY must be owner/repo");
 
-  const githubToken = assertNonEmpty(env.GITHUB_TOKEN, "GITHUB_TOKEN");
-  const automationToken = assertNonEmpty(
-    env.LCV_AUTOMATION_TOKEN,
-    "LCV_AUTOMATION_TOKEN",
+  const githubToken = assertNonEmpty(
+    env.INPUT_GITHUB_TOKEN ?? env.GITHUB_TOKEN,
+    "github_token input",
   );
-  const requiredChecks = parseRequiredChecks(env.REQUIRED_CHECKS_JSON);
+  const automationToken = assertNonEmpty(
+    env.INPUT_AUTOMATION_TOKEN ?? env.LCV_AUTOMATION_TOKEN,
+    "automation_token input",
+  );
+  const requiredChecks = parseRequiredChecks(
+    env.INPUT_REQUIRED_CHECKS_JSON ?? env.REQUIRED_CHECKS_JSON,
+  );
   const currentRunId = env.GITHUB_RUN_ID ?? "";
   const dryRun = env.DRY_RUN === "true";
 

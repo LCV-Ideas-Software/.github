@@ -10,7 +10,7 @@ import {
   isAllowedDependabotPath,
   isTrustedPullRequest,
   parseRequiredChecks,
-} from "./dependabot-automerge-controller.mjs";
+} from "./main.mjs";
 
 const requiredChecks = ["CI", "CodeQL"];
 let nextId = 1;
@@ -285,10 +285,7 @@ test("the latest decisive review per reviewer preserves a changes-requested veto
 });
 
 test("the controller never rewrites or deletes Dependabot refs directly", async () => {
-  const source = await readFile(
-    new URL("./dependabot-automerge-controller.mjs", import.meta.url),
-    "utf8",
-  );
+  const source = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\/update-branch/);
   assert.doesNotMatch(source, /method:\s*["']DELETE["']/);
 });
