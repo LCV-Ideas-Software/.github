@@ -27,6 +27,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Check public page formatting
         run: npm run format:public:check
+      - name: Test Dependabot automerge controller
+        run: node --test dependabot-automerge/main.test.mjs
     timeout-minutes: 15
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
