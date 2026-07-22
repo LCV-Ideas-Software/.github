@@ -17,10 +17,12 @@ wrapper and an exact list of stack-specific required checks.
   targets `main`, uses a `dependabot/` branch and has a verified 40-character head
   SHA.
 - Approval, rebase requests and merge require the full PR commit set to be exactly
-  one verified Dependabot-authored commit, committed by the exact immutable
-  `web-flow` account ID, with one parent. Changed paths are restricted to the
-  dependency manifests, lockfiles, pre-commit configuration and GitHub Actions
-  workflows used by the ecosystems configured in this organization.
+  one verified Dependabot-authored commit, committed by either the exact immutable
+  `dependabot[bot]` or `web-flow` account ID, with one parent. Login and numeric ID
+  must be the matching pair; every other or mismatched identity fails closed.
+  Changed paths are restricted to the dependency manifests, lockfiles, pre-commit
+  configuration and GitHub Actions workflows used by the ecosystems configured in
+  this organization.
 - Any noncanonical commit set fails closed before reviews, comments, Git refs or
   merges can be written. This includes extra commits and GitHub-signed merge
   commits authored by the automation operator. The controller has no branch
