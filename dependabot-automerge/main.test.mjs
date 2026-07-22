@@ -103,6 +103,19 @@ test("requires the expected single-commit Dependabot shape at the exact head", (
   assert.equal(hasExpectedDependabotCommitShape([commit], head), true);
   assert.equal(
     hasExpectedDependabotCommitShape(
+      [
+        {
+          ...commit,
+          committer: { id: 49699333, login: "dependabot[bot]" },
+        },
+      ],
+      head,
+    ),
+    true,
+    "Dependabot may be the authenticated committer of its own signed update",
+  );
+  assert.equal(
+    hasExpectedDependabotCommitShape(
       [{ ...commit, sha: "c".repeat(40) }],
       head,
     ),
@@ -135,6 +148,18 @@ test("requires the expected single-commit Dependabot shape at the exact head", (
     ),
     false,
   );
+  for (const committer of [
+    { id: 49699333, login: "web-flow" },
+    { id: 19864447, login: "dependabot[bot]" },
+    { id: 1, login: "web-flow" },
+    { id: 49699333, login: "attacker" },
+  ]) {
+    assert.equal(
+      hasExpectedDependabotCommitShape([{ ...commit, committer }], head),
+      false,
+      `mismatched or untrusted committer must fail closed: ${JSON.stringify(committer)}`,
+    );
+  }
 });
 
 test("requires a required Actions check run initially triggered by Dependabot", () => {

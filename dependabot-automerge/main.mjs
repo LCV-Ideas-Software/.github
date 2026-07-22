@@ -116,12 +116,16 @@ export function isTrustedPullRequest(pull, repository) {
 export function hasExpectedDependabotCommitShape(commits, headSha) {
   if (!Array.isArray(commits) || commits.length !== 1) return false;
   const commit = commits[0];
+  const hasTrustedCommitter =
+    (commit.committer?.id === WEB_FLOW_ACTOR_ID &&
+      commit.committer?.login === WEB_FLOW_ACTOR_LOGIN) ||
+    (commit.committer?.id === DEPENDABOT_ACTOR_ID &&
+      commit.committer?.login === DEPENDABOT_ACTOR_LOGIN);
   return Boolean(
     commit.sha === headSha &&
     commit.author?.id === DEPENDABOT_ACTOR_ID &&
     commit.author?.login === DEPENDABOT_ACTOR_LOGIN &&
-    commit.committer?.id === WEB_FLOW_ACTOR_ID &&
-    commit.committer?.login === WEB_FLOW_ACTOR_LOGIN &&
+    hasTrustedCommitter &&
     commit.commit?.author?.email ===
       "49699333+dependabot[bot]@users.noreply.github.com" &&
     commit.commit?.verification?.verified === true &&
