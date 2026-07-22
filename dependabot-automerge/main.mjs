@@ -126,7 +126,8 @@ export function hasExpectedDependabotCommitShape(commits, headSha) {
       "49699333+dependabot[bot]@users.noreply.github.com" &&
     commit.commit?.verification?.verified === true &&
     Array.isArray(commit.parents) &&
-    commit.parents.length === 1,
+    commit.parents.length === 1 &&
+    /^[0-9a-f]{40}$/i.test(commit.parents[0]?.sha ?? ""),
   );
 }
 
@@ -513,6 +514,37 @@ async function compareWithMain(owner, repo, mainSha, headSha, token) {
   return payload;
 }
 
+function classifyCanonicalComparison(comparison, expectedMergeBaseSha) {
+  if (
+    !Number.isSafeInteger(comparison?.behind_by) ||
+    comparison.behind_by < 0 ||
+    comparison?.merge_base_commit?.sha !== expectedMergeBaseSha
+  ) {
+    return "invalid";
+  }
+  if (comparison.behind_by > 0) {
+    return comparison.status === "diverged" ? "behind" : "invalid";
+  }
+  return new Set(["ahead", "identical"]).has(comparison.status)
+    ? "current"
+    : "invalid";
+}
+
+function classifyMergeability(pull) {
+  if (pull?.mergeable === false || pull?.mergeable_state === "dirty") {
+    return "conflicting";
+  }
+  if (
+    pull?.mergeable !== true ||
+    typeof pull.mergeable_state !== "string" ||
+    pull.mergeable_state === "" ||
+    pull.mergeable_state === "unknown"
+  ) {
+    return "unknown";
+  }
+  return "mergeable";
+}
+
 async function resolveAutomationActor(token) {
   const { payload: automationActor } = await github("/user", { token });
   if (
@@ -528,12 +560,16 @@ async function resolveAutomationActor(token) {
 async function requestDependabotRebase(
   owner,
   repo,
-  number,
-  headSha,
-  mainSha,
+  pull,
+  expectedMainSha,
+  expectedMergeBaseSha,
+  repository,
   readToken,
   automationToken,
 ) {
+  const number = pull.number;
+  const headSha = pull.head.sha;
+  const mainSha = expectedMainSha;
   const marker = `<!-- lcv-dependabot-rebase:${headSha}:${mainSha} -->`;
   const automationActor = await resolveAutomationActor(automationToken);
   const comments = await paginated(
@@ -549,14 +585,35 @@ async function requestDependabotRebase(
     log(
       `PR #${number}: waiting for Dependabot to process the existing guarded rebase request.`,
     );
-    return false;
+    return "waiting";
   }
+
+  const boundary = await validateRebaseBoundary({
+    owner,
+    repo,
+    number,
+    expectedHeadSha: headSha,
+    expectedMainSha,
+    expectedMergeBaseSha,
+    repository,
+    token: readToken,
+  });
+  if (!boundary.eligible) {
+    log(
+      `PR #${number}: rebase boundary changed (${boundary.reason}); deferred.`,
+    );
+    return "deferred";
+  }
+
+  // GitHub's issue-comment endpoint has no expected-head/base precondition. The
+  // immediately preceding immutable-head and live-main reads minimize, but
+  // cannot eliminate, the residual race before this POST.
   await github(`/repos/${owner}/${repo}/issues/${number}/comments`, {
     token: automationToken,
     method: "POST",
     body: { body: `@dependabot rebase\n\n${marker}` },
   });
-  return true;
+  return "requested";
 }
 
 async function inspectPullCandidate(owner, repo, pull, token) {
@@ -588,10 +645,78 @@ async function inspectPullCandidate(owner, repo, pull, token) {
   return {
     eligible: true,
     hasExpectedCommitShape,
+    canonicalParentSha: hasExpectedCommitShape
+      ? commits[0].parents[0].sha
+      : null,
     reason: hasExpectedCommitShape
       ? "expected commit shape and dependency-only paths"
       : "dependency-only paths with a noncanonical commit set",
   };
+}
+
+async function validateRebaseBoundary({
+  owner,
+  repo,
+  number,
+  expectedHeadSha,
+  expectedMainSha,
+  expectedMergeBaseSha,
+  repository,
+  token,
+}) {
+  const { payload: freshPull } = await github(
+    `/repos/${owner}/${repo}/pulls/${number}`,
+    { token },
+  );
+  if (
+    !isTrustedPullRequest(freshPull, repository) ||
+    freshPull.head.sha !== expectedHeadSha
+  ) {
+    return { eligible: false, reason: "identity or head changed" };
+  }
+
+  const candidate = await inspectPullCandidate(owner, repo, freshPull, token);
+  if (
+    !candidate.eligible ||
+    !candidate.hasExpectedCommitShape ||
+    candidate.canonicalParentSha !== expectedMergeBaseSha
+  ) {
+    return { eligible: false, reason: "commit shape or changed paths changed" };
+  }
+
+  const freshMainSha = await currentMainSha(owner, repo, token);
+  if (freshMainSha !== expectedMainSha) {
+    return { eligible: false, reason: "main advanced" };
+  }
+  const comparison = await compareWithMain(
+    owner,
+    repo,
+    freshMainSha,
+    freshPull.head.sha,
+    token,
+  );
+  if (
+    classifyCanonicalComparison(comparison, expectedMergeBaseSha) !== "behind"
+  ) {
+    return { eligible: false, reason: "comparison topology changed" };
+  }
+
+  const finalMainSha = await currentMainSha(owner, repo, token);
+  const { payload: finalPull } = await github(
+    `/repos/${owner}/${repo}/pulls/${number}`,
+    { token },
+  );
+  if (
+    finalMainSha !== expectedMainSha ||
+    !isTrustedPullRequest(finalPull, repository) ||
+    finalPull.head.sha !== expectedHeadSha
+  ) {
+    return {
+      eligible: false,
+      reason: "head or main changed at the POST boundary",
+    };
+  }
+  return { eligible: true };
 }
 
 async function ensureApproval(owner, repo, pull, token) {
@@ -715,15 +840,17 @@ export async function runController(env = process.env) {
       pull.head.sha,
       githubToken,
     );
-    if (
-      !Number.isSafeInteger(comparison?.behind_by) ||
-      comparison.behind_by < 0
-    ) {
-      throw new Error(
-        `PR #${pull.number}: GitHub returned an invalid behind_by comparison`,
+    const comparisonState = classifyCanonicalComparison(
+      comparison,
+      candidate.canonicalParentSha,
+    );
+    if (comparisonState === "invalid") {
+      log(
+        `PR #${pull.number}: GitHub returned an incoherent status, behind count or merge base; deferred.`,
       );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
     }
-    if (comparison.behind_by > 0) {
+    if (comparisonState === "behind") {
       log(
         `PR #${pull.number}: ${comparison.behind_by} commit(s) behind main; requesting a Dependabot-authored rebase.`,
       );
@@ -734,21 +861,25 @@ export async function runController(env = process.env) {
           head: pull.head.sha,
         };
       }
-      const requested = await requestDependabotRebase(
+      const rebaseState = await requestDependabotRebase(
         owner,
         repo,
-        pull.number,
-        pull.head.sha,
+        pull,
         mainSha,
+        candidate.canonicalParentSha,
+        repository,
         githubToken,
         automationToken,
       );
-      if (requested) {
+      if (rebaseState === "requested") {
         return {
           action: "requested-rebase",
           pull: pull.number,
           head: pull.head.sha,
         };
+      }
+      if (rebaseState === "deferred") {
+        return { action: "deferred", pull: pull.number, head: pull.head.sha };
       }
       continue;
     }
@@ -780,11 +911,6 @@ export async function runController(env = process.env) {
       continue;
     }
 
-    if (pull.mergeable === false || pull.mergeable_state === "dirty") {
-      log(`PR #${pull.number}: GitHub reports merge conflicts; skipped.`);
-      continue;
-    }
-
     const { payload: freshPull } = await github(
       `/repos/${owner}/${repo}/pulls/${pull.number}`,
       {
@@ -798,6 +924,17 @@ export async function runController(env = process.env) {
       log(
         `PR #${pull.number}: head changed after validation; deferred to the next run.`,
       );
+      continue;
+    }
+    const freshMergeability = classifyMergeability(freshPull);
+    if (freshMergeability === "unknown") {
+      log(
+        `PR #${pull.number}: GitHub mergeability is not yet known; deferred.`,
+      );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
+    }
+    if (freshMergeability === "conflicting") {
+      log(`PR #${pull.number}: GitHub reports merge conflicts; skipped.`);
       continue;
     }
 
@@ -828,7 +965,8 @@ export async function runController(env = process.env) {
     if (
       postApprovalMainSha !== mainSha ||
       !isTrustedPullRequest(postApprovalPull, repository) ||
-      postApprovalPull.head.sha !== pull.head.sha
+      postApprovalPull.head.sha !== pull.head.sha ||
+      classifyMergeability(postApprovalPull) !== "mergeable"
     ) {
       log(
         `PR #${pull.number}: head or main changed during approval; merge deferred.`,
@@ -900,7 +1038,8 @@ export async function runController(env = process.env) {
     if (
       finalMainSha !== mainSha ||
       !isTrustedPullRequest(finalPull, repository) ||
-      finalPull.head.sha !== pull.head.sha
+      finalPull.head.sha !== pull.head.sha ||
+      classifyMergeability(finalPull) !== "mergeable"
     ) {
       log(
         `PR #${pull.number}: head or main changed immediately before merge; deferred.`,
@@ -915,16 +1054,13 @@ export async function runController(env = process.env) {
       githubToken,
     );
     if (
-      !Number.isSafeInteger(finalComparison?.behind_by) ||
-      finalComparison.behind_by < 0
+      classifyCanonicalComparison(
+        finalComparison,
+        candidate.canonicalParentSha,
+      ) !== "current"
     ) {
-      throw new Error(
-        `PR #${pull.number}: GitHub returned an invalid final behind_by comparison`,
-      );
-    }
-    if (finalComparison.behind_by > 0) {
       log(
-        `PR #${pull.number}: became behind immediately before merge; deferred.`,
+        `PR #${pull.number}: final comparison status, behind count or merge base changed; deferred.`,
       );
       return { action: "deferred", pull: pull.number, head: pull.head.sha };
     }

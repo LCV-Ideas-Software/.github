@@ -41,13 +41,23 @@ perform at most one pull-request queue transition per run.
 1. A canonical PR behind `main` receives one identity-bound `@dependabot rebase`
    request. Its marker contains the exact head and base SHAs, and only a recent
    comment from the exact login and numeric ID resolved from
-   `LCV_AUTOMATION_TOKEN` suppresses a retry. Dependabot authors the replacement
-   head, so normal restricted Dependabot pull-request CI runs on that SHA.
+   `LCV_AUTOMATION_TOKEN` suppresses a retry. After that deduplication read, the
+   controller revalidates the PR identity, exact head, one-commit shape, changed
+   paths, live `main`, canonical merge base and a coherent behind comparison. It
+   then re-reads the head and `main` immediately before posting. Dependabot
+   authors the replacement head, so normal restricted Dependabot pull-request CI
+   runs on that SHA.
 2. A noncanonical PR is logged and skipped without any mutation. There is no
    automatic destructive fallback if rebase fails or if someone has edited the
    Dependabot branch.
-3. If the exact canonical head is current and green, `GITHUB_TOKEN` records the
-   approval for that SHA.
+3. If the exact canonical head is current and green, the controller performs a
+   fresh per-PR detail read rather than relying on the list response. Once GitHub
+   has computed `mergeable: true`, `GITHUB_TOKEN` records the approval for that
+   SHA. A `mergeable: null` response or `mergeable_state: unknown` defers the
+   transition; `mergeable: true` with `mergeable_state: blocked` remains eligible
+   because the required checks and review policy are enforced explicitly by this
+   controller. A definitive conflict is skipped without mutation so the scan can
+   inspect the next PR.
 4. The controller re-reads `main`, the PR head, checks, Actions provenance,
    reviews and connector threads after approval.
 5. The automation credential squash-merges only the validated exact head SHA.
@@ -57,10 +67,20 @@ perform at most one pull-request queue transition per run.
    missed workflow events.
 
 The final REST merge guard accepts an expected head SHA but GitHub does not offer
-an expected base SHA for that endpoint. Two live base reads, repository-wide
-serialization and the single-operator model narrow that residual race. If the
-organization later has concurrent maintainers, enable a merge queue and migrate
-the final step to queue enrollment.
+an expected base SHA for that endpoint. Immediately before it, the controller
+requires a zero-behind `ahead` or `identical` comparison whose merge base is the
+validated canonical parent, then performs another live base read. Those reads,
+repository-wide serialization and the single-operator model narrow the residual
+base-side race. If the organization later has concurrent maintainers, enable a
+merge queue and migrate the final step to queue enrollment.
+
+The REST issue-comment endpoint similarly accepts only the comment body; it has
+no expected head or base SHA precondition. The live boundary revalidation above
+therefore minimizes but cannot eliminate the narrow interval between its final
+reads and the `@dependabot rebase` POST. The controller never turns that residual
+race into a branch write: Dependabot remains the only actor that may replace its
+head, and its documented default is to stop rebasing when extra commits are
+present.
 
 ## Why recreation is excluded
 
@@ -106,6 +126,8 @@ outside this reusable action.
 - [Dependabot pull-request comment commands](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-pull-request-comment-commands)
 - [Managing Dependabot PRs and extra commits](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/manage-dependabot-prs#allowing-dependabot-to-rebase-and-force-push-over-extra-commits)
 - [REST pull-request endpoints](https://docs.github.com/en/rest/pulls/pulls)
+- [REST compare-two-commits endpoint](https://docs.github.com/en/rest/commits/commits#compare-two-commits)
+- [REST issue-comment endpoints](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment)
 - [Dependabot issue #7898: recreate may open a replacement PR](https://github.com/dependabot/dependabot-core/issues/7898)
 - [Dependabot issue #10504: recreate may close without replacement](https://github.com/dependabot/dependabot-core/issues/10504)
 - [Dependabot issue #15566: command failures reported in 2026](https://github.com/dependabot/dependabot-core/issues/15566)

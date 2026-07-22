@@ -128,6 +128,13 @@ test("requires the expected single-commit Dependabot shape at the exact head", (
     ),
     false,
   );
+  assert.equal(
+    hasExpectedDependabotCommitShape(
+      [{ ...commit, parents: [{ sha: "not-a-commit-sha" }] }],
+      head,
+    ),
+    false,
+  );
 });
 
 test("requires a required Actions check run initially triggered by Dependabot", () => {
@@ -603,6 +610,15 @@ test("approval is pinned to the validated head and late connector feedback block
     mergeable: true,
     mergeable_state: "clean",
   };
+  const pullSummary = {
+    number: pull.number,
+    state: pull.state,
+    draft: pull.draft,
+    title: pull.title,
+    user: pull.user,
+    head: pull.head,
+    base: pull.base,
+  };
   const commit = {
     sha: head,
     author: { id: 49699333, login: "dependabot[bot]" },
@@ -632,7 +648,7 @@ test("approval is pinned to the validated head and late connector feedback block
 
     let payload;
     if (url.pathname === "/repos/owner/repo/pulls" && method === "GET") {
-      payload = [pull];
+      payload = [pullSummary];
     } else if (
       url.pathname === "/repos/owner/repo/git/ref/heads/main" &&
       method === "GET"
@@ -657,7 +673,11 @@ test("approval is pinned to the validated head and late connector feedback block
       url.pathname.startsWith("/repos/owner/repo/compare/") &&
       method === "GET"
     ) {
-      payload = { behind_by: 0 };
+      payload = {
+        behind_by: 0,
+        status: "ahead",
+        merge_base_commit: { sha: main },
+      };
     } else if (
       url.pathname === `/repos/owner/repo/commits/${head}/check-runs` &&
       method === "GET"
@@ -818,6 +838,15 @@ function createControllerHarness(options = {}) {
     mergeable: true,
     mergeable_state: "clean",
   };
+  const pullSummary = {
+    number: pull.number,
+    state: pull.state,
+    draft: pull.draft,
+    title: pull.title,
+    user: pull.user,
+    head: pull.head,
+    base: pull.base,
+  };
   const commit = {
     sha: head,
     author: { id: 49699333, login: "dependabot[bot]" },
@@ -860,7 +889,7 @@ function createControllerHarness(options = {}) {
     if (url.pathname === "/repos/owner/repo/pulls" && method === "GET") {
       payload = options.pullPageResponder
         ? options.pullPageResponder(Number(url.searchParams.get("page")))
-        : [pull];
+        : [pullSummary];
     } else if (
       url.pathname === "/repos/owner/repo/git/ref/heads/main" &&
       method === "GET"
@@ -899,8 +928,12 @@ function createControllerHarness(options = {}) {
     ) {
       compareReads += 1;
       payload = options.comparisonForRead
-        ? options.comparisonForRead(compareReads)
-        : { behind_by: options.behindBy ?? 0, status: "ahead" };
+        ? options.comparisonForRead(compareReads, { head, main })
+        : {
+            behind_by: options.behindBy ?? 0,
+            status: options.behindBy > 0 ? "diverged" : "ahead",
+            merge_base_commit: { sha: main },
+          };
     } else if (
       url.pathname === `/repos/owner/repo/commits/${head}/check-runs` &&
       method === "GET"
@@ -1004,6 +1037,7 @@ function createControllerHarness(options = {}) {
     main,
     advancedMain,
     pull,
+    pullSummary,
     commit,
     requests,
     fetch,
@@ -1179,6 +1213,318 @@ test("a behind PR gets one identity-bound Dependabot rebase command", async () =
         (request) =>
           request.pathname === "/repos/owner/repo/git/refs" ||
           request.pathname === "/repos/owner/repo/pulls/7/reviews" ||
+          request.pathname === "/repos/owner/repo/pulls/7/merge",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a head change while resolving rebase identity and comments blocks the POST", async () => {
+  const changedHead = "e".repeat(40);
+  const harness = createControllerHarness({
+    behindBy: 2,
+    pullForRead: (read, pull) =>
+      read === 1 ? pull : { ...pull, head: { ...pull.head, sha: changedHead } },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.equal(result.action, "deferred");
+    const commentReadIndex = harness.requests.findIndex(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/repos/owner/repo/issues/7/comments",
+    );
+    const finalPullReadIndex = harness.requests.findLastIndex(
+      (request) =>
+        request.method === "GET" &&
+        request.pathname === "/repos/owner/repo/pulls/7",
+    );
+    assert.ok(commentReadIndex >= 0 && finalPullReadIndex > commentReadIndex);
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a main advance at the final rebase POST boundary blocks the comment", async () => {
+  const harness = createControllerHarness({
+    behindBy: 2,
+    mainShaForRead: (read, refs) => (read <= 2 ? refs.main : refs.advancedMain),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.equal(result.action, "deferred");
+    assert.ok(harness.state.mainReads >= 3);
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an unknown mergeability result defers before approval", async () => {
+  const harness = createControllerHarness({
+    pullForRead: (_read, pull) => ({ ...pull, mergeable: null }),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.equal(result.action, "deferred");
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an unknown mergeability state defers even when mergeable is true", async () => {
+  const harness = createControllerHarness({
+    pullForRead: (_read, pull) => ({
+      ...pull,
+      mergeable: true,
+      mergeable_state: "unknown",
+    }),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.equal(result.action, "deferred");
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a definitive merge conflict is skipped without mutating the queue", async () => {
+  const harness = createControllerHarness({
+    pullForRead: (_read, pull) => ({
+      ...pull,
+      mergeable: false,
+      mergeable_state: "dirty",
+    }),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      { action: "none" },
+    );
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("mergeable true with blocked state remains eligible for approval", async () => {
+  const harness = createControllerHarness({
+    pullForRead: (_read, pull) => ({
+      ...pull,
+      mergeable: true,
+      mergeable_state: "blocked",
+    }),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.equal(
+      (await runController(controllerEnvironment(harness.repository))).action,
+      "merged",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("list payloads without mergeability still use a mergeable detail response", async () => {
+  const harness = createControllerHarness({
+    pullForRead: (_read, pull) => ({
+      ...pull,
+      mergeable: true,
+      mergeable_state: "blocked",
+    }),
+  });
+  assert.equal(Object.hasOwn(harness.pullSummary, "mergeable"), false);
+  assert.equal(Object.hasOwn(harness.pullSummary, "mergeable_state"), false);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.equal(
+      (await runController(controllerEnvironment(harness.repository))).action,
+      "merged",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a fresh detail read may resolve initially unknown mergeability", async () => {
+  const harness = createControllerHarness({
+    pullForRead: (read, pull) =>
+      read === 1
+        ? { ...pull, mergeable: null, mergeable_state: "unknown" }
+        : { ...pull, mergeable: true, mergeable_state: "blocked" },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.equal(
+      (await runController(controllerEnvironment(harness.repository))).action,
+      "merged",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("merge gating rejects an incoherent comparison status or merge base", async (t) => {
+  const seed = createControllerHarness();
+  const cases = [
+    {
+      name: "zero behind but diverged",
+      comparison: {
+        behind_by: 0,
+        status: "diverged",
+        merge_base_commit: { sha: seed.main },
+      },
+    },
+    {
+      name: "wrong merge base",
+      comparison: {
+        behind_by: 0,
+        status: "ahead",
+        merge_base_commit: { sha: "f".repeat(40) },
+      },
+    },
+    {
+      name: "positive behind count but ahead status",
+      comparison: {
+        behind_by: 2,
+        status: "ahead",
+        merge_base_commit: { sha: seed.main },
+      },
+    },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const harness = createControllerHarness({
+        comparisonForRead: () => fixture.comparison,
+      });
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = harness.fetch;
+      try {
+        const result = await runController(
+          controllerEnvironment(harness.repository),
+        );
+        assert.equal(result.action, "deferred");
+        assertNoControllerMutation(harness);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  }
+});
+
+test("a rebase request requires a coherent merge base at the final boundary", async () => {
+  const harness = createControllerHarness({
+    comparisonForRead: (read, refs) =>
+      read === 1
+        ? {
+            behind_by: 2,
+            status: "diverged",
+            merge_base_commit: { sha: refs.main },
+          }
+        : {
+            behind_by: 2,
+            status: "diverged",
+            merge_base_commit: { sha: "f".repeat(40) },
+          },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.equal(result.action, "deferred");
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("the final merge comparison revalidates status and merge base", async () => {
+  const harness = createControllerHarness({
+    comparisonForRead: (read, refs) =>
+      read === 1
+        ? {
+            behind_by: 0,
+            status: "ahead",
+            merge_base_commit: { sha: refs.main },
+          }
+        : {
+            behind_by: 0,
+            status: "diverged",
+            merge_base_commit: { sha: refs.main },
+          },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.equal(result.action, "deferred");
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "PUT" &&
+          request.pathname === "/repos/owner/repo/pulls/7/merge",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("the final merge comparison rejects a changed merge base", async () => {
+  const harness = createControllerHarness({
+    comparisonForRead: (read, refs) => ({
+      behind_by: 0,
+      status: "ahead",
+      merge_base_commit: {
+        sha: read === 1 ? refs.main : "f".repeat(40),
+      },
+    }),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.equal(result.action, "deferred");
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "PUT" &&
           request.pathname === "/repos/owner/repo/pulls/7/merge",
       ),
       false,
