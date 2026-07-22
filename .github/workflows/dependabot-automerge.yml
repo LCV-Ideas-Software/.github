@@ -3,7 +3,6 @@ name: Dependabot Automerge
 on:
   workflow_run:
     workflows:
-      - CI
       - CodeQL
       - Dependabot Controller CI
       - Dependency Review
