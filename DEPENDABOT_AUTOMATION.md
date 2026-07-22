@@ -25,8 +25,8 @@ wrapper and an exact list of stack-specific required checks.
 
 ## Queue behavior
 
-The reusable workflow serializes the whole repository and performs at most one
-queue mutation per run.
+The pinned JavaScript Action and its wrapper serialize the whole repository and
+perform at most one queue mutation per run.
 
 1. If the oldest eligible PR is behind `main`, the automation credential posts a
    guarded `@dependabot rebase` command, de-duplicated against the exact login
@@ -64,8 +64,8 @@ active repositories.
 1. Test the controller with `node --test dependabot-automerge/main.test.mjs` and
    lint every workflow with `actionlint`.
 2. Merge this repository first.
-3. Pin both the reusable workflow reference and `controller_ref` in every
-   consumer wrapper to the same reviewed commit SHA.
+3. Pin the central `dependabot-automerge` JavaScript Action in every consumer
+   wrapper to the reviewed commit SHA.
 4. Deploy one consumer as a canary. Prove a Dependabot-authored rebase, checks on
    the replacement SHA, automatic approval and an exact-head squash merge before
    completing the rollout.

@@ -23,9 +23,22 @@ permissions:
 
 jobs:
   dependabot-automerge:
-    uses: ./.github/workflows/dependabot-automerge-core.yml
-    with:
-      controller_ref: ${{ github.sha }}
-      required_checks_json: '["Dependency Review","Check index.html formatting","CodeQL","Socket Security: Project Report"]'
-    secrets:
-      LCV_AUTOMATION_TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+    name: Process Dependabot pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Process one guarded queue mutation
+        uses: LCV-Ideas-Software/.github/dependabot-automerge@dc4626e4d6745f87e5705a69632e0d387516806c
+        with:
+          github_token: ${{ github.token }}
+          automation_token: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+          required_checks_json: '["Dependency Review","Check index.html formatting","CodeQL","Socket Security: Project Report"]'
+
+concurrency:
+  group: dependabot-automerge-${{ github.repository }}
+  cancel-in-progress: false
