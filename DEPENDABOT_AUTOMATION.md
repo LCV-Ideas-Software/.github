@@ -12,55 +12,49 @@ wrapper and an exact list of stack-specific required checks.
   `workflow_dispatch`. It loads this repository at an immutable commit and never
   checks out a pull-request ref, executes pull-request code, restores its cache or
   downloads its artifacts.
-- A pull request is eligible only when it is open, non-draft, authored by
-  `dependabot[bot]`, originates in the same repository, targets `main`, uses a
-  `dependabot/` branch and has a verified 40-character head commit.
-- Approval and merge require the full PR commit set to be exactly one verified
-  Dependabot-authored commit with one parent. A PR with extra commits is never
-  approved. It is recoverable only when the original verified Dependabot commit
-  is followed exclusively by verified merge commits created by the exact
-  automation identity, each with the exact GitHub `Merge branch 'main' into …`
-  message, a first parent equal to the preceding commit and a second parent
-  proven to be an ancestor of current `main`. Manual commits fail closed.
-  Changed paths are restricted to the dependency manifests, lockfiles,
-  pre-commit configuration and GitHub Actions workflows used by the ecosystems
-  configured in this organization.
-- Before the destructive `@dependabot recreate` command, the controller creates
-  and re-reads a durable preservation branch named
-  `dependabot-recovery/pr-<number>-<head-prefix>` at the exact old head. It never
-  updates or deletes that ref. Any inline `chatgpt-codex-connector` thread in the
-  PR history blocks recreation, including resolved or outdated threads.
-- Every configured required check must be present and successful on the exact
-  head SHA. Every other attached check must be successful, skipped or neutral.
-  Missing and pending checks fail closed.
+- A pull request is eligible only when it is open, non-draft, authored by the
+  exact immutable `dependabot[bot]` account ID, originates in the same repository,
+  targets `main`, uses a `dependabot/` branch and has a verified 40-character head
+  SHA.
+- Approval, rebase requests and merge require the full PR commit set to be exactly
+  one verified Dependabot-authored commit, committed by the exact immutable
+  `web-flow` account ID, with one parent. Changed paths are restricted to the
+  dependency manifests, lockfiles, pre-commit configuration and GitHub Actions
+  workflows used by the ecosystems configured in this organization.
+- Any noncanonical commit set fails closed before reviews, comments, Git refs or
+  merges can be written. This includes extra commits and GitHub-signed merge
+  commits authored by the automation operator. The controller has no branch
+  update, force-push, recovery-ref or `@dependabot recreate` path.
+- Every configured required check must be present and successful on the exact head
+  SHA. Every other attached check must be successful, skipped or neutral. Missing
+  and pending checks fail closed. Required GitHub Actions checks must belong to a
+  pull-request workflow run whose immutable actor ID is Dependabot's.
+- An active `CHANGES_REQUESTED` review or unresolved inline thread from the exact
+  `chatgpt-codex-connector` bot ID blocks approval and merge. Reviews, connector
+  threads, checks, `main` and the PR head are all re-read after approval.
 
 ## Queue behavior
 
 The pinned JavaScript Action and its wrapper serialize the whole repository and
-perform at most one pull-request queue transition per run. A recovery
-transaction additionally creates its mandatory preservation ref before the
-single Dependabot command.
+perform at most one pull-request queue transition per run.
 
-1. If the oldest candidate contains only the strictly proven mechanical merge
-   chain described above, the automation credential first preserves the exact
-   head, repeats identity/history/path/review/connector validation, performs one
-   final head read and then posts a guarded `@dependabot recreate` command.
-   The marker is bound to PR, command and old head, so a later `main` advance
-   cannot duplicate the destructive request. Manual edits are never recreated.
-   A bounded watchdog recognizes a replaced head or replacement PR, fails if the
-   original closes without a trusted replacement, and otherwise leaves a
-   visible pending state for the hourly reconciliation run.
-2. If the oldest eligible PR is behind `main`, the credential posts a guarded
-   `@dependabot rebase` command. Both commands are de-duplicated against the exact
-   login and numeric ID resolved from the automation token. Dependabot therefore
-   authors the replacement head and triggers the normal restricted Dependabot CI
-   path; the privileged controller does not rewrite the branch itself.
-3. If the exact head is current and green, `GITHUB_TOKEN` records the approval.
-4. The controller re-reads `main`, the PR head and all checks after approval.
-5. The automation credential squash-merges only that exact head SHA. GitHub's
-   repository-level delete-after-merge setting owns branch deletion.
-6. The resulting `main` update makes the remaining PRs behind; the next run asks
-   Dependabot to rebase one of them. An hourly schedule recovers missed events.
+1. A canonical PR behind `main` receives one identity-bound `@dependabot rebase`
+   request. Its marker contains the exact head and base SHAs, and only a recent
+   comment from the exact login and numeric ID resolved from
+   `LCV_AUTOMATION_TOKEN` suppresses a retry. Dependabot authors the replacement
+   head, so normal restricted Dependabot pull-request CI runs on that SHA.
+2. A noncanonical PR is logged and skipped without any mutation. There is no
+   automatic destructive fallback if rebase fails or if someone has edited the
+   Dependabot branch.
+3. If the exact canonical head is current and green, `GITHUB_TOKEN` records the
+   approval for that SHA.
+4. The controller re-reads `main`, the PR head, checks, Actions provenance,
+   reviews and connector threads after approval.
+5. The automation credential squash-merges only the validated exact head SHA.
+   GitHub's repository-level delete-after-merge setting owns branch deletion.
+6. The resulting `main` update makes remaining PRs behind; a later serialized run
+   asks Dependabot to rebase the next canonical PR. The hourly schedule recovers
+   missed workflow events.
 
 The final REST merge guard accepts an expected head SHA but GitHub does not offer
 an expected base SHA for that endpoint. Two live base reads, repository-wide
@@ -68,36 +62,50 @@ serialization and the single-operator model narrow that residual race. If the
 organization later has concurrent maintainers, enable a merge queue and migrate
 the final step to queue enrollment.
 
+## Why recreation is excluded
+
+GitHub documents that `@dependabot recreate` overwrites edits. Dependabot's public
+issue tracker also contains real cases where recreation closed the original PR
+and opened a differently named replacement, or closed it without opening a
+replacement. A July 2026 report shows that rebase and recreate commands may fail
+for a valid non-root manifest layout. The generic controller therefore never
+tries to infer whether an operator-authored merge contained manual conflict
+resolution and never escalates a failed rebase to recreation. Any exceptional
+one-off recovery must be separately audited and preserve the exact old head
+outside this reusable action.
+
 ## Credentials and effective permissions
 
 - Every workflow and job intentionally declares `permissions: write-all`, as do
   the consumer wrappers. The controller still separates operations by token and
   has no generic command execution path.
 - `GITHUB_TOKEN` is used only for API reads and exact-head approval.
-- `LCV_AUTOMATION_TOKEN` is used only for the durable recovery-ref creation,
-  guarded Dependabot comments and exact-head squash merge. It is never printed
-  or exposed to pull-request code.
+- `LCV_AUTOMATION_TOKEN` is used only for guarded Dependabot rebase comments and
+  exact-head squash merge. It is never printed or exposed to pull-request code.
 
 ## Deployment and rollback
 
-1. Test the controller with `node --test dependabot-automerge/main.test.mjs` and
-   lint every workflow with `actionlint`.
+1. The dedicated controller CI must pass both
+   `node --check dependabot-automerge/main.mjs` and
+   `node --test dependabot-automerge/main.test.mjs`. Lint every workflow with
+   `actionlint` and audit it with zizmor.
 2. Merge this repository first.
 3. Pin the central `dependabot-automerge` JavaScript Action in every consumer
    wrapper to the reviewed commit SHA.
-4. Deploy one consumer as a canary. Prove a Dependabot-authored rebase, checks on
-   the replacement SHA, and—when recovery is required—the preserved old head,
-   one recreation command and reconciled canonical head. Then prove automatic
-   approval and an exact-head squash merge before completing the rollout.
-5. Roll back by restoring the prior wrapper. Existing PR heads and branches are
-   not deleted by the controller.
+4. Deploy one consumer as a canary. Prove a Dependabot-authored rebase, required
+   checks on the replacement SHA, automatic approval and an exact-head squash
+   merge before completing the rollout.
+5. Roll back by restoring the prior wrapper. The controller does not update or
+   delete PR heads, branches, tags or other Git refs.
 
-## Primary GitHub references
+## Primary references
 
 - [Events that trigger workflows: `workflow_run`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
 - [Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)
 - [Automating Dependabot with GitHub Actions](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions)
-- [Dependabot comment commands](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/managing-pull-requests-for-dependency-updates#comment-commands-for-dependabot)
+- [Dependabot pull-request comment commands](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-pull-request-comment-commands)
 - [Managing Dependabot PRs and extra commits](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/manage-dependabot-prs#allowing-dependabot-to-rebase-and-force-push-over-extra-commits)
 - [REST pull-request endpoints](https://docs.github.com/en/rest/pulls/pulls)
-- [Authenticating with a GitHub App installation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation)
+- [Dependabot issue #7898: recreate may open a replacement PR](https://github.com/dependabot/dependabot-core/issues/7898)
+- [Dependabot issue #10504: recreate may close without replacement](https://github.com/dependabot/dependabot-core/issues/10504)
+- [Dependabot issue #15566: command failures reported in 2026](https://github.com/dependabot/dependabot-core/issues/15566)

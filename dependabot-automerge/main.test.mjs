@@ -5,7 +5,6 @@ import { readFile } from "node:fs/promises";
 import {
   classifyChecks,
   evaluateExactHeadReviews,
-  findAnyConnectorReviewThreads,
   findBlockingConnectorReviewThreads,
   hasExpectedDependabotCommitShape,
   hasRecentAutomationRebaseRequest,
@@ -543,26 +542,46 @@ test("unresolved connector inline feedback blocks automation even after becoming
     "https://github.test/discussions/1",
     "https://github.test/discussions/3",
   ]);
-  assert.deepEqual(findAnyConnectorReviewThreads(threads), [
-    "https://github.test/discussions/1",
-    "https://github.test/discussions/2",
-    "https://github.test/discussions/3",
-  ]);
 });
 
-test("the controller can only create durable recovery refs and never rewrites or deletes refs", async () => {
+test("the controller has no branch-update or destructive-recreation primitive", async () => {
   const source = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
-  const forbiddenRefWritePrimitives = [
+  const forbiddenMutationPrimitives = [
     /\/update-branch/,
+    /@dependabot\s+recreate/i,
+    /\/git\/refs\b/,
     /method:\s*["'](?:PATCH|DELETE)["']/,
     /\bgit\s+(?:push|update-ref|branch\s+-[fF])\b/i,
   ];
-  for (const pattern of forbiddenRefWritePrimitives) {
+  for (const pattern of forbiddenMutationPrimitives) {
     assert.doesNotMatch(source, pattern);
   }
+});
 
-  assert.match(source, /refs\/heads\/dependabot-recovery\/pr-/);
-  assert.match(source, /method:\s*["']POST["'][\s\S]*\/git\/refs/);
+test("dedicated controller CI enforces syntax and tests with pinned actions and write-all", async () => {
+  const workflow = await readFile(
+    new URL(
+      "../.github/workflows/dependabot-controller-ci.yml",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(workflow, /^name: Dependabot Controller CI$/m);
+  assert.match(workflow, /^\s+pull_request:$/m);
+  assert.match(workflow, /^\s+push:$/m);
+  assert.equal(
+    [...workflow.matchAll(/^\s*permissions:\s*write-all$/gm)].length,
+    2,
+  );
+  assert.match(workflow, /node --check dependabot-automerge\/main\.mjs/);
+  assert.match(workflow, /node --test dependabot-automerge\/main\.test\.mjs/);
+  const actionReferences = [...workflow.matchAll(/^\s*uses:\s*(\S+)/gm)].map(
+    (match) => match[1],
+  );
+  assert.ok(actionReferences.length > 0);
+  for (const reference of actionReferences) {
+    assert.match(reference, /@[0-9a-f]{40}$/i);
+  }
 });
 
 test("approval is pinned to the validated head and late connector feedback blocks merge", async () => {
@@ -822,8 +841,6 @@ function createControllerHarness(options = {}) {
   let reviewReads = 0;
   let threadReads = 0;
   let pullReads = 0;
-  let recoveryRefSha = options.existingRecoveryRefSha ?? null;
-  let recoveryRefReads = 0;
 
   const fetch = async (input, init = {}) => {
     const url = new URL(String(input));
@@ -875,7 +892,7 @@ function createControllerHarness(options = {}) {
       url.pathname === "/repos/owner/repo/pulls/7/files" &&
       method === "GET"
     ) {
-      payload = [{ filename: "package.json" }];
+      payload = options.files ?? [{ filename: "package.json" }];
     } else if (
       url.pathname.startsWith("/repos/owner/repo/compare/") &&
       method === "GET"
@@ -955,28 +972,6 @@ function createControllerHarness(options = {}) {
     } else if (url.pathname === "/user" && method === "GET") {
       payload = { id: 42, login: "operator" };
     } else if (
-      url.pathname.startsWith(
-        "/repos/owner/repo/git/ref/heads/dependabot-recovery",
-      ) &&
-      method === "GET"
-    ) {
-      recoveryRefReads += 1;
-      if (recoveryRefSha === null) {
-        status = 404;
-        payload = { message: "Not Found" };
-      } else {
-        payload = {
-          ref: options.recoveryRefName,
-          object: { sha: recoveryRefSha },
-        };
-      }
-    } else if (
-      url.pathname === "/repos/owner/repo/git/refs" &&
-      method === "POST"
-    ) {
-      recoveryRefSha = body?.sha ?? null;
-      payload = { ref: body?.ref, object: { sha: recoveryRefSha } };
-    } else if (
       url.pathname === "/repos/owner/repo/issues/7/comments" &&
       method === "GET"
     ) {
@@ -1028,12 +1023,6 @@ function createControllerHarness(options = {}) {
       get pullReads() {
         return pullReads;
       },
-      get recoveryRefReads() {
-        return recoveryRefReads;
-      },
-      get recoveryRefSha() {
-        return recoveryRefSha;
-      },
     },
   };
 }
@@ -1044,12 +1033,10 @@ function controllerEnvironment(repository = "owner/repo") {
     GITHUB_TOKEN: "github-token",
     LCV_AUTOMATION_TOKEN: "automation-token",
     REQUIRED_CHECKS_JSON: JSON.stringify(requiredChecks),
-    RECREATE_POLL_ATTEMPTS: "1",
-    RECREATE_POLL_INTERVAL_MS: "0",
   };
 }
 
-function recoverableMergeChain(seed, overrides = {}) {
+function signedOperatorMergeChain(seed) {
   const original = {
     ...seed.commit,
     sha: "d".repeat(40),
@@ -1065,7 +1052,20 @@ function recoverableMergeChain(seed, overrides = {}) {
     },
     parents: [{ sha: original.sha }, { sha: seed.main }],
   };
-  return [original, { ...merge, ...overrides }];
+  return [original, merge];
+}
+
+function assertNoControllerMutation(harness) {
+  const mutation = harness.requests.find(
+    (request) =>
+      (request.method === "POST" &&
+        (request.pathname === "/repos/owner/repo/git/refs" ||
+          request.pathname === "/repos/owner/repo/issues/7/comments" ||
+          request.pathname === "/repos/owner/repo/pulls/7/reviews")) ||
+      (request.method === "PUT" &&
+        request.pathname === "/repos/owner/repo/pulls/7/merge"),
+  );
+  assert.equal(mutation, undefined);
 }
 
 test("the happy path approves and squash-merges only the exact head with separated tokens", async () => {
@@ -1163,71 +1163,22 @@ test("a behind PR gets one identity-bound Dependabot rebase command", async () =
         request.pathname === "/repos/owner/repo/issues/7/comments",
     );
     assert.equal(commentRead?.authorization, "Bearer github-token");
-    const commentWrite = harness.requests.find(
+    const commentWrites = harness.requests.filter(
       (request) =>
         request.method === "POST" &&
         request.pathname === "/repos/owner/repo/issues/7/comments",
     );
+    assert.equal(commentWrites.length, 1);
+    const [commentWrite] = commentWrites;
     assert.equal(commentWrite?.authorization, "Bearer automation-token");
     assert.deepEqual(commentWrite?.body, {
       body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${harness.head}:${harness.main} -->`,
     });
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("extra commits trigger an identity-bound Dependabot recreation without approval or merge", async () => {
-  const seed = createControllerHarness();
-  const harness = createControllerHarness({
-    commits: recoverableMergeChain(seed),
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    const result = await runController(
-      controllerEnvironment(harness.repository),
-    );
-    assert.deepEqual(result, {
-      action: "requested-recreate",
-      pull: 7,
-      head: harness.head,
-    });
-    const commentWrite = harness.requests.find(
-      (request) =>
-        request.method === "POST" &&
-        request.pathname === "/repos/owner/repo/issues/7/comments",
-    );
-    assert.equal(commentWrite?.authorization, "Bearer automation-token");
-    assert.deepEqual(commentWrite?.body, {
-      body: `@dependabot recreate\n\n<!-- lcv-dependabot-refresh:recreate:${harness.head} -->`,
-    });
-    const backupCreate = harness.requests.find(
-      (request) =>
-        request.method === "POST" &&
-        request.pathname === "/repos/owner/repo/git/refs",
-    );
-    assert.equal(backupCreate?.authorization, "Bearer automation-token");
-    assert.deepEqual(backupCreate?.body, {
-      ref: `refs/heads/dependabot-recovery/pr-7-${harness.head.slice(0, 12)}`,
-      sha: harness.head,
-    });
-    assert.equal(harness.state.recoveryRefSha, harness.head);
-    const backupIndex = harness.requests.indexOf(backupCreate);
-    const commentIndex = harness.requests.indexOf(commentWrite);
-    assert.ok(backupIndex >= 0 && backupIndex < commentIndex);
     assert.equal(
       harness.requests.some(
         (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/pulls/7/reviews",
-      ),
-      false,
-    );
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "PUT" &&
+          request.pathname === "/repos/owner/repo/git/refs" ||
+          request.pathname === "/repos/owner/repo/pulls/7/reviews" ||
           request.pathname === "/repos/owner/repo/pulls/7/merge",
       ),
       false,
@@ -1237,7 +1188,26 @@ test("extra commits trigger an identity-bound Dependabot recreation without appr
   }
 });
 
-test("a manual one-parent commit is never classified as a recoverable main-merge chain", async () => {
+test("a GitHub-signed merge by the automation operator never authorizes destructive recovery", async () => {
+  const seed = createControllerHarness();
+  const harness = createControllerHarness({
+    commits: signedOperatorMergeChain(seed),
+    files: [{ filename: ".github/workflows/ci.yml" }],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.deepEqual(result, { action: "none" });
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a noncanonical manual commit set fails closed without any mutation", async () => {
   const seed = createControllerHarness();
   const original = { ...seed.commit, sha: "d".repeat(40) };
   const harness = createControllerHarness({
@@ -1263,305 +1233,7 @@ test("a manual one-parent commit is never classified as a recoverable main-merge
       await runController(controllerEnvironment(harness.repository)),
       { action: "none" },
     );
-    assert.equal(harness.state.recoveryRefSha, null);
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/issues/7/comments",
-      ),
-      false,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("recreation rejects a wrong merge actor, message, parent chain, or main ancestry", async (t) => {
-  const seed = createControllerHarness();
-  const cases = [
-    {
-      name: "wrong actor",
-      commits: recoverableMergeChain(seed, {
-        author: { id: 999, login: "lookalike" },
-      }),
-    },
-    {
-      name: "wrong message",
-      commits: recoverableMergeChain(seed, {
-        commit: {
-          author: { email: "operator@users.noreply.github.com" },
-          message: "merge main and preserve manual changes",
-          verification: { verified: true },
-        },
-      }),
-    },
-    {
-      name: "wrong first parent",
-      commits: recoverableMergeChain(seed, {
-        parents: [{ sha: "e".repeat(40) }, { sha: seed.main }],
-      }),
-    },
-  ];
-  for (const fixture of cases) {
-    await t.test(fixture.name, async () => {
-      const harness = createControllerHarness({ commits: fixture.commits });
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = harness.fetch;
-      try {
-        assert.deepEqual(
-          await runController(controllerEnvironment(harness.repository)),
-          { action: "none" },
-        );
-        assert.equal(harness.state.recoveryRefSha, null);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-  }
-
-  await t.test("second parent is not an ancestor of current main", async () => {
-    const chain = recoverableMergeChain(seed);
-    chain[0] = {
-      ...chain[0],
-      parents: [{ sha: "1".repeat(40) }],
-    };
-    chain[1] = {
-      ...chain[1],
-      parents: [{ sha: chain[0].sha }, { sha: "2".repeat(40) }],
-    };
-    const harness = createControllerHarness({
-      commits: chain,
-      comparisonForRead: () => ({ status: "diverged", behind_by: 1 }),
-    });
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = harness.fetch;
-    try {
-      assert.deepEqual(
-        await runController(controllerEnvironment(harness.repository)),
-        { action: "none" },
-      );
-      assert.equal(harness.state.recoveryRefSha, null);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});
-
-test("any historical connector thread blocks destructive recreation, even when resolved and outdated", async () => {
-  const seed = createControllerHarness();
-  const harness = createControllerHarness({
-    commits: recoverableMergeChain(seed),
-    graphqlResponseForRead: () => ({
-      data: {
-        repository: {
-          pullRequest: {
-            reviewThreads: {
-              nodes: [
-                {
-                  isResolved: true,
-                  isOutdated: true,
-                  comments: {
-                    nodes: [
-                      {
-                        author: {
-                          databaseId: 199175422,
-                          login: "chatgpt-codex-connector",
-                        },
-                        url: "https://github.test/discussions/resolved",
-                      },
-                    ],
-                    pageInfo: { hasNextPage: false },
-                  },
-                },
-              ],
-              pageInfo: { hasNextPage: false, endCursor: null },
-            },
-          },
-        },
-      },
-    }),
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    assert.deepEqual(
-      await runController(controllerEnvironment(harness.repository)),
-      { action: "none" },
-    );
-    assert.equal(harness.state.recoveryRefSha, null);
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/issues/7/comments",
-      ),
-      false,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("a conflicting durable recovery ref fails closed before recreation", async () => {
-  const seed = createControllerHarness();
-  const harness = createControllerHarness({
-    commits: recoverableMergeChain(seed),
-    existingRecoveryRefSha: "f".repeat(40),
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    await assert.rejects(
-      runController(controllerEnvironment(harness.repository)),
-      /recovery ref.*does not preserve the expected head/i,
-    );
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/issues/7/comments",
-      ),
-      false,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("an active review veto blocks recreation of a noncanonical branch", async () => {
-  const seed = createControllerHarness();
-  const harness = createControllerHarness({
-    commits: recoverableMergeChain(seed),
-    reviewsForRead: () => [
-      {
-        id: 99,
-        user: { id: 7, login: "reviewer" },
-        commit_id: seed.head,
-        state: "CHANGES_REQUESTED",
-      },
-    ],
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    assert.deepEqual(
-      await runController(controllerEnvironment(harness.repository)),
-      { action: "none" },
-    );
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/issues/7/comments",
-      ),
-      false,
-    );
-    assert.equal(harness.state.threadReads, 0);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("a recent exact-identity recreate marker suppresses duplicate recreation", async () => {
-  const seed = createControllerHarness();
-  const marker = `<!-- lcv-dependabot-refresh:recreate:${seed.head} -->`;
-  const harness = createControllerHarness({
-    commits: recoverableMergeChain(seed),
-    issueComments: [
-      {
-        user: { id: 42, login: "operator" },
-        body: `@dependabot recreate\n\n${marker}`,
-        created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-      },
-    ],
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    assert.deepEqual(
-      await runController(controllerEnvironment(harness.repository)),
-      { action: "none" },
-    );
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/issues/7/comments",
-      ),
-      false,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("a recreate marker for the same head suppresses destructive retries indefinitely", async () => {
-  const seed = createControllerHarness();
-  const marker = `<!-- lcv-dependabot-refresh:recreate:${seed.head} -->`;
-  const harness = createControllerHarness({
-    commits: recoverableMergeChain(seed),
-    issueComments: [
-      {
-        user: { id: 42, login: "operator" },
-        body: `@dependabot recreate\n\n${marker}`,
-        created_at: "2025-01-01T00:00:00Z",
-      },
-    ],
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    assert.deepEqual(
-      await runController(controllerEnvironment(harness.repository)),
-      { action: "none" },
-    );
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/issues/7/comments",
-      ),
-      false,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("a head change at the recreation boundary defers without overwriting it", async () => {
-  const seed = createControllerHarness();
-  const harness = createControllerHarness({
-    commits: recoverableMergeChain(seed),
-    pullForRead: (read, pull) =>
-      read < 4
-        ? pull
-        : {
-            ...pull,
-            head: { ...pull.head, sha: "e".repeat(40) },
-          },
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    assert.deepEqual(
-      await runController(controllerEnvironment(harness.repository)),
-      {
-        action: "deferred",
-        pull: 7,
-        head: seed.head,
-      },
-    );
-    assert.ok(harness.state.pullReads >= 4);
-    assert.equal(harness.state.recoveryRefSha, seed.head);
-    assert.equal(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/issues/7/comments",
-      ),
-      false,
-    );
+    assertNoControllerMutation(harness);
   } finally {
     globalThis.fetch = originalFetch;
   }
