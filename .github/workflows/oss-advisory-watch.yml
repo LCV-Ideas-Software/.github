@@ -4,9 +4,7 @@ on:
     - cron: "0 12 * * 1"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
+permissions: write-all
 
 concurrency:
   group: oss-advisory-watch
@@ -16,9 +14,7 @@ jobs:
   watch:
     name: Cross-reference recent NPM advisories vs org dependencies
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
+    permissions: write-all
     timeout-minutes: 20
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -28,6 +24,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Gather org NPM dependencies (root + known frontend subpaths)
         id: deps
@@ -149,18 +147,22 @@ jobs:
               ) | join(""))
           ' /tmp/findings.json)
           # Find existing open issue with title prefix
-          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "OSS Advisory Watch in:title" --json number -q '.[0].number' 2>/dev/null || echo "")
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "OSS Advisory Watch in:title" --json number -q '.[0].number' 2>/dev/null || echo "")
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
-            gh issue comment "$existing" --repo "${{ github.repository }}" --body "$body"
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
             echo "Commented on existing #$existing"
           else
-            gh issue create --repo "${{ github.repository }}" \
+            gh issue create --repo "$GITHUB_REPOSITORY" \
               --title "OSS Advisory Watch — $(date -u +%Y-%m-%d)" \
               --body "$body"
           fi
 
       - name: Summary
+        env:
+          ADVISORY_COUNT: ${{ steps.advisories.outputs.count }}
+          DEPENDENCY_COUNT: ${{ steps.deps.outputs.count }}
+          FINDING_COUNT: ${{ steps.match.outputs.count }}
         run: |
-          echo "Installed NPM unique pkg/version pairs: ${{ steps.deps.outputs.count }}"
-          echo "GHAS NPM advisories (last 30d): ${{ steps.advisories.outputs.count }}"
-          echo "Cross-ref findings: ${{ steps.match.outputs.count }}"
+          echo "Installed NPM unique pkg/version pairs: $DEPENDENCY_COUNT"
+          echo "GHAS NPM advisories (last 30d): $ADVISORY_COUNT"
+          echo "Cross-ref findings: $FINDING_COUNT"

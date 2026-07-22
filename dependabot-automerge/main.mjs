@@ -3,8 +3,56 @@
 import { pathToFileURL } from "node:url";
 
 const API_ROOT = "https://api.github.com";
-const API_VERSION = "2022-11-28";
+const API_VERSION = "2026-03-10";
 const ALLOWED_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
+const DEPENDABOT_ACTOR_ID = 49699333;
+const DEPENDABOT_ACTOR_LOGIN = "dependabot[bot]";
+// Verified against live GitHub check-run payloads. Unlike an App slug, this
+// database ID is immutable when an App is renamed.
+const GITHUB_ACTIONS_APP_ID = 15368;
+const CONNECTOR_ACTOR_DATABASE_ID = 199175422;
+const CONNECTOR_ACTOR_LOGINS = new Set([
+  "chatgpt-codex-connector",
+  "chatgpt-codex-connector[bot]",
+]);
+const REVIEW_THREADS_QUERY = `
+  query DependabotReviewThreads(
+    $owner: String!
+    $repo: String!
+    $number: Int!
+    $after: String
+  ) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        reviewThreads(first: 100, after: $after) {
+          nodes {
+            isResolved
+            isOutdated
+            comments(first: 100) {
+              nodes {
+                author {
+                  login
+                  ... on Bot {
+                    databaseId
+                  }
+                }
+                body
+                url
+              }
+              pageInfo {
+                hasNextPage
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  }
+`;
 
 function log(message) {
   process.stdout.write(`${message}\n`);
@@ -27,8 +75,21 @@ export function parseRequiredChecks(raw) {
   if (!Array.isArray(parsed) || parsed.length === 0) {
     throw new Error("REQUIRED_CHECKS_JSON must be a non-empty JSON array");
   }
-  const checks = parsed.map((value) => assertNonEmpty(value, "required check"));
-  if (new Set(checks).size !== checks.length) {
+  const checks = parsed.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        "Each required check must be an object with name and app_id",
+      );
+    }
+    if (!Number.isSafeInteger(value.app_id) || value.app_id <= 0) {
+      throw new Error("required check app_id must be a positive safe integer");
+    }
+    return {
+      name: assertNonEmpty(value.name, "required check name"),
+      app_id: value.app_id,
+    };
+  });
+  if (new Set(checks.map((check) => check.name)).size !== checks.length) {
     throw new Error("REQUIRED_CHECKS_JSON must not contain duplicate names");
   }
   return checks;
@@ -39,7 +100,8 @@ export function isTrustedPullRequest(pull, repository) {
     pull &&
     pull.state === "open" &&
     pull.draft === false &&
-    pull.user?.login === "dependabot[bot]" &&
+    pull.user?.id === DEPENDABOT_ACTOR_ID &&
+    pull.user?.login === DEPENDABOT_ACTOR_LOGIN &&
     pull.head?.repo?.full_name === repository &&
     pull.base?.repo?.full_name === repository &&
     pull.base?.ref === "main" &&
@@ -49,13 +111,14 @@ export function isTrustedPullRequest(pull, repository) {
   );
 }
 
-export function hasTrustedDependabotCommitSet(commits, headSha) {
+export function hasExpectedDependabotCommitShape(commits, headSha) {
   if (!Array.isArray(commits) || commits.length !== 1) return false;
   const commit = commits[0];
   return Boolean(
     commit.sha === headSha &&
-    commit.author?.login === "dependabot[bot]" &&
-    ["dependabot[bot]", "web-flow"].includes(commit.committer?.login) &&
+    commit.author?.id === DEPENDABOT_ACTOR_ID &&
+    commit.author?.login === DEPENDABOT_ACTOR_LOGIN &&
+    [DEPENDABOT_ACTOR_LOGIN, "web-flow"].includes(commit.committer?.login) &&
     commit.commit?.author?.email ===
       "49699333+dependabot[bot]@users.noreply.github.com" &&
     commit.commit?.verification?.verified === true &&
@@ -86,24 +149,13 @@ export function isAllowedDependabotPath(filename) {
   return /^\.pre-commit-config\.ya?ml$/i.test(filename);
 }
 
-function isIgnoredCheck(check, currentRunId) {
-  return (
-    currentRunId &&
-    typeof check.details_url === "string" &&
-    check.details_url.includes(`/actions/runs/${currentRunId}`)
-  );
-}
-
 export function classifyChecks({
   checkRuns,
   statuses = [],
   combinedStatusState = "pending",
   requiredChecks,
-  currentRunId = "",
 }) {
-  const relevantRuns = checkRuns.filter(
-    (check) => !isIgnoredCheck(check, currentRunId),
-  );
+  const relevantRuns = checkRuns;
   const latestStatuses = new Map();
   for (const status of statuses) {
     const previous = latestStatuses.get(status.context);
@@ -121,12 +173,18 @@ export function classifyChecks({
   }
 
   const missing = requiredChecks.filter(
-    (required) => !relevantRuns.some((check) => check.name === required),
+    (required) =>
+      !relevantRuns.some(
+        (check) =>
+          check.name === required.name && check.app?.id === required.app_id,
+      ),
   );
   if (missing.length > 0) {
     return {
       state: "pending",
-      reason: `required checks not attached: ${missing.join(", ")}`,
+      reason: `required checks not attached from expected producers: ${missing
+        .map((check) => `${check.name}@app:${check.app_id}`)
+        .join(", ")}`,
     };
   }
 
@@ -152,7 +210,8 @@ export function classifyChecks({
   const requiredNotSuccessful = requiredChecks.filter((required) =>
     relevantRuns.some(
       (check) =>
-        check.name === required &&
+        check.name === required.name &&
+        check.app?.id === required.app_id &&
         (check.conclusion ?? "").toLowerCase() !== "success",
     ),
   );
@@ -166,7 +225,9 @@ export function classifyChecks({
         (check) => `${check.name}=${check.conclusion ?? check.status}`,
       ),
       ...failedStatuses.map((status) => `${status.context}=${status.state}`),
-      ...requiredNotSuccessful.map((name) => `${name}=required-not-successful`),
+      ...requiredNotSuccessful.map(
+        (check) => `${check.name}@app:${check.app_id}=required-not-successful`,
+      ),
     ];
     return { state: "failure", reason: [...new Set(failures)].join(", ") };
   }
@@ -175,6 +236,57 @@ export function classifyChecks({
     state: "success",
     reason: "all required and attached checks are green",
   };
+}
+
+export function hasTrustedDependabotWorkflowProvenance({
+  checkRuns,
+  workflowRuns,
+  requiredChecks,
+  headSha,
+}) {
+  if (
+    !Array.isArray(checkRuns) ||
+    !Array.isArray(workflowRuns) ||
+    !Array.isArray(requiredChecks) ||
+    !/^[0-9a-f]{40}$/i.test(headSha ?? "")
+  ) {
+    return false;
+  }
+
+  const requiredNames = new Set(
+    requiredChecks
+      .filter((required) => required.app_id === GITHUB_ACTIONS_APP_ID)
+      .map((required) => required.name),
+  );
+  const requiredActionsChecks = checkRuns.filter(
+    (check) =>
+      requiredNames.has(check.name) && check.app?.id === GITHUB_ACTIONS_APP_ID,
+  );
+  if (requiredActionsChecks.length === 0) return false;
+
+  // Commit author/committer fields are supplied commit metadata and are not
+  // provenance. Bind every required Actions check to the immutable account id
+  // that triggered the original pull_request run for this exact SHA instead.
+  // GitHub re-runs retain that original actor and SHA, so triggering_actor is
+  // intentionally not part of this decision.
+  const trustedSuiteIds = new Set(
+    workflowRuns
+      .filter(
+        (run) =>
+          run.head_sha === headSha &&
+          run.event === "pull_request" &&
+          run.actor?.id === DEPENDABOT_ACTOR_ID &&
+          run.actor?.login === DEPENDABOT_ACTOR_LOGIN &&
+          Number.isSafeInteger(run.check_suite_id),
+      )
+      .map((run) => run.check_suite_id),
+  );
+
+  return requiredActionsChecks.every(
+    (check) =>
+      Number.isSafeInteger(check.check_suite?.id) &&
+      trustedSuiteIds.has(check.check_suite.id),
+  );
 }
 
 export function hasRecentAutomationRebaseRequest(
@@ -223,6 +335,33 @@ export function evaluateExactHeadReviews(reviews, headSha) {
       (review) => review.state === "APPROVED" && review.commit_id === headSha,
     ),
   };
+}
+
+export function findBlockingConnectorReviewThreads(threads) {
+  if (!Array.isArray(threads)) {
+    throw new Error("Review threads must be an array");
+  }
+  const blocking = [];
+  for (const thread of threads) {
+    if (thread?.isResolved === true) continue;
+    const comments = thread?.comments?.nodes;
+    if (!Array.isArray(comments)) {
+      throw new Error("Review thread comments must be an array");
+    }
+    const connectorComment = comments.find(
+      (comment) =>
+        comment?.author?.databaseId === CONNECTOR_ACTOR_DATABASE_ID &&
+        CONNECTOR_ACTOR_LOGINS.has(comment?.author?.login),
+    );
+    if (connectorComment) {
+      blocking.push(
+        typeof connectorComment.url === "string" && connectorComment.url !== ""
+          ? connectorComment.url
+          : "unlinked connector review thread",
+      );
+    }
+  }
+  return blocking;
 }
 
 async function github(path, { token, method = "GET", body, allow = [] } = {}) {
@@ -279,7 +418,51 @@ async function paginated(path, token, key = null) {
   return results;
 }
 
-async function readChecks(owner, repo, sha, token, currentRunId) {
+async function readReviewThreads(owner, repo, number, token) {
+  const threads = [];
+  let after = null;
+  const maxPages = 10;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const { payload } = await github("/graphql", {
+      token,
+      method: "POST",
+      body: {
+        query: REVIEW_THREADS_QUERY,
+        variables: { owner, repo, number, after },
+      },
+    });
+    if (Array.isArray(payload?.errors) && payload.errors.length > 0) {
+      throw new Error(
+        `GitHub GraphQL review-thread query failed: ${payload.errors
+          .map((error) => error?.message ?? "unknown error")
+          .join("; ")}`,
+      );
+    }
+    const connection = payload?.data?.repository?.pullRequest?.reviewThreads;
+    if (!Array.isArray(connection?.nodes)) {
+      throw new Error("Unexpected review-thread response from GitHub GraphQL");
+    }
+    for (const thread of connection.nodes) {
+      if (thread?.comments?.pageInfo?.hasNextPage === true) {
+        throw new Error(
+          `PR #${number} has a review thread with more than 100 comments; refusing to merge without a complete audit`,
+        );
+      }
+      threads.push(thread);
+    }
+    if (connection.pageInfo?.hasNextPage !== true) return threads;
+    after = connection.pageInfo?.endCursor;
+    if (typeof after !== "string" || after === "") {
+      throw new Error("Review-thread pagination did not provide an end cursor");
+    }
+    if (page === maxPages) {
+      throw new Error("Review-thread pagination limit exceeded");
+    }
+  }
+  return threads;
+}
+
+async function readChecks(owner, repo, sha, token) {
   const encodedSha = encodeURIComponent(sha);
   const checkRuns = await paginated(
     `/repos/${owner}/${repo}/commits/${encodedSha}/check-runs?filter=latest`,
@@ -294,11 +477,16 @@ async function readChecks(owner, repo, sha, token, currentRunId) {
     `/repos/${owner}/${repo}/commits/${encodedSha}/status`,
     { token },
   );
+  const workflowRuns = await paginated(
+    `/repos/${owner}/${repo}/actions/runs?head_sha=${encodedSha}`,
+    token,
+    "workflow_runs",
+  );
   return {
     checkRuns,
     statuses,
     combinedStatusState: combinedStatus?.state ?? "pending",
-    currentRunId,
+    workflowRuns,
   };
 }
 
@@ -364,15 +552,16 @@ async function requestDependabotRebase(
   return true;
 }
 
-async function inspectPullProvenance(owner, repo, pull, token) {
+async function inspectPullCandidate(owner, repo, pull, token) {
   const commits = await paginated(
     `/repos/${owner}/${repo}/pulls/${pull.number}/commits`,
     token,
   );
-  if (!hasTrustedDependabotCommitSet(commits, pull.head.sha)) {
+  if (!hasExpectedDependabotCommitShape(commits, pull.head.sha)) {
     return {
-      trusted: false,
-      reason: "commit set is not a single verified Dependabot-authored commit",
+      eligible: false,
+      reason:
+        "commit set does not match the expected single-commit Dependabot shape",
     };
   }
 
@@ -381,20 +570,20 @@ async function inspectPullProvenance(owner, repo, pull, token) {
     token,
   );
   if (files.length === 0) {
-    return { trusted: false, reason: "pull request has no changed files" };
+    return { eligible: false, reason: "pull request has no changed files" };
   }
   const unexpected = files
     .map((file) => file.filename)
     .filter((filename) => !isAllowedDependabotPath(filename));
   if (unexpected.length > 0) {
     return {
-      trusted: false,
+      eligible: false,
       reason: `unexpected changed paths: ${unexpected.join(", ")}`,
     };
   }
   return {
-    trusted: true,
-    reason: "verified Dependabot commit and dependency-only paths",
+    eligible: true,
+    reason: "expected commit shape and dependency-only paths",
   };
 }
 
@@ -416,6 +605,7 @@ async function ensureApproval(owner, repo, pull, token) {
     token,
     method: "POST",
     body: {
+      commit_id: pull.head.sha,
       event: "APPROVE",
       body: `Auto-approved Dependabot update after all configured checks passed for ${pull.head.sha}.`,
     },
@@ -463,7 +653,6 @@ export async function runController(env = process.env) {
   const requiredChecks = parseRequiredChecks(
     env.INPUT_REQUIRED_CHECKS_JSON ?? env.REQUIRED_CHECKS_JSON,
   );
-  const currentRunId = env.GITHUB_RUN_ID ?? "";
   const dryRun = env.DRY_RUN === "true";
 
   const pulls = await paginated(
@@ -474,7 +663,7 @@ export async function runController(env = process.env) {
     isTrustedPullRequest(pull, repository),
   );
   log(
-    `${repository}: ${dependabotPulls.length} trusted open Dependabot PR(s).`,
+    `${repository}: ${dependabotPulls.length} candidate open Dependabot PR(s).`,
   );
   if (dependabotPulls.length === 0) return { action: "none" };
 
@@ -493,15 +682,15 @@ export async function runController(env = process.env) {
       continue;
     }
 
-    const provenance = await inspectPullProvenance(
+    const candidate = await inspectPullCandidate(
       owner,
       repo,
       pull,
       githubToken,
     );
-    if (!provenance.trusted) {
+    if (!candidate.eligible) {
       log(
-        `PR #${pull.number}: untrusted provenance (${provenance.reason}); skipped.`,
+        `PR #${pull.number}: ineligible candidate (${candidate.reason}); skipped.`,
       );
       continue;
     }
@@ -513,7 +702,15 @@ export async function runController(env = process.env) {
       pull.head.sha,
       githubToken,
     );
-    if (Number(comparison?.behind_by ?? 0) > 0) {
+    if (
+      !Number.isSafeInteger(comparison?.behind_by) ||
+      comparison.behind_by < 0
+    ) {
+      throw new Error(
+        `PR #${pull.number}: GitHub returned an invalid behind_by comparison`,
+      );
+    }
+    if (comparison.behind_by > 0) {
       log(
         `PR #${pull.number}: ${comparison.behind_by} commit(s) behind main; requesting a Dependabot-authored rebase.`,
       );
@@ -543,16 +740,32 @@ export async function runController(env = process.env) {
       continue;
     }
 
-    const checks = await readChecks(
-      owner,
-      repo,
-      pull.head.sha,
-      githubToken,
-      currentRunId,
-    );
+    const checks = await readChecks(owner, repo, pull.head.sha, githubToken);
     const verdict = classifyChecks({ ...checks, requiredChecks });
     log(`PR #${pull.number}: checks=${verdict.state} (${verdict.reason}).`);
     if (verdict.state !== "success") continue;
+    if (
+      !hasTrustedDependabotWorkflowProvenance({
+        ...checks,
+        requiredChecks,
+        headSha: pull.head.sha,
+      })
+    ) {
+      log(
+        `PR #${pull.number}: required Actions checks lack exact-head Dependabot actor provenance; skipped.`,
+      );
+      continue;
+    }
+
+    const connectorThreads = findBlockingConnectorReviewThreads(
+      await readReviewThreads(owner, repo, pull.number, githubToken),
+    );
+    if (connectorThreads.length > 0) {
+      log(
+        `PR #${pull.number}: ${connectorThreads.length} unresolved chatgpt-codex-connector inline thread(s) block automation: ${connectorThreads.join(", ")}`,
+      );
+      continue;
+    }
 
     if (pull.mergeable === false || pull.mergeable_state === "dirty") {
       log(`PR #${pull.number}: GitHub reports merge conflicts; skipped.`);
@@ -609,14 +822,14 @@ export async function runController(env = process.env) {
       );
       return { action: "deferred", pull: pull.number, head: pull.head.sha };
     }
+    const postApprovalCheckSnapshot = await readChecks(
+      owner,
+      repo,
+      pull.head.sha,
+      githubToken,
+    );
     const postApprovalChecks = classifyChecks({
-      ...(await readChecks(
-        owner,
-        repo,
-        pull.head.sha,
-        githubToken,
-        currentRunId,
-      )),
+      ...postApprovalCheckSnapshot,
       requiredChecks,
     });
     if (postApprovalChecks.state !== "success") {
@@ -625,8 +838,92 @@ export async function runController(env = process.env) {
       );
       return { action: "deferred", pull: pull.number, head: pull.head.sha };
     }
+    if (
+      !hasTrustedDependabotWorkflowProvenance({
+        ...postApprovalCheckSnapshot,
+        requiredChecks,
+        headSha: pull.head.sha,
+      })
+    ) {
+      log(
+        `PR #${pull.number}: Actions provenance changed during approval; merge deferred.`,
+      );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
+    }
 
-    await mergeSquash(owner, repo, postApprovalPull, automationToken);
+    const finalReviews = await paginated(
+      `/repos/${owner}/${repo}/pulls/${pull.number}/reviews`,
+      githubToken,
+    );
+    const finalReviewState = evaluateExactHeadReviews(
+      finalReviews,
+      pull.head.sha,
+    );
+    if (finalReviewState.vetoed || !finalReviewState.approved) {
+      log(
+        `PR #${pull.number}: review state changed during approval; merge deferred.`,
+      );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
+    }
+
+    const finalConnectorThreads = findBlockingConnectorReviewThreads(
+      await readReviewThreads(owner, repo, pull.number, githubToken),
+    );
+    if (finalConnectorThreads.length > 0) {
+      log(
+        `PR #${pull.number}: connector inline feedback changed during approval; merge deferred: ${finalConnectorThreads.join(", ")}`,
+      );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
+    }
+
+    // The REST merge endpoint offers an atomic expected head SHA, but no
+    // expected base SHA. Re-read both refs and the comparison immediately
+    // before that exact-head PUT to minimize the unavoidable base-side race.
+    const finalMainSha = await currentMainSha(owner, repo, githubToken);
+    const { payload: finalPull } = await github(
+      `/repos/${owner}/${repo}/pulls/${pull.number}`,
+      { token: githubToken },
+    );
+    if (
+      finalMainSha !== mainSha ||
+      !isTrustedPullRequest(finalPull, repository) ||
+      finalPull.head.sha !== pull.head.sha
+    ) {
+      log(
+        `PR #${pull.number}: head or main changed immediately before merge; deferred.`,
+      );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
+    }
+    const finalComparison = await compareWithMain(
+      owner,
+      repo,
+      finalMainSha,
+      finalPull.head.sha,
+      githubToken,
+    );
+    if (
+      !Number.isSafeInteger(finalComparison?.behind_by) ||
+      finalComparison.behind_by < 0
+    ) {
+      throw new Error(
+        `PR #${pull.number}: GitHub returned an invalid final behind_by comparison`,
+      );
+    }
+    if (finalComparison.behind_by > 0) {
+      log(
+        `PR #${pull.number}: became behind immediately before merge; deferred.`,
+      );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
+    }
+    const mergeMainSha = await currentMainSha(owner, repo, githubToken);
+    if (mergeMainSha !== mainSha) {
+      log(
+        `PR #${pull.number}: main advanced at the final merge boundary; deferred.`,
+      );
+      return { action: "deferred", pull: pull.number, head: pull.head.sha };
+    }
+
+    await mergeSquash(owner, repo, finalPull, automationToken);
     return { action: "merged", pull: pull.number, head: pull.head.sha };
   }
 
