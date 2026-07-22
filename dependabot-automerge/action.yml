@@ -1,12 +1,12 @@
 name: LCV Dependabot Automerge Controller
-description: Validates, refreshes, approves and squash-merges trusted Dependabot pull requests.
+description: Validates, rebases, approves and squash-merges canonical Dependabot pull requests.
 
 inputs:
   github_token:
     description: Ephemeral GITHUB_TOKEN used for Actions provenance, checks and approval.
     required: true
   automation_token:
-    description: Automation credential used only for recovery refs, guarded refresh commands and exact-head merge.
+    description: Automation credential used only for guarded rebase comments and exact-head squash merges.
     required: true
   required_checks_json:
     description: JSON array of exact {name,app_id} check identities that must conclude success.
