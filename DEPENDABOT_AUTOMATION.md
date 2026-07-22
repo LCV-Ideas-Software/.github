@@ -17,11 +17,19 @@ wrapper and an exact list of stack-specific required checks.
   `dependabot/` branch and has a verified 40-character head commit.
 - Approval and merge require the full PR commit set to be exactly one verified
   Dependabot-authored commit with one parent. A PR with extra commits is never
-  approved: after path checks and veto/connector checks, the controller asks
-  Dependabot to `recreate` it, which restores bot authorship while overwriting
-  the noncanonical edits. Changed paths are restricted to the dependency
-  manifests, lockfiles, pre-commit configuration and GitHub Actions workflows
-  used by the ecosystems configured in this organization.
+  approved. It is recoverable only when the original verified Dependabot commit
+  is followed exclusively by verified merge commits created by the exact
+  automation identity, each with the exact GitHub `Merge branch 'main' into …`
+  message, a first parent equal to the preceding commit and a second parent
+  proven to be an ancestor of current `main`. Manual commits fail closed.
+  Changed paths are restricted to the dependency manifests, lockfiles,
+  pre-commit configuration and GitHub Actions workflows used by the ecosystems
+  configured in this organization.
+- Before the destructive `@dependabot recreate` command, the controller creates
+  and re-reads a durable preservation branch named
+  `dependabot-recovery/pr-<number>-<head-prefix>` at the exact old head. It never
+  updates or deletes that ref. Any inline `chatgpt-codex-connector` thread in the
+  PR history blocks recreation, including resolved or outdated threads.
 - Every configured required check must be present and successful on the exact
   head SHA. Every other attached check must be successful, skipped or neutral.
   Missing and pending checks fail closed.
@@ -29,12 +37,19 @@ wrapper and an exact list of stack-specific required checks.
 ## Queue behavior
 
 The pinned JavaScript Action and its wrapper serialize the whole repository and
-perform at most one queue mutation per run.
+perform at most one pull-request queue transition per run. A recovery
+transaction additionally creates its mandatory preservation ref before the
+single Dependabot command.
 
-1. If the oldest candidate contains extra commits, the automation credential
-   posts a guarded `@dependabot recreate` command. This recovers branches changed
-   by GitHub's update button or by manual edits; no approval is possible until
-   Dependabot replaces the head with its canonical single verified commit.
+1. If the oldest candidate contains only the strictly proven mechanical merge
+   chain described above, the automation credential first preserves the exact
+   head, repeats identity/history/path/review/connector validation, performs one
+   final head read and then posts a guarded `@dependabot recreate` command.
+   The marker is bound to PR, command and old head, so a later `main` advance
+   cannot duplicate the destructive request. Manual edits are never recreated.
+   A bounded watchdog recognizes a replaced head or replacement PR, fails if the
+   original closes without a trusted replacement, and otherwise leaves a
+   visible pending state for the hourly reconciliation run.
 2. If the oldest eligible PR is behind `main`, the credential posts a guarded
    `@dependabot rebase` command. Both commands are de-duplicated against the exact
    login and numeric ID resolved from the automation token. Dependabot therefore
@@ -53,18 +68,15 @@ serialization and the single-operator model narrow that residual race. If the
 organization later has concurrent maintainers, enable a merge queue and migrate
 the final step to queue enrollment.
 
-## Credentials
+## Credentials and effective permissions
 
-- `GITHUB_TOKEN`: checks read, contents read, statuses read and pull requests
-  write. It is not used to update branches or merge.
-- `LCV_AUTOMATION_TOKEN`: repository-scoped pull-request/comment and contents
-  write access, plus workflow write access so reviewed GitHub Actions dependency
-  updates can merge. It is never printed or exposed to pull-request code.
-
-A dedicated least-privilege GitHub App installation token is the preferred
-future replacement for the personal automation token. The current token remains
-the deployable option because the same named secret is already provisioned in all
-active repositories.
+- Every workflow and job intentionally declares `permissions: write-all`, as do
+  the consumer wrappers. The controller still separates operations by token and
+  has no generic command execution path.
+- `GITHUB_TOKEN` is used only for API reads and exact-head approval.
+- `LCV_AUTOMATION_TOKEN` is used only for the durable recovery-ref creation,
+  guarded Dependabot comments and exact-head squash merge. It is never printed
+  or exposed to pull-request code.
 
 ## Deployment and rollback
 
@@ -74,8 +86,9 @@ active repositories.
 3. Pin the central `dependabot-automerge` JavaScript Action in every consumer
    wrapper to the reviewed commit SHA.
 4. Deploy one consumer as a canary. Prove a Dependabot-authored rebase, checks on
-   the replacement SHA, automatic approval and an exact-head squash merge before
-   completing the rollout.
+   the replacement SHA, and—when recovery is required—the preserved old head,
+   one recreation command and reconciled canonical head. Then prove automatic
+   approval and an exact-head squash merge before completing the rollout.
 5. Roll back by restoring the prior wrapper. Existing PR heads and branches are
    not deleted by the controller.
 
