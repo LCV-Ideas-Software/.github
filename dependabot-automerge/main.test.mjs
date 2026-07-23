@@ -276,6 +276,9 @@ test("allows only dependency manifests, locks, pre-commit config and Actions wor
     "src-tauri/Cargo.toml",
     "Cargo.lock",
     "requirements-dev.txt",
+    "socketsecurity-requirements.in",
+    "socketsecurity-requirements.txt",
+    "python/socketsecurity-requirements.in",
     "pyproject.toml",
     ".pre-commit-config.yaml",
     ".github/workflows/ci.yml",
@@ -287,6 +290,9 @@ test("allows only dependency manifests, locks, pre-commit config and Actions wor
     ".github/dependabot.yml",
     "README.md",
     "ci.yml",
+    "socketsecurity-requirements-dev.txt",
+    "attacker-socketsecurity-requirements.txt",
+    "socketsecurity-requirements.in.js",
   ]) {
     assert.equal(isAllowedDependabotPath(path), false, path);
   }

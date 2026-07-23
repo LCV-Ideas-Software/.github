@@ -148,6 +148,11 @@ export function isAllowedDependabotPath(filename) {
   if (/^(?:.+\/)?Cargo\.(?:toml|lock)$/i.test(filename)) return true;
   if (/^(?:.+\/)?requirements[^/]*\.(?:txt|in)$/i.test(filename)) return true;
   if (
+    /^(?:.+\/)?socketsecurity-requirements\.(?:txt|in)$/i.test(filename)
+  ) {
+    return true;
+  }
+  if (
     /^(?:.+\/)?(?:pyproject\.toml|poetry\.lock|Pipfile(?:\.lock)?|uv\.lock|setup\.py|setup\.cfg)$/i.test(
       filename,
     )
