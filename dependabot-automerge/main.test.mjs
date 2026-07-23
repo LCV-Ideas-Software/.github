@@ -1178,6 +1178,47 @@ test("the happy path approves and squash-merges only the exact head with separat
   }
 });
 
+test("canonical Socket Security manifests reach guarded approval and squash merge", async () => {
+  const harness = createControllerHarness({
+    files: [
+      { filename: "socketsecurity-requirements.in" },
+      { filename: "socketsecurity-requirements.txt" },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      {
+        action: "merged",
+        pull: 7,
+        head: harness.head,
+      },
+    );
+    assert.ok(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/pulls/7/reviews" &&
+          request.body?.commit_id === harness.head &&
+          request.body?.event === "APPROVE",
+      ),
+    );
+    assert.ok(
+      harness.requests.some(
+        (request) =>
+          request.method === "PUT" &&
+          request.pathname === "/repos/owner/repo/pulls/7/merge" &&
+          request.body?.sha === harness.head &&
+          request.body?.merge_method === "squash",
+      ),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("a base advance at the final merge boundary defers an unchecked integration", async () => {
   const harness = createControllerHarness({
     mainShaForRead: (read, refs) => (read <= 4 ? refs.main : refs.advancedMain),
