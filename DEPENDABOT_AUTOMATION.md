@@ -48,7 +48,11 @@ perform at most one pull-request queue transition per run.
    paths, live `main`, canonical merge base and a coherent behind comparison. It
    then re-reads the head and `main` immediately before posting. Dependabot
    authors the replacement head, so normal restricted Dependabot pull-request CI
-   runs on that SHA.
+   runs on that SHA. If the immutable Dependabot identity returns its exact
+   documented "already up-to-date" response while the live comparison still says
+   the PR is behind, the controller performs one separately marked rebase retry.
+   A second authenticated no-op fails the controller visibly; it is never
+   escalated to a destructive command.
 2. A noncanonical PR is logged and skipped without any mutation. There is no
    automatic destructive fallback if rebase fails or if someone has edited the
    Dependabot branch.

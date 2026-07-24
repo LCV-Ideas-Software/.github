@@ -7,6 +7,8 @@ const API_VERSION = "2026-03-10";
 const ALLOWED_CONCLUSIONS = new Set(["success", "skipped", "neutral"]);
 const DEPENDABOT_ACTOR_ID = 49699333;
 const DEPENDABOT_ACTOR_LOGIN = "dependabot[bot]";
+const DEPENDABOT_ALREADY_CURRENT_RESPONSE =
+  "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.";
 const WEB_FLOW_ACTOR_ID = 19864447;
 const WEB_FLOW_ACTOR_LOGIN = "web-flow";
 // Verified against live GitHub check-run payloads. Unlike an App slug, this
@@ -302,22 +304,79 @@ export function hasTrustedDependabotWorkflowProvenance({
   );
 }
 
+function findAutomationCommandRequest(
+  comments,
+  command,
+  marker,
+  automationActor,
+  now = Date.now(),
+) {
+  const expectedBody = `@dependabot ${command}\n\n${marker}`;
+  return comments
+    .filter((comment) => {
+      const createdAt = Date.parse(comment.created_at ?? "");
+      return (
+        comment.user?.id === automationActor.id &&
+        comment.user?.login === automationActor.login &&
+        comment.body === expectedBody &&
+        Number.isFinite(createdAt) &&
+        now - createdAt >= 0
+      );
+    })
+    .sort((left, right) => {
+      const timeDifference =
+        Date.parse(right.created_at) - Date.parse(left.created_at);
+      return timeDifference || Number(right.id ?? 0) - Number(left.id ?? 0);
+    })[0];
+}
+
+function isRecentAutomationCommandRequest(request, now = Date.now()) {
+  const retryWindowMs = 6 * 60 * 60 * 1000;
+  const createdAt = Date.parse(request?.created_at ?? "");
+  return (
+    Number.isFinite(createdAt) &&
+    now - createdAt >= 0 &&
+    now - createdAt < retryWindowMs
+  );
+}
+
 export function hasRecentAutomationRebaseRequest(
   comments,
   marker,
   automationActor,
   now = Date.now(),
 ) {
-  const retryWindowMs = 6 * 60 * 60 * 1000;
+  return Boolean(
+    isRecentAutomationCommandRequest(
+      findAutomationCommandRequest(
+        comments,
+        "rebase",
+        marker,
+        automationActor,
+        now,
+      ),
+      now,
+    ),
+  );
+}
+
+export function hasTrustedDependabotAlreadyCurrentResponse(
+  comments,
+  request,
+  now = Date.now(),
+) {
+  const requestCreatedAt = Date.parse(request?.created_at ?? "");
+  if (!Number.isFinite(requestCreatedAt)) return false;
   return comments.some((comment) => {
     const createdAt = Date.parse(comment.created_at ?? "");
     return (
-      comment.user?.id === automationActor.id &&
-      comment.user?.login === automationActor.login &&
-      comment.body?.includes(marker) &&
+      comment.user?.id === DEPENDABOT_ACTOR_ID &&
+      comment.user?.login === DEPENDABOT_ACTOR_LOGIN &&
+      comment.body?.trim() === DEPENDABOT_ALREADY_CURRENT_RESPONSE &&
       Number.isFinite(createdAt) &&
+      createdAt > requestCreatedAt &&
       now - createdAt >= 0 &&
-      now - createdAt < retryWindowMs
+      Number(comment.id ?? 0) > Number(request.id ?? 0)
     );
   });
 }
@@ -580,21 +639,70 @@ async function requestDependabotRebase(
   const headSha = pull.head.sha;
   const mainSha = expectedMainSha;
   const marker = `<!-- lcv-dependabot-rebase:${headSha}:${mainSha} -->`;
+  const retryMarker = `<!-- lcv-dependabot-rebase-retry:${headSha}:${mainSha} -->`;
   const automationActor = await resolveAutomationActor(automationToken);
   const comments = await paginated(
     `/repos/${owner}/${repo}/issues/${number}/comments`,
     readToken,
   );
-  const alreadyRequested = hasRecentAutomationRebaseRequest(
+  const rebaseRequest = findAutomationCommandRequest(
     comments,
+    "rebase",
     marker,
     automationActor,
   );
-  if (alreadyRequested) {
+  let commandMarker = marker;
+  let requestedState = "requested";
+  if (
+    rebaseRequest &&
+    !hasTrustedDependabotAlreadyCurrentResponse(
+      comments,
+      rebaseRequest,
+    )
+  ) {
+    if (!isRecentAutomationCommandRequest(rebaseRequest)) {
+      throw new Error(
+        `PR #${number}: Dependabot did not process the guarded rebase request within six hours; refusing repeated commands for the same head and base.`,
+      );
+    }
     log(
       `PR #${number}: waiting for Dependabot to process the existing guarded rebase request.`,
     );
     return "waiting";
+  }
+  if (rebaseRequest) {
+    const retryRequest = findAutomationCommandRequest(
+      comments,
+      "rebase",
+      retryMarker,
+      automationActor,
+    );
+    if (retryRequest) {
+      if (
+        hasTrustedDependabotAlreadyCurrentResponse(
+          comments,
+          retryRequest,
+        )
+      ) {
+        throw new Error(
+          `PR #${number}: Dependabot twice reported a still-behind head as current; refusing destructive recreation and requiring visible intervention.`,
+        );
+      }
+      if (!isRecentAutomationCommandRequest(retryRequest)) {
+        throw new Error(
+          `PR #${number}: Dependabot did not process the guarded rebase retry within six hours; refusing repeated commands for the same head and base.`,
+        );
+      }
+      log(
+        `PR #${number}: waiting for Dependabot to process the existing guarded rebase retry.`,
+      );
+      return "waiting";
+    }
+    commandMarker = retryMarker;
+    requestedState = "requested-retry";
+    log(
+      `PR #${number}: Dependabot reported the still-behind head as current; requesting one non-destructive guarded rebase retry.`,
+    );
   }
 
   const boundary = await validateRebaseBoundary({
@@ -620,9 +728,9 @@ async function requestDependabotRebase(
   await github(`/repos/${owner}/${repo}/issues/${number}/comments`, {
     token: automationToken,
     method: "POST",
-    body: { body: `@dependabot rebase\n\n${marker}` },
+    body: { body: `@dependabot rebase\n\n${commandMarker}` },
   });
-  return "requested";
+  return requestedState;
 }
 
 async function inspectPullCandidate(owner, repo, pull, token) {
@@ -883,6 +991,13 @@ export async function runController(env = process.env) {
       if (rebaseState === "requested") {
         return {
           action: "requested-rebase",
+          pull: pull.number,
+          head: pull.head.sha,
+        };
+      }
+      if (rebaseState === "requested-retry") {
+        return {
+          action: "requested-retry",
           pull: pull.number,
           head: pull.head.sha,
         };
