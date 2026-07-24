@@ -365,6 +365,8 @@ export function hasTrustedDependabotAlreadyCurrentResponse(
   request,
   now = Date.now(),
 ) {
+  const requestId = request?.id;
+  if (!Number.isSafeInteger(requestId) || requestId <= 0) return false;
   const requestCreatedAt = Date.parse(request?.created_at ?? "");
   if (!Number.isFinite(requestCreatedAt)) return false;
   return comments.some((comment) => {
@@ -374,9 +376,10 @@ export function hasTrustedDependabotAlreadyCurrentResponse(
       comment.user?.login === DEPENDABOT_ACTOR_LOGIN &&
       comment.body?.trim() === DEPENDABOT_ALREADY_CURRENT_RESPONSE &&
       Number.isFinite(createdAt) &&
-      createdAt > requestCreatedAt &&
+      createdAt >= requestCreatedAt &&
       now - createdAt >= 0 &&
-      Number(comment.id ?? 0) > Number(request.id ?? 0)
+      Number.isSafeInteger(comment.id) &&
+      comment.id > requestId
     );
   });
 }
