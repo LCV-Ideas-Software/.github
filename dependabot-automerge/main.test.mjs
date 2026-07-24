@@ -8,6 +8,7 @@ import {
   findBlockingConnectorReviewThreads,
   hasExpectedDependabotCommitShape,
   hasRecentAutomationRebaseRequest,
+  hasTrustedDependabotAlreadyCurrentResponse,
   hasTrustedDependabotWorkflowProvenance,
   isAllowedDependabotPath,
   isTrustedPullRequest,
@@ -422,7 +423,7 @@ test("only the exact automation identity can suppress duplicate rebase requests"
         {
           author_association: "MEMBER",
           user: automationActor,
-          body: `@dependabot rebase\n${marker}`,
+          body: `@dependabot rebase\n\n${marker}`,
           created_at: "2026-07-22T11:00:00Z",
         },
       ],
@@ -445,6 +446,11 @@ test("only the exact automation identity can suppress duplicate rebase requests"
           body: marker,
           created_at: "2026-07-22T05:00:00Z",
         },
+        {
+          user: automationActor,
+          body: `prefix ${marker} suffix`,
+          created_at: "2026-07-22T11:00:00Z",
+        },
       ],
       marker,
       automationActor,
@@ -452,6 +458,56 @@ test("only the exact automation identity can suppress duplicate rebase requests"
     ),
     false,
   );
+});
+
+test("only an exact later Dependabot no-op response unlocks guarded recovery", () => {
+  const now = Date.parse("2026-07-24T12:00:00Z");
+  const request = {
+    id: 100,
+    user: { id: 42, login: "operator" },
+    body: "@dependabot rebase",
+    created_at: "2026-07-24T11:00:00Z",
+  };
+  const canonicalResponse = {
+    id: 101,
+    user: { id: 49699333, login: "dependabot[bot]" },
+    body: "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.",
+    created_at: "2026-07-24T11:00:03Z",
+  };
+  assert.equal(
+    hasTrustedDependabotAlreadyCurrentResponse(
+      [request, canonicalResponse],
+      request,
+      now,
+    ),
+    true,
+  );
+  for (const untrustedResponse of [
+    {
+      ...canonicalResponse,
+      user: { id: 999, login: "dependabot[bot]" },
+    },
+    {
+      ...canonicalResponse,
+      user: { id: 49699333, login: "other-bot[bot]" },
+    },
+    {
+      ...canonicalResponse,
+      body: canonicalResponse.body.replace("main!", "main."),
+    },
+    { ...canonicalResponse, id: 99 },
+    { ...canonicalResponse, created_at: "2026-07-24T10:59:59Z" },
+    { ...canonicalResponse, created_at: "2026-07-24T12:00:01Z" },
+  ]) {
+    assert.equal(
+      hasTrustedDependabotAlreadyCurrentResponse(
+        [request, untrustedResponse],
+        request,
+        now,
+      ),
+      false,
+    );
+  }
 });
 
 test("the latest decisive review per reviewer preserves a changes-requested veto", () => {
@@ -586,7 +642,7 @@ test("the controller has no branch-update or destructive-recreation primitive", 
   const source = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
   const forbiddenMutationPrimitives = [
     /\/update-branch/,
-    /@dependabot\s+recreate/i,
+    /body:\s*["'`]@dependabot\s+recreate/i,
     /\/git\/refs\b/,
     /method:\s*["'](?:PATCH|DELETE)["']/,
     /\bgit\s+(?:push|update-ref|branch\s+-[fF])\b/i,
@@ -1286,6 +1342,200 @@ test("a behind PR gets one identity-bound Dependabot rebase command", async () =
           request.pathname === "/repos/owner/repo/git/refs" ||
           request.pathname === "/repos/owner/repo/pulls/7/reviews" ||
           request.pathname === "/repos/owner/repo/pulls/7/merge",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an exact Dependabot no-op response triggers one guarded rebase retry", async () => {
+  const now = Date.now();
+  const head = "a".repeat(40);
+  const main = "b".repeat(40);
+  const harness = createControllerHarness({
+    behindBy: 1,
+    issueComments: [
+      {
+        id: 100,
+        user: { id: 42, login: "operator" },
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${head}:${main} -->`,
+        created_at: new Date(now - 60_000).toISOString(),
+      },
+      {
+        id: 101,
+        user: { id: 49699333, login: "dependabot[bot]" },
+        body: "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.",
+        created_at: new Date(now - 30_000).toISOString(),
+      },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      {
+        action: "requested-retry",
+        pull: 7,
+        head: harness.head,
+      },
+    );
+    const commentWrites = harness.requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.pathname === "/repos/owner/repo/issues/7/comments",
+    );
+    assert.deepEqual(commentWrites.map((request) => request.body), [
+      {
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase-retry:${harness.head}:${harness.main} -->`,
+      },
+    ]);
+    assert.equal(commentWrites[0]?.authorization, "Bearer automation-token");
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.pathname === "/repos/owner/repo/git/refs" ||
+          request.pathname === "/repos/owner/repo/pulls/7/reviews" ||
+          request.pathname === "/repos/owner/repo/pulls/7/merge",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a recent guarded rebase retry suppresses duplicate recovery while pending", async () => {
+  const now = Date.now();
+  const head = "a".repeat(40);
+  const main = "b".repeat(40);
+  const harness = createControllerHarness({
+    behindBy: 1,
+    issueComments: [
+      {
+        id: 100,
+        user: { id: 42, login: "operator" },
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${head}:${main} -->`,
+        created_at: new Date(now - 90_000).toISOString(),
+      },
+      {
+        id: 101,
+        user: { id: 49699333, login: "dependabot[bot]" },
+        body: "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.",
+        created_at: new Date(now - 60_000).toISOString(),
+      },
+      {
+        id: 102,
+        user: { id: 42, login: "operator" },
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase-retry:${head}:${main} -->`,
+        created_at: new Date(now - 30_000).toISOString(),
+      },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      { action: "none" },
+    );
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/issues/7/comments",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an old second exact Dependabot no-op remains a durable visible failure", async () => {
+  const now = Date.now();
+  const head = "a".repeat(40);
+  const main = "b".repeat(40);
+  const canonicalResponse =
+    "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.";
+  const harness = createControllerHarness({
+    behindBy: 1,
+    issueComments: [
+      {
+        id: 100,
+        user: { id: 42, login: "operator" },
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${head}:${main} -->`,
+        created_at: new Date(now - 9 * 60 * 60 * 1000).toISOString(),
+      },
+      {
+        id: 101,
+        user: { id: 49699333, login: "dependabot[bot]" },
+        body: canonicalResponse,
+        created_at: new Date(now - 8.5 * 60 * 60 * 1000).toISOString(),
+      },
+      {
+        id: 102,
+        user: { id: 42, login: "operator" },
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase-retry:${head}:${main} -->`,
+        created_at: new Date(now - 8 * 60 * 60 * 1000).toISOString(),
+      },
+      {
+        id: 103,
+        user: { id: 49699333, login: "dependabot[bot]" },
+        body: canonicalResponse,
+        created_at: new Date(now - 7.5 * 60 * 60 * 1000).toISOString(),
+      },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    await assert.rejects(
+      runController(controllerEnvironment(harness.repository)),
+      /twice reported a still-behind head as current/,
+    );
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/issues/7/comments",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an old unprocessed rebase request fails instead of starting another cycle", async () => {
+  const now = Date.now();
+  const head = "a".repeat(40);
+  const main = "b".repeat(40);
+  const harness = createControllerHarness({
+    behindBy: 1,
+    issueComments: [
+      {
+        id: 100,
+        user: { id: 42, login: "operator" },
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${head}:${main} -->`,
+        created_at: new Date(now - 7 * 60 * 60 * 1000).toISOString(),
+      },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    await assert.rejects(
+      runController(controllerEnvironment(harness.repository)),
+      /did not process the guarded rebase request within six hours/,
+    );
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/issues/7/comments",
       ),
       false,
     );
