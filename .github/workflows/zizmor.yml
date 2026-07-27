@@ -30,19 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Harden the runner (Block unapproved outbound calls)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
-        with:
-          egress-policy: block
-          disable-telemetry: true
-          allowed-endpoints: >
-            api.github.com:443
-            files.pythonhosted.org:443
-            github.com:443
-            pypi.org:443
-            raw.githubusercontent.com:443
-            releases.astral.sh:443
-
       - name: Checkout repository without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

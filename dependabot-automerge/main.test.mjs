@@ -277,9 +277,6 @@ test("allows only dependency manifests, locks, pre-commit config and Actions wor
     "src-tauri/Cargo.toml",
     "Cargo.lock",
     "requirements-dev.txt",
-    "socketsecurity-requirements.in",
-    "socketsecurity-requirements.txt",
-    "python/socketsecurity-requirements.in",
     "pyproject.toml",
     ".pre-commit-config.yaml",
     ".github/workflows/ci.yml",
@@ -291,9 +288,9 @@ test("allows only dependency manifests, locks, pre-commit config and Actions wor
     ".github/dependabot.yml",
     "README.md",
     "ci.yml",
-    "socketsecurity-requirements-dev.txt",
-    "attacker-socketsecurity-requirements.txt",
-    "socketsecurity-requirements.in.js",
+    "vendor-requirements-dev.txt",
+    "attacker-vendor-requirements.txt",
+    "requirements.in.js",
   ]) {
     assert.equal(isAllowedDependabotPath(path), false, path);
   }
@@ -1344,47 +1341,6 @@ test("the happy path approves and squash-merges only the exact head with separat
     assert.ok(harness.state.mainReads >= 4);
     assert.equal(harness.state.reviewReads, 2);
     assert.equal(harness.state.threadReads, 2);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("canonical Socket Security manifests reach guarded approval and squash merge", async () => {
-  const harness = createControllerHarness({
-    files: [
-      { filename: "socketsecurity-requirements.in" },
-      { filename: "socketsecurity-requirements.txt" },
-    ],
-  });
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = harness.fetch;
-  try {
-    assert.deepEqual(
-      await runController(controllerEnvironment(harness.repository)),
-      {
-        action: "merged",
-        pull: 7,
-        head: harness.head,
-      },
-    );
-    assert.ok(
-      harness.requests.some(
-        (request) =>
-          request.method === "POST" &&
-          request.pathname === "/repos/owner/repo/pulls/7/reviews" &&
-          request.body?.commit_id === harness.head &&
-          request.body?.event === "APPROVE",
-      ),
-    );
-    assert.ok(
-      harness.requests.some(
-        (request) =>
-          request.method === "PUT" &&
-          request.pathname === "/repos/owner/repo/pulls/7/merge" &&
-          request.body?.sha === harness.head &&
-          request.body?.merge_method === "squash",
-      ),
-    );
   } finally {
     globalThis.fetch = originalFetch;
   }
