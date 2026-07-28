@@ -790,6 +790,17 @@ test("dedicated controller CI enforces syntax and tests with pinned actions and 
   }
 });
 
+test("action metadata exposes bounded settle controls with conservative defaults", async () => {
+  const action = await readFile(
+    new URL("./action.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(action, /^\s{2}settle_timeout_seconds:$/m);
+  assert.match(action, /^\s{4}default:\s*"180"$/m);
+  assert.match(action, /^\s{2}settle_poll_seconds:$/m);
+  assert.match(action, /^\s{4}default:\s*"10"$/m);
+});
+
 test("approval is pinned to the validated head and late connector feedback blocks merge", async () => {
   const repository = "owner/repo";
   const head = "a".repeat(40);
@@ -1069,6 +1080,7 @@ function createControllerHarness(options = {}) {
   let reviewReads = 0;
   let threadReads = 0;
   let pullReads = 0;
+  let checkReads = 0;
 
   const fetch = async (input, init = {}) => {
     const url = new URL(String(input));
@@ -1137,7 +1149,12 @@ function createControllerHarness(options = {}) {
       url.pathname === `/repos/owner/repo/commits/${head}/check-runs` &&
       method === "GET"
     ) {
-      payload = { check_runs: checks };
+      checkReads += 1;
+      payload = {
+        check_runs: options.checksForRead
+          ? options.checksForRead(checkReads, checks)
+          : checks,
+      };
     } else if (
       url.pathname === `/repos/owner/repo/commits/${head}/statuses` &&
       method === "GET"
@@ -1256,6 +1273,9 @@ function createControllerHarness(options = {}) {
       get pullReads() {
         return pullReads;
       },
+      get checkReads() {
+        return checkReads;
+      },
     },
   };
 }
@@ -1341,6 +1361,97 @@ test("the happy path approves and squash-merges only the exact head with separat
     assert.ok(harness.state.mainReads >= 4);
     assert.equal(harness.state.reviewReads, 2);
     assert.equal(harness.state.threadReads, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a workflow-run controller settles checks that finish just after the trigger", async () => {
+  const harness = createControllerHarness({
+    checksForRead: (read, checks) =>
+      read === 1
+        ? checks.map((check, index) =>
+            index === 0
+              ? { ...check, status: "in_progress", conclusion: null }
+              : check,
+          )
+        : checks,
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      {
+        ...controllerEnvironment(harness.repository),
+        GITHUB_EVENT_NAME: "workflow_run",
+        INPUT_SETTLE_TIMEOUT_SECONDS: "2",
+        INPUT_SETTLE_POLL_SECONDS: "1",
+      },
+      { sleep: async () => {} },
+    );
+    assert.equal(result.action, "merged");
+    assert.ok(harness.state.checkReads >= 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("scheduled fallbacks do not poll a persistently pending head", async () => {
+  const harness = createControllerHarness({
+    checksForRead: (_read, checks) =>
+      checks.map((check, index) =>
+        index === 0
+          ? { ...check, status: "in_progress", conclusion: null }
+          : check,
+      ),
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      {
+        ...controllerEnvironment(harness.repository),
+        GITHUB_EVENT_NAME: "schedule",
+      },
+      {
+        sleep: async () => {
+          throw new Error("scheduled fallback must not poll");
+        },
+      },
+    );
+    assert.deepEqual(result, { action: "none" });
+    assert.equal(harness.state.checkReads, 1);
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a main advance during bounded settling defers without mutation", async () => {
+  const harness = createControllerHarness({
+    checksForRead: (_read, checks) =>
+      checks.map((check, index) =>
+        index === 0
+          ? { ...check, status: "in_progress", conclusion: null }
+          : check,
+      ),
+    mainShaForRead: (read, refs) =>
+      read === 1 ? refs.main : refs.advancedMain,
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      {
+        ...controllerEnvironment(harness.repository),
+        GITHUB_EVENT_NAME: "workflow_run",
+        INPUT_SETTLE_TIMEOUT_SECONDS: "2",
+        INPUT_SETTLE_POLL_SECONDS: "1",
+      },
+      { sleep: async () => {} },
+    );
+    assert.equal(result.action, "deferred");
+    assertNoControllerMutation(harness);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1458,11 +1569,14 @@ test("an exact Dependabot no-op response triggers one guarded rebase retry", asy
         request.method === "POST" &&
         request.pathname === "/repos/owner/repo/issues/7/comments",
     );
-    assert.deepEqual(commentWrites.map((request) => request.body), [
-      {
-        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase-retry:${harness.head}:${harness.main} -->`,
-      },
-    ]);
+    assert.deepEqual(
+      commentWrites.map((request) => request.body),
+      [
+        {
+          body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase-retry:${harness.head}:${harness.main} -->`,
+        },
+      ],
+    );
     assert.equal(commentWrites[0]?.authorization, "Bearer automation-token");
     assert.equal(
       harness.requests.some(
@@ -1516,11 +1630,14 @@ test("a same-second request and response trigger exactly one guarded rebase retr
         request.method === "POST" &&
         request.pathname === "/repos/owner/repo/issues/7/comments",
     );
-    assert.deepEqual(commentWrites.map((request) => request.body), [
-      {
-        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase-retry:${harness.head}:${harness.main} -->`,
-      },
-    ]);
+    assert.deepEqual(
+      commentWrites.map((request) => request.body),
+      [
+        {
+          body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase-retry:${harness.head}:${harness.main} -->`,
+        },
+      ],
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

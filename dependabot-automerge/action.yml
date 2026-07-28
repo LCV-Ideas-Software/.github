@@ -11,6 +11,14 @@ inputs:
   required_checks_json:
     description: JSON array of exact {name,app_id} check identities that must conclude success.
     required: true
+  settle_timeout_seconds:
+    description: Maximum bounded wait for checks that finish just after workflow_run.
+    required: false
+    default: "180"
+  settle_poll_seconds:
+    description: Interval between immutable-head check revalidations.
+    required: false
+    default: "10"
 
 runs:
   using: node24

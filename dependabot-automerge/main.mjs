@@ -19,6 +19,8 @@ const CONNECTOR_ACTOR_LOGINS = new Set([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
 ]);
+const DEFAULT_SETTLE_TIMEOUT_SECONDS = 180;
+const DEFAULT_SETTLE_POLL_SECONDS = 10;
 const REVIEW_THREADS_QUERY = `
   query DependabotReviewThreads(
     $owner: String!
@@ -67,6 +69,21 @@ function assertNonEmpty(value, name) {
     throw new Error(`${name} must be a non-empty string`);
   }
   return value.trim();
+}
+
+function parseBoundedPositiveInteger(raw, name, { defaultValue, maximum }) {
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return defaultValue;
+  }
+  const normalized = String(raw).trim();
+  if (!/^[1-9]\d*$/.test(normalized)) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  const value = Number(normalized);
+  if (!Number.isSafeInteger(value) || value > maximum) {
+    throw new Error(`${name} must be at most ${maximum}`);
+  }
+  return value;
 }
 
 export function parseRequiredChecks(raw) {
@@ -653,10 +670,7 @@ async function requestDependabotRebase(
   let requestedState = "requested";
   if (
     rebaseRequest &&
-    !hasTrustedDependabotAlreadyCurrentResponse(
-      comments,
-      rebaseRequest,
-    )
+    !hasTrustedDependabotAlreadyCurrentResponse(comments, rebaseRequest)
   ) {
     if (!isRecentAutomationCommandRequest(rebaseRequest)) {
       throw new Error(
@@ -676,12 +690,7 @@ async function requestDependabotRebase(
       automationActor,
     );
     if (retryRequest) {
-      if (
-        hasTrustedDependabotAlreadyCurrentResponse(
-          comments,
-          retryRequest,
-        )
-      ) {
+      if (hasTrustedDependabotAlreadyCurrentResponse(comments, retryRequest)) {
         throw new Error(
           `PR #${number}: Dependabot twice reported a still-behind head as current; refusing destructive recreation and requiring visible intervention.`,
         );
@@ -883,7 +892,7 @@ async function mergeSquash(owner, repo, pull, automationToken) {
   log(`PR #${pull.number}: squash-merged exact head ${pull.head.sha}.`);
 }
 
-export async function runController(env = process.env) {
+export async function runController(env = process.env, runtime = {}) {
   const repository = assertNonEmpty(env.GITHUB_REPOSITORY, "GITHUB_REPOSITORY");
   const [owner, repo, extra] = repository.split("/");
   if (!owner || !repo || extra)
@@ -900,6 +909,26 @@ export async function runController(env = process.env) {
   const requiredChecks = parseRequiredChecks(
     env.INPUT_REQUIRED_CHECKS_JSON ?? env.REQUIRED_CHECKS_JSON,
   );
+  const settleTimeoutSeconds = parseBoundedPositiveInteger(
+    env.INPUT_SETTLE_TIMEOUT_SECONDS,
+    "settle_timeout_seconds",
+    { defaultValue: DEFAULT_SETTLE_TIMEOUT_SECONDS, maximum: 480 },
+  );
+  const settlePollSeconds = parseBoundedPositiveInteger(
+    env.INPUT_SETTLE_POLL_SECONDS,
+    "settle_poll_seconds",
+    { defaultValue: DEFAULT_SETTLE_POLL_SECONDS, maximum: 60 },
+  );
+  const settleAttempts =
+    env.GITHUB_EVENT_NAME === "schedule"
+      ? 0
+      : Math.ceil(settleTimeoutSeconds / settlePollSeconds);
+  const sleep =
+    runtime.sleep ??
+    ((milliseconds) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, milliseconds);
+      }));
   const dryRun = env.DRY_RUN === "true";
   const pulls = await paginated(
     `/repos/${owner}/${repo}/pulls?state=open&base=main&sort=created&direction=asc`,
@@ -1006,9 +1035,41 @@ export async function runController(env = process.env) {
       continue;
     }
 
-    const checks = await readChecks(owner, repo, pull.head.sha, githubToken);
-    const verdict = classifyChecks({ ...checks, requiredChecks });
+    let checks = await readChecks(owner, repo, pull.head.sha, githubToken);
+    let verdict = classifyChecks({ ...checks, requiredChecks });
+    for (
+      let settleAttempt = 1;
+      verdict.state === "pending" && settleAttempt <= settleAttempts;
+      settleAttempt += 1
+    ) {
+      log(
+        `PR #${pull.number}: checks pending; bounded settle poll ${settleAttempt}/${settleAttempts} in ${settlePollSeconds}s.`,
+      );
+      await sleep(settlePollSeconds * 1000);
+      const settledMainSha = await currentMainSha(owner, repo, githubToken);
+      const { payload: settledPull } = await github(
+        `/repos/${owner}/${repo}/pulls/${pull.number}`,
+        { token: githubToken },
+      );
+      if (
+        settledMainSha !== mainSha ||
+        !isTrustedPullRequest(settledPull, repository) ||
+        settledPull.head.sha !== pull.head.sha
+      ) {
+        log(
+          `PR #${pull.number}: head, identity or main changed while checks settled; deferred.`,
+        );
+        return { action: "deferred", pull: pull.number, head: pull.head.sha };
+      }
+      checks = await readChecks(owner, repo, pull.head.sha, githubToken);
+      verdict = classifyChecks({ ...checks, requiredChecks });
+    }
     log(`PR #${pull.number}: checks=${verdict.state} (${verdict.reason}).`);
+    if (verdict.state === "pending" && settleAttempts > 0) {
+      log(
+        `PR #${pull.number}: bounded ${settleTimeoutSeconds}s settle window expired without a terminal check state.`,
+      );
+    }
     if (verdict.state !== "success") continue;
     if (
       !hasTrustedDependabotWorkflowProvenance({

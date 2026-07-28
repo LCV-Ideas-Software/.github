@@ -7,7 +7,7 @@ wrapper and an exact list of stack-specific required checks.
 ## Trust boundary
 
 - Pull-request CI remains unprivileged and is responsible for build, test,
-  dependency review, CodeQL, Socket and repository-specific gates.
+  dependency review, CodeQL and repository-specific gates.
 - The privileged controller starts from `workflow_run`, `schedule` or
   `workflow_dispatch`. It loads this repository at an immutable commit and never
   checks out a pull-request ref, executes pull-request code, restores its cache or
@@ -29,8 +29,13 @@ wrapper and an exact list of stack-specific required checks.
   update, force-push, recovery-ref or `@dependabot recreate` path.
 - Every configured required check must be present and successful on the exact head
   SHA. Every other attached check must be successful, skipped or neutral. Missing
-  and pending checks fail closed. Required GitHub Actions checks must belong to a
-  pull-request workflow run whose immutable actor ID is Dependabot's.
+  and pending checks fail closed. On `workflow_run` and manual dispatches, the
+  controller gives checks that were already triggered a bounded 180-second settle
+  window, polling every 10 seconds and revalidating the immutable PR head,
+  identity and live `main` before every read. Scheduled fallbacks never poll, so a
+  persistently pending check cannot consume runner minutes every hour. Required
+  GitHub Actions checks must belong to a pull-request workflow run whose immutable
+  actor ID is Dependabot's.
 - An active `CHANGES_REQUESTED` review or unresolved inline thread from the exact
   `chatgpt-codex-connector` bot ID blocks approval and merge. Reviews, connector
   threads, checks, `main` and the PR head are all re-read after approval.
@@ -56,21 +61,25 @@ perform at most one pull-request queue transition per run.
 2. A noncanonical PR is logged and skipped without any mutation. There is no
    automatic destructive fallback if rebase fails or if someone has edited the
    Dependabot branch.
-3. If the exact canonical head is current and green, the controller performs a
-   fresh per-PR detail read rather than relying on the list response. Once GitHub
-   has computed `mergeable: true`, `GITHUB_TOKEN` records the approval for that
-   SHA. A `mergeable: null` response or `mergeable_state: unknown` defers the
-   transition; `mergeable: true` with `mergeable_state: blocked` remains eligible
-   because the required checks and review policy are enforced explicitly by this
-   controller. A definitive conflict is skipped without mutation so the scan can
-   inspect the next PR.
+3. If the exact canonical head is current, the controller first closes the short
+   race in which CodeQL finishes just before another required workflow. The
+   bounded settle loop performs reads only; any head, identity or base change
+   defers without mutation. Once green, the controller performs a fresh per-PR
+   detail read rather than relying on the list response. After GitHub computes
+   `mergeable: true`, `GITHUB_TOKEN` records the approval for that SHA. A
+   `mergeable: null` response or `mergeable_state: unknown` defers the transition;
+   `mergeable: true` with `mergeable_state: blocked` remains eligible because the
+   required checks and review policy are enforced explicitly by this controller.
+   A definitive conflict is skipped without mutation so the scan can inspect the
+   next PR.
 4. The controller re-reads `main`, the PR head, checks, Actions provenance,
    reviews and connector threads after approval.
 5. The automation credential squash-merges only the validated exact head SHA.
    GitHub's repository-level delete-after-merge setting owns branch deletion.
 6. The resulting `main` update makes remaining PRs behind; a later serialized run
-   asks Dependabot to rebase the next canonical PR. The hourly schedule recovers
-   missed workflow events.
+   asks Dependabot to rebase the next canonical PR. The hourly schedule remains a
+   delayed safety net for missed workflow events, not the primary way to close the
+   few-second check-completion race.
 
 The final REST merge guard accepts an expected head SHA but GitHub does not offer
 an expected base SHA for that endpoint. Immediately before it, the controller
