@@ -1,0 +1,130 @@
+name: Token Metadata Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions: write-all
+
+concurrency:
+  group: token-metadata-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  classify:
+    name: Classify LCV automation credential
+    runs-on: ubuntu-latest
+    permissions: write-all
+    environment: dependabot-automation
+    timeout-minutes: 3
+    steps:
+      - name: Validate token type without revealing the credential
+        shell: bash
+        env:
+          AUTOMATION_TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +x
+
+          if [ -z "${AUTOMATION_TOKEN:-}" ]; then
+            echo "::error::LCV_AUTOMATION_TOKEN is unavailable."
+            exit 1
+          fi
+
+          case "$AUTOMATION_TOKEN" in
+            ghp_*) token_type="personal_access_token_classic" ;;
+            github_pat_*) token_type="fine_grained_personal_access_token" ;;
+            gho_*) token_type="oauth_access_token" ;;
+            ghu_*) token_type="github_app_user_access_token" ;;
+            ghs_*) token_type="github_app_installation_access_token" ;;
+            *) token_type="unknown" ;;
+          esac
+
+          headers="$RUNNER_TEMP/token-response-headers"
+          body="$RUNNER_TEMP/token-response-body"
+          status="$({
+            curl --silent --show-error \
+              --output "$body" \
+              --dump-header "$headers" \
+              --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              --header "Authorization: Bearer $AUTOMATION_TOKEN" \
+              https://api.github.com/user
+          })"
+          unset AUTOMATION_TOKEN
+
+          if [ "$status" != "200" ]; then
+            echo "::error::The stored credential did not authenticate successfully (HTTP $status)."
+            exit 1
+          fi
+
+          login="$(jq -er '.login' "$body")"
+          scopes="$(awk -F ': *' 'tolower($1) == "x-oauth-scopes" { sub(/\r$/, "", $2); print $2 }' "$headers")"
+          expiration="$(awk -F ': *' 'tolower($1) == "github-authentication-token-expiration" { sub(/\r$/, "", $2); print $2 }' "$headers")"
+
+          required_scopes=(
+            repo
+            security_events
+            workflow
+            admin:org
+            admin:repo_hook
+            admin:org_hook
+            delete_repo
+            write:packages
+            delete:packages
+            user
+            project
+            gist
+            notifications
+            admin:public_key
+            admin:gpg_key
+            codespace
+            read:audit_log
+          )
+          missing_scopes=()
+          for required in "${required_scopes[@]}"; do
+            if ! grep -Eq "(^|, )${required}(,|$)" <<<"$scopes"; then
+              missing_scopes+=("$required")
+            fi
+          done
+
+          if [ "${#missing_scopes[@]}" -eq 0 ]; then
+            broad_scope_set="true"
+          else
+            broad_scope_set="false"
+          fi
+
+          if [ -n "$expiration" ]; then
+            has_expiration="true"
+          else
+            has_expiration="false"
+          fi
+
+          {
+            echo "### LCV automation token metadata"
+            echo
+            echo "- Authenticated: true"
+            echo "- GitHub login: \`$login\`"
+            echo "- Token type: \`$token_type\`"
+            echo "- Broad automation scope set present: \`$broad_scope_set\`"
+            echo "- Explicit expiration header present: \`$has_expiration\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$token_type" != "personal_access_token_classic" ]; then
+            echo "::error::LCV_AUTOMATION_TOKEN is not a classic personal access token."
+            exit 1
+          fi
+          if [ "$login" != "lcv-leo" ]; then
+            echo "::error::LCV_AUTOMATION_TOKEN belongs to unexpected GitHub login '$login'."
+            exit 1
+          fi
+          if [ "$broad_scope_set" != "true" ]; then
+            echo "::error::LCV_AUTOMATION_TOKEN is missing one or more expected broad automation scopes."
+            exit 1
+          fi
+          if [ "$has_expiration" != "false" ]; then
+            echo "::error::LCV_AUTOMATION_TOKEN has an explicit expiration date."
+            exit 1
+          fi
+
+          echo "Credential metadata validated without exposing the token or response headers."
