@@ -146,5 +146,6 @@ outside this reusable action.
 - [REST compare-two-commits endpoint](https://docs.github.com/en/rest/commits/commits#compare-two-commits)
 - [REST issue-comment endpoints](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment)
 - [Dependabot issue #7898: recreate may open a replacement PR](https://github.com/dependabot/dependabot-core/issues/7898)
+- [Dependabot issue #9854: rebase may incorrectly report an outdated head as current](https://github.com/dependabot/dependabot-core/issues/9854)
 - [Dependabot issue #10504: recreate may close without replacement](https://github.com/dependabot/dependabot-core/issues/10504)
 - [Dependabot issue #15566: command failures reported in 2026](https://github.com/dependabot/dependabot-core/issues/15566)
