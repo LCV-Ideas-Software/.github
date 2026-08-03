@@ -9,6 +9,7 @@ const DEPENDABOT_ACTOR_ID = 49699333;
 const DEPENDABOT_ACTOR_LOGIN = "dependabot[bot]";
 const DEPENDABOT_ALREADY_CURRENT_RESPONSE =
   "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.";
+const DEPENDABOT_REBASE_RETRY_DELAY_MS = 10 * 60 * 1000;
 const WEB_FLOW_ACTOR_ID = 19864447;
 const WEB_FLOW_ACTOR_LOGIN = "web-flow";
 // Verified against live GitHub check-run payloads. Unlike an App slug, this
@@ -372,28 +373,44 @@ export function hasRecentAutomationRebaseRequest(
   );
 }
 
-export function hasTrustedDependabotAlreadyCurrentResponse(
+function findTrustedDependabotAlreadyCurrentResponse(
   comments,
   request,
   now = Date.now(),
 ) {
   const requestId = request?.id;
-  if (!Number.isSafeInteger(requestId) || requestId <= 0) return false;
+  if (!Number.isSafeInteger(requestId) || requestId <= 0) return undefined;
   const requestCreatedAt = Date.parse(request?.created_at ?? "");
-  if (!Number.isFinite(requestCreatedAt)) return false;
-  return comments.some((comment) => {
-    const createdAt = Date.parse(comment.created_at ?? "");
-    return (
-      comment.user?.id === DEPENDABOT_ACTOR_ID &&
-      comment.user?.login === DEPENDABOT_ACTOR_LOGIN &&
-      comment.body?.trim() === DEPENDABOT_ALREADY_CURRENT_RESPONSE &&
-      Number.isFinite(createdAt) &&
-      createdAt >= requestCreatedAt &&
-      now - createdAt >= 0 &&
-      Number.isSafeInteger(comment.id) &&
-      comment.id > requestId
-    );
-  });
+  if (!Number.isFinite(requestCreatedAt)) return undefined;
+  return comments
+    .filter((comment) => {
+      const createdAt = Date.parse(comment.created_at ?? "");
+      return (
+        comment.user?.id === DEPENDABOT_ACTOR_ID &&
+        comment.user?.login === DEPENDABOT_ACTOR_LOGIN &&
+        comment.body?.trim() === DEPENDABOT_ALREADY_CURRENT_RESPONSE &&
+        Number.isFinite(createdAt) &&
+        createdAt >= requestCreatedAt &&
+        now - createdAt >= 0 &&
+        Number.isSafeInteger(comment.id) &&
+        comment.id > requestId
+      );
+    })
+    .sort((left, right) => {
+      const timeDifference =
+        Date.parse(right.created_at) - Date.parse(left.created_at);
+      return timeDifference || right.id - left.id;
+    })[0];
+}
+
+export function hasTrustedDependabotAlreadyCurrentResponse(
+  comments,
+  request,
+  now = Date.now(),
+) {
+  return Boolean(
+    findTrustedDependabotAlreadyCurrentResponse(comments, request, now),
+  );
 }
 
 export function evaluateExactHeadReviews(reviews, headSha) {
@@ -668,10 +685,10 @@ async function requestDependabotRebase(
   );
   let commandMarker = marker;
   let requestedState = "requested";
-  if (
+  const rebaseNoOpResponse =
     rebaseRequest &&
-    !hasTrustedDependabotAlreadyCurrentResponse(comments, rebaseRequest)
-  ) {
+    findTrustedDependabotAlreadyCurrentResponse(comments, rebaseRequest);
+  if (rebaseRequest && !rebaseNoOpResponse) {
     if (!isRecentAutomationCommandRequest(rebaseRequest)) {
       throw new Error(
         `PR #${number}: Dependabot did not process the guarded rebase request within six hours; refusing repeated commands for the same head and base.`,
@@ -702,6 +719,13 @@ async function requestDependabotRebase(
       }
       log(
         `PR #${number}: waiting for Dependabot to process the existing guarded rebase retry.`,
+      );
+      return "waiting";
+    }
+    const noOpResponseCreatedAt = Date.parse(rebaseNoOpResponse.created_at);
+    if (Date.now() - noOpResponseCreatedAt < DEPENDABOT_REBASE_RETRY_DELAY_MS) {
+      log(
+        `PR #${number}: Dependabot reported the still-behind head as current; waiting at least ten minutes before the one guarded rebase retry.`,
       );
       return "waiting";
     }

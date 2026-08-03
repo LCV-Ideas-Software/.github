@@ -1543,13 +1543,13 @@ test("an exact Dependabot no-op response triggers one guarded rebase retry", asy
         id: 100,
         user: { id: 42, login: "operator" },
         body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${head}:${main} -->`,
-        created_at: new Date(now - 60_000).toISOString(),
+        created_at: new Date(now - 12 * 60_000).toISOString(),
       },
       {
         id: 101,
         user: { id: 49699333, login: "dependabot[bot]" },
         body: "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.",
-        created_at: new Date(now - 30_000).toISOString(),
+        created_at: new Date(now - 11 * 60_000).toISOString(),
       },
     ],
   });
@@ -1592,9 +1592,50 @@ test("an exact Dependabot no-op response triggers one guarded rebase retry", asy
   }
 });
 
+test("a recent exact Dependabot no-op response waits before retrying", async () => {
+  const now = Date.now();
+  const head = "a".repeat(40);
+  const main = "b".repeat(40);
+  const harness = createControllerHarness({
+    behindBy: 1,
+    issueComments: [
+      {
+        id: 100,
+        user: { id: 42, login: "operator" },
+        body: `@dependabot rebase\n\n<!-- lcv-dependabot-rebase:${head}:${main} -->`,
+        created_at: new Date(now - 60_000).toISOString(),
+      },
+      {
+        id: 101,
+        user: { id: 49699333, login: "dependabot[bot]" },
+        body: "Looks like this PR is already up-to-date with main! If you'd still like to recreate it from scratch, overwriting any edits, you can request `@dependabot recreate`.",
+        created_at: new Date(now - 30_000).toISOString(),
+      },
+    ],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    assert.deepEqual(
+      await runController(controllerEnvironment(harness.repository)),
+      { action: "none" },
+    );
+    assert.equal(
+      harness.requests.some(
+        (request) =>
+          request.method === "POST" &&
+          request.pathname === "/repos/owner/repo/issues/7/comments",
+      ),
+      false,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("a same-second request and response trigger exactly one guarded rebase retry", async () => {
   const now = Date.now();
-  const timestamp = new Date(now - 60_000).toISOString();
+  const timestamp = new Date(now - 11 * 60_000).toISOString();
   const head = "a".repeat(40);
   const main = "b".repeat(40);
   const harness = createControllerHarness({
