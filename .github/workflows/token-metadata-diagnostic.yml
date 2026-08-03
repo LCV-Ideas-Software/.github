@@ -59,8 +59,8 @@ jobs:
           fi
 
           login="$(jq -er '.login' "$body")"
-          scopes="$(awk -F ': *' 'tolower($1) == "x-oauth-scopes" { sub(/\r$/, "", $2); print $2 }' "$headers")"
-          expiration="$(awk -F ': *' 'tolower($1) == "github-authentication-token-expiration" { sub(/\r$/, "", $2); print $2 }' "$headers")"
+          scopes="$(awk 'BEGIN { IGNORECASE=1 } /^x-oauth-scopes:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print }' "$headers")"
+          expiration="$(awk 'BEGIN { IGNORECASE=1 } /^github-authentication-token-expiration:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print }' "$headers")"
 
           required_scopes=(
             repo
