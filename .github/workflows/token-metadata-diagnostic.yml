@@ -113,6 +113,8 @@ jobs:
             echo "- Explicit expiration header present: \`$has_expiration\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+          echo "::notice::Credential metadata: authenticated=true; expected_login=$([ "$login" = "lcv-leo" ] && echo true || echo false); type=$token_type; missing_scopes=$missing_scope_names; explicit_expiration=$has_expiration"
+
           if [ "$token_type" != "personal_access_token_classic" ]; then
             echo "::error::LCV_AUTOMATION_TOKEN is not a classic personal access token."
             exit 1
