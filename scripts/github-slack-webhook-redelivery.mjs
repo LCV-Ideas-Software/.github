@@ -74,6 +74,11 @@ function apiError(response, method, pathname) {
   const reset = response.headers.get("x-ratelimit-reset");
   const retryAfter = response.headers.get("retry-after");
   const requestId = response.headers.get("x-github-request-id") ?? undefined;
+  const oauthScopes = (response.headers.get("x-oauth-scopes") ?? "")
+    .split(",")
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+  const ssoAuthorization = response.headers.get("x-github-sso");
   const rateLimited =
     response.status === 429 || (response.status === 403 && remaining === "0");
 
@@ -91,6 +96,14 @@ function apiError(response, method, pathname) {
   }
   if (requestId) {
     context.push(`request-id=${requestId}`);
+  }
+  if (response.status === 404 && oauthScopes.length > 0) {
+    context.push(
+      `admin:org_hook-scope=${oauthScopes.includes("admin:org_hook") ? "present" : "missing"}`,
+    );
+  }
+  if (ssoAuthorization) {
+    context.push("sso-authorization=required");
   }
 
   const suffix = context.length > 0 ? ` (${context.join(", ")})` : "";

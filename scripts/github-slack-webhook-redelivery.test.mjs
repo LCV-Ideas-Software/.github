@@ -468,6 +468,34 @@ test("rate-limit errors are explicit and never include the token", async () => {
   );
 });
 
+test("organization-hook 404 classifies missing scope without listing token scopes", async () => {
+  await assert.rejects(
+    fetchDeliveriesSince({
+      token: baseEnvironment.TOKEN,
+      organizationName: baseEnvironment.ORGANIZATION_NAME,
+      hookId: baseEnvironment.HOOK_ID,
+      cutoff: Date.now() - 60_000,
+      fetchImpl: async () =>
+        responseJson(
+          { message: "Not Found" },
+          {
+            status: 404,
+            headers: {
+              "x-oauth-scopes": "repo, workflow",
+              "x-github-request-id": "request-scope",
+            },
+          },
+        ),
+    }),
+    (error) =>
+      error instanceof GitHubApiError &&
+      /admin:org_hook-scope=missing/.test(error.message) &&
+      /request-id=request-scope/.test(error.message) &&
+      !/repo, workflow/.test(error.message) &&
+      !error.message.includes(baseEnvironment.TOKEN),
+  );
+});
+
 test("API requests carry a timeout and report aborts without leaking credentials", async () => {
   await assert.rejects(
     runRedelivery({
