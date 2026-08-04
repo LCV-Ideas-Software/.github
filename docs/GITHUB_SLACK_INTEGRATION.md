@@ -127,6 +127,13 @@ and the [IANA time-zone database overview][iana-time-zones].
 | Activity DLQ    | `github-slack-activity-dlq`                                       |
 | Secrets Store   | `df90c0935ba1460899c3c2c457548a90`                                |
 
+The public receiver is an explicit exception for external GitHub ingress, not
+a Worker-to-Worker transport. GitHub cannot invoke a Cloudflare Service
+Binding. The Worker keeps its single production `workers.dev` route, disables
+all versioned and aliased preview URLs, and uses only direct Cloudflare
+bindings for D1, Queues, and Secrets Store. Relay source must never call an
+intra-Cloudflare application through `workers.dev` or `pages.dev`.
+
 Four Secrets Store entries are bound to the Worker:
 
 | Binding                               | Secret name                          | Purpose                                  |

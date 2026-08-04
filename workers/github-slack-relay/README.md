@@ -48,6 +48,10 @@ events. They must be selected when the organization webhook is created.
 ## Inbound security
 
 - `POST /github/webhook` is the only ingestion route.
+- The production `workers.dev` route is an explicit external-ingress
+  exception: GitHub cannot invoke a Cloudflare Service Binding. Preview URLs
+  are disabled, and relay source must never call another Cloudflare
+  application through `workers.dev` or `pages.dev`.
 - The request stream is cancelled above exactly 25,000,000 bytes, GitHub's
   documented webhook ceiling.
 - `X-Hub-Signature-256` is verified with HMAC-SHA256 before JSON parsing.
