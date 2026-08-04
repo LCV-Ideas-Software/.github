@@ -5,8 +5,11 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/github-slack-integration.yml"
+      - ".github/workflows/github-slack-hook-management.yml"
       - ".github/workflows/github-slack-webhook-redelivery.yml"
       - "docs/GITHUB_SLACK_INTEGRATION.md"
+      - "scripts/github-slack-hook-management.mjs"
+      - "scripts/github-slack-hook-management.test.mjs"
       - "scripts/github-slack-webhook-redelivery.mjs"
       - "scripts/github-slack-webhook-redelivery.test.mjs"
       - "workers/github-slack-relay/**"
@@ -14,8 +17,11 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/github-slack-integration.yml"
+      - ".github/workflows/github-slack-hook-management.yml"
       - ".github/workflows/github-slack-webhook-redelivery.yml"
       - "docs/GITHUB_SLACK_INTEGRATION.md"
+      - "scripts/github-slack-hook-management.mjs"
+      - "scripts/github-slack-hook-management.test.mjs"
       - "scripts/github-slack-webhook-redelivery.mjs"
       - "scripts/github-slack-webhook-redelivery.test.mjs"
       - "workers/github-slack-relay/**"
@@ -95,8 +101,11 @@ jobs:
           printf '%s\n' "$wrangler_prefix/node_modules/.bin" >> "$GITHUB_PATH"
           printf 'bin=%s\nversion=%s\n' "$WRANGLER_BIN" "$WRANGLER_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Test organization webhook redelivery controller
-        run: node --test scripts/github-slack-webhook-redelivery.test.mjs
+      - name: Test organization webhook controllers
+        run: >-
+          node --test
+          scripts/github-slack-hook-management.test.mjs
+          scripts/github-slack-webhook-redelivery.test.mjs
 
       - name: Verify Cloudflare relay
         working-directory: workers/github-slack-relay

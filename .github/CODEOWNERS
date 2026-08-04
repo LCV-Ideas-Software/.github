@@ -14,6 +14,8 @@
 /.github/dependabot.yml @lcv-leo
 /.github/workflows/ @lcv-leo
 /docs/GITHUB_SLACK_INTEGRATION.md @lcv-leo
+/scripts/github-slack-hook-management.mjs @lcv-leo
+/scripts/github-slack-hook-management.test.mjs @lcv-leo
 /scripts/github-slack-webhook-redelivery.mjs @lcv-leo
 /scripts/github-slack-webhook-redelivery.test.mjs @lcv-leo
 /slack/github-integration/ @lcv-leo
