@@ -17,6 +17,7 @@ import {
 const baseEnvironment = Object.freeze({
   TOKEN: "test-token-never-log",
   ORGANIZATION_NAME: "example-org",
+  ORGANIZATION_ID: "987654",
   HOOK_ID: "12345",
   WORKFLOW_REPO_OWNER: "example-org",
   WORKFLOW_REPO_NAME: ".github",
@@ -76,6 +77,14 @@ test("configuration fails before API access when any required input is absent", 
     () => readConfiguration({ ...baseEnvironment, HOOK_ID: "not-an-id" }),
     /HOOK_ID must be a positive integer/,
   );
+  assert.throws(
+    () =>
+      readConfiguration({
+        ...baseEnvironment,
+        ORGANIZATION_ID: "not-an-id",
+      }),
+    /ORGANIZATION_ID must be a positive integer/,
+  );
 });
 
 test("checkpoint defaults to 24 hours and clamps values beyond GitHub's three-day limit", () => {
@@ -110,11 +119,20 @@ test("checkpoint defaults to 24 hours and clamps values beyond GitHub's three-da
 
 test("Link pagination extracts only a cursor from the expected GitHub endpoint", () => {
   const path = "/orgs/example-org/hooks/12345/deliveries";
+  const canonicalPath = "/organizations/987654/hooks/12345/deliveries";
   const link = [
     `<https://api.github.com${path}?per_page=100&cursor=previous>; rel="prev"`,
     `<https://api.github.com${path}?per_page=100&cursor=next%2Fcursor>; rel="next"`,
   ].join(", ");
   assert.equal(parseNextCursor(link, path), "next/cursor");
+  assert.equal(
+    parseNextCursor(
+      `<https://api.github.com${canonicalPath}?per_page=100&cursor=canonical%2Fcursor>; rel="next"`,
+      path,
+      canonicalPath,
+    ),
+    "canonical/cursor",
+  );
   assert.equal(parseNextCursor(undefined, path), undefined);
   assert.throws(
     () =>
@@ -132,11 +150,29 @@ test("Link pagination extracts only a cursor from the expected GitHub endpoint",
       ),
     /without a cursor/,
   );
+  assert.throws(
+    () =>
+      parseNextCursor(
+        `<https://api.github.com/organizations/987655/hooks/12345/deliveries?cursor=next>; rel="next"`,
+        path,
+        canonicalPath,
+      ),
+    /outside the expected deliveries endpoint/,
+  );
+  assert.throws(
+    () =>
+      parseNextCursor(
+        `<https://api.github.com/organizations/987654/hooks/54321/deliveries?cursor=next>; rel="next"`,
+        path,
+        canonicalPath,
+      ),
+    /outside the expected deliveries endpoint/,
+  );
 });
 
 test("delivery pagination follows Link cursors and handles a terminal empty page", async () => {
   const cutoff = Date.parse("2026-08-03T10:00:00.000Z");
-  const path = "/orgs/example-org/hooks/12345/deliveries";
+  const canonicalPath = "/organizations/987654/hooks/12345/deliveries";
   const requests = [];
   const fetchImpl = async (url) => {
     requests.push(new URL(url));
@@ -154,7 +190,7 @@ test("delivery pagination follows Link cursors and handles a terminal empty page
         ],
         {
           headers: {
-            link: `<https://api.github.com${path}?per_page=100&cursor=cursor-2>; rel="next"`,
+            link: `<https://api.github.com${canonicalPath}?per_page=100&cursor=cursor-2>; rel="next"`,
           },
         },
       );
@@ -165,6 +201,7 @@ test("delivery pagination follows Link cursors and handles a terminal empty page
   const deliveries = await fetchDeliveriesSince({
     token: baseEnvironment.TOKEN,
     organizationName: baseEnvironment.ORGANIZATION_NAME,
+    organizationId: baseEnvironment.ORGANIZATION_ID,
     hookId: baseEnvironment.HOOK_ID,
     cutoff,
     fetchImpl,
@@ -183,6 +220,7 @@ test("delivery IDs beyond JavaScript's safe integer range retain every decimal d
   const deliveries = await fetchDeliveriesSince({
     token: baseEnvironment.TOKEN,
     organizationName: baseEnvironment.ORGANIZATION_NAME,
+    organizationId: baseEnvironment.ORGANIZATION_ID,
     hookId: baseEnvironment.HOOK_ID,
     cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
     fetchImpl: async () =>
@@ -198,6 +236,7 @@ test("delivery IDs beyond JavaScript's safe integer range retain every decimal d
     fetchDeliveriesSince({
       token: baseEnvironment.TOKEN,
       organizationName: baseEnvironment.ORGANIZATION_NAME,
+      organizationId: baseEnvironment.ORGANIZATION_ID,
       hookId: baseEnvironment.HOOK_ID,
       cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
       fetchImpl: async () =>
@@ -218,6 +257,7 @@ test("pagination stops at the checkpoint and fails closed on contradictory empty
   const deliveries = await fetchDeliveriesSince({
     token: baseEnvironment.TOKEN,
     organizationName: baseEnvironment.ORGANIZATION_NAME,
+    organizationId: baseEnvironment.ORGANIZATION_ID,
     hookId: baseEnvironment.HOOK_ID,
     cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
     fetchImpl: async () => {
@@ -251,6 +291,7 @@ test("pagination stops at the checkpoint and fails closed on contradictory empty
     fetchDeliveriesSince({
       token: baseEnvironment.TOKEN,
       organizationName: baseEnvironment.ORGANIZATION_NAME,
+      organizationId: baseEnvironment.ORGANIZATION_ID,
       hookId: baseEnvironment.HOOK_ID,
       cutoff: 1,
       fetchImpl: async () =>
@@ -581,6 +622,7 @@ test("organization-hook 404 classifies missing scope without listing token scope
     fetchDeliveriesSince({
       token: baseEnvironment.TOKEN,
       organizationName: baseEnvironment.ORGANIZATION_NAME,
+      organizationId: baseEnvironment.ORGANIZATION_ID,
       hookId: baseEnvironment.HOOK_ID,
       cutoff: Date.now() - 60_000,
       fetchImpl: async () =>

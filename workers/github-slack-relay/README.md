@@ -295,7 +295,10 @@ ORDER BY updated_at ASC;
 ```
 
 The separate Slack app workflow queries `apps.activities.list` every 15 minutes
-and fails on recent workflow errors. For interactive diagnosis, use
+with Slack's documented URL-encoded request format and fails on recent workflow
+errors. Its complete response remains private; only a validated Slack error
+code can reach the job log. The same check can be dispatched with
+`operation: monitor`. For interactive diagnosis, use
 `slack activity` against the deployed app. Slack activity payloads may contain
 private workflow inputs, so CI withholds raw API responses.
 
@@ -304,7 +307,9 @@ scheduled `GitHub Slack Webhook Redelivery` workflow checks every 15 minutes,
 groups attempts by GUID, accepts GitHub's documented HTTP 200-399 success
 classification, and redelivers unresolved attempts within the three-day
 retention window. Its checkpoint advances only after the complete run
-succeeds.
+succeeds. Pagination accepts only the exact named and numeric canonical paths
+for the configured organization and hook, and reconstructs each request from
+the returned cursor instead of following a `Link` URL blindly.
 
 ## Official references
 

@@ -64,6 +64,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
           ORGANIZATION_NAME: ${{ github.repository_owner }}
+          ORGANIZATION_ID: ${{ github.repository_owner_id }}
           WORKFLOW_REPO_OWNER: ${{ github.repository_owner }}
           WORKFLOW_REPO_NAME: ${{ github.event.repository.name }}
         run: node scripts/github-slack-webhook-redelivery.mjs

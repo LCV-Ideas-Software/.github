@@ -34,6 +34,13 @@ export function readConfiguration(environment = process.env) {
   if (!/^\d+$/.test(hookId) || BigInt(hookId) <= 0n) {
     throw new Error("HOOK_ID must be a positive integer.");
   }
+  const organizationId = requiredEnvironmentValue(
+    environment,
+    "ORGANIZATION_ID",
+  );
+  if (!/^\d+$/.test(organizationId) || BigInt(organizationId) <= 0n) {
+    throw new Error("ORGANIZATION_ID must be a positive integer.");
+  }
 
   return Object.freeze({
     token: requiredEnvironmentValue(environment, "TOKEN"),
@@ -41,6 +48,7 @@ export function readConfiguration(environment = process.env) {
       environment,
       "ORGANIZATION_NAME",
     ),
+    organizationId,
     hookId,
     workflowRepoOwner: requiredEnvironmentValue(
       environment,
@@ -202,7 +210,11 @@ async function readDeliveryPageJson(response) {
   }
 }
 
-export function parseNextCursor(linkHeader, expectedPathname) {
+export function parseNextCursor(
+  linkHeader,
+  expectedPathname,
+  canonicalPathname,
+) {
   if (!linkHeader) {
     return undefined;
   }
@@ -222,9 +234,12 @@ export function parseNextCursor(linkHeader, expectedPathname) {
         cause: error,
       });
     }
+    const allowedPathnames = new Set(
+      [expectedPathname, canonicalPathname].filter(Boolean),
+    );
     if (
       nextUrl.origin !== API_ORIGIN ||
-      nextUrl.pathname !== expectedPathname
+      !allowedPathnames.has(nextUrl.pathname)
     ) {
       throw new Error(
         "GitHub returned a next-page URL outside the expected deliveries endpoint.",
@@ -324,12 +339,16 @@ function normalizeDelivery(delivery) {
 export async function fetchDeliveriesSince({
   token,
   organizationName,
+  organizationId,
   hookId,
   cutoff,
   fetchImpl = globalThis.fetch,
 }) {
   const deliveriesPath = `/orgs/${endpointPath([
     organizationName,
+  ])}/hooks/${endpointPath([hookId])}/deliveries`;
+  const canonicalDeliveriesPath = `/organizations/${endpointPath([
+    organizationId,
   ])}/hooks/${endpointPath([hookId])}/deliveries`;
   let cursor;
   let previousTimestamp = Number.POSITIVE_INFINITY;
@@ -353,6 +372,7 @@ export async function fetchDeliveriesSince({
     const nextCursor = parseNextCursor(
       response.headers.get("link"),
       deliveriesPath,
+      canonicalDeliveriesPath,
     );
     if (pageData.length === 0) {
       if (nextCursor) {
@@ -537,6 +557,7 @@ export async function runRedelivery({
   const deliveries = await fetchDeliveriesSince({
     token: configuration.token,
     organizationName: configuration.organizationName,
+    organizationId: configuration.organizationId,
     hookId: configuration.hookId,
     cutoff,
     fetchImpl,

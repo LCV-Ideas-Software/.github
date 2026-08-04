@@ -354,6 +354,9 @@ ingestion therefore requires an intentional webhook action as well.
   `main` when the same gate is `true`.
 - `.github/workflows/github-slack-webhook-redelivery.yml` runs its scheduled or
   manually dispatched redelivery job only while the same gate is `true`.
+- `.github/workflows/slack-github-integration.yml` accepts the manual
+  `operation: monitor` input to run the same production activity check on
+  demand; its default manual operation remains `deploy`.
 - `.github/workflows/github-slack-hook-management.yml` is the fail-closed,
   main-only control plane for provisioning, activating, deactivating, or
   pinging the PAT-owned organization hook. It never prints either credential.
@@ -417,7 +420,10 @@ Monitoring and recovery are layered:
 - accepted rows are retained for 30 days; unresolved and manual-review rows are
   not automatically deleted;
 - the scheduled Slack monitor queries `apps.activities.list` every 15 minutes
-  and fails if Slack recorded workflow errors during the preceding 20 minutes;
+  with Slack's documented URL-encoded request format and fails if Slack
+  recorded workflow errors during the preceding 20 minutes. It never logs the
+  activities collection; on an API rejection it emits only a strictly
+  validated Slack error code;
 - the operator can inspect richer hosted logs with `slack activity`;
 - `.github/workflows/github-slack-webhook-redelivery.yml` scans the organization
   webhook every 15 minutes, groups attempts by GUID, treats HTTP 200-399 as a
@@ -425,6 +431,12 @@ Monitoring and recovery are layered:
   GitHub's three-day window;
 - the webhook recovery workflow advances `SLACK_RELAY_LAST_REDELIVERY` only
   after the entire scan and all accepted redelivery requests succeed.
+
+GitHub can canonicalize a paginated `/orgs/{name}/...` request into an
+`/organizations/{id}/...` URL in the `Link` header. The recovery controller
+accepts only those two exact path identities for the configured organization
+and hook, keeps `api.github.com` as the mandatory origin, and copies only the
+opaque cursor into a newly constructed request URL.
 
 The recovery workflow uses `LCV_AUTOMATION_TOKEN` because the built-in
 `GITHUB_TOKEN` cannot administer organization webhooks. The classic PAT needs

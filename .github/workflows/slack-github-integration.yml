@@ -6,14 +6,27 @@ on:
     paths:
       - ".github/workflows/slack-github-integration.yml"
       - "slack/github-integration/**"
+      - "scripts/slack-workflow-monitor.mjs"
+      - "scripts/slack-workflow-monitor.test.mjs"
   pull_request:
     branches: [main]
     paths:
       - ".github/workflows/slack-github-integration.yml"
       - "slack/github-integration/**"
+      - "scripts/slack-workflow-monitor.mjs"
+      - "scripts/slack-workflow-monitor.test.mjs"
   schedule:
     - cron: "12,27,42,57 * * * *"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Operation to run against the production Slack app
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - deploy
+          - monitor
 
 permissions: write-all
 
@@ -42,6 +55,15 @@ jobs:
         with:
           deno-version: latest
 
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Test Slack workflow monitor
+        run: node --test scripts/slack-workflow-monitor.test.mjs
+
       - name: Check Slack workflow app
         working-directory: slack/github-integration
         run: |
@@ -64,7 +86,9 @@ jobs:
     if: >-
       vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
       (github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'deploy' &&
+      github.ref == 'refs/heads/main'))
     needs: verify
     permissions: write-all
     runs-on: ubuntu-latest
@@ -108,44 +132,32 @@ jobs:
     name: Monitor Slack workflow execution
     if: >-
       vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
-      github.event_name == 'schedule'
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'monitor'))
     permissions: write-all
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: slack-production
     steps:
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Test Slack workflow monitor
+        run: node --test scripts/slack-workflow-monitor.test.mjs
+
       - name: Fail closed on recent Slack workflow errors
         env:
           SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
           SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
           SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
-        run: |
-          set -euo pipefail
-          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
-          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
-          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
-
-          min_created="$((($(date +%s) - 1200) * 1000000))"
-          response="$(curl --fail-with-body --silent --show-error \
-            --request POST \
-            --header "Authorization: Bearer $SLACK_SERVICE_TOKEN" \
-            --header "Content-Type: application/json; charset=utf-8" \
-            --data "$(jq -nc \
-              --arg app_id "$SLACK_APP_ID" \
-              --arg team_id "$SLACK_TEAM_ID" \
-              --argjson min_date_created "$min_created" \
-              '{app_id: $app_id, team_id: $team_id, min_log_level: "error", min_date_created: $min_date_created, limit: 100}')" \
-            https://slack.com/api/apps.activities.list)"
-
-          if ! jq -e '.ok == true and (.activities | type) == "array"' <<<"$response" >/dev/null; then
-            echo "::error::Slack activity API failed; response withheld because activity payloads may contain private workflow inputs."
-            exit 1
-          fi
-
-          error_count="$(jq '.activities | length' <<<"$response")"
-          if (( error_count > 0 )); then
-            echo "::error::Slack recorded $error_count workflow error(s) during the last 20 minutes; inspect with the authenticated Slack CLI."
-            exit 1
-          fi
-
-          echo "No Slack workflow errors were recorded during the last 20 minutes."
+        run: node scripts/slack-workflow-monitor.mjs
