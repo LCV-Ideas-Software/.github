@@ -169,6 +169,39 @@ async function readJson(response, description) {
   }
 }
 
+async function readDeliveryPageJson(response) {
+  let text;
+  try {
+    text = await response.text();
+  } catch (error) {
+    throw new Error("GitHub webhook deliveries could not be read.", {
+      cause: error,
+    });
+  }
+
+  try {
+    return JSON.parse(text, (key, value, context) => {
+      // GitHub delivery IDs currently exceed Number.MAX_SAFE_INTEGER. The
+      // reviver's source text preserves every decimal digit before the rounded
+      // JavaScript Number can reach endpoint construction.
+      if (
+        key === "id" &&
+        typeof value === "number" &&
+        typeof context?.source === "string" &&
+        /^\d+$/.test(context.source)
+      ) {
+        return BigInt(context.source);
+      }
+      return value;
+    });
+  } catch (error) {
+    throw new Error(
+      "GitHub returned invalid JSON for organization webhook deliveries.",
+      { cause: error },
+    );
+  }
+}
+
 export function parseNextCursor(linkHeader, expectedPathname) {
   if (!linkHeader) {
     return undefined;
@@ -253,7 +286,7 @@ function normalizeDelivery(delivery) {
   if (!delivery || typeof delivery !== "object") {
     throw new Error("GitHub returned a malformed webhook delivery.");
   }
-  if (!Number.isSafeInteger(delivery.id) || delivery.id <= 0) {
+  if (typeof delivery.id !== "bigint" || delivery.id <= 0n) {
     throw new Error("GitHub returned a webhook delivery with an invalid ID.");
   }
   if (typeof delivery.guid !== "string" || delivery.guid === "") {
@@ -280,7 +313,7 @@ function normalizeDelivery(delivery) {
   // Deliberately retain metadata only. Request and response payloads are never
   // copied, logged, or persisted by this recovery process.
   return Object.freeze({
-    id: delivery.id,
+    id: delivery.id.toString(),
     guid: delivery.guid,
     deliveredAt,
     status: delivery.status,
@@ -312,10 +345,7 @@ export async function fetchDeliveriesSince({
       }),
       fetchImpl,
     });
-    const pageData = await readJson(
-      response,
-      "organization webhook deliveries",
-    );
+    const pageData = await readDeliveryPageJson(response);
     if (!Array.isArray(pageData)) {
       throw new Error("GitHub returned a non-array deliveries page.");
     }
@@ -373,6 +403,12 @@ export function wasSuccessful(delivery) {
 }
 
 export function selectFailedDeliveryIds(deliveries) {
+  const compareIds = (left, right) => {
+    const leftId = BigInt(left);
+    const rightId = BigInt(right);
+    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+  };
+
   const byGuid = new Map();
   for (const delivery of deliveries) {
     const attempts = byGuid.get(delivery.guid) ?? [];
@@ -391,14 +427,15 @@ export function selectFailedDeliveryIds(deliveries) {
           ? attempt
           : candidate;
       }
-      return attempt.id > candidate.id ? attempt : candidate;
+      return compareIds(attempt.id, candidate.id) > 0 ? attempt : candidate;
     });
     failures.push(latest);
   }
 
   // Preserve event chronology when several independent deliveries need recovery.
   failures.sort(
-    (left, right) => left.deliveredAt - right.deliveredAt || left.id - right.id,
+    (left, right) =>
+      left.deliveredAt - right.deliveredAt || compareIds(left.id, right.id),
   );
   return failures.map((delivery) => delivery.id);
 }

@@ -29,6 +29,13 @@ function responseJson(body, { status = 200, headers = {} } = {}) {
   });
 }
 
+function responseText(body, { status = 200, headers = {} } = {}) {
+  return new Response(body, {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
 function rawDelivery({
   id,
   guid = `guid-${id}`,
@@ -52,7 +59,7 @@ function normalizedDelivery({
   status = "Internal Server Error",
   statusCode = 500,
 }) {
-  return { id, guid, deliveredAt, status, statusCode };
+  return { id: String(id), guid, deliveredAt, status, statusCode };
 }
 
 test("configuration fails before API access when any required input is absent", () => {
@@ -164,11 +171,45 @@ test("delivery pagination follows Link cursors and handles a terminal empty page
   });
   assert.deepEqual(
     deliveries.map((delivery) => delivery.id),
-    [2, 1],
+    ["2", "1"],
   );
   assert.equal(requests.length, 2);
   assert.equal(requests[0].searchParams.get("per_page"), "100");
   assert.equal(requests[1].searchParams.get("cursor"), "cursor-2");
+});
+
+test("delivery IDs beyond JavaScript's safe integer range retain every decimal digit", async () => {
+  const exactDeliveryId = "3835001740625715000";
+  const deliveries = await fetchDeliveriesSince({
+    token: baseEnvironment.TOKEN,
+    organizationName: baseEnvironment.ORGANIZATION_NAME,
+    hookId: baseEnvironment.HOOK_ID,
+    cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
+    fetchImpl: async () =>
+      responseText(
+        `[{"id":${exactDeliveryId},"guid":"large-id-guid","delivered_at":"2026-08-03T11:00:00.000Z","status":"Internal Server Error","status_code":500}]`,
+      ),
+  });
+
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].id, exactDeliveryId);
+
+  await assert.rejects(
+    fetchDeliveriesSince({
+      token: baseEnvironment.TOKEN,
+      organizationName: baseEnvironment.ORGANIZATION_NAME,
+      hookId: baseEnvironment.HOOK_ID,
+      cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
+      fetchImpl: async () =>
+        responseJson([
+          rawDelivery({
+            id: exactDeliveryId,
+            deliveredAt: "2026-08-03T11:00:00.000Z",
+          }),
+        ]),
+    }),
+    /invalid ID/,
+  );
 });
 
 test("pagination stops at the checkpoint and fails closed on contradictory empty pages", async () => {
@@ -202,7 +243,7 @@ test("pagination stops at the checkpoint and fails closed on contradictory empty
   });
   assert.deepEqual(
     deliveries.map((delivery) => delivery.id),
-    [2],
+    ["2"],
   );
   assert.equal(requests, 1);
 
@@ -318,7 +359,30 @@ test("HTTP 200-399 suppresses failed attempts but textual OK cannot override 4xx
       statusCode: 399,
     }),
   ]);
-  assert.deepEqual(ids, [41, 32, 12]);
+  assert.deepEqual(ids, ["41", "32", "12"]);
+
+  assert.deepEqual(
+    selectFailedDeliveryIds([
+      normalizedDelivery({ id: "99", guid: "same", deliveredAt: time }),
+      normalizedDelivery({ id: "100", guid: "same", deliveredAt: time }),
+    ]),
+    ["100"],
+  );
+  assert.deepEqual(
+    selectFailedDeliveryIds([
+      normalizedDelivery({
+        id: "9007199254740993",
+        guid: "higher",
+        deliveredAt: time,
+      }),
+      normalizedDelivery({
+        id: "9007199254740992",
+        guid: "lower",
+        deliveredAt: time,
+      }),
+    ]),
+    ["9007199254740992", "9007199254740993"],
+  );
 });
 
 test("a complete run redelivers only unresolved GUIDs and persists the checkpoint last", async () => {
@@ -392,6 +456,50 @@ test("a complete run redelivers only unresolved GUIDs and persists the checkpoin
   assert.equal(calls.at(-1).url.pathname.endsWith("/actions/variables"), true);
   assert.equal(messages.length, 1);
   assert.doesNotMatch(messages[0], /test-token|failed-guid/);
+});
+
+test("a complete run preserves a large delivery ID in the redelivery endpoint", async () => {
+  const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
+  const exactDeliveryId = "3835001740625715000";
+  let exactAttemptObserved = false;
+
+  const result = await runRedelivery({
+    environment: baseEnvironment,
+    now: () => startedAt,
+    logger: { info() {}, warn() {} },
+    fetchImpl: async (input, init) => {
+      const url = new URL(input);
+      if (
+        init.method === "GET" &&
+        url.pathname.endsWith(`/actions/variables/${CHECKPOINT_VARIABLE}`)
+      ) {
+        return responseJson({ message: "Not Found" }, { status: 404 });
+      }
+      if (init.method === "GET" && url.pathname.endsWith("/deliveries")) {
+        return responseText(
+          `[{"id":${exactDeliveryId},"guid":"large-failed-guid","delivered_at":"2026-08-03T11:30:00.000Z","status":"Internal Server Error","status_code":500}]`,
+        );
+      }
+      if (init.method === "POST" && url.pathname.endsWith("/attempts")) {
+        assert.equal(
+          url.pathname,
+          `/orgs/example-org/hooks/12345/deliveries/${exactDeliveryId}/attempts`,
+        );
+        exactAttemptObserved = true;
+        return new Response(null, { status: 202 });
+      }
+      if (
+        init.method === "POST" &&
+        url.pathname.endsWith("/actions/variables")
+      ) {
+        return responseJson({ name: CHECKPOINT_VARIABLE }, { status: 201 });
+      }
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+    },
+  });
+
+  assert.equal(exactAttemptObserved, true);
+  assert.equal(result.redeliveries, 1);
 });
 
 test("a failed redelivery never advances the repository checkpoint", async () => {
