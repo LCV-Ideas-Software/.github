@@ -215,6 +215,106 @@ test("delivery pagination follows Link cursors and handles a terminal empty page
   assert.equal(requests[1].searchParams.get("cursor"), "cursor-2");
 });
 
+test("delivery collection does not assume API ordering and scans every cursor", async () => {
+  const cutoff = Date.parse("2026-08-03T10:00:00.000Z");
+  const path = "/orgs/example-org/hooks/12345/deliveries";
+  let requests = 0;
+  const deliveries = await fetchDeliveriesSince({
+    token: baseEnvironment.TOKEN,
+    organizationName: baseEnvironment.ORGANIZATION_NAME,
+    organizationId: baseEnvironment.ORGANIZATION_ID,
+    hookId: baseEnvironment.HOOK_ID,
+    cutoff,
+    fetchImpl: async () => {
+      requests += 1;
+      if (requests === 1) {
+        return responseJson(
+          [
+            rawDelivery({
+              id: 1,
+              deliveredAt: "2026-08-03T10:30:00.000Z",
+            }),
+            rawDelivery({
+              id: 3,
+              deliveredAt: "2026-08-03T11:00:00.000Z",
+            }),
+          ],
+          {
+            headers: {
+              link: `<https://api.github.com${path}?cursor=cursor-2>; rel="next"`,
+            },
+          },
+        );
+      }
+      return responseJson([
+        rawDelivery({
+          id: 2,
+          deliveredAt: "2026-08-03T10:45:00.000Z",
+        }),
+        rawDelivery({
+          id: 4,
+          deliveredAt: "2026-08-03T09:59:59.999Z",
+        }),
+      ]);
+    },
+  });
+
+  assert.equal(requests, 2);
+  assert.deepEqual(
+    deliveries.map((delivery) => delivery.id),
+    ["3", "2", "1"],
+  );
+});
+
+test("cursor overlap is deduplicated and contradictory delivery metadata fails closed", async () => {
+  const path = "/orgs/example-org/hooks/12345/deliveries";
+  const shared = rawDelivery({
+    id: 7,
+    deliveredAt: "2026-08-03T11:00:00.000Z",
+  });
+  const overlappingFetch = ({ contradiction = false } = {}) => {
+    let requests = 0;
+    return async () => {
+      requests += 1;
+      if (requests === 1) {
+        return responseJson([shared], {
+          headers: {
+            link: `<https://api.github.com${path}?cursor=overlap>; rel="next"`,
+          },
+        });
+      }
+      return responseJson([
+        contradiction ? { ...shared, status: "OK", status_code: 200 } : shared,
+      ]);
+    };
+  };
+
+  const deliveries = await fetchDeliveriesSince({
+    token: baseEnvironment.TOKEN,
+    organizationName: baseEnvironment.ORGANIZATION_NAME,
+    organizationId: baseEnvironment.ORGANIZATION_ID,
+    hookId: baseEnvironment.HOOK_ID,
+    cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
+    fetchImpl: overlappingFetch(),
+  });
+  assert.deepEqual(
+    deliveries.map((delivery) => delivery.id),
+    ["7"],
+  );
+
+  await assert.rejects(
+    fetchDeliveriesSince({
+      token: baseEnvironment.TOKEN,
+      organizationName: baseEnvironment.ORGANIZATION_NAME,
+      organizationId: baseEnvironment.ORGANIZATION_ID,
+      hookId: baseEnvironment.HOOK_ID,
+      cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
+      fetchImpl: overlappingFetch({ contradiction: true }),
+    }),
+    /contradictory metadata/,
+  );
+});
+
 test("delivery IDs beyond JavaScript's safe integer range retain every decimal digit", async () => {
   const exactDeliveryId = "3835001740625715000";
   const deliveries = await fetchDeliveriesSince({
@@ -251,7 +351,7 @@ test("delivery IDs beyond JavaScript's safe integer range retain every decimal d
   );
 });
 
-test("pagination stops at the checkpoint and fails closed on contradictory empty pages", async () => {
+test("pagination filters the checkpoint without assuming later pages are older", async () => {
   const path = "/orgs/example-org/hooks/12345/deliveries";
   let requests = 0;
   const deliveries = await fetchDeliveriesSince({
@@ -262,6 +362,14 @@ test("pagination stops at the checkpoint and fails closed on contradictory empty
     cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
     fetchImpl: async () => {
       requests += 1;
+      if (requests === 2) {
+        return responseJson([
+          rawDelivery({
+            id: 3,
+            deliveredAt: "2026-08-03T10:30:00.000Z",
+          }),
+        ]);
+      }
       return responseJson(
         [
           rawDelivery({
@@ -275,7 +383,7 @@ test("pagination stops at the checkpoint and fails closed on contradictory empty
         ],
         {
           headers: {
-            link: `<https://api.github.com${path}?cursor=must-not-follow>; rel="next"`,
+            link: `<https://api.github.com${path}?cursor=second-page>; rel="next"`,
           },
         },
       );
@@ -283,10 +391,13 @@ test("pagination stops at the checkpoint and fails closed on contradictory empty
   });
   assert.deepEqual(
     deliveries.map((delivery) => delivery.id),
-    ["2"],
+    ["2", "3"],
   );
-  assert.equal(requests, 1);
+  assert.equal(requests, 2);
+});
 
+test("pagination fails closed on contradictory empty pages", async () => {
+  const path = "/orgs/example-org/hooks/12345/deliveries";
   await assert.rejects(
     fetchDeliveriesSince({
       token: baseEnvironment.TOKEN,

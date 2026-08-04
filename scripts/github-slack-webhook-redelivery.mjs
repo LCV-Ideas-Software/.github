@@ -351,9 +351,19 @@ export async function fetchDeliveriesSince({
     organizationId,
   ])}/hooks/${endpointPath([hookId])}/deliveries`;
   let cursor;
-  let previousTimestamp = Number.POSITIVE_INFINITY;
   const seenCursors = new Set();
+  const seenDeliveries = new Map();
   const deliveries = [];
+
+  const newestFirst = () =>
+    deliveries.sort((left, right) => {
+      if (left.deliveredAt !== right.deliveredAt) {
+        return right.deliveredAt - left.deliveredAt;
+      }
+      const leftId = BigInt(left.id);
+      const rightId = BigInt(right.id);
+      return leftId < rightId ? 1 : leftId > rightId ? -1 : 0;
+    });
 
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const response = await githubRequest({
@@ -380,28 +390,39 @@ export async function fetchDeliveriesSince({
           "GitHub returned an empty deliveries page with a next cursor; refusing to advance the checkpoint.",
         );
       }
-      return deliveries;
+      return newestFirst();
     }
 
-    let reachedCutoff = false;
     for (const rawDelivery of pageData) {
       const delivery = normalizeDelivery(rawDelivery);
-      if (delivery.deliveredAt > previousTimestamp) {
+      const prior = seenDeliveries.get(delivery.id);
+      if (
+        prior &&
+        (prior.guid !== delivery.guid ||
+          prior.deliveredAt !== delivery.deliveredAt ||
+          prior.status !== delivery.status ||
+          prior.statusCode !== delivery.statusCode)
+      ) {
         throw new Error(
-          "GitHub returned deliveries outside newest-to-oldest order; refusing to advance the checkpoint.",
+          "GitHub returned contradictory metadata for the same webhook delivery ID.",
         );
       }
-      previousTimestamp = delivery.deliveredAt;
+      if (prior) {
+        continue;
+      }
+      seenDeliveries.set(delivery.id, delivery);
 
       if (delivery.deliveredAt >= cutoff) {
         deliveries.push(delivery);
-      } else {
-        reachedCutoff = true;
       }
     }
 
-    if (reachedCutoff || !nextCursor) {
-      return deliveries;
+    // GitHub does not document a stable order for this endpoint, and webhook
+    // events can arrive out of order. Follow every bounded cursor before
+    // filtering and sorting, so a newer delivery can never be skipped merely
+    // because an older one appeared first.
+    if (!nextCursor) {
+      return newestFirst();
     }
     if (seenCursors.has(nextCursor)) {
       throw new Error("GitHub returned a repeated deliveries cursor.");
