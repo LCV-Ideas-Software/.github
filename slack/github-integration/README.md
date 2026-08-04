@@ -35,9 +35,11 @@ Slack's latest `deno_slack_hooks@1.5.0` build hook transitively pins
 affects esbuild's development server; the reviewed hook source invokes only
 `build()` and `stop()` and does not make that server reachable.
 
-`deno task --frozen audit` is fail-closed. It permits only that one moderate
-advisory and verifies the exact hook tag, annotated-tag object, commit, remote
-source hash, package integrity, and reviewed esbuild call set against GitHub.
-Any other moderate-or-higher advisory or any changed assumption fails the check.
-The exception expires on 01/11/2026 and must be removed as soon as Slack
-publishes a hook release using esbuild 0.25.0 or newer.
+`deno task --frozen audit` is fail-closed. It permits only that one reviewed
+moderate advisory and verifies the exact hook tag, annotated-tag object, commit,
+remote source hash, package integrity, reviewed esbuild call set, and latest
+stable GitHub release. Any additional low-or-higher advisory, a newer stable
+hook release, or any changed assumption fails the check. The workflow repeats
+this verification every day at 07h17. The exception expires on 01/11/2026 and
+must be removed as soon as Slack publishes a hook release using esbuild 0.25.0
+or newer.

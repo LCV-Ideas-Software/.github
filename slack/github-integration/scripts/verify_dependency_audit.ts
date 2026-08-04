@@ -37,6 +37,12 @@ interface GitHubContent {
   encoding?: string;
 }
 
+interface GitHubRelease {
+  tag_name?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+}
+
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -58,7 +64,7 @@ export function verifyAuditOutput(output: string, exitCode: number): void {
   invariant(totalMatch, "could not parse deno audit's vulnerability total");
   invariant(
     Number(totalMatch[1]) === 1,
-    `expected exactly one moderate-or-higher advisory, found ${totalMatch[1]}`,
+    `expected exactly one reviewed advisory, found ${totalMatch[1]}`,
   );
 
   const advisoryIds = [
@@ -149,6 +155,24 @@ export function verifyExceptionWindow(now = Date.now()): void {
   );
 }
 
+export function verifyLatestHookRelease(release: unknown): void {
+  invariant(
+    release && typeof release === "object",
+    "GitHub returned no latest deno_slack_hooks release",
+  );
+  const candidate = release as GitHubRelease;
+  invariant(
+    candidate.draft === false && candidate.prerelease === false,
+    "GitHub returned a draft or prerelease as the latest stable deno_slack_hooks release",
+  );
+  invariant(
+    candidate.tag_name === EXPECTED_HOOK_TAG,
+    `deno_slack_hooks ${
+      candidate.tag_name ?? "unknown"
+    } is the latest stable release; update the reviewed hook pin`,
+  );
+}
+
 async function sha256(bytes: Uint8Array): Promise<string> {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
@@ -162,7 +186,7 @@ async function githubJson<T>(path: string): Promise<T> {
   const token = Deno.env.get("GITHUB_TOKEN");
   const headers = new Headers({
     Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
+    "X-GitHub-Api-Version": "2026-03-10",
   });
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
@@ -180,6 +204,11 @@ function decodeBase64(value: string): Uint8Array {
 }
 
 async function verifyUpstreamPin(): Promise<void> {
+  const latestRelease = await githubJson<GitHubRelease>(
+    `/repos/${HOOK_REPOSITORY}/releases/latest`,
+  );
+  verifyLatestHookRelease(latestRelease);
+
   const reference = await githubJson<GitReference>(
     `/repos/${HOOK_REPOSITORY}/git/ref/tags/${EXPECTED_HOOK_TAG}`,
   );
@@ -215,7 +244,7 @@ async function verifyUpstreamPin(): Promise<void> {
 
 async function runAudit(): Promise<{ code: number; output: string }> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ["audit", "--frozen", "--level=moderate"],
+    args: ["audit", "--frozen", "--level=low"],
     stdout: "piped",
     stderr: "piped",
   });

@@ -62,7 +62,7 @@ jobs:
 
       - name: Verify relay dependency signatures and advisories
         run: |
-          npm audit signatures --prefix workers/github-slack-relay --registry=https://registry.npmjs.org/
+          npm audit signatures --prefix workers/github-slack-relay
           npm audit --prefix workers/github-slack-relay --audit-level=low
 
       - name: Install and verify latest Wrangler
@@ -71,7 +71,12 @@ jobs:
         run: | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
           set -euo pipefail
           wrangler_prefix="$RUNNER_TEMP/wrangler-latest"
-          npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ wrangler@latest
+          effective_registry="$(npm config get registry --prefix "$wrangler_prefix")"
+          if [ "$effective_registry" != "https://registry.npmjs.org/" ]; then
+            echo "::error::Unexpected npm registry for the isolated Wrangler prefix: $effective_registry" >&2
+            exit 1
+          fi
+          npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest
 
           # Wrangler 4.118.0 was published hours before undici 7.29.0 fixed five
           # new advisories on 2026-08-03. Keep Wrangler latest, but patch only
@@ -80,10 +85,10 @@ jobs:
           undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
           if [ "$undici_version" = "7.28.0" ]; then
             npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
-            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
           fi
 
-          npm audit signatures --prefix "$wrangler_prefix" --registry=https://registry.npmjs.org/
+          npm audit signatures --prefix "$wrangler_prefix"
           npm audit --prefix "$wrangler_prefix" --audit-level=low
 
           WRANGLER_BIN="$wrangler_prefix/node_modules/.bin/wrangler"
@@ -149,7 +154,12 @@ jobs:
         run: | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
           set -euo pipefail
           wrangler_prefix="$RUNNER_TEMP/wrangler-latest"
-          npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ wrangler@latest
+          effective_registry="$(npm config get registry --prefix "$wrangler_prefix")"
+          if [ "$effective_registry" != "https://registry.npmjs.org/" ]; then
+            echo "::error::Unexpected npm registry for the isolated Wrangler prefix: $effective_registry" >&2
+            exit 1
+          fi
+          npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest
 
           # See the verify job above. This narrow override is deliberately
           # inactive for any resolved undici version other than 7.28.0.
@@ -157,10 +167,10 @@ jobs:
           undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
           if [ "$undici_version" = "7.28.0" ]; then
             npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
-            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
           fi
 
-          npm audit signatures --prefix "$wrangler_prefix" --registry=https://registry.npmjs.org/
+          npm audit signatures --prefix "$wrangler_prefix"
           npm audit --prefix "$wrangler_prefix" --audit-level=low
 
           WRANGLER_BIN="$wrangler_prefix/node_modules/.bin/wrangler"

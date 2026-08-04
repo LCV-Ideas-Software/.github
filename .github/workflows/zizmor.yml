@@ -16,8 +16,6 @@ permissions: write-all
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  UV_VERSION: "0.11.32"
-  ZIZMOR_VERSION: "1.28.0"
 
 concurrency:
   group: zizmor-${{ github.repository }}-${{ github.ref }}
@@ -30,18 +28,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout repository without persisted credentials
+      - name: Checkout this reusable workflow's immutable tooling source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .lcv-zizmor-tooling
+          sparse-checkout: .github/zizmor/Dockerfile
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Install hash-verified uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - name: Checkout repository to audit without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          version: ${{ env.UV_VERSION }}
-          checksum: aab924fd522efd06f1c5f3b93a243864fc453132c94b2dc49f1371b528a4b967
-          enable-cache: false
-          github-token: ""
+          path: .lcv-audit-target
+          persist-credentials: false
+
+      - name: Build the digest-pinned zizmor runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --pull \
+            --no-cache \
+            --file .lcv-zizmor-tooling/.github/zizmor/Dockerfile \
+            --tag lcv-zizmor:audited \
+            .lcv-zizmor-tooling/.github/zizmor
 
       - name: Analyze workflows and capture the enforcement result
         id: audit
@@ -49,13 +61,16 @@ jobs:
         run: |
           set -euo pipefail
           zizmor=(
-            uvx
-            --isolated \
-            --no-cache \
-            --no-config \
-            --no-env-file \
-            --from "zizmor==${ZIZMOR_VERSION}" \
-            zizmor
+            docker run
+            --rm
+            --network none
+            --read-only
+            --cap-drop=ALL
+            --security-opt no-new-privileges
+            --pids-limit 128
+            --volume "${GITHUB_WORKSPACE}/.lcv-audit-target:/workspace:ro"
+            --workdir /workspace
+            lcv-zizmor:audited
             --offline \
             --persona=auditor \
             --strict-collection \
@@ -67,14 +82,14 @@ jobs:
           # normal formatter's exit status as the independent enforcement gate,
           # while still producing SARIF before the job is allowed to fail.
           set +e
-          "${zizmor[@]}" . 2>&1 | tee zizmor-findings.txt
+          "${zizmor[@]}" . 2>&1 | tee "${RUNNER_TEMP}/zizmor-findings.txt"
           zizmor_exit="${PIPESTATUS[0]}"
           set -e
 
           "${zizmor[@]}" \
             --format=sarif \
-            . > zizmor-results.sarif
-          test -s zizmor-results.sarif
+            . > "${RUNNER_TEMP}/zizmor-results.sarif"
+          test -s "${RUNNER_TEMP}/zizmor-results.sarif"
           if [[ ! "$zizmor_exit" =~ ^[0-9]+$ ]]; then
             echo "::error::Invalid zizmor exit code: $zizmor_exit" >&2
             exit 1
@@ -82,9 +97,10 @@ jobs:
           printf 'exit_code=%s\n' "$zizmor_exit" >> "$GITHUB_OUTPUT"
 
       - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
-          sarif_file: zizmor-results.sarif
+          sarif_file: ${{ runner.temp }}/zizmor-results.sarif
+          checkout_path: ${{ github.workspace }}/.lcv-audit-target
           category: zizmor
 
       - name: Enforce zero active zizmor findings

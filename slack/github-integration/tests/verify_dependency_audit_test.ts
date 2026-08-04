@@ -2,6 +2,7 @@ import {
   verifyAuditOutput,
   verifyEsbuildReachability,
   verifyExceptionWindow,
+  verifyLatestHookRelease,
   verifyLocalPins,
 } from "../scripts/verify_dependency_audit.ts";
 
@@ -54,10 +55,17 @@ Deno.test("accepts only the reviewed audit finding", () => {
   verifyAuditOutput(KNOWN_AUDIT, 1);
 });
 
-Deno.test("rejects any additional moderate-or-higher advisory", () => {
+Deno.test("rejects any additional low-or-higher advisory", () => {
   const unexpected = KNOWN_AUDIT.replace(
-    "Found 1 vulnerabilities",
-    "Found 2 vulnerabilities",
+    "Found 1 vulnerabilities\nSeverity: 0 low, 1 moderate, 0 high, 0 critical",
+    `╭ unexpected low-severity advisory
+│ Severity:   low
+│ Package:    example
+│ Vulnerable: <1.0.1
+╰ Info:       https://github.com/advisories/GHSA-aaaa-bbbb-cccc
+
+Found 2 vulnerabilities
+Severity: 1 low, 1 moderate, 0 high, 0 critical`,
   );
   assertThrows(() => verifyAuditOutput(unexpected, 1), "exactly one");
 });
@@ -109,5 +117,44 @@ Deno.test("expires the temporary exception on its review deadline", () => {
   assertThrows(
     () => verifyExceptionWindow(Date.parse("2026-11-01T00:00:00Z")),
     "expired",
+  );
+});
+
+Deno.test("accepts only the reviewed latest stable hook release", () => {
+  verifyLatestHookRelease({
+    tag_name: "1.5.0",
+    draft: false,
+    prerelease: false,
+  });
+  assertThrows(
+    () =>
+      verifyLatestHookRelease({
+        tag_name: "1.5.1",
+        draft: false,
+        prerelease: false,
+      }),
+    "1.5.1 is the latest stable release",
+  );
+  assertThrows(
+    () =>
+      verifyLatestHookRelease({
+        tag_name: "1.5.0",
+        draft: true,
+        prerelease: false,
+      }),
+    "draft or prerelease",
+  );
+  assertThrows(
+    () =>
+      verifyLatestHookRelease({
+        tag_name: "1.5.0",
+        draft: false,
+        prerelease: true,
+      }),
+    "draft or prerelease",
+  );
+  assertThrows(
+    () => verifyLatestHookRelease(null),
+    "no latest deno_slack_hooks release",
   );
 });

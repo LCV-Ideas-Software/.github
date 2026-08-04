@@ -20,9 +20,12 @@ wrapper and an exact list of stack-specific required checks.
   one verified Dependabot-authored commit, committed by either the exact immutable
   `dependabot[bot]` or `web-flow` account ID, with one parent. Login and numeric ID
   must be the matching pair; every other or mismatched identity fails closed.
-  Changed paths are restricted to the dependency manifests, lockfiles, pre-commit
-  configuration and GitHub Actions workflows used by the ecosystems configured in
-  this organization.
+  Changed paths are restricted to the dependency manifests, lockfiles, the one
+  operational pre-commit configuration, the central digest-pinned Zizmor
+  Dockerfile and GitHub Actions workflows used by the ecosystems configured in
+  this organization. Deno manifests and the nonstandard but supported
+  `python-tools-requirements.in`/`.txt` pair are explicitly allowlisted; arbitrary
+  Dockerfiles and similarly named files remain blocked.
 - Any noncanonical commit set fails closed before reviews, comments, Git refs or
   merges can be written. This includes extra commits and GitHub-signed merge
   commits authored by the automation operator. The controller has no branch
@@ -120,6 +123,44 @@ outside this reusable action.
 - `LCV_AUTOMATION_TOKEN` is used only for guarded Dependabot rebase comments and
   exact-head squash merge. It is never printed or exposed to pull-request code.
 
+## Dependency and Action coverage
+
+- Every active, non-archived repository has a GitHub Actions update block and a
+  block for every operational npm, Cargo, pip, Deno, Docker or pre-commit
+  manifest. `cross-review` is the sole repository that executes pre-commit; the
+  orphaned historical hook files were removed elsewhere.
+- The central Zizmor reusable workflow builds the official image from
+  `.github/zizmor/Dockerfile`. Its tag and OCI digest are updated together by the
+  Docker ecosystem, while the audit remains offline, read-only and strict about
+  collection errors. The reusable workflow checks out its own immutable source
+  through `job.workflow_repository` and `job.workflow_sha`, so callers audit only
+  their own checkout.
+- Deno version updates cover `deno.json`/`deno.jsonc` and `deno.lock`, but not an
+  HTTPS import in Slack's hook file and not security updates. A daily 07h17
+  verification therefore queries the latest stable upstream hook release,
+  validates the annotated tag, commit, locked source and integrity, and runs
+  `deno audit` from low severity upward.
+- Dependabot updates full-SHA `uses:` references when their same-line version
+  comment resolves to an upstream tag. GitHub does not generate Dependabot alerts
+  for Actions pinned by SHA, so every “Auditoria diária” also inventories all
+  external and reusable `uses:` references, recursively checks local composite
+  Actions, resolves each SHA to its official tag/release, verifies comment
+  coherence and commit verification, queries reviewed and malware advisories for
+  the canonical Action repository, and updates every outdated pin—including
+  checkout, language setup, cache, artifact, SARIF upload, deployment, third-party
+  and all `github/codeql-action/*` components—without replacing SHA pinning with
+  mutable tags. The ordinary three-day dependency cooldown does not apply to
+  GitHub-official or third-party software used by GitHub Actions; once its
+  release, immutable SHA, provenance and compatibility are verified, the GHA pin
+  is eligible immediately. Every `github-actions` block expresses that policy as
+  `cooldown.default-days: 3` plus `cooldown.exclude: ["*"]`: GitHub accepts only
+  one to ninety days, while the documented exclusion takes precedence and makes
+  every Action eligible immediately.
+- Versions embedded outside a supported manifest, including runtime and schema
+  selectors, are part of the same daily drift inventory. A change is applied only
+  after its official release and compatibility evidence are reviewed; behavioral
+  switches such as Cloudflare compatibility dates are never advanced blindly.
+
 ## Deployment and rollback
 
 1. The dedicated controller CI must pass both
@@ -139,6 +180,9 @@ outside this reusable action.
 
 - [Events that trigger workflows: `workflow_run`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
 - [Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)
+- [Dependabot supported ecosystems and repositories](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories)
+- [Dependabot alerts and the SHA-pinned Actions limitation](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-alerts)
+- [Job context for immutable reusable-workflow source](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context)
 - [Automating Dependabot with GitHub Actions](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions)
 - [Dependabot pull-request comment commands](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-pull-request-comment-commands)
 - [Managing Dependabot PRs and extra commits](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/manage-dependabot-prs#allowing-dependabot-to-rebase-and-force-push-over-extra-commits)

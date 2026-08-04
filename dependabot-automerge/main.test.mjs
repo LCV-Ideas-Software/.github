@@ -270,14 +270,19 @@ test("requires a required Actions check run initially triggered by Dependabot", 
   );
 });
 
-test("allows only dependency manifests, locks, pre-commit config and Actions workflows", () => {
+test("allows only configured dependency manifests, locks, pre-commit config and Actions workflows", () => {
   for (const path of [
     "package.json",
     "frontend/package-lock.json",
     "src-tauri/Cargo.toml",
     "Cargo.lock",
     "requirements-dev.txt",
+    "python-tools-requirements.in",
+    "python-tools-requirements.txt",
     "pyproject.toml",
+    "slack/github-integration/deno.jsonc",
+    "slack/github-integration/deno.lock",
+    ".github/zizmor/Dockerfile",
     ".pre-commit-config.yaml",
     ".github/workflows/ci.yml",
   ]) {
@@ -290,6 +295,9 @@ test("allows only dependency manifests, locks, pre-commit config and Actions wor
     "ci.yml",
     "vendor-requirements-dev.txt",
     "attacker-vendor-requirements.txt",
+    "vendor-python-tools-requirements.txt",
+    "deno.json.js",
+    "src/Dockerfile",
     "requirements.in.js",
   ]) {
     assert.equal(isAllowedDependabotPath(path), false, path);

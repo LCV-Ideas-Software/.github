@@ -362,9 +362,11 @@ ingestion therefore requires an intentional webhook action as well.
 ### Continuous deployment
 
 - `.github/workflows/slack-github-integration.yml` checks formatting, lint,
-  types, tests and all moderate-or-higher dependency advisories, then deploys
-  the Deno app from `main` with the current Slack CLI and the service token when
-  `SLACK_GITHUB_INTEGRATION_ENABLED` is `true`. It does not recreate triggers.
+  types, tests and every low-or-higher dependency advisory, then deploys the
+  Deno app from `main` with the current Slack CLI and the service token when
+  `SLACK_GITHUB_INTEGRATION_ENABLED` is `true`. A separate daily schedule at
+  07h17 repeats the dependency and latest-hook audit without deploying or
+  running the 15-minute production monitor. It does not recreate triggers.
 - `.github/workflows/github-slack-integration.yml` verifies the recovery
   controller and Worker, applies D1 migrations, and deploys the relay from
   `main` when the same gate is `true`.
@@ -387,8 +389,9 @@ The latest upstream `deno_slack_hooks@1.5.0` transitively pins
 `esbuild@0.24.2`. Its moderate `GHSA-67mh-4wv8-2f99` development-server
 advisory is temporarily accepted because the exact reviewed hook source calls
 only `build()` and `stop()`; the affected server is not reachable. The audit
-script fails closed unless this is the sole moderate-or-higher advisory and the
-hook tag, annotated-tag object, commit
+script fails closed unless this is the sole low-or-higher advisory and the hook
+is still the latest stable GitHub release, with the exact tag, annotated-tag
+object, commit
 `b6719c18a18a39ca44fa1b311c3bada28dc3df35`, source lock hash, package
 integrity, and call set all remain exact. The exception expires on 01/11/2026
 and must be removed sooner if Slack publishes a fixed hook. Deploys do not use

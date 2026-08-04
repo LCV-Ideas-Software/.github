@@ -167,6 +167,11 @@ export function isAllowedDependabotPath(filename) {
   }
   if (/^(?:.+\/)?Cargo\.(?:toml|lock)$/i.test(filename)) return true;
   if (/^(?:.+\/)?requirements[^/]*\.(?:txt|in)$/i.test(filename)) return true;
+  if (/^(?:.+\/)?python-tools-requirements\.(?:txt|in)$/i.test(filename)) {
+    return true;
+  }
+  if (/^(?:.+\/)?deno\.(?:jsonc?|lock)$/i.test(filename)) return true;
+  if (/^\.github\/zizmor\/Dockerfile$/i.test(filename)) return true;
   if (
     /^(?:.+\/)?(?:pyproject\.toml|poetry\.lock|Pipfile(?:\.lock)?|uv\.lock|setup\.py|setup\.cfg)$/i.test(
       filename,

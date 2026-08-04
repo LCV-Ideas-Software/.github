@@ -6,6 +6,10 @@ updates:
       interval: "daily"
       time: "01:00"
       timezone: "America/Los_Angeles"
+    cooldown:
+      default-days: 3
+      exclude:
+        - "*"
     labels:
       - "dependencies"
       - "github-actions"
@@ -81,6 +85,28 @@ updates:
       slack-workflow-runtime:
         patterns:
           - "*"
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/.github/zizmor"
+    schedule:
+      interval: "daily"
+      time: "01:00"
+      timezone: "America/Los_Angeles"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      zizmor-runtime:
+        patterns:
+          - "ghcr.io/zizmorcore/zizmor"
         update-types:
           - "major"
           - "minor"
