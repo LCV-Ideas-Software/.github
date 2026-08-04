@@ -63,7 +63,7 @@ export function verifyAuditOutput(output: string, exitCode: number): void {
 
   const advisoryIds = [
     ...plain.matchAll(
-      /https:\/\/github\.com\/advisories\/(GHSA-[0-9a-z-]+)/g,
+      /^[^\S\r\n]*╰[^\S\r\n]+Info:[^\S\r\n]+https:\/\/github\.com\/advisories\/(GHSA-[0-9a-z-]+)[^\S\r\n]*$/gm,
     ),
   ].map((match) => match[1]);
   invariant(

@@ -103,7 +103,7 @@ jobs:
         env:
           WRANGLER_BIN: ${{ steps.wrangler.outputs.bin }}
         run: |
-          "$WRANGLER_BIN" types --config wrangler.jsonc
+          npm run types:generate
           npm run typecheck
           npm test
           "$WRANGLER_BIN" deploy --dry-run --outdir dist --config wrangler.jsonc

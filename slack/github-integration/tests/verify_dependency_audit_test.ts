@@ -70,6 +70,14 @@ Deno.test("rejects a changed advisory identity", () => {
   assertThrows(() => verifyAuditOutput(unexpected, 1), "unexpected advisory");
 });
 
+Deno.test("rejects an allowed advisory URL embedded under another host", () => {
+  const unexpected = KNOWN_AUDIT.replace(
+    "https://github.com/advisories/GHSA-67mh-4wv8-2f99",
+    "https://attacker.invalid/?next=https://github.com/advisories/GHSA-67mh-4wv8-2f99",
+  );
+  assertThrows(() => verifyAuditOutput(unexpected, 1), "unexpected advisory");
+});
+
 Deno.test("validates exact local hook and lockfile pins", () => {
   verifyLocalPins(HOOKS, LOCK);
   assertThrows(
