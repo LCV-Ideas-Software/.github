@@ -658,9 +658,7 @@ async function activate(configuration, fetchImpl, logger) {
   const before = validateTargetHook(
     await getHook({ ...configuration, fetchImpl }),
   );
-  let patchAttempted = false;
   try {
-    patchAttempted = true;
     validateTargetHook(
       await patchHookActive({ ...configuration, active: true, fetchImpl }),
       { expectedActive: true },
@@ -673,7 +671,7 @@ async function activate(configuration, fetchImpl, logger) {
     // A transport failure after PATCH is ambiguous: GitHub may have applied the
     // activation even when the response never reached the runner. Always drive
     // a previously inactive hook back to inactive after an attempted PATCH.
-    if (!before.active && patchAttempted) {
+    if (!before.active) {
       try {
         validateTargetHook(
           await patchHookActive({ ...configuration, active: false, fetchImpl }),
