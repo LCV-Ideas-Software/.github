@@ -40,6 +40,18 @@ const SIGNED_FIELD_NAMES = [
 
 const MAX_AGE_SECONDS = 300;
 const MAX_CLOCK_SKEW_SECONDS = 60;
+const BRASILIA_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("pt-BR", {
+  calendar: "gregory",
+  numberingSystem: "latn",
+  timeZone: "Etc/GMT+3",
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
 
 export function canonicalRelayMessage(
   inputs: Pick<RelayMessageInputs, typeof SIGNED_FIELD_NAMES[number]>,
@@ -147,9 +159,43 @@ function githubUrl(value: string): string | null {
   }
 }
 
+export function formatBrasiliaDateTime(value: string): string | null {
+  const milliseconds = Date.parse(value);
+  if (
+    !Number.isFinite(milliseconds) ||
+    new Date(milliseconds).toISOString() !== value
+  ) {
+    return null;
+  }
+
+  const parts = new Map(
+    BRASILIA_DATE_TIME_FORMATTER.formatToParts(new Date(milliseconds)).map(
+      ({ type, value: partValue }) => [type, partValue],
+    ),
+  );
+  const day = parts.get("day");
+  const month = parts.get("month");
+  const year = parts.get("year");
+  const hour = parts.get("hour");
+  const minute = parts.get("minute");
+  const second = parts.get("second");
+
+  if (
+    day === undefined || month === undefined || year === undefined ||
+    hour === undefined || minute === undefined || second === undefined
+  ) {
+    return null;
+  }
+
+  return `${day}/${month}/${year} às ${hour}:${minute}:${second} (Horário Oficial de Brasília, UTC−03:00)`;
+}
+
 export function formatRelayMessage(inputs: RelayMessageInputs): string | null {
   const url = githubUrl(inputs.url);
   if (url === null) return null;
+
+  const occurredAt = formatBrasiliaDateTime(inputs.occurred_at) ??
+    "Data e hora do evento: não informadas";
 
   const heading = inputs.expected_destination === "alerts"
     ? `*[${inputs.severity.slice(0, 20)}] ${inputs.title.slice(0, 300)}*`
@@ -165,9 +211,7 @@ export function formatRelayMessage(inputs: RelayMessageInputs): string | null {
     `Actor: ${inputs.actor.slice(0, 100)}`,
     inputs.details.slice(0, 1_500),
     `<${url}|Open in GitHub>`,
-    `Delivery: \`${inputs.delivery_id.slice(0, 128)}\` · ${
-      inputs.occurred_at.slice(0, 40)
-    }`,
+    `Delivery: \`${inputs.delivery_id.slice(0, 128)}\` · ${occurredAt}`,
   ].join("\n");
 }
 

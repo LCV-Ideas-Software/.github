@@ -120,7 +120,72 @@ Deno.test("formats a bounded GitHub-only message without authentication fields",
     !message.includes(value.relay_timestamp),
     "relay timestamp leaked into message",
   );
+  assert(
+    message.includes(
+      "03/08/2026 às 09:00:00 (Horário Oficial de Brasília, UTC−03:00)",
+    ),
+    "event time was not rendered in pt-BR and Brasília UTC−03:00",
+  );
+  assert(
+    !message.includes(value.occurred_at),
+    "raw ISO-8601 event time leaked into message",
+  );
 
   value.url = "https://example.com/forged";
   assert(formatRelayMessage(value) === null, "non-GitHub URL was accepted");
+});
+
+Deno.test("keeps the displayed event time fixed at Brasília UTC−03:00", () => {
+  const value = inputs();
+  value.occurred_at = "2026-01-01T01:30:00.000Z";
+  const yearBoundary = formatRelayMessage(value);
+  assert(yearBoundary !== null, "year-boundary message was rejected");
+  assert(
+    yearBoundary.includes(
+      "31/12/2025 às 22:30:00 (Horário Oficial de Brasília, UTC−03:00)",
+    ),
+    "UTC−03:00 did not roll the date back correctly",
+  );
+
+  value.occurred_at = "2018-11-04T03:30:00.000Z";
+  const historical = formatRelayMessage(value);
+  assert(historical !== null, "historical message was rejected");
+  assert(
+    historical.includes(
+      "04/11/2018 às 00:30:00 (Horário Oficial de Brasília, UTC−03:00)",
+    ),
+    "historical daylight-saving rules changed the required fixed UTC−03:00",
+  );
+});
+
+Deno.test("does not leak an empty, ambiguous, or invalid event timestamp", () => {
+  for (
+    const occurredAt of [
+      "",
+      "not-a-timestamp",
+      "0",
+      "2026-08-03",
+      "08/03/2026",
+    ]
+  ) {
+    const value = inputs();
+    value.occurred_at = occurredAt;
+    const message = formatRelayMessage(value);
+    assert(message !== null, "message without a valid event time was rejected");
+    assert(
+      message.includes("Data e hora do evento: não informadas"),
+      "missing event-time fallback was not rendered in pt-BR",
+    );
+    assert(
+      !message.includes("<!date"),
+      "viewer-localized Slack date syntax leaked into the message",
+    );
+    const deliveryLine = message.split("\n").at(-1) ?? "";
+    assert(
+      deliveryLine.endsWith(
+        " · Data e hora do evento: não informadas",
+      ),
+      "invalid timestamp leaked into the delivery line",
+    );
+  }
 });

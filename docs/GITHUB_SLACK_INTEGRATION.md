@@ -98,6 +98,22 @@ Store and `SLACK_RELAY_SIGNING_SECRET` in the deployed Slack app environment.
 During a controlled zero-loss rotation, Slack may also hold the optional
 `SLACK_RELAY_SIGNING_SECRET_NEXT`. Neither value is ever committed.
 
+### Human-facing date and time
+
+The Worker preserves the source timestamp as ISO 8601 in `occurred_at`, and
+that exact technical value remains part of the HMAC input. After successful
+authentication, the Slack app alone renders it as `dd/MM/aaaa às HH:mm:ss
+(Horário Oficial de Brasília, UTC−03:00)`, using `Intl.DateTimeFormat` with
+locale `pt-BR` and fixed IANA zone `Etc/GMT+3`. The POSIX/IANA sign convention
+is inverted, so `+3` means UTC−03:00. Invalid, ambiguous or absent values become
+`Data e hora do evento: não informadas` and are never echoed.
+
+The app deliberately does not use Slack's `<!date>` syntax because Slack
+renders that syntax in each viewer device's timezone. The native timestamp that
+Slack displays beside a message remains controlled by Slack and is not modified
+by the integration. See [Slack message date formatting][slack-date-formatting]
+and the [IANA time-zone database overview][iana-time-zones].
+
 ## Cloudflare resources
 
 | Resource        | Name or identifier                                                |
@@ -374,7 +390,7 @@ only `build()` and `stop()`; the affected server is not reachable. The audit
 script fails closed unless this is the sole moderate-or-higher advisory and the
 hook tag, annotated-tag object, commit
 `b6719c18a18a39ca44fa1b311c3bada28dc3df35`, source lock hash, package
-integrity, and call set all remain exact. The exception expires on 2026-11-01
+integrity, and call set all remain exact. The exception expires on 01/11/2026
 and must be removed sooner if Slack publishes a fixed hook. Deploys do not use
 the Slack CLI's broad `--force` warning override.
 
@@ -486,6 +502,7 @@ and [GitHub's automatic redelivery design][github-redelivery].
 - [Automatically redelivering failed organization webhook deliveries][github-redelivery]
 - [REST API endpoints and creator ownership for organization webhooks][github-org-webhooks]
 - [Implementing Slack slash commands][slack-slash-commands]
+- [Formatting dates in Slack messages][slack-date-formatting]
 - [Creating Slack workflows][slack-workflows]
 - [Creating Slack custom functions][slack-custom-functions]
 - [Creating Slack webhook triggers][slack-webhook-trigger]
@@ -511,11 +528,13 @@ and [GitHub's automatic redelivery design][github-redelivery].
 [github-slack-install]: https://docs.github.com/en/integrations/how-tos/slack/integrate-github-with-slack
 [github-slack-notifications]: https://docs.github.com/en/integrations/how-tos/slack/customize-notifications
 [github-slack-permissions]: https://docs.github.com/en/integrations/reference/slack-permissions
+[iana-time-zones]: https://data.iana.org/time-zones/tz-link.html
 [slack-activities]: https://docs.slack.dev/reference/methods/apps.activities.list/
 [slack-app-env]: https://docs.slack.dev/tools/deno-slack-sdk/guides/using-environment-variables/
 [slack-cli-auth]: https://docs.slack.dev/tools/slack-cli/guides/authorizing-the-slack-cli/
 [slack-custom-functions]: https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-custom-functions/
 [slack-deploy]: https://docs.slack.dev/tools/deno-slack-sdk/guides/deploying-to-slack/
+[slack-date-formatting]: https://docs.slack.dev/messaging/formatting-message-text/#date-formatting
 [slack-logging]: https://docs.slack.dev/tools/deno-slack-sdk/guides/logging-function-and-app-behavior/
 [slack-slash-commands]: https://docs.slack.dev/interactivity/implementing-slash-commands/
 [slack-trigger]: https://docs.slack.dev/tools/slack-cli/reference/commands/slack_trigger/

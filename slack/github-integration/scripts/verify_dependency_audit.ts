@@ -145,7 +145,7 @@ export function verifyEsbuildReachability(source: string): void {
 export function verifyExceptionWindow(now = Date.now()): void {
   invariant(
     now < EXCEPTION_EXPIRES_AT,
-    "the temporary esbuild advisory exception expired on 2026-11-01",
+    "the temporary esbuild advisory exception expired on 01/11/2026",
   );
 }
 

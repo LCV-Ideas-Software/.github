@@ -19,6 +19,15 @@ workflow step validates the signature, destination, and five-minute freshness
 window before formatting or posting anything. The same secret is stored only in
 Cloudflare Secrets Store and the encrypted Slack app environment.
 
+The signed `occurred_at` value remains ISO 8601 in transit. Only after HMAC
+validation does the app render it for people as
+`dd/MM/aaaa às HH:mm:ss
+(Horário Oficial de Brasília, UTC−03:00)`, using the
+fixed IANA zone `Etc/GMT+3` (the POSIX/IANA sign convention is inverted, so `+3`
+means UTC−03:00). It deliberately does not use Slack's viewer-localized
+`<!date>` syntax. Slack's own timestamp beside the message is native UI metadata
+and is not changed by this app.
+
 ## Temporary dependency-audit exception
 
 Slack's latest `deno_slack_hooks@1.5.0` build hook transitively pins
@@ -30,5 +39,5 @@ affects esbuild's development server; the reviewed hook source invokes only
 advisory and verifies the exact hook tag, annotated-tag object, commit, remote
 source hash, package integrity, and reviewed esbuild call set against GitHub.
 Any other moderate-or-higher advisory or any changed assumption fails the check.
-The exception expires on 2026-11-01 and must be removed as soon as Slack
+The exception expires on 01/11/2026 and must be removed as soon as Slack
 publishes a hook release using esbuild 0.25.0 or newer.
