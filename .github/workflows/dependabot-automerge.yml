@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Process one guarded queue mutation
-        uses: LCV-Ideas-Software/.github/dependabot-automerge@fe11bf9e3022a598ce90360f4490641285ab2f5f
+        uses: LCV-Ideas-Software/.github/dependabot-automerge@fe11bf9e3022a598ce90360f4490641285ab2f5f # v1.0.0
         with:
           github_token: ${{ github.token }}
           automation_token: ${{ secrets.LCV_AUTOMATION_TOKEN }}
