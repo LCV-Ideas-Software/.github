@@ -13,3 +13,4 @@
 
 *.svg text -diff
 package-lock.json linguist-generated=true
+workers/github-slack-relay/worker-configuration.d.ts linguist-generated=true -whitespace

@@ -20,6 +20,7 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - The sponsor landing page lives in [`site/sponsor/`](./site/sponsor/) and renders MercadoPago.js V2 Card Payment Brick secure fields backed by the dedicated `sponsor-motor` Worker at `https://sponsor-motor.lcv.app.br`.
 - Dependabot covers GitHub Actions plus the root npm toolchain used for public-site formatting checks.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
+- The organization-wide GitHub-to-Slack alert relay lives in [`workers/github-slack-relay`](./workers/github-slack-relay); its architecture and operating procedure are documented in [`docs/GITHUB_SLACK_INTEGRATION.md`](./docs/GITHUB_SLACK_INTEGRATION.md).
 
 The version history at a glance:
 

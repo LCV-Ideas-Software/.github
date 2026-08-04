@@ -2,6 +2,11 @@ name: Cloudflare Pages
 on:
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/cloudflare-pages.yml"
+      - "package-lock.json"
+      - "package.json"
+      - "site/**"
   workflow_dispatch:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"

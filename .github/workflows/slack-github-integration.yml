@@ -1,0 +1,151 @@
+name: Slack GitHub Integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/slack-github-integration.yml"
+      - "slack/github-integration/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/slack-github-integration.yml"
+      - "slack/github-integration/**"
+  schedule:
+    - cron: "12,27,42,57 * * * *"
+  workflow_dispatch:
+
+permissions: write-all
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: slack-github-integration-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify Slack workflow app
+    if: github.event_name != 'schedule'
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest stable Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: latest
+
+      - name: Check Slack workflow app
+        working-directory: slack/github-integration
+        run: |
+          set -euo pipefail
+          if grep -R -n -E 'GITHUB_(ACTIVITY|ALERTS)_CHANNEL_ID|workflows:[[:space:]]*\[\]|"groups:(read|write)"' \
+            manifest.ts workflows; then
+            echo "::error::Slack app still contains bootstrap-only placeholders, an empty workflow list, or a scope outside the fixed private-channel design."
+            exit 1
+          fi
+          deno task --frozen check
+
+      - name: Audit Slack workflow app dependencies
+        working-directory: slack/github-integration
+        env:
+          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.token || '' }}
+        run: deno task --frozen audit
+
+  deploy:
+    name: Deploy Slack workflow app
+    if: >-
+      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    needs: verify
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: slack-production
+    steps:
+      - name: Checkout verified revision without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest stable Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: latest
+
+      - name: Install latest Slack CLI
+        uses: slackapi/slack-github-action/cli@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          command: version
+
+      - name: Deploy without exposing webhook triggers
+        working-directory: slack/github-integration
+        env:
+          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
+          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
+          SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
+        run: |
+          set -euo pipefail
+          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
+          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
+          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
+          slack deploy \
+            --app "$SLACK_APP_ID" \
+            --team "$SLACK_TEAM_ID" \
+            --token "$SLACK_SERVICE_TOKEN" \
+            --hide-triggers \
+            --skip-update
+
+  monitor:
+    name: Monitor Slack workflow execution
+    if: >-
+      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
+      github.event_name == 'schedule'
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: slack-production
+    steps:
+      - name: Fail closed on recent Slack workflow errors
+        env:
+          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
+          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
+          SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
+        run: |
+          set -euo pipefail
+          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
+          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
+          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
+
+          min_created="$((($(date +%s) - 1200) * 1000000))"
+          response="$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $SLACK_SERVICE_TOKEN" \
+            --header "Content-Type: application/json; charset=utf-8" \
+            --data "$(jq -nc \
+              --arg app_id "$SLACK_APP_ID" \
+              --arg team_id "$SLACK_TEAM_ID" \
+              --argjson min_date_created "$min_created" \
+              '{app_id: $app_id, team_id: $team_id, min_log_level: "error", min_date_created: $min_date_created, limit: 100}')" \
+            https://slack.com/api/apps.activities.list)"
+
+          if ! jq -e '.ok == true and (.activities | type) == "array"' <<<"$response" >/dev/null; then
+            echo "::error::Slack activity API failed; response withheld because activity payloads may contain private workflow inputs."
+            exit 1
+          fi
+
+          error_count="$(jq '.activities | length' <<<"$response")"
+          if (( error_count > 0 )); then
+            echo "::error::Slack recorded $error_count workflow error(s) during the last 20 minutes; inspect with the authenticated Slack CLI."
+            exit 1
+          fi
+
+          echo "No Slack workflow errors were recorded during the last 20 minutes."

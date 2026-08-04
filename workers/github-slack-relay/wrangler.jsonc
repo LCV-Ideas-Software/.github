@@ -1,0 +1,98 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "github-slack-alerts",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "minify": true,
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+    },
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "github-slack-alerts-db",
+      "database_id": "cf070eb0-32d9-4ee0-9516-d469833cdc77",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "secrets_store_secrets": [
+    {
+      "binding": "GITHUB_WEBHOOK_SECRET",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-alerts-webhook-secret",
+    },
+    {
+      "binding": "SLACK_ALERTS_WORKFLOW_WEBHOOK_URL",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-alerts-workflow-url",
+    },
+    {
+      "binding": "SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-activity-workflow-url",
+    },
+    {
+      "binding": "SLACK_RELAY_SIGNING_SECRET",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-relay-signing-secret",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "ALERT_QUEUE",
+        "queue": "github-slack-alerts",
+      },
+      {
+        "binding": "ACTIVITY_QUEUE",
+        "queue": "github-slack-activity",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "github-slack-alerts",
+        "dead_letter_queue": "github-slack-alerts-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1,
+        "retry_delay": 2,
+      },
+      {
+        "queue": "github-slack-alerts-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 10,
+        "max_concurrency": 1,
+      },
+      {
+        "queue": "github-slack-activity",
+        "dead_letter_queue": "github-slack-activity-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1,
+        "retry_delay": 2,
+      },
+      {
+        "queue": "github-slack-activity-dlq",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 10,
+        "max_concurrency": 1,
+      },
+    ],
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"],
+  },
+}

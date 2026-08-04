@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/denoland/deno/main/cli/schemas/config-file.v1.json",
+  "fmt": {
+    "include": [
+      "README.md",
+      "functions",
+      "manifest.ts",
+      "scripts",
+      "tests",
+      "triggers",
+      "workflows"
+    ]
+  },
+  "lint": {
+    "include": [
+      "functions",
+      "manifest.ts",
+      "scripts",
+      "tests",
+      "triggers",
+      "workflows"
+    ]
+  },
+  "lock": true,
+  "tasks": {
+    "audit": "deno run --allow-env=GITHUB_TOKEN --allow-net=api.github.com --allow-read=.slack/hooks.json,deno.lock --allow-run=deno scripts/verify_dependency_audit.ts",
+    "check": "deno fmt --check && deno lint && deno check manifest.ts functions/*.ts scripts/*.ts tests/*.ts triggers/*.ts workflows/*.ts && deno test"
+  },
+  "imports": {
+    "deno-slack-sdk/mod.ts": "jsr:@slack/sdk@2.15.2",
+    "deno-slack-sdk/types.ts": "jsr:@slack/sdk@2.15.2/types.ts",
+    "deno-slack-api/mod.ts": "jsr:@slack/api@2.9.3"
+  }
+}

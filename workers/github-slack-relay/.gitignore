@@ -1,5 +1,5 @@
 node_modules/
-*.bkp.html
 .dev.vars
 .wrangler/
 coverage/
+dist/

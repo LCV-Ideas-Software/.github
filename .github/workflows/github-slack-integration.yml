@@ -1,0 +1,187 @@
+name: GitHub Slack Integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/github-slack-integration.yml"
+      - ".github/workflows/github-slack-webhook-redelivery.yml"
+      - "docs/GITHUB_SLACK_INTEGRATION.md"
+      - "scripts/github-slack-webhook-redelivery.mjs"
+      - "scripts/github-slack-webhook-redelivery.test.mjs"
+      - "workers/github-slack-relay/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/github-slack-integration.yml"
+      - ".github/workflows/github-slack-webhook-redelivery.yml"
+      - "docs/GITHUB_SLACK_INTEGRATION.md"
+      - "scripts/github-slack-webhook-redelivery.mjs"
+      - "scripts/github-slack-webhook-redelivery.test.mjs"
+      - "workers/github-slack-relay/**"
+  workflow_dispatch:
+
+permissions: write-all
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_OPTIONS: "--no-deprecation"
+
+concurrency:
+  group: github-slack-integration-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify relay and recovery controller
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+          cache: npm
+          cache-dependency-path: workers/github-slack-relay/package-lock.json
+
+      - name: Install relay dependencies
+        run: npm ci --prefix workers/github-slack-relay --ignore-scripts --no-audit --no-fund
+
+      - name: Verify relay dependency signatures and advisories
+        run: |
+          npm audit signatures --prefix workers/github-slack-relay --registry=https://registry.npmjs.org/
+          npm audit --prefix workers/github-slack-relay --audit-level=low
+
+      - name: Install and verify latest Wrangler
+        id: wrangler
+        shell: bash
+        run: | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
+          set -euo pipefail
+          wrangler_prefix="$RUNNER_TEMP/wrangler-latest"
+          npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ wrangler@latest
+
+          # Wrangler 4.118.0 was published hours before undici 7.29.0 fixed five
+          # new advisories on 2026-08-03. Keep Wrangler latest, but patch only
+          # that exact vulnerable transitive version until upstream catches up.
+          undici_package="$wrangler_prefix/node_modules/undici/package.json"
+          undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
+          if [ "$undici_version" = "7.28.0" ]; then
+            npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
+            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+          fi
+
+          npm audit signatures --prefix "$wrangler_prefix" --registry=https://registry.npmjs.org/
+          npm audit --prefix "$wrangler_prefix" --audit-level=low
+
+          WRANGLER_BIN="$wrangler_prefix/node_modules/.bin/wrangler"
+          if [ ! -x "$WRANGLER_BIN" ]; then
+            echo "::error::The isolated Wrangler executable was not created." >&2
+            exit 1
+          fi
+          WRANGLER_VERSION="$("$WRANGLER_BIN" --version)"
+          if ! [[ "$WRANGLER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected Wrangler version: $WRANGLER_VERSION" >&2
+            exit 1
+          fi
+
+          printf 'Resolved Wrangler version: %s\n' "$WRANGLER_VERSION"
+          printf '%s\n' "$wrangler_prefix/node_modules/.bin" >> "$GITHUB_PATH"
+          printf 'bin=%s\nversion=%s\n' "$WRANGLER_BIN" "$WRANGLER_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Test organization webhook redelivery controller
+        run: node --test scripts/github-slack-webhook-redelivery.test.mjs
+
+      - name: Verify Cloudflare relay
+        working-directory: workers/github-slack-relay
+        env:
+          WRANGLER_BIN: ${{ steps.wrangler.outputs.bin }}
+        run: |
+          "$WRANGLER_BIN" types --config wrangler.jsonc
+          npm run typecheck
+          npm test
+          "$WRANGLER_BIN" deploy --dry-run --outdir dist --config wrangler.jsonc
+
+      - name: Verify generated Worker bindings are committed
+        run: git diff --exit-code -- workers/github-slack-relay/worker-configuration.d.ts
+
+  deploy:
+    name: Deploy GitHub Slack relay
+    if: >-
+      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    needs: verify
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: cloudflare-production
+    steps:
+      - name: Checkout verified revision without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Install and verify latest Wrangler
+        id: wrangler
+        shell: bash
+        run: | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
+          set -euo pipefail
+          wrangler_prefix="$RUNNER_TEMP/wrangler-latest"
+          npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ wrangler@latest
+
+          # See the verify job above. This narrow override is deliberately
+          # inactive for any resolved undici version other than 7.28.0.
+          undici_package="$wrangler_prefix/node_modules/undici/package.json"
+          undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
+          if [ "$undici_version" = "7.28.0" ]; then
+            npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
+            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+          fi
+
+          npm audit signatures --prefix "$wrangler_prefix" --registry=https://registry.npmjs.org/
+          npm audit --prefix "$wrangler_prefix" --audit-level=low
+
+          WRANGLER_BIN="$wrangler_prefix/node_modules/.bin/wrangler"
+          if [ ! -x "$WRANGLER_BIN" ]; then
+            echo "::error::The isolated Wrangler executable was not created." >&2
+            exit 1
+          fi
+          WRANGLER_VERSION="$("$WRANGLER_BIN" --version)"
+          if ! [[ "$WRANGLER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected Wrangler version: $WRANGLER_VERSION" >&2
+            exit 1
+          fi
+
+          printf 'Resolved Wrangler version: %s\n' "$WRANGLER_VERSION"
+          printf 'bin=%s\nversion=%s\n' "$WRANGLER_BIN" "$WRANGLER_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Apply durable inbox migrations
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_BIN: ${{ steps.wrangler.outputs.bin }}
+        run: |
+          "$WRANGLER_BIN" d1 migrations apply github-slack-alerts-db \
+            --remote \
+            --config workers/github-slack-relay/wrangler.jsonc
+
+      - name: Deploy verified relay
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_BIN: ${{ steps.wrangler.outputs.bin }}
+        run: |
+          "$WRANGLER_BIN" deploy --config workers/github-slack-relay/wrangler.jsonc
