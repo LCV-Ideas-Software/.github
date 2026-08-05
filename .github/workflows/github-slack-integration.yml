@@ -82,10 +82,12 @@ jobs:
           # new advisories on 2026-08-03. Keep Wrangler latest, but patch only
           # that exact vulnerable transitive version until upstream catches up.
           undici_package="$wrangler_prefix/node_modules/undici/package.json"
-          undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
-          if [ "$undici_version" = "7.28.0" ]; then
-            npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
-            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
+          if [ -f "$undici_package" ]; then
+            undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
+            if [ "$undici_version" = "7.28.0" ]; then
+              npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
+              npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
+            fi
           fi
 
           npm audit signatures --prefix "$wrangler_prefix"
@@ -164,10 +166,12 @@ jobs:
           # See the verify job above. This narrow override is deliberately
           # inactive for any resolved undici version other than 7.28.0.
           undici_package="$wrangler_prefix/node_modules/undici/package.json"
-          undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
-          if [ "$undici_version" = "7.28.0" ]; then
-            npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
-            npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
+          if [ -f "$undici_package" ]; then
+            undici_version="$(node -e 'console.log(require(process.argv[1]).version)' "$undici_package")"
+            if [ "$undici_version" = "7.28.0" ]; then
+              npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
+              npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
+            fi
           fi
 
           npm audit signatures --prefix "$wrangler_prefix"

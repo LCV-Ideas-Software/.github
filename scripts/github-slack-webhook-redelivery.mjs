@@ -2,10 +2,11 @@ import { pathToFileURL } from "node:url";
 
 export const API_VERSION = "2026-03-10";
 export const CHECKPOINT_VARIABLE = "SLACK_RELAY_LAST_REDELIVERY";
+export const MAX_DELIVERY_ATTEMPTS = 3;
+export const MAX_REDELIVERY_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
 const API_ORIGIN = "https://api.github.com";
 const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-const MAX_REDELIVERY_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 1_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -263,11 +264,7 @@ function parseCheckpoint(value) {
   return Date.parse(value);
 }
 
-export function resolveCheckpoint(
-  storedValue,
-  startedAt,
-  { warn = () => {} } = {},
-) {
+export function resolveCheckpoint(storedValue, startedAt) {
   if (!Number.isSafeInteger(startedAt) || startedAt <= 0) {
     throw new Error(
       "The run start time must be a positive epoch millisecond value.",
@@ -289,10 +286,9 @@ export function resolveCheckpoint(
 
   const oldestRedeliverable = startedAt - MAX_REDELIVERY_AGE_MS;
   if (candidate < oldestRedeliverable) {
-    warn(
-      `${CHECKPOINT_VARIABLE} is older than GitHub's three-day redelivery window; clamping the scan to the oldest redeliverable instant.`,
+    throw new Error(
+      `${CHECKPOINT_VARIABLE} is older than GitHub's three-day redelivery window; refusing to advance the checkpoint because unrecoverable deliveries may exist.`,
     );
-    return oldestRedeliverable;
   }
   return candidate;
 }
@@ -462,6 +458,11 @@ export function selectFailedDeliveryIds(deliveries) {
     if (attempts.some(wasSuccessful)) {
       continue;
     }
+    if (attempts.length >= MAX_DELIVERY_ATTEMPTS) {
+      throw new Error(
+        `A webhook delivery reached the fail-closed limit of ${MAX_DELIVERY_ATTEMPTS} unsuccessful attempts; refusing further automatic redelivery.`,
+      );
+    }
     const latest = attempts.reduce((candidate, attempt) => {
       if (attempt.deliveredAt !== candidate.deliveredAt) {
         return attempt.deliveredAt > candidate.deliveredAt
@@ -571,9 +572,13 @@ export async function runRedelivery({
     repository: configuration.workflowRepoName,
     fetchImpl,
   });
-  const cutoff = resolveCheckpoint(checkpoint.value, startedAt, {
-    warn: (message) => logger.warn(message),
-  });
+  resolveCheckpoint(checkpoint.value, startedAt);
+
+  // Scan GitHub's complete retained window on every run so attempts for the
+  // same GUID remain countable across checkpoints. The checkpoint is still a
+  // fail-closed continuity guard: a gap beyond the retention window aborts
+  // before any redelivery request or checkpoint mutation.
+  const cutoff = startedAt - MAX_REDELIVERY_AGE_MS;
 
   const deliveries = await fetchDeliveriesSince({
     token: configuration.token,

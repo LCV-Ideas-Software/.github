@@ -5,6 +5,8 @@ import {
   API_VERSION,
   CHECKPOINT_VARIABLE,
   GitHubApiError,
+  MAX_DELIVERY_ATTEMPTS,
+  MAX_REDELIVERY_AGE_MS,
   fetchDeliveriesSince,
   parseNextCursor,
   readConfiguration,
@@ -87,7 +89,7 @@ test("configuration fails before API access when any required input is absent", 
   );
 });
 
-test("checkpoint defaults to 24 hours and clamps values beyond GitHub's three-day limit", () => {
+test("checkpoint defaults to 24 hours and fails closed beyond GitHub's three-day limit", () => {
   const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
   assert.equal(
     resolveCheckpoint(undefined, startedAt),
@@ -98,15 +100,10 @@ test("checkpoint defaults to 24 hours and clamps values beyond GitHub's three-da
     Date.parse("2026-08-03T10:00:00.000Z"),
   );
 
-  const warnings = [];
-  assert.equal(
-    resolveCheckpoint("1", startedAt, {
-      warn: (warning) => warnings.push(warning),
-    }),
-    startedAt - 3 * 24 * 60 * 60 * 1000,
+  assert.throws(
+    () => resolveCheckpoint("1", startedAt),
+    /older than GitHub's three-day redelivery window/,
   );
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /three-day redelivery window/);
   assert.throws(
     () => resolveCheckpoint(String(startedAt + 1), startedAt),
     /cannot be in the future/,
@@ -534,6 +531,68 @@ test("HTTP 200-399 suppresses failed attempts but textual OK cannot override 4xx
       }),
     ]),
     ["9007199254740992", "9007199254740993"],
+  );
+});
+
+test("automatic redelivery fails closed at the per-GUID attempt limit", () => {
+  const time = Date.parse("2026-08-03T10:00:00.000Z");
+  const exhaustedAttempts = Array.from(
+    { length: MAX_DELIVERY_ATTEMPTS },
+    (_, index) =>
+      normalizedDelivery({
+        id: 100 + index,
+        guid: "poisoned-delivery",
+        deliveredAt: time + index,
+      }),
+  );
+
+  assert.throws(
+    () => selectFailedDeliveryIds(exhaustedAttempts),
+    new RegExp(`limit of ${MAX_DELIVERY_ATTEMPTS} unsuccessful attempts`),
+  );
+});
+
+test("a complete run counts retained attempts from before the latest checkpoint", async () => {
+  const startedAt = Date.parse("2026-08-04T12:00:00.000Z");
+  const checkpoint = startedAt - 60_000;
+  const oldAttempt = startedAt - 2 * 24 * 60 * 60 * 1000;
+  const calls = [];
+
+  await assert.rejects(
+    runRedelivery({
+      environment: baseEnvironment,
+      now: () => startedAt,
+      logger: { info() {}, warn() {} },
+      fetchImpl: async (input, init) => {
+        const url = new URL(input);
+        calls.push({ url, init });
+        if (
+          init.method === "GET" &&
+          url.pathname.endsWith(`/actions/variables/${CHECKPOINT_VARIABLE}`)
+        ) {
+          return responseJson({ value: String(checkpoint) });
+        }
+        if (init.method === "GET" && url.pathname.endsWith("/deliveries")) {
+          return responseJson(
+            Array.from({ length: MAX_DELIVERY_ATTEMPTS }, (_, index) =>
+              rawDelivery({
+                id: 100 + index,
+                guid: "retained-poisoned-delivery",
+                deliveredAt: new Date(oldAttempt + index).toISOString(),
+              }),
+            ),
+          );
+        }
+        throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+      },
+    }),
+    new RegExp(`limit of ${MAX_DELIVERY_ATTEMPTS} unsuccessful attempts`),
+  );
+
+  assert.ok(oldAttempt >= startedAt - MAX_REDELIVERY_AGE_MS);
+  assert.equal(
+    calls.some(({ init }) => init.method === "POST" || init.method === "PATCH"),
+    false,
   );
 });
 

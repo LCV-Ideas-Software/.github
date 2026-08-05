@@ -6,8 +6,11 @@ wrapper and an exact list of stack-specific required checks.
 
 ## Trust boundary
 
-- Pull-request CI remains unprivileged and is responsible for build, test,
-  dependency review, CodeQL and repository-specific gates.
+- Pull-request CI intentionally receives a `write-all` `GITHUB_TOKEN` under the
+  organization policy, so it is not itself an authorization boundary. It is
+  responsible for build, test, dependency review, CodeQL and repository-specific
+  gates, but it never receives `LCV_AUTOMATION_TOKEN`; the controller treats its
+  results only as evidence that must be re-read and bound to the immutable head.
 - The privileged controller starts from `workflow_run`, `schedule` or
   `workflow_dispatch`. It loads this repository at an immutable commit and never
   checks out a pull-request ref, executes pull-request code, restores its cache or
@@ -39,6 +42,13 @@ wrapper and an exact list of stack-specific required checks.
   persistently pending check cannot consume runner minutes every hour. Required
   GitHub Actions checks must belong to a pull-request workflow run whose immutable
   actor ID is Dependabot's.
+- That `workflow_run` provenance correlation applies specifically to required
+  checks produced by the GitHub Actions app (`app_id: 15368`). Required checks
+  emitted by other configured producers, including GitHub Advanced Security's
+  CodeQL/SARIF checks, remain bound to their configured app ID, exact head SHA,
+  name and successful conclusion, but they do not expose a corresponding Actions
+  check suite that `hasTrustedDependabotWorkflowProvenance` can correlate. This is
+  an explicit residual asymmetry, not an implied provenance guarantee.
 - An active `CHANGES_REQUESTED` review or unresolved inline thread from the exact
   `chatgpt-codex-connector` bot ID blocks approval and merge. Reviews, connector
   threads, checks, `main` and the PR head are all re-read after approval.

@@ -457,11 +457,15 @@ export function findBlockingConnectorReviewThreads(threads) {
     if (!Array.isArray(comments)) {
       throw new Error("Review thread comments must be an array");
     }
-    const connectorComment = comments.find(
-      (comment) =>
-        comment?.author?.databaseId === CONNECTOR_ACTOR_DATABASE_ID &&
-        CONNECTOR_ACTOR_LOGINS.has(comment?.author?.login),
-    );
+    const connectorComment = comments.find((comment) => {
+      const author = comment?.author;
+      if (!CONNECTOR_ACTOR_LOGINS.has(author?.login)) return false;
+      return (
+        author.databaseId === CONNECTOR_ACTOR_DATABASE_ID ||
+        author.databaseId === undefined ||
+        author.databaseId === null
+      );
+    });
     if (connectorComment) {
       blocking.push(
         typeof connectorComment.url === "string" && connectorComment.url !== ""
@@ -786,9 +790,19 @@ async function inspectPullCandidate(owner, repo, pull, token) {
   if (files.length === 0) {
     return { eligible: false, reason: "pull request has no changed files" };
   }
-  const unexpected = files
-    .map((file) => file.filename)
-    .filter((filename) => !isAllowedDependabotPath(filename));
+  const unexpected = [
+    ...new Set(
+      files
+        .flatMap((file) => {
+          const paths = [file.filename];
+          if (file.previous_filename !== undefined) {
+            paths.push(file.previous_filename);
+          }
+          return paths;
+        })
+        .filter((filename) => !isAllowedDependabotPath(filename)),
+    ),
+  ];
   if (unexpected.length > 0) {
     return {
       eligible: false,

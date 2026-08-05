@@ -744,6 +744,18 @@ test("unresolved connector inline feedback blocks automation even after becoming
       comments: {
         nodes: [
           {
+            author: { login: "chatgpt-codex-connector" },
+            url: "https://github.test/discussions/5",
+          },
+        ],
+      },
+    },
+    {
+      isResolved: false,
+      isOutdated: false,
+      comments: {
+        nodes: [
+          {
             author: { login: "human-reviewer" },
             url: "https://github.test/discussions/4",
           },
@@ -755,6 +767,7 @@ test("unresolved connector inline feedback blocks automation even after becoming
   assert.deepEqual(findBlockingConnectorReviewThreads(threads), [
     "https://github.test/discussions/1",
     "https://github.test/discussions/3",
+    "https://github.test/discussions/5",
   ]);
 });
 
@@ -2195,6 +2208,29 @@ test("a GitHub-signed merge by the automation operator never authorizes destruct
   const harness = createControllerHarness({
     commits: signedOperatorMergeChain(seed),
     files: [{ filename: ".github/workflows/ci.yml" }],
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = harness.fetch;
+  try {
+    const result = await runController(
+      controllerEnvironment(harness.repository),
+    );
+    assert.deepEqual(result, { action: "none" });
+    assertNoControllerMutation(harness);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("renamed files require both the previous and current paths to be allowlisted", async () => {
+  const harness = createControllerHarness({
+    files: [
+      {
+        filename: "package-lock.json",
+        previous_filename: "src/compromised.ts",
+        status: "renamed",
+      },
+    ],
   });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = harness.fetch;

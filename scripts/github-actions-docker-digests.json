@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "images": {
+    "ghcr.io/ossf/scorecard-action:v2.4.4": "sha256:ae5104dd3cc28466ebeb11144354be4cac4b7ff829654f9fab89021d71c46670"
+  }
+}

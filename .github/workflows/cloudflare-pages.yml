@@ -44,7 +44,17 @@ jobs:
             exit 1
           fi
           npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest
+
+          undici_package="$wrangler_prefix/node_modules/undici/package.json"
+          if [ -f "$undici_package" ]; then
+            installed_undici="$(node -p "require(process.argv[1]).version" "$undici_package")"
+            if [ "$installed_undici" = "7.28.0" ]; then
+              npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
+              npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
+            fi
+          fi
           npm audit signatures --prefix "$wrangler_prefix"
+          npm audit --prefix "$wrangler_prefix" --audit-level=low
 
           WRANGLER_BIN="$wrangler_prefix/node_modules/.bin/wrangler"
           if [ ! -x "$WRANGLER_BIN" ]; then

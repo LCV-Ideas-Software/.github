@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   watch:
-    name: Cross-reference recent NPM advisories vs org dependencies
+    name: Cross-reference advisories vs locked org dependencies
     runs-on: ubuntu-latest
     permissions: write-all
     timeout-minutes: 20
@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Gather org NPM dependencies (root + known frontend subpaths)
+      - name: Gather every npm and Cargo lockfile from active repositories
         id: deps
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -30,86 +30,223 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/deps
-          repos=$(gh repo list "$ORG" --limit 50 --json name -q '.[].name')
-          for r in $repos; do
-            for path in "package-lock.json" "mainsite-frontend/package-lock.json" "astrologo-frontend/package-lock.json" "src-tauri/Cargo.lock"; do
-              safe=$(echo "$r-$path" | tr '/' '_')
-              if gh api "repos/$ORG/$r/contents/$path" --jq '.content' 2>/dev/null | base64 -d > "/tmp/deps/$safe" 2>/dev/null; then
-                if [ ! -s "/tmp/deps/$safe" ]; then rm -f "/tmp/deps/$safe"; fi
-              else
-                rm -f "/tmp/deps/$safe"
-              fi
-            done
-          done
-          # Aggregate npm packages: package-lock v3 format under .packages
-          ls /tmp/deps/*.json 2>/dev/null | while read f; do
-            jq -r '.packages // .dependencies // {} | to_entries[] | "\(.key | split("/node_modules/") | last)\t\(.value.version // .value)"' "$f" 2>/dev/null
-          done | grep -v '^	' | grep -v '^$' | sort -u > /tmp/all-deps.tsv
-          count=$(wc -l < /tmp/all-deps.tsv)
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Found $count unique pkg/version pairs across org NPM lockfiles"
+          : > /tmp/lockfiles.tsv
+          gh repo list "$ORG" --limit 100 \
+            --json name,isArchived,defaultBranchRef \
+            --jq '.[] | select(.isArchived == false) | [.name, .defaultBranchRef.name] | @tsv' \
+            | tr -d '\r' \
+            > /tmp/active-repositories.tsv
 
-      - name: Query GHAS for NPM advisories (last 30 days)
-        id: advisories
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          while IFS=$'\t' read -r repository default_branch; do
+            tree_file="/tmp/tree-${repository}.json"
+            gh api -X GET "repos/$ORG/$repository/git/trees/$default_branch" \
+              -f recursive=1 > "$tree_file"
+            if [ "$(jq -r '.truncated' "$tree_file")" != "false" ]; then
+              echo "::error::The recursive Git tree for $repository was truncated; lockfile coverage is uncertain."
+              exit 1
+            fi
+            jq -r --arg repository "$repository" --arg branch "$default_branch" '
+              .tree[]
+              | select(.type == "blob")
+              | .path as $path
+              | select(
+                  $path == "package-lock.json"
+                  or ($path | endswith("/package-lock.json"))
+                  or $path == "Cargo.lock"
+                  or ($path | endswith("/Cargo.lock"))
+                )
+              | [$repository, $branch, $path]
+              | @tsv
+            ' "$tree_file" | tr -d '\r' >> /tmp/lockfiles.tsv
+          done < /tmp/active-repositories.tsv
+          sort -u -o /tmp/lockfiles.tsv /tmp/lockfiles.tsv
+
+          lockfile_count=$(wc -l < /tmp/lockfiles.tsv)
+          if [ "$lockfile_count" -lt 17 ]; then
+            echo "::error::Expected at least the 17 audited lockfiles, found $lockfile_count."
+            exit 1
+          fi
+
+          : > /tmp/lockfile-files.tsv
+          index=0
+          while IFS=$'\t' read -r repository default_branch path; do
+            index=$((index + 1))
+            case "$path" in
+              *package-lock.json)
+                ecosystem="npm"
+                extension="json"
+                ;;
+              *Cargo.lock)
+                ecosystem="crates.io"
+                extension="lock"
+                ;;
+              *)
+                echo "::error::Unexpected lockfile path: $repository/$path"
+                exit 1
+                ;;
+            esac
+            local_path=$(printf '/tmp/deps/%03d.%s' "$index" "$extension")
+            gh api -X GET \
+              -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$ORG/$repository/contents/$path" \
+              -f ref="$default_branch" > "$local_path"
+            if [ ! -s "$local_path" ]; then
+              echo "::error::Downloaded an empty lockfile: $repository/$path"
+              exit 1
+            fi
+            printf '%s\t%s\t%s\t%s\n' \
+              "$repository" "$path" "$ecosystem" "$local_path" \
+              >> /tmp/lockfile-files.tsv
+          done < /tmp/lockfiles.tsv
+
+          : > /tmp/npm-deps.tsv
+          while IFS=$'\t' read -r repository path ecosystem local_path; do
+            if [ "$ecosystem" != "npm" ]; then
+              continue
+            fi
+            jq -er '
+              .packages
+              | to_entries[]
+              | select(.key != "" and (.value.version | type) == "string")
+              | [(.key | split("/node_modules/") | last), .value.version]
+              | @tsv
+            ' "$local_path" >> /tmp/npm-deps.tsv
+          done < /tmp/lockfile-files.tsv
+          sort -u -o /tmp/npm-deps.tsv /tmp/npm-deps.tsv
+
+          python3 - <<'PY' > /tmp/cargo-deps.tsv
+          import csv
+          import tomllib
+
+          with open("/tmp/lockfile-files.tsv", encoding="utf-8", newline="") as manifest:
+              for _repository, _path, ecosystem, local_path in csv.reader(manifest, delimiter="\t"):
+                  if ecosystem != "crates.io":
+                      continue
+                  with open(local_path, "rb") as lockfile:
+                      packages = tomllib.load(lockfile).get("package", [])
+                  if not isinstance(packages, list):
+                      raise SystemExit("Cargo.lock package inventory is malformed")
+                  for package in packages:
+                      name = package.get("name")
+                      version = package.get("version")
+                      if not isinstance(name, str) or not isinstance(version, str):
+                          raise SystemExit("Cargo.lock contains an invalid package entry")
+                      print(f"{name}\t{version}")
+          PY
+          sort -u -o /tmp/cargo-deps.tsv /tmp/cargo-deps.tsv
+
+          npm_count=$(wc -l < /tmp/npm-deps.tsv)
+          cargo_count=$(wc -l < /tmp/cargo-deps.tsv)
+          if [ "$npm_count" -eq 0 ] || [ "$cargo_count" -eq 0 ]; then
+            echo "::error::Dependency extraction returned an empty npm or crates.io inventory."
+            exit 1
+          fi
+          {
+            echo "count=$((npm_count + cargo_count))"
+            echo "lockfile_count=$lockfile_count"
+            echo "npm_count=$npm_count"
+            echo "cargo_count=$cargo_count"
+          } >> "$GITHUB_OUTPUT"
+          echo "Found $npm_count npm and $cargo_count crates.io package/version pairs across $lockfile_count lockfiles."
+
+      - name: Query OSV for exact locked npm and crates.io versions
+        id: osv
         run: |
           set -euo pipefail
-          since=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
-          gh api graphql -f query='
-            query($since: DateTime!) {
-              securityAdvisories(first: 100, publishedSince: $since, orderBy: {field: PUBLISHED_AT, direction: DESC}) {
-                nodes {
-                  ghsaId
-                  summary
-                  severity
-                  publishedAt
-                  permalink
-                  vulnerabilities(first: 20, ecosystem: NPM) {
-                    nodes {
-                      package { name }
-                      vulnerableVersionRange
-                      firstPatchedVersion { identifier }
-                    }
-                  }
-                }
-              }
-            }' -f since="$since" > /tmp/adv-raw.json
-          jq '[.data.securityAdvisories.nodes[] | select(.vulnerabilities.nodes | length > 0)]' /tmp/adv-raw.json > /tmp/adv-npm.json
-          count=$(jq 'length' /tmp/adv-npm.json)
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Fetched $count NPM-affecting advisories published in last 30 days"
+          python3 - <<'PY'
+          import csv
+          import json
+          from pathlib import Path
 
-      - name: Cross-reference
+          dependencies = set()
+          for ecosystem, filename in (
+              ("npm", "/tmp/npm-deps.tsv"),
+              ("crates.io", "/tmp/cargo-deps.tsv"),
+          ):
+              with open(filename, encoding="utf-8", newline="") as source:
+                  for name, version in csv.reader(source, delimiter="\t"):
+                      dependencies.add((ecosystem, name, version))
+
+          queries = [
+              {
+                  "package": {"ecosystem": ecosystem, "name": name},
+                  "version": version,
+              }
+              for ecosystem, name, version in sorted(dependencies)
+          ]
+          if not queries:
+              raise SystemExit("No locked dependency versions were available for OSV")
+
+          batch_size = 500
+          for index in range(0, len(queries), batch_size):
+              batch = {"queries": queries[index:index + batch_size]}
+              target = Path(f"/tmp/osv-query-{index // batch_size:04d}.json")
+              target.write_text(json.dumps(batch, separators=(",", ":")), encoding="utf-8")
+          PY
+
+          : > /tmp/osv-findings.ndjson
+          for request in /tmp/osv-query-*.json; do
+            response="${request/query/response}"
+            curl --fail --silent --show-error \
+              --retry 3 --retry-all-errors \
+              --connect-timeout 10 --max-time 120 \
+              --proto '=https' --tlsv1.2 \
+              --header 'Content-Type: application/json' \
+              --data-binary "@$request" \
+              --output "$response" \
+              'https://api.osv.dev/v1/querybatch'
+
+            query_count=$(jq -er '.queries | length' "$request")
+            result_count=$(jq -er '.results | length' "$response")
+            if [ "$result_count" -ne "$query_count" ]; then
+              echo "::error::OSV returned $result_count result slots for $query_count exact-version queries."
+              exit 1
+            fi
+            if jq -e '.results[]? | select(.next_page_token != null)' \
+              "$response" > /dev/null; then
+              echo "::error::OSV paginated an exact-version result; refusing an incomplete advisory inventory."
+              exit 1
+            fi
+
+            python3 - "$request" "$response" <<'PY' >> /tmp/osv-findings.ndjson
+          import json
+          import sys
+
+          request = json.load(open(sys.argv[1], encoding="utf-8"))
+          response = json.load(open(sys.argv[2], encoding="utf-8"))
+          for query, result in zip(request["queries"], response["results"], strict=True):
+              for vulnerability in result.get("vulns", []):
+                  vulnerability_id = vulnerability["id"]
+                  print(json.dumps({
+                      "ghsaId": vulnerability_id,
+                      "severity": "UNKNOWN",
+                      "ecosystem": query["package"]["ecosystem"],
+                      "package": query["package"]["name"],
+                      "installed_version": query["version"],
+                      "vulnerable_range": "Exact locked version matched by OSV",
+                      "first_patched": None,
+                      "summary": "OSV matched this exact locked dependency version.",
+                      "permalink": f"https://osv.dev/vulnerability/{vulnerability_id}",
+                  }, separators=(",", ":")))
+          PY
+          done
+
+          jq -s '
+            unique_by([.ecosystem, .ghsaId, .package, .installed_version])
+          ' /tmp/osv-findings.ndjson > /tmp/findings.json
+          count=$(jq 'length' /tmp/findings.json)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "OSV matched $count advisory/package/version tuple(s) in exact locked dependencies."
+
+      - name: Preview exact-version advisory findings
         id: match
         run: |
           set -euo pipefail
-          # Build pkg name lookup from installed deps
-          awk -F'\t' '{print $1}' /tmp/all-deps.tsv | sort -u > /tmp/installed-names.txt
-          # For each advisory, keep only those whose vulnerable packages match an installed pkg
-          jq --rawfile installed /tmp/installed-names.txt '
-            ($installed | split("\n") | map(select(. != "")) | unique) as $names
-            | [
-                .[] as $a
-                | $a.vulnerabilities.nodes[]
-                | select(.package.name as $p | $names | index($p))
-                | {
-                    ghsaId: $a.ghsaId,
-                    severity: $a.severity,
-                    package: .package.name,
-                    vulnerable_range: .vulnerableVersionRange,
-                    first_patched: (.firstPatchedVersion.identifier // null),
-                    summary: $a.summary,
-                    permalink: $a.permalink,
-                    publishedAt: $a.publishedAt
-                  }
-              ]
-          ' /tmp/adv-npm.json > /tmp/findings.json
           count=$(jq 'length' /tmp/findings.json)
           echo "count=$count" >> "$GITHUB_OUTPUT"
           if [ "$count" != "0" ]; then
             echo "===== findings preview ====="
-            jq '.' /tmp/findings.json | head -50
+            jq '.[0:10]' /tmp/findings.json
           fi
 
       - name: Report findings (open or update issue)
@@ -118,11 +255,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          generated_at=$(TZ=Etc/GMT+3 date '+%d/%m/%Y %Hh%M')
           # Build markdown body
-          body=$(jq -r '
-            "## OSS Advisory Watch — \(length) findings against org NPM dependencies\n\n"
-            + "_Source: GitHub Security Advisory database (NPM ecosystem, last 30 days)._\n"
-            + "_Generated: \(now | strftime("%Y-%m-%dT%H:%M:%SZ"))_\n\n"
+          body=$(jq -r --arg generated_at "$generated_at" '
+            "## OSS Advisory Watch — \(length) findings against locked organization dependencies\n\n"
+            + "_Source: OSV.dev exact-version queries for locked npm and crates.io dependencies._\n"
+            + "_Generated: \($generated_at)_\n\n"
             + (group_by(.severity) | sort_by(
                 if .[0].severity == "CRITICAL" then 0
                 elif .[0].severity == "HIGH" then 1
@@ -132,10 +270,10 @@ jobs:
               ) | map(
                 "### \(.[0].severity) (\(length))\n\n"
                 + (map(
-                    "- **\(.package)** — [\(.ghsaId)](\(.permalink))\n"
+                    "- **\(.package)** (`\(.ecosystem)`) — [\(.ghsaId)](\(.permalink))\n"
+                    + (if .installed_version then "  - Installed: `\(.installed_version)`\n" else "" end)
                     + "  - Vulnerable: `\(.vulnerable_range)`\n"
                     + "  - First patched: `\(.first_patched // "n/a")`\n"
-                    + "  - Published: \(.publishedAt)\n"
                     + "  - Summary: \(.summary)\n"
                   ) | join(""))
                 + "\n"
@@ -148,16 +286,22 @@ jobs:
             echo "Commented on existing #$existing"
           else
             gh issue create --repo "$GITHUB_REPOSITORY" \
-              --title "OSS Advisory Watch — $(date -u +%Y-%m-%d)" \
+              --title "OSS Advisory Watch — $(TZ=Etc/GMT+3 date +%d-%m-%Y)" \
               --body "$body"
           fi
 
       - name: Summary
         env:
-          ADVISORY_COUNT: ${{ steps.advisories.outputs.count }}
+          CARGO_DEPENDENCY_COUNT: ${{ steps.deps.outputs.cargo_count }}
           DEPENDENCY_COUNT: ${{ steps.deps.outputs.count }}
           FINDING_COUNT: ${{ steps.match.outputs.count }}
+          LOCKFILE_COUNT: ${{ steps.deps.outputs.lockfile_count }}
+          NPM_DEPENDENCY_COUNT: ${{ steps.deps.outputs.npm_count }}
+          OSV_FINDING_COUNT: ${{ steps.osv.outputs.count }}
         run: |
-          echo "Installed NPM unique pkg/version pairs: $DEPENDENCY_COUNT"
-          echo "GHAS NPM advisories (last 30d): $ADVISORY_COUNT"
-          echo "Cross-ref findings: $FINDING_COUNT"
+          echo "Audited lockfiles: $LOCKFILE_COUNT"
+          echo "Installed npm unique pkg/version pairs: $NPM_DEPENDENCY_COUNT"
+          echo "Installed crates.io unique pkg/version pairs: $CARGO_DEPENDENCY_COUNT"
+          echo "Total installed unique pkg/version pairs: $DEPENDENCY_COUNT"
+          echo "OSV exact-version matches: $OSV_FINDING_COUNT"
+          echo "Reported exact-version findings: $FINDING_COUNT"
