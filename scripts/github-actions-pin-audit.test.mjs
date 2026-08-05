@@ -30,6 +30,7 @@ const SHA_SCORECARD = "5".repeat(40);
 const SHA_SETUP_DENO = "6".repeat(40);
 const SHA_DENO_RELEASE = "7".repeat(40);
 const SHA_SLACK_RELEASE = "8".repeat(40);
+const SHA_OSV_SCANNER_RELEASE = "9".repeat(40);
 const DIGEST_BASELINE = `sha256:${"a".repeat(64)}`;
 const DIGEST_DRIFT = `sha256:${"b".repeat(64)}`;
 const TEST_TOKEN = "test-token-never-log";
@@ -381,7 +382,7 @@ test("uses parser fails closed on mutable, Docker, expression, missing-comment, 
   );
 });
 
-test("runtime pin parser binds exact Deno and Slack CLI pins to canonical workflow blocks", () => {
+test("runtime pin parser binds exact Deno, Slack CLI, and OSV-Scanner pins to canonical workflow blocks", () => {
   const workflow = [
     "steps:",
     "  - name: Setup Deno",
@@ -394,6 +395,12 @@ test("runtime pin parser binds exact Deno and Slack CLI pins to canonical workfl
     `      SLACK_CLI_SHA256: ${"a".repeat(64)}`,
     "      SLACK_CLI_VERSION: 4.6.0",
     "    run: ./install-slack-cli.sh",
+    "  - name: Install OSV-Scanner",
+    "    env:",
+    "      OSV_SCANNER_ASSET: osv-scanner_linux_amd64",
+    `      OSV_SCANNER_SHA256: ${"b".repeat(64)}`,
+    "      OSV_SCANNER_VERSION: 2.4.0",
+    "    run: ./install-osv-scanner.sh",
   ].join("\n");
   const parsed = parseWorkflowRuntimePins(workflow, {
     repository: "LCV-Ideas-Software/example",
@@ -428,9 +435,29 @@ test("runtime pin parser binds exact Deno and Slack CLI pins to canonical workfl
       },
     ],
   );
+  assert.deepEqual(
+    parsed.osvScannerReferences.map(
+      ({ version, asset, checksum, line, checksumLine }) => ({
+        version,
+        asset,
+        checksum,
+        line,
+        checksumLine,
+      }),
+    ),
+    [
+      {
+        version: "2.4.0",
+        asset: "osv-scanner_linux_amd64",
+        checksum: "b".repeat(64),
+        line: 16,
+        checksumLine: 15,
+      },
+    ],
+  );
 });
 
-test("runtime pin parser fails closed on ranges, missing inputs, expressions, and partial Slack pins", () => {
+test("runtime pin parser fails closed on ranges, expressions, and partial runtime-tool pins", () => {
   const workflow = [
     "steps:",
     `  - uses: denoland/setup-deno@${SHA_SETUP_DENO} # v2.0.5`,
@@ -445,6 +472,9 @@ test("runtime pin parser fails closed on ranges, missing inputs, expressions, an
     "      SLACK_CLI_ASSET: slack_cli_4.6.0_linux_64-bit.tar.gz",
     `      SLACK_CLI_SHA256: ${"a".repeat(64)}`,
     "      SLACK_CLI_VERSION: ${{ matrix.slack-cli }}",
+    "  - name: Partial OSV-Scanner pin",
+    "    env:",
+    "      OSV_SCANNER_VERSION: 2.4.0",
   ].join("\n");
   const parsed = parseWorkflowRuntimePins(workflow, {
     repository: "LCV-Ideas-Software/example",
@@ -457,13 +487,15 @@ test("runtime pin parser fails closed on ranges, missing inputs, expressions, an
       "MISSING_DENO_VERSION_PIN",
       "INCOMPLETE_SLACK_CLI_PIN",
       "UNSUPPORTED_SLACK_CLI_PIN",
+      "INCOMPLETE_OSV_SCANNER_PIN",
     ],
   );
   assert.deepEqual(parsed.denoReferences, []);
   assert.deepEqual(parsed.slackCliReferences, []);
+  assert.deepEqual(parsed.osvScannerReferences, []);
 });
 
-test("official runtime audit validates latest signed Deno and Slack CLI releases and release-asset checksum", async () => {
+test("official runtime audit validates latest signed Deno, Slack CLI, and OSV-Scanner releases and asset checksums", async () => {
   const routes = new Map();
   addOfficialReleaseRoutes(routes, {
     source: "denoland/deno",
@@ -479,6 +511,19 @@ test("official runtime audit validates latest signed Deno and Slack CLI releases
         source: "slackapi/slack-cli",
         tag: "v4.6.0",
         name: "slack_cli_4.6.0_linux_64-bit.tar.gz",
+      }),
+    ],
+  });
+  addOfficialReleaseRoutes(routes, {
+    source: "google/osv-scanner",
+    tag: "v2.4.0",
+    sha: SHA_OSV_SCANNER_RELEASE,
+    assets: [
+      releaseAsset({
+        source: "google/osv-scanner",
+        tag: "v2.4.0",
+        name: "osv-scanner_linux_amd64",
+        digest: DIGEST_DRIFT,
       }),
     ],
   });
@@ -505,6 +550,17 @@ test("official runtime audit validates latest signed Deno and Slack CLI releases
         checksumLine: 9,
       },
     ],
+    osvScannerReferences: [
+      {
+        repository: "LCV-Ideas-Software/example",
+        path: ".github/workflows/oss-advisory-watch.yml",
+        line: 20,
+        version: "2.4.0",
+        asset: "osv-scanner_linux_amd64",
+        checksum: DIGEST_DRIFT.slice("sha256:".length),
+        checksumLine: 19,
+      },
+    ],
   });
   assert.deepEqual(result.findings, []);
   assert.equal(
@@ -513,7 +569,7 @@ test("official runtime audit validates latest signed Deno and Slack CLI releases
   );
 });
 
-test("official runtime audit reports stale versions and supplies the exact latest Slack asset digest", async () => {
+test("official runtime audit reports stale versions and supplies exact latest asset digests", async () => {
   const routes = new Map();
   addOfficialReleaseRoutes(routes, {
     source: "denoland/deno",
@@ -530,6 +586,32 @@ test("official runtime audit reports stale versions and supplies the exact lates
         tag: "v4.6.0",
         name: "slack_cli_4.6.0_linux_64-bit.tar.gz",
         digest: DIGEST_DRIFT,
+      }),
+    ],
+  });
+  addOfficialReleaseRoutes(routes, {
+    source: "google/osv-scanner",
+    tag: "v2.4.0",
+    sha: SHA_OSV_SCANNER_RELEASE,
+    assets: [
+      releaseAsset({
+        source: "google/osv-scanner",
+        tag: "v2.4.0",
+        name: "osv-scanner_linux_amd64",
+        digest: DIGEST_DRIFT,
+      }),
+    ],
+  });
+  addOfficialReleaseRoutes(routes, {
+    source: "google/osv-scanner",
+    tag: "v2.3.0",
+    sha: SHA_OLD,
+    latest: false,
+    assets: [
+      releaseAsset({
+        source: "google/osv-scanner",
+        tag: "v2.3.0",
+        name: "osv-scanner_linux_amd64",
       }),
     ],
   });
@@ -568,10 +650,25 @@ test("official runtime audit reports stale versions and supplies the exact lates
         checksumLine: 9,
       },
     ],
+    osvScannerReferences: [
+      {
+        repository: "LCV-Ideas-Software/example",
+        path: ".github/workflows/oss-advisory-watch.yml",
+        line: 20,
+        version: "2.3.0",
+        asset: "osv-scanner_linux_amd64",
+        checksum: DIGEST_BASELINE.slice("sha256:".length),
+        checksumLine: 19,
+      },
+    ],
   });
   assert.deepEqual(
     result.findings.map(({ code }) => code),
-    ["STALE_DENO_VERSION_PIN", "STALE_SLACK_CLI_VERSION_PIN"],
+    [
+      "STALE_DENO_VERSION_PIN",
+      "STALE_SLACK_CLI_VERSION_PIN",
+      "STALE_OSV_SCANNER_VERSION_PIN",
+    ],
   );
   assert.match(
     result.findings[1].message,
@@ -579,6 +676,7 @@ test("official runtime audit reports stale versions and supplies the exact lates
       `slack_cli_4\\.6\\.0_linux_64-bit\\.tar\\.gz.*${"b".repeat(64)}`,
     ),
   );
+  assert.match(result.findings[2].message, new RegExp("b{64}"));
 });
 
 test("official runtime audit rejects a Slack CLI checksum that differs from GitHub release metadata", async () => {
@@ -612,6 +710,40 @@ test("official runtime audit rejects a Slack CLI checksum that differs from GitH
   assert.deepEqual(
     result.findings.map(({ code }) => code),
     ["SLACK_CLI_CHECKSUM_MISMATCH"],
+  );
+});
+
+test("official runtime audit rejects an OSV-Scanner checksum that differs from GitHub release metadata", async () => {
+  const routes = new Map();
+  addOfficialReleaseRoutes(routes, {
+    source: "google/osv-scanner",
+    tag: "v2.4.0",
+    sha: SHA_OSV_SCANNER_RELEASE,
+    assets: [
+      releaseAsset({
+        source: "google/osv-scanner",
+        tag: "v2.4.0",
+        name: "osv-scanner_linux_amd64",
+      }),
+    ],
+  });
+  const result = await auditRuntimeToolUpdates({
+    api: new FixtureApi({ routes }),
+    osvScannerReferences: [
+      {
+        repository: "LCV-Ideas-Software/example",
+        path: ".github/workflows/oss-advisory-watch.yml",
+        line: 20,
+        version: "2.4.0",
+        asset: "osv-scanner_linux_amd64",
+        checksum: "f".repeat(64),
+        checksumLine: 19,
+      },
+    ],
+  });
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    ["OSV_SCANNER_CHECKSUM_MISMATCH"],
   );
 });
 
@@ -868,6 +1000,12 @@ test("organization audit discovers runtime pins and validates them through offic
     `      SLACK_CLI_SHA256: ${"a".repeat(64)}`,
     "      SLACK_CLI_VERSION: 4.6.0",
     "    run: ./install-slack-cli.sh",
+    "  - name: Install OSV-Scanner",
+    "    env:",
+    "      OSV_SCANNER_ASSET: osv-scanner_linux_amd64",
+    `      OSV_SCANNER_SHA256: ${"b".repeat(64)}`,
+    "      OSV_SCANNER_VERSION: 2.4.0",
+    "    run: ./install-osv-scanner.sh",
   ].join("\n");
   const routes = new Map();
   addActionRoutes(routes, {
@@ -893,6 +1031,19 @@ test("organization audit discovers runtime pins and validates them through offic
       }),
     ],
   });
+  addOfficialReleaseRoutes(routes, {
+    source: "google/osv-scanner",
+    tag: "v2.4.0",
+    sha: SHA_OSV_SCANNER_RELEASE,
+    assets: [
+      releaseAsset({
+        source: "google/osv-scanner",
+        tag: "v2.4.0",
+        name: "osv-scanner_linux_amd64",
+        digest: DIGEST_DRIFT,
+      }),
+    ],
+  });
   const result = await runAudit({
     api: new FixtureApi({ workflow, routes }),
     minimumRepositories: 1,
@@ -900,6 +1051,7 @@ test("organization audit discovers runtime pins and validates them through offic
   assert.deepEqual(result.findings, []);
   assert.equal(result.denoRuntimeReferenceCount, 1);
   assert.equal(result.slackCliReferenceCount, 1);
+  assert.equal(result.osvScannerReferenceCount, 1);
 });
 
 test("organization audit covers internal and third-party Actions with zero mutations", async () => {

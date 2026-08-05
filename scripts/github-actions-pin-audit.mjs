@@ -37,10 +37,17 @@ const SLACK_CLI_CHECKSUM = /^[0-9a-f]{64}$/i;
 const SETUP_DENO_SOURCE = "denoland/setup-deno";
 const DENO_RUNTIME_SOURCE = "denoland/deno";
 const SLACK_CLI_SOURCE = "slackapi/slack-cli";
+const OSV_SCANNER_SOURCE = "google/osv-scanner";
+const OSV_SCANNER_ASSET = "osv-scanner_linux_amd64";
 const SLACK_CLI_PIN_KEYS = Object.freeze([
   "SLACK_CLI_ASSET",
   "SLACK_CLI_SHA256",
   "SLACK_CLI_VERSION",
+]);
+const OSV_SCANNER_PIN_KEYS = Object.freeze([
+  "OSV_SCANNER_ASSET",
+  "OSV_SCANNER_SHA256",
+  "OSV_SCANNER_VERSION",
 ]);
 
 export class GitHubApiError extends Error {
@@ -784,6 +791,7 @@ export function parseWorkflowRuntimePins(
   const lines = content.replaceAll("\r\n", "\n").split("\n");
   const denoReferences = [];
   const slackCliReferences = [];
+  const osvScannerReferences = [];
   const findings = [];
 
   for (const reference of references.filter(
@@ -1032,7 +1040,136 @@ export function parseWorkflowRuntimePins(
     });
   }
 
-  return { denoReferences, slackCliReferences, findings };
+  for (const [index, line] of lines.entries()) {
+    const envMatch = /^\s*env\s*:\s*(.*)$/.exec(line);
+    if (!envMatch) continue;
+    const envIndent = logicalKeyIndent(line);
+    const remainder = envMatch[1].trim();
+    if (remainder && !remainder.startsWith("#")) {
+      if (OSV_SCANNER_PIN_KEYS.some((key) => remainder.includes(key))) {
+        findings.push(
+          finding(
+            "UNSUPPORTED_OSV_SCANNER_PIN",
+            repository,
+            path,
+            index + 1,
+            "OSV-Scanner pins must use a canonical block-style env mapping.",
+          ),
+        );
+      }
+      continue;
+    }
+
+    const block = nestedBlock(lines, index, envIndent);
+    const entries = new Map();
+    for (const child of block.children) {
+      if (child.indent !== block.directIndent) continue;
+      const entry =
+        /^\s*(OSV_SCANNER_(?:ASSET|SHA256|VERSION))\s*:\s*(.*)$/.exec(
+          child.line,
+        );
+      if (!entry) continue;
+      if (!entries.has(entry[1])) entries.set(entry[1], []);
+      entries.get(entry[1]).push({ index: child.index, raw: entry[2] });
+    }
+    if (entries.size === 0) continue;
+
+    const invalidCardinality = OSV_SCANNER_PIN_KEYS.filter(
+      (key) => (entries.get(key)?.length ?? 0) !== 1,
+    );
+    if (invalidCardinality.length > 0) {
+      findings.push(
+        finding(
+          "INCOMPLETE_OSV_SCANNER_PIN",
+          repository,
+          path,
+          index + 1,
+          `An OSV-Scanner env block must contain each pin exactly once; invalid keys: ${invalidCardinality.join(", ")}.`,
+        ),
+      );
+      continue;
+    }
+
+    const values = new Map();
+    let scalarFailed = false;
+    for (const key of OSV_SCANNER_PIN_KEYS) {
+      const entry = entries.get(key)[0];
+      try {
+        values.set(
+          key,
+          workflowLiteralScalar(entry.raw, `OSV-Scanner pin ${key}`),
+        );
+      } catch (error) {
+        scalarFailed = true;
+        findings.push(
+          finding(
+            "UNSUPPORTED_OSV_SCANNER_PIN",
+            repository,
+            path,
+            entry.index + 1,
+            error.message,
+          ),
+        );
+      }
+    }
+    if (scalarFailed) continue;
+
+    const version = values.get("OSV_SCANNER_VERSION");
+    const asset = values.get("OSV_SCANNER_ASSET");
+    const checksum = values.get("OSV_SCANNER_SHA256");
+    if (!EXACT_STABLE_VERSION.test(version)) {
+      findings.push(
+        finding(
+          "NON_EXACT_OSV_SCANNER_VERSION_PIN",
+          repository,
+          path,
+          entries.get("OSV_SCANNER_VERSION")[0].index + 1,
+          `OSV_SCANNER_VERSION must be an exact stable version, not ${version}.`,
+        ),
+      );
+      continue;
+    }
+    if (asset !== OSV_SCANNER_ASSET) {
+      findings.push(
+        finding(
+          "INVALID_OSV_SCANNER_ASSET_PIN",
+          repository,
+          path,
+          entries.get("OSV_SCANNER_ASSET")[0].index + 1,
+          `OSV_SCANNER_ASSET must be the official Linux AMD64 asset ${OSV_SCANNER_ASSET}.`,
+        ),
+      );
+      continue;
+    }
+    if (!SLACK_CLI_CHECKSUM.test(checksum)) {
+      findings.push(
+        finding(
+          "INVALID_OSV_SCANNER_CHECKSUM_PIN",
+          repository,
+          path,
+          entries.get("OSV_SCANNER_SHA256")[0].index + 1,
+          "OSV_SCANNER_SHA256 must be an exact 64-character SHA-256 checksum.",
+        ),
+      );
+      continue;
+    }
+    osvScannerReferences.push({
+      repository,
+      path,
+      line: entries.get("OSV_SCANNER_VERSION")[0].index + 1,
+      version,
+      asset,
+      checksum: checksum.toLowerCase(),
+      checksumLine: entries.get("OSV_SCANNER_SHA256")[0].index + 1,
+    });
+  }
+
+  return {
+    denoReferences,
+    slackCliReferences,
+    osvScannerReferences,
+    findings,
+  };
 }
 
 function indentationOf(line, context) {
@@ -1297,10 +1434,10 @@ async function verifiedReleaseCommit(api, source, release, commitCache) {
   return verifiedCommit(api, owner, repository, sha, commitCache);
 }
 
-function officialSlackCliAsset(release, name) {
+function officialReleaseAsset(release, source, name) {
   if (!Array.isArray(release.payload.assets)) {
     throw new Error(
-      `${SLACK_CLI_SOURCE} release ${release.tag} returned malformed assets.`,
+      `${source} release ${release.tag} returned malformed assets.`,
     );
   }
   const matching = release.payload.assets.filter(
@@ -1308,12 +1445,12 @@ function officialSlackCliAsset(release, name) {
   );
   if (matching.length > 1) {
     throw new Error(
-      `${SLACK_CLI_SOURCE} release ${release.tag} contains duplicate asset ${name}.`,
+      `${source} release ${release.tag} contains duplicate asset ${name}.`,
     );
   }
   if (matching.length === 0) return undefined;
   const asset = matching[0];
-  const expectedUrl = `https://github.com/${SLACK_CLI_SOURCE}/releases/download/${release.tag}/${encodeURIComponent(name)}`;
+  const expectedUrl = `https://github.com/${source}/releases/download/${release.tag}/${encodeURIComponent(name)}`;
   if (
     asset.state !== "uploaded" ||
     !Number.isSafeInteger(asset.size) ||
@@ -1321,7 +1458,7 @@ function officialSlackCliAsset(release, name) {
     asset.browser_download_url !== expectedUrl
   ) {
     throw new Error(
-      `${SLACK_CLI_SOURCE} release ${release.tag} returned invalid metadata for asset ${name}.`,
+      `${source} release ${release.tag} returned invalid metadata for asset ${name}.`,
     );
   }
   if (typeof asset.digest !== "string" || !SHA256_DIGEST.test(asset.digest)) {
@@ -1333,10 +1470,19 @@ function officialSlackCliAsset(release, name) {
   });
 }
 
+function officialSlackCliAsset(release, name) {
+  return officialReleaseAsset(release, SLACK_CLI_SOURCE, name);
+}
+
+function officialOsvScannerAsset(release, name) {
+  return officialReleaseAsset(release, OSV_SCANNER_SOURCE, name);
+}
+
 export async function auditRuntimeToolUpdates({
   api,
   denoReferences = [],
   slackCliReferences = [],
+  osvScannerReferences = [],
   commitCache = new Map(),
   releaseCache = new Map(),
 } = {}) {
@@ -1528,6 +1674,150 @@ export async function auditRuntimeToolUpdates({
     }
   }
 
+  if (osvScannerReferences.length > 0) {
+    const latestOsvScanner = await officialRelease(api, OSV_SCANNER_SOURCE, {
+      cache: releaseCache,
+    });
+    const latestCommit = await verifiedReleaseCommit(
+      api,
+      OSV_SCANNER_SOURCE,
+      latestOsvScanner,
+      commitCache,
+    );
+    for (const reference of osvScannerReferences) {
+      if (!latestCommit.verified) {
+        findings.push(
+          finding(
+            "UNVERIFIED_OSV_SCANNER_RELEASE",
+            reference.repository,
+            reference.path,
+            reference.line,
+            `${OSV_SCANNER_SOURCE} latest stable release ${latestOsvScanner.tag}@${latestCommit.sha} is not GitHub-verified (reason: ${latestCommit.reason}).`,
+            reference.asset,
+          ),
+        );
+      }
+
+      const pinnedTag = `v${reference.version}`;
+      const pinnedRelease =
+        pinnedTag === latestOsvScanner.tag
+          ? latestOsvScanner
+          : await officialRelease(api, OSV_SCANNER_SOURCE, {
+              tag: pinnedTag,
+              allow404: true,
+              cache: releaseCache,
+            });
+      if (!pinnedRelease) {
+        findings.push(
+          finding(
+            "UNKNOWN_OSV_SCANNER_RELEASE",
+            reference.repository,
+            reference.path,
+            reference.line,
+            `${OSV_SCANNER_SOURCE} has no official stable release ${pinnedTag}.`,
+            reference.asset,
+          ),
+        );
+      } else {
+        const pinnedCommit = await verifiedReleaseCommit(
+          api,
+          OSV_SCANNER_SOURCE,
+          pinnedRelease,
+          commitCache,
+        );
+        if (!pinnedCommit.verified) {
+          findings.push(
+            finding(
+              "UNVERIFIED_OSV_SCANNER_PINNED_RELEASE",
+              reference.repository,
+              reference.path,
+              reference.line,
+              `${OSV_SCANNER_SOURCE} pinned release ${pinnedTag}@${pinnedCommit.sha} is not GitHub-verified (reason: ${pinnedCommit.reason}).`,
+              reference.asset,
+            ),
+          );
+        }
+        const pinnedAsset = officialOsvScannerAsset(
+          pinnedRelease,
+          reference.asset,
+        );
+        if (!pinnedAsset) {
+          findings.push(
+            finding(
+              "UNKNOWN_OSV_SCANNER_ASSET",
+              reference.repository,
+              reference.path,
+              reference.line,
+              `${OSV_SCANNER_SOURCE} release ${pinnedTag} does not contain asset ${reference.asset}.`,
+              reference.asset,
+            ),
+          );
+        } else if (!pinnedAsset.checksum) {
+          findings.push(
+            finding(
+              "MISSING_OFFICIAL_OSV_SCANNER_CHECKSUM",
+              reference.repository,
+              reference.path,
+              reference.checksumLine,
+              `${OSV_SCANNER_SOURCE} release ${pinnedTag} does not expose a SHA-256 digest for ${reference.asset}.`,
+              reference.asset,
+            ),
+          );
+        } else if (pinnedAsset.checksum !== reference.checksum) {
+          findings.push(
+            finding(
+              "OSV_SCANNER_CHECKSUM_MISMATCH",
+              reference.repository,
+              reference.path,
+              reference.checksumLine,
+              `Pinned checksum ${reference.checksum} does not match the official release-asset checksum ${pinnedAsset.checksum} for ${reference.asset}.`,
+              reference.asset,
+            ),
+          );
+        }
+      }
+
+      const latestAsset = officialOsvScannerAsset(
+        latestOsvScanner,
+        reference.asset,
+      );
+      if (!latestAsset) {
+        findings.push(
+          finding(
+            "LATEST_OSV_SCANNER_ASSET_UNAVAILABLE",
+            reference.repository,
+            reference.path,
+            reference.line,
+            `${OSV_SCANNER_SOURCE} latest stable release ${latestOsvScanner.tag} does not contain the official asset ${reference.asset}.`,
+            reference.asset,
+          ),
+        );
+      } else if (!latestAsset.checksum) {
+        findings.push(
+          finding(
+            "MISSING_LATEST_OSV_SCANNER_CHECKSUM",
+            reference.repository,
+            reference.path,
+            reference.line,
+            `${OSV_SCANNER_SOURCE} latest stable release ${latestOsvScanner.tag} does not expose a SHA-256 digest for ${reference.asset}.`,
+            reference.asset,
+          ),
+        );
+      } else if (reference.version !== latestOsvScanner.version) {
+        findings.push(
+          finding(
+            "STALE_OSV_SCANNER_VERSION_PIN",
+            reference.repository,
+            reference.path,
+            reference.line,
+            `OSV-Scanner ${reference.version} is not the latest official stable release ${latestOsvScanner.version}; expected SHA-256 ${latestAsset.checksum} for ${reference.asset}.`,
+            reference.asset,
+          ),
+        );
+      }
+    }
+  }
+
   return { findings };
 }
 
@@ -1666,6 +1956,7 @@ export async function runAudit({
   const references = [];
   const denoReferences = [];
   const slackCliReferences = [];
+  const osvScannerReferences = [];
   const blobCache = new Map();
   let yamlFileCount = 0;
 
@@ -1712,6 +2003,7 @@ export async function runAudit({
       findings.push(...runtimePins.findings);
       denoReferences.push(...runtimePins.denoReferences);
       slackCliReferences.push(...runtimePins.slackCliReferences);
+      osvScannerReferences.push(...runtimePins.osvScannerReferences);
     }
   }
 
@@ -1977,6 +2269,7 @@ export async function runAudit({
     api,
     denoReferences,
     slackCliReferences,
+    osvScannerReferences,
     commitCache,
   });
   findings.push(...runtimeToolAudit.findings);
@@ -1997,6 +2290,7 @@ export async function runAudit({
     uniqueDockerImageCount: dockerImages.size,
     denoRuntimeReferenceCount: denoReferences.length,
     slackCliReferenceCount: slackCliReferences.length,
+    osvScannerReferenceCount: osvScannerReferences.length,
     uniqueActionRepositoryCount: new Set(
       references.map((reference) => reference.source.toLowerCase()),
     ).size,
@@ -2047,6 +2341,7 @@ export function renderSummary(result, date = new Date()) {
     `- Imagens Docker externas distintas: ${result.uniqueDockerImageCount ?? 0}`,
     `- Pins do runtime Deno: ${result.denoRuntimeReferenceCount ?? 0}`,
     `- Pins da Slack CLI: ${result.slackCliReferenceCount ?? 0}`,
+    `- Pins do OSV-Scanner: ${result.osvScannerReferenceCount ?? 0}`,
     `- Achados: ${result.findings.length}`,
     "",
   ];
@@ -2085,7 +2380,7 @@ export async function main(environment = process.env) {
     await fs.appendFile(configuration.summaryPath, summary, "utf8");
   }
   console.log(
-    `Audited ${result.referenceCount} external uses references in ${result.yamlFileCount} YAML files across ${result.repositoryCount} repositories; docker-images=${result.uniqueDockerImageCount}; deno-pins=${result.denoRuntimeReferenceCount}; slack-cli-pins=${result.slackCliReferenceCount}; findings=${result.findings.length}.`,
+    `Audited ${result.referenceCount} external uses references in ${result.yamlFileCount} YAML files across ${result.repositoryCount} repositories; docker-images=${result.uniqueDockerImageCount}; deno-pins=${result.denoRuntimeReferenceCount}; slack-cli-pins=${result.slackCliReferenceCount}; osv-scanner-pins=${result.osvScannerReferenceCount}; findings=${result.findings.length}.`,
   );
   if (result.findings.length > 0) process.exitCode = 1;
   return result;

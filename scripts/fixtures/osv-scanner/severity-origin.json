@@ -1,0 +1,72 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "scripts/fixtures/osv-scanner/workspace/LCV-Ideas-Software/example-app/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "dangerous-package",
+            "version": "1.0.0",
+            "ecosystem": "npm"
+          },
+          "groups": [
+            {
+              "ids": ["GHSA-aaaa-bbbb-cccc"],
+              "aliases": ["CVE-2026-0001"],
+              "max_severity": "9.4"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "id": "GHSA-aaaa-bbbb-cccc",
+              "aliases": ["CVE-2026-0001"],
+              "summary": "Critical fixture advisory",
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "npm",
+                    "name": "dangerous-package"
+                  },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [{ "introduced": "0" }, { "fixed": "1.0.1" }]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "package": {
+            "name": "moderate-package",
+            "version": "2.0.0",
+            "ecosystem": "npm"
+          },
+          "groups": [
+            {
+              "ids": ["OSV-2026-TEST"],
+              "aliases": ["OSV-2026-TEST"],
+              "max_severity": ""
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "id": "OSV-2026-TEST",
+              "summary": "Moderate fixture advisory",
+              "database_specific": { "severity": "MEDIUM" },
+              "affected": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "experimental_config": {
+    "licenses": { "summary": false, "allowlist": null }
+  }
+}

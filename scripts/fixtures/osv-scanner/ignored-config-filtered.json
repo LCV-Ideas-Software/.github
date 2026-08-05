@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "scripts/fixtures/osv-scanner/workspace/LCV-Ideas-Software/maestro-app/src-tauri/Cargo.lock",
+        "type": "lockfile"
+      },
+      "packages": []
+    }
+  ],
+  "experimental_config": {
+    "licenses": { "summary": false, "allowlist": null }
+  }
+}

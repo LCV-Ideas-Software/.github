@@ -1,0 +1,70 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "scripts/fixtures/osv-scanner/workspace/LCV-Ideas-Software/maestro-app/src-tauri/Cargo.lock",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "glib",
+            "version": "0.18.5",
+            "ecosystem": "crates.io"
+          },
+          "groups": [
+            {
+              "ids": ["RUSTSEC-2024-0429", "GHSA-wrw7-89jp-8q8g"],
+              "aliases": ["GHSA-wrw7-89jp-8q8g", "RUSTSEC-2024-0429"],
+              "max_severity": "6.9"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "id": "RUSTSEC-2024-0429",
+              "aliases": ["GHSA-wrw7-89jp-8q8g"],
+              "summary": "Unsound iterator implementation",
+              "affected": [
+                {
+                  "package": { "ecosystem": "crates.io", "name": "glib" },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        { "introduced": "0.15.0" },
+                        { "fixed": "0.20.0" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "GHSA-wrw7-89jp-8q8g",
+              "aliases": ["RUSTSEC-2024-0429"],
+              "summary": "Unsound iterator implementation",
+              "database_specific": { "severity": "MODERATE" },
+              "affected": [
+                {
+                  "package": { "ecosystem": "crates.io", "name": "glib" },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        { "introduced": "0.15.0" },
+                        { "fixed": "0.20.0" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "experimental_config": {
+    "licenses": { "summary": false, "allowlist": null }
+  }
+}
