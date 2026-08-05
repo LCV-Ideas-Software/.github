@@ -26,10 +26,9 @@ function canonicalPath(value) {
 
 function markdownText(value) {
   return String(value)
-    .replaceAll("\\", "\\\\")
-    .replace(/([`*_{}\[\]<>])/g, "\\$1")
     .replaceAll("\r", " ")
-    .replaceAll("\n", " ");
+    .replaceAll("\n", " ")
+    .replace(/[\\`*_{}\[\]<>]/g, "\\$&");
 }
 
 function inlineCode(value) {
