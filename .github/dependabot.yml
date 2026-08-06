@@ -119,7 +119,7 @@ updates:
     groups:
       zizmor-runtime:
         patterns:
-          - "ghcr.io/zizmorcore/zizmor"
+          - "zizmorcore/zizmor"
         update-types:
           - "major"
           - "minor"
