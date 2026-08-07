@@ -22,6 +22,13 @@ const CONNECTOR_ACTOR_LOGINS = new Set([
 ]);
 const DEFAULT_SETTLE_TIMEOUT_SECONDS = 180;
 const DEFAULT_SETTLE_POLL_SECONDS = 10;
+const GITHUB_READ_MAX_ATTEMPTS = 3;
+const GITHUB_READ_RETRY_BASE_MS = 500;
+const GITHUB_READ_RETRY_MAX_MS = 4_000;
+const GITHUB_READ_WAIT_BUDGET_MS = 60_000;
+// 408 is safe here because this set is consulted only after the request has
+// been proven read-only (GET or a fail-closed GraphQL query).
+const GITHUB_READ_RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const REVIEW_THREADS_QUERY = `
   query DependabotReviewThreads(
     $owner: String!
@@ -477,36 +484,202 @@ export function findBlockingConnectorReviewThreads(threads) {
   return blocking;
 }
 
-async function github(path, { token, method = "GET", body, allow = [] } = {}) {
-  const response = await fetch(`${API_ROOT}${path}`, {
-    method,
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${assertNonEmpty(token, "GitHub token")}`,
-      "X-GitHub-Api-Version": API_VERSION,
-      "User-Agent": "lcv-dependabot-automerge-controller",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await response.text();
-  let payload = null;
-  if (text) {
+function isReadOnlyGraphqlQuery(path, method, body) {
+  if (path !== "/graphql" || method !== "POST") return false;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  if (typeof body.query !== "string") return false;
+  if (body.operationName !== undefined && body.operationName !== null)
+    return false;
+
+  let document = body.query.replace(/^\uFEFF/, "").trimStart();
+  while (document.startsWith("#")) {
+    const newline = document.indexOf("\n");
+    if (newline === -1) return false;
+    document = document.slice(newline + 1).trimStart();
+  }
+  // Fail closed on multi-operation documents: the controller sends one known
+  // query and never needs to select an operation that could be a mutation.
+  if (/(^|[\s},])(mutation|subscription)\b/.test(document)) return false;
+  return /^query(?:\s|\(|\{)/.test(document) || document.startsWith("{");
+}
+
+function isRetryableReadRequest(path, method, body) {
+  return method === "GET" || isReadOnlyGraphqlQuery(path, method, body);
+}
+
+function retryAfterMilliseconds(headers, now) {
+  const raw = headers?.get?.("retry-after")?.trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) {
+    const milliseconds = Number(raw) * 1_000;
+    return Number.isFinite(milliseconds) ? milliseconds : null;
+  }
+
+  const deadline = Date.parse(raw);
+  if (!Number.isFinite(deadline)) return null;
+  return Math.max(0, deadline - now());
+}
+
+function hasExhaustedRateLimit(headers) {
+  return headers?.get?.("x-ratelimit-remaining")?.trim() === "0";
+}
+
+function rateLimitResetMilliseconds(headers, now) {
+  if (!hasExhaustedRateLimit(headers)) return null;
+  const rawReset = headers?.get?.("x-ratelimit-reset")?.trim();
+  if (!rawReset || !/^\d+$/.test(rawReset)) return null;
+  const deadline = Number(rawReset) * 1_000;
+  if (!Number.isFinite(deadline)) return null;
+  return Math.max(0, deadline - now());
+}
+
+function isRetryableReadResponse(response, now) {
+  if (GITHUB_READ_RETRYABLE_STATUSES.has(response.status)) return true;
+  if (response.status !== 403) return false;
+  return (
+    retryAfterMilliseconds(response.headers, now) !== null ||
+    hasExhaustedRateLimit(response.headers)
+  );
+}
+
+function readRetryDelayMilliseconds(attempt, response, random, now) {
+  const ceiling = Math.min(
+    GITHUB_READ_RETRY_MAX_MS,
+    GITHUB_READ_RETRY_BASE_MS * 2 ** (attempt - 1),
+  );
+  const sample = Number(random());
+  const boundedSample = Number.isFinite(sample)
+    ? Math.min(1, Math.max(0, sample))
+    : 0.5;
+  const jittered = Math.floor(ceiling / 2 + (ceiling / 2) * boundedSample);
+  const retryAfter = retryAfterMilliseconds(response?.headers, now);
+  const rateLimitReset = rateLimitResetMilliseconds(response?.headers, now);
+  const documentedRateLimitMinimum =
+    (response?.status === 429 ||
+      (response?.status === 403 && hasExhaustedRateLimit(response?.headers))) &&
+    retryAfter === null &&
+    rateLimitReset === null
+      ? 60_000
+      : null;
+  return Math.max(
+    jittered,
+    retryAfter ?? 0,
+    rateLimitReset ?? 0,
+    documentedRateLimitMinimum ?? 0,
+  );
+}
+
+export async function github(
+  path,
+  { token, method = "GET", body, allow = [] } = {},
+  runtime = {},
+) {
+  const normalizedMethod = String(method).toUpperCase();
+  const readOnly = isRetryableReadRequest(path, normalizedMethod, body);
+  const maxAttempts = readOnly ? GITHUB_READ_MAX_ATTEMPTS : 1;
+  const sleep =
+    runtime.sleep ??
+    ((milliseconds) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, milliseconds);
+      }));
+  const random = runtime.random ?? Math.random;
+  const now = runtime.now ?? Date.now;
+  const authorization = `Bearer ${assertNonEmpty(token, "GitHub token")}`;
+  let waitedMilliseconds = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response;
+    let text;
     try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = text;
+      response = await fetch(`${API_ROOT}${path}`, {
+        method: normalizedMethod,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: authorization,
+          "X-GitHub-Api-Version": API_VERSION,
+          "User-Agent": "lcv-dependabot-automerge-controller",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      text = await response.text();
+    } catch (error) {
+      if (attempt < maxAttempts) {
+        const delay = readRetryDelayMilliseconds(attempt, null, random, now);
+        const remainingWaitBudget = Math.max(
+          0,
+          GITHUB_READ_WAIT_BUDGET_MS - waitedMilliseconds,
+        );
+        if (delay > remainingWaitBudget) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `GitHub API ${normalizedMethod} ${path} transport failed after ${attempt} ${attempt === 1 ? "attempt" : "attempts"}: ${detail}; required retry delay ${delay}ms exceeds the remaining ${remainingWaitBudget}ms of the cumulative ${GITHUB_READ_WAIT_BUDGET_MS}ms wait budget`,
+            { cause: error },
+          );
+        }
+        log(
+          `GitHub API ${normalizedMethod} ${path} read attempt ${attempt}/${maxAttempts} had a transport failure; retrying in ${delay}ms.`,
+        );
+        await sleep(delay);
+        waitedMilliseconds += delay;
+        continue;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      const attempts = maxAttempts === 1 ? "" : ` after ${attempt} attempts`;
+      throw new Error(
+        `GitHub API ${normalizedMethod} ${path} transport failed${attempts}: ${detail}`,
+        { cause: error },
+      );
     }
+
+    let payload = null;
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = text;
+      }
+    }
+    if (!response.ok && !allow.includes(response.status)) {
+      const detail =
+        typeof payload === "object" && payload
+          ? payload.message
+          : String(payload ?? "");
+      if (attempt < maxAttempts && isRetryableReadResponse(response, now)) {
+        const delay = readRetryDelayMilliseconds(
+          attempt,
+          response,
+          random,
+          now,
+        );
+        const remainingWaitBudget = Math.max(
+          0,
+          GITHUB_READ_WAIT_BUDGET_MS - waitedMilliseconds,
+        );
+        if (delay > remainingWaitBudget) {
+          throw new Error(
+            `GitHub API ${normalizedMethod} ${path} failed (${response.status}) after ${attempt} ${attempt === 1 ? "attempt" : "attempts"}: ${detail}; required retry delay ${delay}ms exceeds the remaining ${remainingWaitBudget}ms of the cumulative ${GITHUB_READ_WAIT_BUDGET_MS}ms wait budget`,
+          );
+        }
+        log(
+          `GitHub API ${normalizedMethod} ${path} read attempt ${attempt}/${maxAttempts} returned ${response.status}; retrying in ${delay}ms.`,
+        );
+        await sleep(delay);
+        waitedMilliseconds += delay;
+        continue;
+      }
+      const attempts =
+        readOnly && (attempt > 1 || isRetryableReadResponse(response, now))
+          ? ` after ${attempt} ${attempt === 1 ? "attempt" : "attempts"}`
+          : "";
+      throw new Error(
+        `GitHub API ${normalizedMethod} ${path} failed (${response.status})${attempts}: ${detail}`,
+      );
+    }
+    return { status: response.status, payload, headers: response.headers };
   }
-  if (!response.ok && !allow.includes(response.status)) {
-    const detail =
-      typeof payload === "object" && payload
-        ? payload.message
-        : String(payload ?? "");
-    throw new Error(
-      `GitHub API ${method} ${path} failed (${response.status}): ${detail}`,
-    );
-  }
-  return { status: response.status, payload, headers: response.headers };
+
+  throw new Error(`GitHub API ${normalizedMethod} ${path} exhausted retries`);
 }
 
 async function paginated(path, token, key = null) {

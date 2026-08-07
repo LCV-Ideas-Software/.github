@@ -121,10 +121,13 @@ Deno.test("formats a bounded GitHub-only message without authentication fields",
     "relay timestamp leaked into message",
   );
   assert(
-    message.includes(
-      "03/08/2026 às 09:00:00 (Horário Oficial de Brasília, UTC−03:00)",
-    ),
+    message.includes("03/08/2026 às 09:00:00"),
     "event time was not rendered in pt-BR and Brasília UTC−03:00",
+  );
+  assert(
+    !message.includes("Horário Oficial de Brasília") &&
+      !message.includes("UTC−03:00"),
+    "technical timezone suffix leaked into the user-facing message",
   );
   assert(
     !message.includes(value.occurred_at),
@@ -141,9 +144,7 @@ Deno.test("keeps the displayed event time fixed at Brasília UTC−03:00", () =>
   const yearBoundary = formatRelayMessage(value);
   assert(yearBoundary !== null, "year-boundary message was rejected");
   assert(
-    yearBoundary.includes(
-      "31/12/2025 às 22:30:00 (Horário Oficial de Brasília, UTC−03:00)",
-    ),
+    yearBoundary.includes("31/12/2025 às 22:30:00"),
     "UTC−03:00 did not roll the date back correctly",
   );
 
@@ -151,9 +152,7 @@ Deno.test("keeps the displayed event time fixed at Brasília UTC−03:00", () =>
   const historical = formatRelayMessage(value);
   assert(historical !== null, "historical message was rejected");
   assert(
-    historical.includes(
-      "04/11/2018 às 00:30:00 (Horário Oficial de Brasília, UTC−03:00)",
-    ),
+    historical.includes("04/11/2018 às 00:30:00"),
     "historical daylight-saving rules changed the required fixed UTC−03:00",
   );
 });

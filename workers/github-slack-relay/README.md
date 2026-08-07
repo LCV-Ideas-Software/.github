@@ -92,10 +92,10 @@ zero-loss rotation, optional `SLACK_RELAY_SIGNING_SECRET_NEXT`.
 
 `occurred_at` remains ISO 8601 inside the canonical signed record. At the final
 human-presentation boundary, the Deno app converts a valid value to
-`dd/MM/aaaa às HH:mm:ss (Horário Oficial de Brasília, UTC−03:00)` with the
-fixed IANA zone `Etc/GMT+3`; by the POSIX/IANA sign convention, `+3` here means
-UTC−03:00. An invalid, ambiguous or absent value is not echoed. This does not
-alter Slack's native message timestamp.
+`dd/MM/aaaa às HH:mm:ss` with the fixed IANA zone `Etc/GMT+3`; by the POSIX/IANA
+sign convention, `+3` here means UTC−03:00. The technical timezone suffix is
+not displayed to the user. An invalid, ambiguous or absent value is not echoed.
+This does not alter Slack's native message timestamp.
 
 Each trigger receives a flat string-only object with every key present:
 

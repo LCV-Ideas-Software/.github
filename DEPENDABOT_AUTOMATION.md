@@ -49,6 +49,15 @@ wrapper and an exact list of stack-specific required checks.
   name and successful conclusion, but they do not expose a corresponding Actions
   check suite that `hasTrustedDependabotWorkflowProvenance` can correlate. This is
   an explicit residual asymmetry, not an implied provenance guarantee.
+- GitHub API transport failures and HTTP 408, 429, 500, 502, 503 or 504 responses
+  are retried at most three times only for `GET` requests and fail-closed
+  GraphQL queries. HTTP 403 is retried only when GitHub supplies an explicit
+  rate-limit signal. `Retry-After` and primary-limit reset hints are respected,
+  while cumulative retry sleep for one read is capped at 60 seconds. REST
+  writes and GraphQL mutations are attempted once, so an ambiguous response
+  cannot duplicate approval, rebase requests or merge. Retry time counts toward
+  the wrapper's absolute 10-minute job timeout; the bounded settle window remains
+  180 seconds and does not weaken that outer cap.
 - An active `CHANGES_REQUESTED` review or unresolved inline thread from the exact
   `chatgpt-codex-connector` bot ID blocks approval and merge. Reviews, connector
   threads, checks, `main` and the PR head are all re-read after approval.
@@ -66,13 +75,13 @@ perform at most one pull-request queue transition per run.
    paths, live `main`, canonical merge base and a coherent behind comparison. It
    then re-reads the head and `main` immediately before posting. Dependabot
    authors the replacement head, so normal restricted Dependabot pull-request CI
-    runs on that SHA. If the immutable Dependabot identity returns its exact
-    documented "already up-to-date" response while the live comparison still says
-    the PR is behind, the controller waits at least ten minutes before performing
-    one separately marked rebase retry. This avoids repeating the command against
-    the same stale update-job snapshot during a burst of sequential Dependabot
-    merges. A second authenticated no-op fails the controller visibly; it is
-    never escalated to a destructive command.
+   runs on that SHA. If the immutable Dependabot identity returns its exact
+   documented "already up-to-date" response while the live comparison still says
+   the PR is behind, the controller waits at least ten minutes before performing
+   one separately marked rebase retry. This avoids repeating the command against
+   the same stale update-job snapshot during a burst of sequential Dependabot
+   merges. A second authenticated no-op fails the controller visibly; it is
+   never escalated to a destructive command.
 2. A noncanonical PR is logged and skipped without any mutation. There is no
    automatic destructive fallback if rebase fails or if someone has edited the
    Dependabot branch.

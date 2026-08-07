@@ -187,7 +187,7 @@ export function formatBrasiliaDateTime(value: string): string | null {
     return null;
   }
 
-  return `${day}/${month}/${year} às ${hour}:${minute}:${second} (Horário Oficial de Brasília, UTC−03:00)`;
+  return `${day}/${month}/${year} às ${hour}:${minute}:${second}`;
 }
 
 export function formatRelayMessage(inputs: RelayMessageInputs): string | null {

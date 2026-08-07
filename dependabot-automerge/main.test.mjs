@@ -6,6 +6,7 @@ import {
   classifyChecks,
   evaluateExactHeadReviews,
   findBlockingConnectorReviewThreads,
+  github,
   hasExpectedDependabotCommitShape,
   hasRecentAutomationRebaseRequest,
   hasTrustedDependabotAlreadyCurrentResponse,
@@ -15,6 +16,451 @@ import {
   parseRequiredChecks,
   runController,
 } from "./main.mjs";
+
+test("read-only GraphQL queries retry a transient transport failure", async () => {
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw new TypeError("fetch failed");
+    return new Response(
+      JSON.stringify({ data: { viewer: { login: "owner" } } }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
+  };
+
+  try {
+    const result = await github(
+      "/graphql",
+      {
+        token: "github-token",
+        method: "POST",
+        body: { query: "query ReadOnly { viewer { login } }" },
+      },
+      {
+        random: () => 0,
+        sleep: async (milliseconds) => sleeps.push(milliseconds),
+      },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(result.payload.data.viewer.login, "owner");
+    assert.equal(calls, 2);
+    assert.deepEqual(sleeps, [250]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("read-only GET retries 503 and respects Retry-After", async () => {
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(
+        JSON.stringify({ message: "temporarily unavailable" }),
+        {
+          status: 503,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "2",
+          },
+        },
+      );
+    }
+    return new Response(JSON.stringify([{ number: 7 }]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await github(
+      "/repos/owner/repo/pulls",
+      { token: "github-token" },
+      {
+        random: () => 0,
+        sleep: async (milliseconds) => sleeps.push(milliseconds),
+      },
+    );
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.payload, [{ number: 7 }]);
+    assert.equal(calls, 2);
+    assert.deepEqual(sleeps, [2_000]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("read-only GET retries an HTTP 408 request timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ message: "request timeout" }), {
+        status: 408,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await github(
+      "/repos/owner/repo/pulls",
+      { token: "github-token" },
+      {
+        random: () => 0,
+        sleep: async (milliseconds) => sleeps.push(milliseconds),
+      },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(calls, 2);
+    assert.deepEqual(sleeps, [250]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("read-only 403 retries only when GitHub identifies a rate limit", async () => {
+  const rateLimitCases = [
+    {
+      name: "Retry-After",
+      headers: { "retry-after": "3" },
+      now: () => 100_000,
+      expectedDelay: 3_000,
+    },
+    {
+      name: "primary rate-limit reset",
+      headers: {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "105",
+      },
+      now: () => 100_000,
+      expectedDelay: 5_000,
+    },
+    {
+      name: "exhausted primary rate limit without a reset hint",
+      headers: { "x-ratelimit-remaining": "0" },
+      now: () => 100_000,
+      expectedDelay: 60_000,
+    },
+  ];
+
+  for (const rateLimit of rateLimitCases) {
+    const originalFetch = globalThis.fetch;
+    const sleeps = [];
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ message: "rate limited" }), {
+          status: 403,
+          headers: {
+            "content-type": "application/json",
+            ...rateLimit.headers,
+          },
+        });
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    try {
+      const result = await github(
+        "/repos/owner/repo/pulls",
+        { token: "github-token" },
+        {
+          now: rateLimit.now,
+          random: () => 0,
+          sleep: async (milliseconds) => sleeps.push(milliseconds),
+        },
+      );
+      assert.equal(result.status, 200, rateLimit.name);
+      assert.equal(calls, 2, rateLimit.name);
+      assert.deepEqual(sleeps, [rateLimit.expectedDelay], rateLimit.name);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ message: "forbidden" }), {
+      status: 403,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    await assert.rejects(
+      github(
+        "/repos/owner/repo/pulls",
+        { token: "github-token" },
+        {
+          random: () => 0,
+          sleep: async (milliseconds) => sleeps.push(milliseconds),
+        },
+      ),
+      /failed \(403\): forbidden/,
+    );
+    assert.equal(calls, 1);
+    assert.deepEqual(sleeps, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("read-only 429 without rate-limit headers waits at least 60 seconds", async () => {
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ message: "too many requests" }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await github(
+      "/repos/owner/repo/pulls",
+      { token: "github-token" },
+      {
+        random: () => 0,
+        sleep: async (milliseconds) => sleeps.push(milliseconds),
+      },
+    );
+    assert.equal(result.status, 200);
+    assert.equal(calls, 2);
+    assert.deepEqual(sleeps, [60_000]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("read retries fail fast when a server hint exceeds the cumulative wait budget", async () => {
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ message: "rate limited" }), {
+      status: 403,
+      headers: {
+        "content-type": "application/json",
+        "retry-after": "3600",
+      },
+    });
+  };
+
+  try {
+    await assert.rejects(
+      github(
+        "/repos/owner/repo/pulls",
+        { token: "github-token" },
+        {
+          random: () => 0,
+          sleep: async (milliseconds) => sleeps.push(milliseconds),
+        },
+      ),
+      /failed \(403\) after 1 attempt: rate limited; required retry delay 3600000ms exceeds the remaining 60000ms of the cumulative 60000ms wait budget/,
+    );
+    assert.equal(calls, 1);
+    assert.deepEqual(sleeps, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("read-only 429 responses consume at most one cumulative 60-second wait", async () => {
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ message: "too many requests" }), {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    await assert.rejects(
+      github(
+        "/repos/owner/repo/pulls",
+        { token: "github-token" },
+        {
+          random: () => 0,
+          sleep: async (milliseconds) => sleeps.push(milliseconds),
+        },
+      ),
+      /failed \(429\) after 2 attempts: too many requests; required retry delay 60000ms exceeds the remaining 0ms of the cumulative 60000ms wait budget/,
+    );
+    assert.equal(calls, 2);
+    assert.deepEqual(sleeps, [60_000]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("read-only retries remain bounded when GitHub stays unavailable", async () => {
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ message: "internal server error" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  };
+
+  try {
+    await assert.rejects(
+      github(
+        "/repos/owner/repo/pulls",
+        { token: "github-token" },
+        {
+          random: () => 0,
+          sleep: async (milliseconds) => sleeps.push(milliseconds),
+        },
+      ),
+      /failed \(500\) after 3 attempts: internal server error/,
+    );
+    assert.equal(calls, 3);
+    assert.deepEqual(sleeps, [250, 500]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("mutating requests never retry transient failures", async () => {
+  const cases = [
+    {
+      path: "/repos/owner/repo/pulls/7/reviews",
+      method: "POST",
+      body: { event: "APPROVE" },
+    },
+    {
+      path: "/repos/owner/repo/pulls/7/merge",
+      method: "PUT",
+      body: { merge_method: "squash" },
+    },
+    {
+      path: "/repos/owner/repo/issues/7",
+      method: "PATCH",
+      body: { state: "closed" },
+    },
+    {
+      path: "/repos/owner/repo/issues/comments/1",
+      method: "DELETE",
+    },
+    {
+      path: "/graphql",
+      method: "POST",
+      body: {
+        query: "mutation Write { addStar(input: {}) { clientMutationId } }",
+      },
+    },
+    {
+      path: "/graphql",
+      method: "POST",
+      body: {
+        query:
+          "query Read { viewer { login } },mutation Write { addStar(input: {}) { clientMutationId } }",
+      },
+    },
+  ];
+
+  for (const request of cases) {
+    const originalFetch = globalThis.fetch;
+    const sleeps = [];
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({ message: "temporarily unavailable" }),
+        {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    };
+
+    try {
+      await assert.rejects(
+        github(
+          request.path,
+          {
+            token: "github-token",
+            method: request.method,
+            body: request.body,
+          },
+          {
+            random: () => 0,
+            sleep: async (milliseconds) => sleeps.push(milliseconds),
+          },
+        ),
+        /failed \(503\)/,
+      );
+      assert.equal(calls, 1, `${request.method} ${request.path}`);
+      assert.deepEqual(sleeps, [], `${request.method} ${request.path}`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  const originalFetch = globalThis.fetch;
+  const sleeps = [];
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new TypeError("fetch failed");
+  };
+  try {
+    await assert.rejects(
+      github(
+        "/repos/owner/repo/pulls/7/reviews",
+        {
+          token: "github-token",
+          method: "POST",
+          body: { event: "APPROVE" },
+        },
+        {
+          random: () => 0,
+          sleep: async (milliseconds) => sleeps.push(milliseconds),
+        },
+      ),
+      /transport failed: fetch failed/,
+    );
+    assert.equal(calls, 1);
+    assert.deepEqual(sleeps, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 const requiredChecks = [
   { name: "CI", app_id: 15368 },

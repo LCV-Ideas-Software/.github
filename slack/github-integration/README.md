@@ -20,11 +20,10 @@ window before formatting or posting anything. The same secret is stored only in
 Cloudflare Secrets Store and the encrypted Slack app environment.
 
 The signed `occurred_at` value remains ISO 8601 in transit. Only after HMAC
-validation does the app render it for people as
-`dd/MM/aaaa às HH:mm:ss
-(Horário Oficial de Brasília, UTC−03:00)`, using the
-fixed IANA zone `Etc/GMT+3` (the POSIX/IANA sign convention is inverted, so `+3`
-means UTC−03:00). It deliberately does not use Slack's viewer-localized
+validation does the app render it for people as `dd/MM/aaaa às HH:mm:ss`, using
+the fixed IANA zone `Etc/GMT+3` (the POSIX/IANA sign convention is inverted, so
+`+3` means UTC−03:00). The technical timezone suffix is deliberately omitted
+from the user-facing text. The app does not use Slack's viewer-localized
 `<!date>` syntax. Slack's own timestamp beside the message is native UI metadata
 and is not changed by this app.
 
