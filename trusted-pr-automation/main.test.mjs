@@ -4,8 +4,10 @@ import test from "node:test";
 
 import {
   ACTIONS_APP_ID,
-  CONNECTOR_APP_ID,
+  BOT_REVIEW_VETO_ANNOTATION_TITLE,
+  BotReviewVetoError,
   CONNECTOR_ID,
+  CONNECTOR_NODE_ID,
   COPILOT_REVIEWER_ID,
   COPILOT_REVIEWER_NODE_ID,
   GitHubApi,
@@ -14,41 +16,34 @@ import {
   TRUSTED_GATE_SOURCE_WORKFLOW_ID,
   TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
   allCommitsVerified,
+  assessPullCore,
   assessForEnqueue,
   buildEnqueueInput,
+  botReviewVetoWorkflowCommand,
   checkEvidenceFingerprint,
   classifyPullRequestMergeability,
   classifyChecks,
-  connectorFailureCanSettleWithoutHeadChange,
-  copilotFailureCanSettleWithoutHeadChange,
-  controllerCopilotDisposition,
-  controllerConnectorDisposition,
   controllerCheckOutcome,
   dependabotRebaseBody,
-  ensureConnectorReviewRequest,
-  ensureCopilotReviewRequest,
   ensureDependabotRebaseRequest,
   enqueueAfterFinalTrustAssessment,
   evaluateConnectorEvidence,
   evaluateCopilotEvidence,
   finalizePullTrustBoundary,
-  hasReviewRequestForHead,
   inspectTrustedGate,
   inspectRequiredCheckProducerProvenance,
+  isRecoverableBotReviewVetoFailure,
   isTrustedPullRequest,
-  isCopilotReviewExcludedPath,
-  lateReviewTimeoutCommand,
-  recoverLateTrustedGate,
   readCheckEvidence,
-  readPullFiles,
+  readBotReviewEvidence,
+  readExactPullCore,
+  requestResolvedBotReviewVetoRerun,
   requiredChecksForPhase,
-  resolveConnectorReviewCommits,
-  reviewRequestBody,
   selectAssociatedPullRequests,
+  selectCurrentTrustedGateRun,
   validateMergeQueueEvidence,
   validatePolicy,
   verifyCodeScanningAfterChecks,
-  waitForPullCore,
 } from "./main.mjs";
 
 const SHA = "a".repeat(40);
@@ -132,6 +127,19 @@ function graphqlCopilotActor(
   };
 }
 
+function graphqlConnectorActor(
+  login = "chatgpt-codex-connector",
+  databaseId = CONNECTOR_ID,
+  nodeId = CONNECTOR_NODE_ID,
+) {
+  return {
+    login,
+    databaseId,
+    id: nodeId,
+    __typename: "Bot",
+  };
+}
+
 function copilotReview(commitId = SHA, overrides = {}) {
   return {
     id: 123,
@@ -140,25 +148,6 @@ function copilotReview(commitId = SHA, overrides = {}) {
     commit_id: commitId,
     submitted_at: "2026-08-08T12:00:00Z",
     body: "Copilot reviewed 1 out of 1 changed file in this pull request and generated no comments.",
-    ...overrides,
-  };
-}
-
-function changedFile(
-  filename = "src/app.js",
-  status = "modified",
-  overrides = {},
-) {
-  return { filename, status, ...overrides };
-}
-
-function reviewRequestComment(sha = SHA, overrides = {}) {
-  return {
-    id: 99,
-    user: actor(),
-    body: reviewRequestBody(sha),
-    created_at: "2026-08-08T12:00:00Z",
-    updated_at: "2026-08-08T12:00:00Z",
     ...overrides,
   };
 }
@@ -217,6 +206,7 @@ function trustedGateFixture({
       head_sha: SHA,
       name: TRUSTED_GATE_CHECK_NAME,
       workflow_name: TRUSTED_GATE_CHECK_NAME,
+      run_attempt: runAttempt,
       status,
       conclusion,
       ...jobOverrides,
@@ -288,11 +278,7 @@ function trustedGateApi(fixtures, { annotations = [] } = {}) {
 
 function connectorComment(body, createdAt = "2026-08-08T12:00:00Z") {
   return {
-    user: actor("chatgpt-codex-connector[bot]", CONNECTOR_ID),
-    performed_via_github_app: {
-      id: CONNECTOR_APP_ID,
-      slug: "chatgpt-codex-connector",
-    },
+    user: graphqlConnectorActor(),
     body,
     created_at: createdAt,
   };
@@ -310,27 +296,12 @@ function connectorEvidence({
   issueComments = [cleanComment(headSha)],
   reviews = [],
   threads = [],
-  resolvedReviewCommits,
-  requestReactions = new Map(),
 } = {}) {
-  const resolved = resolvedReviewCommits ?? new Map();
-  if (!resolvedReviewCommits) {
-    for (const comment of issueComments) {
-      const prefix = comment.body?.match(
-        /Reviewed commit:\*\*\s+`([0-9a-f]{10,40})`/i,
-      )?.[1];
-      if (prefix && SHA.startsWith(prefix)) resolved.set(prefix, SHA);
-      if (prefix && OTHER_SHA.startsWith(prefix))
-        resolved.set(prefix, OTHER_SHA);
-    }
-  }
   return {
     headSha,
     issueComments,
     reviews,
     threads,
-    resolvedReviewCommits: resolved,
-    requestReactions,
     policy: validatePolicy(policy()),
   };
 }
@@ -393,6 +364,8 @@ test("validatePolicy rejects duplicate identities, duplicate checks, and self-ga
 
 test("isTrustedPullRequest accepts only exact allowlisted same-repository main PRs", () => {
   const checked = validatePolicy(policy());
+  const missingDraft = pull();
+  delete missingDraft.draft;
   assert.deepEqual(
     isTrustedPullRequest(pull(), "LCV-Ideas-Software/example", checked),
     { ok: true },
@@ -401,6 +374,10 @@ test("isTrustedPullRequest accepts only exact allowlisted same-repository main P
     [pull({ user: actor("lcv-leo", 1) }), /not allowlisted/i],
     [pull({ user: actor("lookalike", 268063598) }), /not allowlisted/i],
     [pull({ draft: true }), /draft/i],
+    [pull({ draft: null }), /draft/i],
+    [pull({ draft: "false" }), /draft/i],
+    [pull({ draft: 0 }), /draft/i],
+    [missingDraft, /draft/i],
     [pull({ state: "closed" }), /not open/i],
     [pull({ base: { ...pull().base, ref: "release" } }), /base main/i],
     [
@@ -420,41 +397,395 @@ test("isTrustedPullRequest accepts only exact allowlisted same-repository main P
   }
 });
 
-test("connector evidence requires a clean review of the exact head", () => {
+test("connector clean, unknown, and lookalike signals are informational", () => {
   assert.equal(evaluateConnectorEvidence(connectorEvidence()).ok, true);
+  const liveLikeClean = cleanComment();
+  liveLikeClean.body += `
 
-  assert.match(
+<details> <summary>ℹ️ About Codex in GitHub</summary>
+<br/>
+
+Codex can also answer questions or update the PR.
+</details>`;
+  assert.deepEqual(
+    evaluateConnectorEvidence(
+      connectorEvidence({ issueComments: [liveLikeClean] }),
+    ),
+    { ok: true },
+  );
+  assert.deepEqual(
     evaluateConnectorEvidence(
       connectorEvidence({ issueComments: [cleanComment(OTHER_SHA)] }),
-    ).reason,
-    /exact head/i,
+    ),
+    { ok: true },
   );
 
-  const spoofedApp = cleanComment();
-  spoofedApp.performed_via_github_app = { id: 1, slug: "lookalike" };
-  assert.match(
+  for (const user of [
+    graphqlConnectorActor("lookalike"),
+    graphqlConnectorActor("chatgpt-codex-connector", 1),
+    graphqlConnectorActor("chatgpt-codex-connector", CONNECTOR_ID, "BOT_spoof"),
+    { ...graphqlConnectorActor(), __typename: "User" },
+  ]) {
+    const spoofed = cleanComment();
+    spoofed.user = user;
+    assert.deepEqual(
+      evaluateConnectorEvidence(
+        connectorEvidence({ issueComments: [spoofed] }),
+      ),
+      { ok: true },
+    );
+  }
+
+  const unknownReview = (sha) =>
+    connectorComment(
+      `Codex Review: Found an issue.\n\n**Reviewed commit:** \`${sha.slice(0, 10)}\``,
+    );
+  assert.deepEqual(
     evaluateConnectorEvidence(
-      connectorEvidence({ issueComments: [spoofedApp] }),
-    ).reason,
-    /exact head/i,
+      connectorEvidence({ issueComments: [unknownReview(SHA)] }),
+    ),
+    { ok: true },
+  );
+  assert.deepEqual(
+    evaluateConnectorEvidence(
+      connectorEvidence({ issueComments: [unknownReview(OTHER_SHA)] }),
+    ),
+    { ok: true },
+  );
+  assert.deepEqual(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [connectorComment("Codex Review: Found an issue")],
+      }),
+    ),
+    { ok: true },
+  );
+  assert.deepEqual(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [
+          connectorComment(
+            "Codex Review: Didn't find any major issues. Missing binding.",
+          ),
+        ],
+      }),
+    ),
+    { ok: true },
+  );
+  assert.deepEqual(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [connectorComment("Review is still in progress.")],
+      }),
+    ),
+    { ok: true },
   );
 
+  const explicitFinding = connectorComment(
+    `### 💡 Codex Review\n\nA finding.\n\n**Reviewed commit:** \`${SHA.slice(0, 10)}\``,
+  );
   assert.match(
     evaluateConnectorEvidence(
-      connectorEvidence({ resolvedReviewCommits: new Map() }),
+      connectorEvidence({ issueComments: [explicitFinding] }),
     ).reason,
-    /exact head/i,
+    /reports a current-head finding/i,
+  );
+  for (const body of [
+    `\`\`\`md\n### 💡 Codex Review\n\`\`\`\n\n**Reviewed commit:** \`${SHA.slice(0, 10)}\``,
+    `> ### 💡 Codex Review\n\n**Reviewed commit:** \`${SHA.slice(0, 10)}\``,
+  ]) {
+    assert.deepEqual(
+      evaluateConnectorEvidence(
+        connectorEvidence({ issueComments: [connectorComment(body)] }),
+      ),
+      { ok: true },
+      body,
+    );
+  }
+});
+
+test("bot reviews are optional and only observed negative signals veto", () => {
+  const checked = validatePolicy(policy());
+  assert.deepEqual(
+    evaluateConnectorEvidence(connectorEvidence({ issueComments: [] })),
+    { ok: true },
+  );
+  assert.deepEqual(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [{ user: actor(), body: "@codex review" }],
+      }),
+    ),
+    { ok: true },
+  );
+  assert.deepEqual(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [],
+      threads: [],
+      policy: checked,
+    }),
+    { ok: true },
+  );
+
+  for (const body of [
+    "Copilot wasn't able to review any files in this pull request.",
+    "Copilot encountered an error and was unable to review this pull request. You can try again by re-requesting a review.",
+    "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.",
+  ]) {
+    assert.deepEqual(
+      evaluateCopilotEvidence({
+        headSha: SHA,
+        reviews: [copilotReview(SHA, { body })],
+        threads: [],
+        policy: checked,
+      }),
+      { ok: true },
+      body,
+    );
+  }
+
+  assert.deepEqual(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [
+        copilotReview(SHA, {
+          body: "Copilot reviewed 6 out of 7 changed files in this pull request and generated no new comments.",
+        }),
+      ],
+      threads: [],
+      policy: checked,
+    }),
+    { ok: true },
   );
 });
 
-test("Copilot evidence requires exact Bot identity and COMMENTED review on the exact head", () => {
+test("resolved bot threads dirime visible findings while unresolved or suppressed signals veto", () => {
+  const checked = validatePolicy(policy());
+  const findingReview = copilotReview(SHA, {
+    id: 321,
+    body: "Copilot reviewed 2 out of 2 changed files in this pull request and generated 2 comments.",
+  });
+  const findingThread = (resolved, suffix) => ({
+    isResolved: resolved,
+    comments: [
+      {
+        author: graphqlCopilotActor(),
+        reviewId: 321,
+        reviewCommit: { oid: SHA },
+        body: `finding ${suffix}`,
+      },
+    ],
+  });
+  const resolvedThreads = [
+    findingThread(true, "one"),
+    findingThread(true, "two"),
+  ];
+  assert.deepEqual(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [findingReview],
+      threads: resolvedThreads,
+      policy: checked,
+    }),
+    { ok: true },
+  );
+  assert.match(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [findingReview],
+      threads: [findingThread(true, "one"), findingThread(false, "two")],
+      policy: checked,
+    }).reason,
+    /unresolved Copilot review thread/i,
+  );
+  const unresolvedFinding = findingThread(false, "one");
+  assert.match(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [
+        {
+          ...findingReview,
+          body: `${findingReview.body}\n<summary>Suppressed comments (1)</summary>`,
+        },
+      ],
+      threads: [unresolvedFinding, findingThread(true, "two")],
+      policy: checked,
+    }).reason,
+    /suppressed Copilot finding/i,
+  );
+  assert.match(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [{ ...findingReview, body: "unknown review body" }],
+      threads: [unresolvedFinding, findingThread(true, "two")],
+      policy: checked,
+    }).reason,
+    /unresolved Copilot review thread/i,
+  );
+  assert.deepEqual(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [findingReview],
+      threads: [findingThread(true, "one")],
+      policy: checked,
+    }),
+    { ok: true },
+  );
+
+  const suppressed = copilotReview(SHA, {
+    id: 320,
+    body: `${copilotReview().body}\n<summary>Suppressed comments (1)</summary>`,
+  });
+  assert.match(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [suppressed, copilotReview(SHA, { id: 321 })],
+      threads: [],
+      policy: checked,
+    }).reason,
+    /suppressed Copilot finding/i,
+  );
+  assert.match(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [copilotReview(SHA, { id: 320 }), { ...suppressed, id: 321 }],
+      threads: [],
+      policy: checked,
+    }).reason,
+    /suppressed Copilot finding/i,
+  );
+  assert.deepEqual(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [
+        copilotReview(OTHER_SHA, { id: 320, body: suppressed.body }),
+        copilotReview(SHA, { id: 321 }),
+      ],
+      threads: [],
+      policy: checked,
+    }),
+    { ok: true },
+  );
+
+  const connectorThread = {
+    isResolved: true,
+    comments: [
+      {
+        author: graphqlConnectorActor(),
+        reviewId: 444,
+        reviewCommit: { oid: SHA },
+      },
+    ],
+  };
+  assert.deepEqual(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [],
+        reviews: [
+          {
+            id: 444,
+            user: graphqlConnectorActor(),
+            state: "COMMENTED",
+            commit_id: SHA,
+            body: "### 💡 Codex Review",
+          },
+        ],
+        threads: [connectorThread],
+      }),
+    ),
+    { ok: true },
+  );
+  assert.match(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [],
+        reviews: [
+          {
+            id: 444,
+            user: graphqlConnectorActor(),
+            state: "COMMENTED",
+            commit_id: SHA,
+          },
+        ],
+        threads: [{ ...connectorThread, isResolved: false }],
+      }),
+    ).reason,
+    /unresolved connector thread/i,
+  );
+  assert.match(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [],
+        reviews: [
+          {
+            id: 444,
+            user: graphqlConnectorActor(),
+            state: "COMMENTED",
+            commit_id: SHA,
+            body: "### 💡 Codex Review",
+          },
+        ],
+        threads: [],
+      }),
+    ).reason,
+    /finding without a resolvable thread/i,
+  );
+  assert.match(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [],
+        reviews: [
+          {
+            id: 444,
+            user: graphqlConnectorActor(),
+            state: "COMMENTED",
+            commit_id: SHA,
+            body: "### 💡 Codex Review",
+          },
+        ],
+        threads: [
+          {
+            ...connectorThread,
+            comments: [
+              {
+                ...connectorThread.comments[0],
+                reviewId: 999,
+              },
+            ],
+          },
+        ],
+      }),
+    ).reason,
+    /finding without a resolvable thread/i,
+  );
+  assert.match(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [],
+        reviews: [
+          {
+            id: 444,
+            user: graphqlConnectorActor(),
+            state: "COMMENTED",
+            commit_id: SHA,
+            body: "unknown connector review body",
+          },
+        ],
+        threads: [{ ...connectorThread, isResolved: false }],
+      }),
+    ).reason,
+    /unresolved connector thread/i,
+  );
+});
+
+test("Copilot evidence ignores lookalikes and does not require a review", () => {
   const checked = validatePolicy(policy());
   assert.deepEqual(
     evaluateCopilotEvidence({
       headSha: SHA,
       reviews: [copilotReview(SHA)],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }),
     { ok: true },
@@ -468,15 +799,23 @@ test("Copilot evidence requires exact Bot identity and COMMENTED review on the e
         }),
       ],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }),
     { ok: true },
   );
 
+  for (const reviews of [[], [copilotReview(OTHER_SHA)]]) {
+    assert.deepEqual(
+      evaluateCopilotEvidence({
+        headSha: SHA,
+        reviews,
+        threads: [],
+        policy: checked,
+      }),
+      { ok: true },
+    );
+  }
   for (const reviews of [
-    [],
-    [copilotReview(OTHER_SHA)],
     [
       copilotReview(SHA, {
         user: restCopilotActor("copilot-pull-request-reviewer[bot]", 1),
@@ -491,145 +830,45 @@ test("Copilot evidence requires exact Bot identity and COMMENTED review on the e
         ),
       }),
     ],
-    [copilotReview(SHA, { user: restCopilotActor("lookalike") })],
+    [
+      copilotReview(SHA, {
+        user: restCopilotActor("lookalike"),
+      }),
+    ],
+    [
+      copilotReview(SHA, {
+        user: { ...restCopilotActor(), type: "User" },
+      }),
+    ],
   ]) {
-    assert.match(
+    assert.deepEqual(
       evaluateCopilotEvidence({
         headSha: SHA,
         reviews,
         threads: [],
         policy: checked,
-      }).reason,
-      /Copilot review COMMENTED.*exact head/i,
-    );
-  }
-  assert.match(
-    evaluateCopilotEvidence({
-      headSha: SHA,
-      reviews: [copilotReview(SHA, { state: "APPROVED" })],
-      threads: [],
-      files: [changedFile()],
-      policy: checked,
-    }).reason,
-    /unexpected state/i,
-  );
-  assert.match(
-    evaluateCopilotEvidence({
-      headSha: SHA,
-      reviews: [copilotReview(SHA, { id: null })],
-      threads: [],
-      files: [changedFile()],
-      policy: checked,
-    }).reason,
-    /no immutable identity/i,
-  );
-});
-
-test("Copilot clean completion reconciles reviewed and changed-file counts", () => {
-  const checked = validatePolicy(policy());
-  const files = [
-    changedFile("src/app.js"),
-    changedFile("src/security.js"),
-    changedFile("package-lock.json"),
-  ];
-  for (const suffix of ["no comments", "no new comments"]) {
-    assert.deepEqual(
-      evaluateCopilotEvidence({
-        headSha: SHA,
-        reviews: [
-          copilotReview(SHA, {
-            body: `Copilot reviewed 2 out of 3 changed files in this pull request and generated ${suffix}.`,
-          }),
-        ],
-        threads: [],
-        files,
-        policy: checked,
       }),
       { ok: true },
     );
   }
-
-  for (const body of [
-    "Copilot reviewed 4 out of 3 changed files in this pull request and generated no comments.",
-    "Copilot reviewed 2 out of 2 changed files in this pull request and generated no comments.",
-    "Copilot reviewed 1 out of 3 changed files in this pull request and generated no comments.",
-    "Copilot reviewed 0 out of 3 changed files in this pull request and generated no comments.",
-  ]) {
-    assert.match(
-      evaluateCopilotEvidence({
-        headSha: SHA,
-        reviews: [copilotReview(SHA, { body })],
-        threads: [],
-        files,
-        policy: checked,
-      }).reason,
-      /coverage does not match/i,
-    );
-  }
-
   assert.deepEqual(
     evaluateCopilotEvidence({
       headSha: SHA,
-      reviews: [
-        copilotReview(SHA, {
-          body: "Copilot reviewed 1 out of 2 changed files in this pull request and generated no comments.",
-        }),
-      ],
+      reviews: [copilotReview(SHA, { state: "APPROVED" })],
       threads: [],
-      files: [changedFile(), changedFile("package-lock.json")],
       policy: checked,
     }),
     { ok: true },
   );
-
-  const liveLikeFiles = [
-    ...Array.from({ length: 179 }, (_, index) =>
-      changedFile(`src/file-${index}.js`),
-    ),
-    changedFile("package-lock.json"),
-  ];
   assert.deepEqual(
     evaluateCopilotEvidence({
       headSha: SHA,
-      reviews: [
-        copilotReview(SHA, {
-          body: "Copilot reviewed 179 out of 180 changed files in this pull request and generated no comments.",
-        }),
-      ],
+      reviews: [copilotReview(SHA, { id: null })],
       threads: [],
-      files: liveLikeFiles,
       policy: checked,
     }),
     { ok: true },
   );
-
-  assert.match(
-    evaluateCopilotEvidence({
-      headSha: SHA,
-      reviews: [
-        copilotReview(SHA, {
-          body: "Copilot reviewed 0 out of 1 changed file in this pull request and generated no comments.",
-        }),
-      ],
-      threads: [],
-      files: [changedFile("package-lock.json")],
-      policy: checked,
-    }).reason,
-    /coverage does not match/i,
-  );
-
-  for (const body of ["Copilot reviewed this pull request.", ""]) {
-    assert.match(
-      evaluateCopilotEvidence({
-        headSha: SHA,
-        reviews: [copilotReview(SHA, { body })],
-        threads: [],
-        files,
-        policy: checked,
-      }).reason,
-      /unrecognized completion/i,
-    );
-  }
 });
 
 test("Copilot suppressed comments reject only the head on which they were emitted", () => {
@@ -646,7 +885,6 @@ test("Copilot suppressed comments reject only the head on which they were emitte
         copilotReview(SHA, { id: 123, body: cleanBody }),
       ],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }).reason,
     /suppressed Copilot finding.*current head/i,
@@ -660,7 +898,6 @@ test("Copilot suppressed comments reject only the head on which they were emitte
         }),
       ],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }).reason,
     /suppressed Copilot finding.*current head/i,
@@ -673,7 +910,6 @@ test("Copilot suppressed comments reject only the head on which they were emitte
         copilotReview(SHA, { id: 123, body: cleanBody }),
       ],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }),
     { ok: true },
@@ -687,7 +923,6 @@ test("Copilot suppressed comments reject only the head on which they were emitte
         }),
       ],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }),
     { ok: true },
@@ -701,7 +936,37 @@ test("Copilot suppressed comments reject only the head on which they were emitte
         }),
       ],
       threads: [],
-      files: [changedFile()],
+      policy: checked,
+    }),
+    { ok: true },
+  );
+
+  for (const example of [
+    "```html\n<summary>Suppressed comments (1)</summary>\n```",
+    "````markdown\n```\nComments suppressed due to low confidence (2)\n```\n````",
+    "    <summary>Suppressed comments (1)</summary>",
+    "`Suppressed comments (1)`",
+  ]) {
+    assert.deepEqual(
+      evaluateCopilotEvidence({
+        headSha: SHA,
+        reviews: [copilotReview(SHA, { body: `${cleanBody}\n${example}` })],
+        threads: [],
+        policy: checked,
+      }),
+      { ok: true },
+      example,
+    );
+  }
+  assert.deepEqual(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: [
+        copilotReview(SHA, {
+          body: `${cleanBody}\n\`\`\`html\n<summary>Suppressed comments (1)</summary>`,
+        }),
+      ],
+      threads: [],
       policy: checked,
     }),
     { ok: true },
@@ -714,20 +979,20 @@ test("Copilot suppressed comments reject only the head on which they were emitte
     "Suppressed comments (many)",
     "Comments suppressed due to low confidence",
   ]) {
-    assert.match(
+    assert.deepEqual(
       evaluateCopilotEvidence({
         headSha: SHA,
         reviews: [copilotReview(SHA, { body: `${cleanBody}\n${marker}` })],
         threads: [],
-        files: [changedFile()],
         policy: checked,
-      }).reason,
-      /malformed suppressed-comments metadata/i,
+      }),
+      { ok: true },
+      marker,
     );
   }
 });
 
-test("Copilot's structured positive comment count permanently rejects that head", () => {
+test("Copilot explicit finding without a resolvable thread vetoes", () => {
   const checked = validatePolicy(policy());
   assert.match(
     evaluateCopilotEvidence({
@@ -740,26 +1005,40 @@ test("Copilot's structured positive comment count permanently rejects that head"
         copilotReview(SHA, { id: 123 }),
       ],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }).reason,
-    /Copilot finding exists on the current head/i,
+    /finding without a resolvable thread/i,
   );
+  for (const body of [
+    "This change parses generated 1 comment summaries.",
+    "```text\nCopilot reviewed 1 out of 1 changed file in this pull request and generated 1 comment.\n```",
+    "> Copilot reviewed 1 out of 1 changed file in this pull request and generated 1 comment.",
+  ]) {
+    assert.deepEqual(
+      evaluateCopilotEvidence({
+        headSha: SHA,
+        reviews: [copilotReview(SHA, { body })],
+        threads: [],
+        policy: checked,
+      }),
+      { ok: true },
+      body,
+    );
+  }
 });
 
-test("Copilot's explicit review errors block until a fresh exact-head review", () => {
+test("Copilot service, quota, and unreviewable outcomes are neutral", () => {
   const checked = validatePolicy(policy());
   const errorBody =
     "Copilot encountered an error and was unable to review this pull request. You can try again by re-requesting a review.";
-  assert.match(
+  assert.deepEqual(
     evaluateCopilotEvidence({
       headSha: SHA,
       reviews: [copilotReview(SHA, { body: errorBody })],
       threads: [],
-      files: [changedFile("src/security.js")],
       policy: checked,
-    }).reason,
-    /review attempt failed.*exact head/i,
+    }),
+    { ok: true },
   );
   assert.deepEqual(
     evaluateCopilotEvidence({
@@ -769,7 +1048,6 @@ test("Copilot's explicit review errors block until a fresh exact-head review", (
         copilotReview(SHA, { id: 123 }),
       ],
       threads: [],
-      files: [changedFile()],
       policy: checked,
     }),
     { ok: true },
@@ -777,167 +1055,15 @@ test("Copilot's explicit review errors block until a fresh exact-head review", (
 
   const quotaBody =
     "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
-  assert.match(
+  assert.deepEqual(
     evaluateCopilotEvidence({
       headSha: SHA,
       reviews: [copilotReview(SHA, { body: quotaBody })],
       threads: [],
-      files: [changedFile("README.md")],
       policy: checked,
-    }).reason,
-    /unrecognized completion/i,
+    }),
+    { ok: true },
   );
-});
-
-test("Copilot unreviewable completion is neutral only for explicitly excluded files", () => {
-  const checked = validatePolicy(policy());
-  const unreviewable = copilotReview(SHA, {
-    body: "Copilot wasn't able to review any files in this pull request.",
-  });
-  for (const files of [
-    [{ filename: "package-lock.json", status: "modified" }],
-    [
-      { filename: "Cargo.lock", status: "modified" },
-      { filename: "assets/logo.svg", status: "added" },
-      { filename: "logs/build.log", status: "removed" },
-    ],
-    [
-      {
-        filename: "dist/new-name.js",
-        previous_filename: "dist/old-name.js",
-        status: "renamed",
-      },
-    ],
-  ]) {
-    assert.deepEqual(
-      evaluateCopilotEvidence({
-        headSha: SHA,
-        reviews: [unreviewable],
-        threads: [],
-        files,
-        policy: checked,
-      }),
-      { ok: true },
-    );
-  }
-
-  for (const files of [
-    [],
-    [{ filename: "src/app.js", status: "modified" }],
-    [
-      { filename: "package-lock.json", status: "modified" },
-      { filename: "src/app.js", status: "modified" },
-    ],
-    [{ filename: "unknown.custom", status: "modified" }],
-    [{ filename: "package-lock.json" }],
-    [{ filename: "package-lock.json", status: "future-status" }],
-    [
-      {
-        filename: "dist/app.js",
-        previous_filename: "src/app.js",
-        status: "renamed",
-      },
-    ],
-    [
-      {
-        filename: "dist/app.js",
-        status: "renamed",
-      },
-    ],
-  ]) {
-    assert.match(
-      evaluateCopilotEvidence({
-        headSha: SHA,
-        reviews: [unreviewable],
-        threads: [],
-        files,
-        policy: checked,
-      }).reason,
-      /could not review all changed files/i,
-    );
-  }
-});
-
-test("Copilot excluded-file matcher follows the official list and bin exceptions", () => {
-  for (const filename of [
-    ".gitignore",
-    "package.json",
-    "package-lock.json",
-    "yarn.lock",
-    "jest.config.js",
-    "next.config.js",
-    "tailwind.config.js",
-    "tsconfig.json",
-    "requirements.txt",
-    "Pipfile.lock",
-    "nested/Gemfile.lock",
-    "composer.lock",
-    "Cargo.lock",
-    "go.sum",
-    "paket.lock",
-    "pubspec.lock",
-    "stack.yaml",
-    "elm.json",
-    "Project.toml",
-    "Manifest.toml",
-    "renv.lock",
-    "build.sbt",
-    "Package.resolved",
-    "deps.edn",
-    "build.gradle",
-    "mix.lock",
-    "build.gradle.kts",
-    "cpanfile",
-    "Podfile.lock",
-    "conanfile.txt",
-    "info.rkt",
-    "rockspec",
-    "opam",
-    "rebar.config",
-    "nimble",
-    "shard.yml",
-    "dub.json",
-    "dub.sdl",
-    "GPR",
-    "Mason.toml",
-    "fpm.toml",
-    "pack.pl",
-    "baseline.st",
-    "PacletInfo.m",
-    "info.ss",
-    "Jpkg",
-    "box.json",
-    "GNAVI.xml",
-    "assets/icon.svg",
-    "logs/build.log",
-    "deps/custom.lock",
-    "notebooks/output.ipynb.raw.html",
-    "dist/app.js",
-    "node_modules/pkg/index.js",
-    "public/app.min.js",
-    "src/generated/client.ts",
-    "src/generated-sources/client.ts",
-    "types/index.d.ts",
-    "coverage/index.html",
-    "public/app.bundle.js",
-    "public/app.js.map",
-    "out/result.txt",
-    "vendor/library.js",
-    "src/bin/tool",
-  ]) {
-    assert.equal(isCopilotReviewExcludedPath(filename), true, filename);
-  }
-  for (const filename of [
-    "src/app.ts",
-    "unknown.custom",
-    "src/bin/main.rs",
-    "platform/hybris/bin/custom/Extension.java",
-    "platform/hybris/bin/custom/tool/bin/Extension.java",
-    "../dist/app.js",
-    "src\\dist\\app.js",
-  ]) {
-    assert.equal(isCopilotReviewExcludedPath(filename), false, filename);
-  }
 });
 
 test("Copilot evidence reads every thread using the immutable review commit", () => {
@@ -967,29 +1093,41 @@ test("Copilot evidence reads every thread using the immutable review commit", ()
       headSha: SHA,
       reviews,
       threads: [staleUnresolved],
-      files: [changedFile()],
       policy: checked,
     }).reason,
     /unresolved Copilot review thread/i,
   );
 
-  for (const isResolved of [false, true]) {
-    const currentFinding = structuredClone(staleUnresolved);
-    currentFinding.isResolved = isResolved;
-    currentFinding.comments[1].reviewCommit.oid = SHA;
-    currentFinding.comments[1].reviewId = 123;
-    assert.match(
-      evaluateCopilotEvidence({
-        headSha: SHA,
-        reviews,
-        threads: [currentFinding],
-        files: [changedFile()],
-        policy: checked,
-      }).reason,
-      /Copilot finding exists on the current head/i,
-      String(isResolved),
-    );
-  }
+  const currentFinding = structuredClone(staleUnresolved);
+  currentFinding.comments[1].reviewCommit.oid = SHA;
+  currentFinding.comments[1].reviewId = 123;
+  const currentReviews = [
+    reviews[0],
+    copilotReview(SHA, {
+      id: 123,
+      body: "Copilot reviewed 1 out of 1 changed file in this pull request and generated 1 comment.",
+    }),
+  ];
+  currentFinding.isResolved = false;
+  assert.match(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: currentReviews,
+      threads: [currentFinding],
+      policy: checked,
+    }).reason,
+    /unresolved Copilot review thread/i,
+  );
+  currentFinding.isResolved = true;
+  assert.deepEqual(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: currentReviews,
+      threads: [currentFinding],
+      policy: checked,
+    }),
+    { ok: true },
+  );
 
   assert.deepEqual(
     evaluateCopilotEvidence({
@@ -1008,7 +1146,6 @@ test("Copilot evidence reads every thread using the immutable review commit", ()
           ],
         },
       ],
-      files: [changedFile()],
       policy: checked,
     }),
     { ok: true },
@@ -1017,390 +1154,335 @@ test("Copilot evidence reads every thread using the immutable review commit", ()
   const missingImmutableReview = structuredClone(staleUnresolved);
   missingImmutableReview.isResolved = true;
   delete missingImmutableReview.comments[1].reviewCommit;
-  assert.match(
+  assert.deepEqual(
     evaluateCopilotEvidence({
       headSha: SHA,
       reviews,
       threads: [missingImmutableReview],
-      files: [changedFile()],
       policy: checked,
-    }).reason,
-    /Copilot thread has no immutable review commit/i,
+    }),
+    { ok: true },
   );
 
   const mismatchedReview = structuredClone(staleUnresolved);
   mismatchedReview.isResolved = true;
   mismatchedReview.comments[1].reviewId = 999;
-  assert.match(
+  assert.deepEqual(
     evaluateCopilotEvidence({
       headSha: SHA,
       reviews,
       threads: [mismatchedReview],
-      files: [changedFile()],
+      policy: checked,
+    }),
+    { ok: true },
+  );
+
+  assert.match(
+    evaluateCopilotEvidence({
+      headSha: SHA,
+      reviews: currentReviews,
+      threads: [
+        {
+          ...mismatchedReview,
+          comments: [
+            {
+              ...mismatchedReview.comments[1],
+              reviewCommit: { oid: SHA },
+            },
+          ],
+        },
+      ],
       policy: checked,
     }).reason,
-    /Copilot thread review identity is inconsistent/i,
+    /finding without a resolvable thread/i,
   );
 });
 
-test("reviewed commit prefixes are resolved through GitHub and fail closed", async () => {
-  const comment = cleanComment();
-  const correct = await resolveConnectorReviewCommits({
-    api: { request: async () => ({ sha: SHA }) },
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    headSha: SHA,
-    issueComments: [comment],
-  });
-  assert.equal(correct.get(SHA.slice(0, 10)), SHA);
-
-  const stale = await resolveConnectorReviewCommits({
-    api: {
-      request: async () => assert.fail("stale prefix must not be resolved"),
+test("bot reviews and threads come from one fail-closed GraphQL snapshot", async () => {
+  const calls = [];
+  const review = {
+    databaseId: 123,
+    author: graphqlCopilotActor(),
+    state: "COMMENTED",
+    commit: { oid: SHA },
+    body: copilotReview().body,
+    submittedAt: "2026-08-08T12:00:00Z",
+  };
+  const thread = {
+    isResolved: true,
+    comments: {
+      nodes: [
+        {
+          author: graphqlCopilotActor(),
+          body: "handled",
+          pullRequestReview: { databaseId: 123, commit: { oid: SHA } },
+        },
+      ],
+      pageInfo: { hasNextPage: false },
     },
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    headSha: SHA,
-    issueComments: [cleanComment(OTHER_SHA)],
-  });
-  assert.equal(stale.size, 0);
-
-  await assert.rejects(
-    resolveConnectorReviewCommits({
-      api: { request: async () => ({ sha: OTHER_SHA }) },
-      owner: "LCV-Ideas-Software",
-      repo: "example",
-      headSha: SHA,
-      issueComments: [comment],
-    }),
-    /did not resolve uniquely/i,
-  );
-  await assert.rejects(
-    resolveConnectorReviewCommits({
-      api: {
-        request: async () => {
-          throw new Error("lookup unavailable");
+  };
+  const payload = (overrides = {}) => ({
+    repository: {
+      pullRequest: {
+        number: 7,
+        state: "OPEN",
+        isDraft: false,
+        headRefOid: SHA,
+        baseRefOid: BASE_SHA,
+        baseRefName: "main",
+        comments: {
+          nodes: [
+            {
+              databaseId: 99,
+              author: graphqlConnectorActor(),
+              body: cleanComment().body,
+              createdAt: "2026-08-08T12:00:00Z",
+              updatedAt: "2026-08-08T12:00:00Z",
+            },
+          ],
+          pageInfo: { hasNextPage: false },
+          ...overrides.comments,
+        },
+        reviews: {
+          nodes: [review],
+          pageInfo: { hasNextPage: false },
+          ...overrides.reviews,
+        },
+        reviewThreads: {
+          nodes: [thread],
+          pageInfo: { hasNextPage: false },
+          ...overrides.reviewThreads,
         },
       },
-      owner: "LCV-Ideas-Software",
-      repo: "example",
-      headSha: SHA,
-      issueComments: [comment],
-    }),
-    /lookup unavailable/i,
-  );
-});
-
-test("only connector +1 on the exact marked request is a clean signal", () => {
-  const request = reviewRequestComment();
-  const reaction = (
-    content,
-    user = actor("chatgpt-codex-connector[bot]", CONNECTOR_ID),
-    createdAt = "2026-08-08T12:03:00Z",
-  ) => ({
-    content,
-    user,
-    created_at: createdAt,
-  });
-  assert.equal(
-    evaluateConnectorEvidence(
-      connectorEvidence({
-        issueComments: [request],
-        resolvedReviewCommits: new Map(),
-        requestReactions: new Map([["99", [reaction("+1")]]]),
-      }),
-    ).ok,
-    true,
-  );
-  for (const denied of [
-    reaction("eyes"),
-    reaction("+1", actor("lookalike", 1)),
-    reaction(
-      "+1",
-      actor("chatgpt-codex-connector[bot]", CONNECTOR_ID),
-      "2026-08-08T12:00:00Z",
-    ),
-    reaction(
-      "+1",
-      actor("chatgpt-codex-connector[bot]", CONNECTOR_ID),
-      "2026-08-08T11:59:59Z",
-    ),
-    reaction(
-      "+1",
-      actor("chatgpt-codex-connector[bot]", CONNECTOR_ID),
-      "malformed",
-    ),
-    {
-      content: "+1",
-      user: actor("chatgpt-codex-connector[bot]", CONNECTOR_ID),
     },
-  ]) {
-    assert.match(
-      evaluateConnectorEvidence(
-        connectorEvidence({
-          issueComments: [request],
-          resolvedReviewCommits: new Map(),
-          requestReactions: new Map([["99", [denied]]]),
-        }),
-      ).reason,
-      /exact head/i,
-    );
-  }
+  });
+  const evidence = await readBotReviewEvidence(
+    {
+      graphql: async (query, variables) => {
+        calls.push([query, variables]);
+        return payload();
+      },
+    },
+    "LCV-Ideas-Software",
+    "example",
+    7,
+  );
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][0], /comments\(first: 100\)/);
+  assert.match(calls[0][0], /reviews\(first: 100\)/);
+  assert.match(calls[0][0], /reviewThreads\(first: 100\)/);
+  assert.equal(evidence.reviews[0].id, 123);
+  assert.equal(evidence.reviews[0].commit_id, SHA);
+  assert.equal(evidence.threads[0].comments[0].reviewId, 123);
+  assert.equal(evidence.threads[0].comments[0].reviewCommit.oid, SHA);
+  assert.equal(evidence.issueComments[0].user.id, CONNECTOR_NODE_ID);
+  assert.equal(evidence.pullRequest.headRefOid, SHA);
 
-  for (const createdAt of [
-    "2026-08-08T12:03:00Z",
-    "2026-08-08T12:04:00Z",
-    "2026-08-08T12:05:00Z",
-  ]) {
-    const editedRequest = {
-      ...request,
-      updated_at: "2026-08-08T12:04:00Z",
-    };
-    assert.match(
-      evaluateConnectorEvidence(
-        connectorEvidence({
-          issueComments: [editedRequest],
-          resolvedReviewCommits: new Map(),
-          requestReactions: new Map([
-            ["99", [reaction("+1", undefined, createdAt)]],
-          ]),
-        }),
-      ).reason,
-      /exact head/i,
-      createdAt,
-    );
-  }
-  assert.equal(
-    evaluateConnectorEvidence(
-      connectorEvidence({
-        issueComments: [
-          reviewRequestComment(SHA, {
-            created_at: "2026-08-08T12:04:00Z",
-            updated_at: "2026-08-08T12:04:00Z",
-          }),
+  for (const truncated of [
+    { comments: { pageInfo: { hasNextPage: true } } },
+    { reviews: { pageInfo: { hasNextPage: true } } },
+    { reviewThreads: { pageInfo: { hasNextPage: true } } },
+    {
+      reviewThreads: {
+        nodes: [
+          {
+            ...thread,
+            comments: {
+              ...thread.comments,
+              pageInfo: { hasNextPage: true },
+            },
+          },
         ],
-        resolvedReviewCommits: new Map(),
-        requestReactions: new Map([
-          ["99", [reaction("+1", undefined, "2026-08-08T12:04:01Z")]],
-        ]),
-      }),
-    ).ok,
-    true,
-  );
-});
-
-test("review requests are exact-head, idempotent, and posted only by an allowlisted actor", () => {
-  const checked = validatePolicy(policy());
-  const body = reviewRequestBody(SHA);
-  const request = reviewRequestComment();
-  assert.match(body, /^@codex review/);
-  assert.equal(hasReviewRequestForHead([request], SHA, checked), true);
-  assert.equal(hasReviewRequestForHead([request], OTHER_SHA, checked), false);
-  assert.equal(
-    hasReviewRequestForHead(
-      [
-        reviewRequestComment(SHA, {
-          body: `${reviewRequestBody(SHA)}\n${reviewRequestBody(OTHER_SHA)}`,
-        }),
-      ],
-      SHA,
-      checked,
-    ),
-    false,
-  );
-  assert.equal(
-    hasReviewRequestForHead(
-      [reviewRequestComment(SHA, { user: actor("untrusted", 123) })],
-      SHA,
-      checked,
-    ),
-    false,
-  );
-  assert.equal(
-    hasReviewRequestForHead(
-      [
-        reviewRequestComment(SHA, {
-          updated_at: "2026-08-08T12:01:00Z",
-        }),
-      ],
-      SHA,
-      checked,
-    ),
-    false,
-  );
-  for (const timestamps of [
-    { created_at: undefined },
-    { updated_at: undefined },
-    { created_at: "malformed", updated_at: "malformed" },
+      },
+    },
   ]) {
-    assert.equal(
-      hasReviewRequestForHead(
-        [reviewRequestComment(SHA, timestamps)],
-        SHA,
-        checked,
+    await assert.rejects(
+      readBotReviewEvidence(
+        { graphql: async () => payload(truncated) },
+        "LCV-Ideas-Software",
+        "example",
+        7,
       ),
-      false,
+      /BOT_EVIDENCE_TRUNCATED/,
+    );
+  }
+
+  for (const invalid of [
+    { comments: { nodes: undefined } },
+    { reviews: { pageInfo: {} } },
+    { reviewThreads: { nodes: null } },
+    {
+      reviewThreads: {
+        nodes: [{ ...thread, comments: { ...thread.comments, pageInfo: {} } }],
+      },
+    },
+  ]) {
+    await assert.rejects(
+      readBotReviewEvidence(
+        { graphql: async () => payload(invalid) },
+        "LCV-Ideas-Software",
+        "example",
+        7,
+      ),
+      /BOT_EVIDENCE_INVALID/,
     );
   }
 });
 
-test("controller requests connector review once per exact head", async () => {
-  const requests = [];
-  const api = {
-    request: async (...args) => {
-      requests.push(args);
-      return {};
-    },
+test("bot change requests are typed end to end and human veto precedence is deterministic", async () => {
+  const copilotChanges = {
+    databaseId: 501,
+    author: graphqlCopilotActor(),
+    state: "CHANGES_REQUESTED",
+    commit: { oid: SHA },
+    body: "change this",
+    submittedAt: "2026-08-08T12:00:00Z",
   };
-  const checked = validatePolicy(policy());
-  const requested = await ensureConnectorReviewRequest({
-    api,
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    number: 7,
-    headSha: SHA,
-    issueComments: [],
-    policy: checked,
-  });
-  assert.equal(requested, "connector-review-requested");
-  assert.equal(requests.length, 1);
-  assert.equal(
-    requests[0][0],
-    "/repos/LCV-Ideas-Software/example/issues/7/comments",
-  );
-  assert.deepEqual(requests[0][1], {
-    method: "POST",
-    body: { body: reviewRequestBody(SHA) },
-  });
-
-  const pending = await ensureConnectorReviewRequest({
-    api,
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    number: 7,
-    headSha: SHA,
-    issueComments: [reviewRequestComment()],
-    policy: checked,
-  });
-  assert.equal(pending, "connector-review-pending");
-  assert.equal(requests.length, 1);
-
-  const edited = await ensureConnectorReviewRequest({
-    api,
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    number: 7,
-    headSha: SHA,
-    issueComments: [
-      reviewRequestComment(SHA, {
-        updated_at: "2026-08-08T12:01:00Z",
-      }),
-    ],
-    policy: checked,
-  });
-  assert.equal(edited, "connector-review-requested");
-  assert.equal(requests.length, 2);
-
-  await ensureConnectorReviewRequest({
-    api,
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    number: 7,
-    headSha: OTHER_SHA,
-    issueComments: [reviewRequestComment()],
-    policy: checked,
-  });
-  assert.equal(requests.length, 3);
-});
-
-test("controller requests the exact Copilot reviewer idempotently", async () => {
-  const requests = [];
-  const api = {
-    request: async (...args) => {
-      requests.push(args);
-      return {};
+  const graphqlPayload = (reviews, snapshotHead = SHA) => ({
+    repository: {
+      pullRequest: {
+        number: 7,
+        state: "OPEN",
+        isDraft: false,
+        headRefOid: snapshotHead,
+        baseRefOid: BASE_SHA,
+        baseRefName: "main",
+        comments: { nodes: [], pageInfo: { hasNextPage: false } },
+        reviews: { nodes: reviews, pageInfo: { hasNextPage: false } },
+        reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+      },
     },
-  };
-  const checked = validatePolicy(policy());
-  assert.equal(
-    await ensureCopilotReviewRequest({
-      api,
+  });
+  const apiFor = (reviews, snapshotHead = SHA) => ({
+    graphql: async () => graphqlPayload(reviews, snapshotHead),
+    pages: async (path) => {
+      if (path.endsWith("/commits")) {
+        return [{ sha: SHA, commit: { verification: { verified: true } } }];
+      }
+      assert.fail(`unexpected paginated request ${path}`);
+    },
+    request: async (path) => {
+      if (path.endsWith("/pulls/7")) return pull();
+      if (path.endsWith("/branches/main")) {
+        return { commit: { sha: BASE_SHA } };
+      }
+      assert.fail(`unexpected request ${path}`);
+    },
+  });
+  let veto;
+  try {
+    await assessPullCore({
+      api: apiFor([copilotChanges]),
       owner: "LCV-Ideas-Software",
       repo: "example",
       number: 7,
-      requestedReviewers: [],
-      policy: checked,
-    }),
-    "copilot-review-requested",
-  );
-  assert.deepEqual(requests[0], [
-    "/repos/LCV-Ideas-Software/example/pulls/7/requested_reviewers",
-    {
-      method: "POST",
-      body: { reviewers: ["copilot-pull-request-reviewer[bot]"] },
-    },
-  ]);
-
-  assert.equal(
-    await ensureCopilotReviewRequest({
-      api,
-      owner: "LCV-Ideas-Software",
-      repo: "example",
-      number: 7,
-      requestedReviewers: [restCopilotActor()],
-      policy: checked,
-    }),
-    "copilot-review-pending",
-  );
-  assert.equal(requests.length, 1);
-
-  await ensureCopilotReviewRequest({
-    api,
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    number: 7,
-    requestedReviewers: [restCopilotActor("lookalike")],
-    policy: checked,
-  });
-  assert.equal(requests.length, 2);
-});
-
-test("controller requests a fresh Copilot review only for safely mutable blockers", () => {
-  assert.equal(
-    controllerCopilotDisposition(
-      "no Copilot review COMMENTED exists for the exact head",
-    ),
-    "request-review",
-  );
+      policy: validatePolicy(policy()),
+    });
+    assert.fail("Copilot change request must veto");
+  } catch (error) {
+    veto = error;
+  }
+  assert.ok(veto instanceof BotReviewVetoError);
+  assert.equal(veto.recoveryCode, "COPILOT_CHANGES_REQUESTED");
   assert.match(
-    controllerCopilotDisposition("unresolved Copilot review thread remains"),
-    /^copilot-blocked:/,
+    botReviewVetoWorkflowCommand(veto),
+    /BOT_REVIEW_VETO COPILOT_CHANGES_REQUESTED example#7@/,
   );
-  assert.throws(
-    () =>
-      controllerCopilotDisposition(
-        "suppressed Copilot finding exists on the current head",
-      ),
-    /not safely observable/i,
+
+  const approved = {
+    ...copilotChanges,
+    databaseId: 502,
+    state: "APPROVED",
+    submittedAt: "2026-08-08T12:01:00Z",
+  };
+  assert.equal(
+    (
+      await assessPullCore({
+        api: apiFor([copilotChanges, approved]),
+        owner: "LCV-Ideas-Software",
+        repo: "example",
+        number: 7,
+        policy: validatePolicy(policy()),
+      })
+    ).pullRequest.head.sha,
+    SHA,
   );
-  assert.throws(
-    () =>
-      controllerCopilotDisposition(
-        "Copilot review attempt failed for the exact head",
-      ),
-    /not safely observable/i,
+
+  const humanChanges = {
+    id: 601,
+    user: actor(),
+    state: "CHANGES_REQUESTED",
+    commit_id: SHA,
+  };
+  const botChanges = {
+    id: 602,
+    user: graphqlConnectorActor(),
+    state: "CHANGES_REQUESTED",
+    commit_id: SHA,
+  };
+  for (const reviews of [
+    [humanChanges, botChanges],
+    [botChanges, humanChanges],
+  ]) {
+    const result = evaluateConnectorEvidence(
+      connectorEvidence({ issueComments: [], reviews }),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.botVeto, false);
+    assert.equal(result.recoveryCode, undefined);
+  }
+
+  await assert.rejects(
+    assessPullCore({
+      api: apiFor([], OTHER_SHA),
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      number: 7,
+      policy: validatePolicy(policy()),
+    }),
+    /BOT_EVIDENCE_SNAPSHOT_MISMATCH/,
   );
 });
 
-test("Dependabot conflict rebase requests are idempotent per exact head", async () => {
-  const requests = [];
-  const api = {
-    request: async (...args) => {
-      requests.push(args);
-      return {};
-    },
-  };
+test("Dependabot rebase mutation revalidates exact head, base, identity, conflict, and idempotency", async () => {
   const checked = validatePolicy(policy());
+  function rebaseApi({
+    currentPull = {},
+    comments = [],
+    mainSha = BASE_SHA,
+  } = {}) {
+    const calls = [];
+    const api = {
+      calls,
+      pages: async (path) => {
+        calls.push([path]);
+        return comments;
+      },
+      request: async (path, options) => {
+        calls.push([path, options]);
+        if (path.endsWith("/pulls/7")) {
+          return {
+            ...pull({
+              user: actor("dependabot[bot]", 49699333),
+              mergeable: false,
+              mergeable_state: "dirty",
+            }),
+            ...currentPull,
+          };
+        }
+        if (path.endsWith("/branches/main")) {
+          return { commit: { sha: mainSha } };
+        }
+        if (path.endsWith("/issues/7/comments") && options?.method === "POST") {
+          return {};
+        }
+        throw new Error(`unexpected API request ${path}`);
+      },
+    };
+    return api;
+  }
+
+  const api = rebaseApi();
   assert.equal(
     await ensureDependabotRebaseRequest({
       api,
@@ -1408,156 +1490,100 @@ test("Dependabot conflict rebase requests are idempotent per exact head", async 
       repo: "example",
       number: 7,
       headSha: SHA,
-      issueComments: [],
+      expectedBase: BASE_SHA,
       policy: checked,
     }),
     "dependabot-rebase-requested",
   );
-  assert.deepEqual(requests[0][1], {
+  assert.deepEqual(api.calls.at(-1)[1], {
     method: "POST",
     body: { body: dependabotRebaseBody(SHA) },
   });
+  assert.match(api.calls.at(-2)[0], /\/pulls\/7$/);
+
+  for (const [currentPull, expected] of [
+    [{ head: { ...pull().head, sha: OTHER_SHA } }, "dependabot-rebase-stale"],
+    [
+      { mergeable: null, mergeable_state: "unknown" },
+      "dependabot-rebase-mergeability-pending",
+    ],
+    [
+      { mergeable: true, mergeable_state: "clean" },
+      "dependabot-rebase-no-conflict",
+    ],
+    [{ user: actor() }, "dependabot-rebase-stale"],
+    [{ draft: null }, "dependabot-rebase-stale"],
+    [{ base: { ...pull().base, sha: OTHER_SHA } }, "dependabot-rebase-stale"],
+  ]) {
+    const candidate = rebaseApi({ currentPull });
+    assert.equal(
+      await ensureDependabotRebaseRequest({
+        api: candidate,
+        owner: "LCV-Ideas-Software",
+        repo: "example",
+        number: 7,
+        headSha: SHA,
+        expectedBase: BASE_SHA,
+        policy: checked,
+      }),
+      expected,
+    );
+    assert.equal(
+      candidate.calls.some(
+        ([path, options]) =>
+          path.endsWith("/issues/7/comments") && options?.method === "POST",
+      ),
+      false,
+      expected,
+    );
+  }
+
+  const changedMain = rebaseApi({ mainSha: OTHER_SHA });
   assert.equal(
     await ensureDependabotRebaseRequest({
-      api,
+      api: changedMain,
       owner: "LCV-Ideas-Software",
       repo: "example",
       number: 7,
       headSha: SHA,
-      issueComments: [
-        { id: 1, user: actor(), body: dependabotRebaseBody(SHA) },
-      ],
+      expectedBase: BASE_SHA,
+      policy: checked,
+    }),
+    "dependabot-rebase-stale",
+  );
+  assert.equal(
+    changedMain.calls.some(
+      ([path, options]) =>
+        path.endsWith("/issues/7/comments") && options?.method === "POST",
+    ),
+    false,
+  );
+
+  const idempotent = rebaseApi({
+    comments: [{ id: 1, user: actor(), body: dependabotRebaseBody(SHA) }],
+  });
+  assert.equal(
+    await ensureDependabotRebaseRequest({
+      api: idempotent,
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      number: 7,
+      headSha: SHA,
+      expectedBase: BASE_SHA,
       policy: checked,
     }),
     "dependabot-rebase-pending",
   );
-  assert.equal(requests.length, 1);
-});
-
-test("connector evidence blocks unresolved findings and later current-head findings", () => {
-  const unresolved = evaluateConnectorEvidence(
-    connectorEvidence({
-      threads: [
-        {
-          isResolved: false,
-          isOutdated: false,
-          comments: [
-            {
-              author: actor("chatgpt-codex-connector", CONNECTOR_ID),
-              body: "P1: actionable finding",
-              commit: { oid: SHA },
-              reviewCommit: { oid: SHA },
-              createdAt: "2026-08-08T12:01:00Z",
-            },
-          ],
-        },
-      ],
-    }),
+  assert.equal(
+    idempotent.calls.some(
+      ([path, options]) =>
+        path.endsWith("/issues/7/comments") && options?.method === "POST",
+    ),
+    false,
   );
-  assert.match(unresolved.reason, /unresolved connector thread/i);
-
-  const laterFinding = evaluateConnectorEvidence(
-    connectorEvidence({
-      issueComments: [cleanComment(SHA, "2026-08-08T12:00:00Z")],
-      reviews: [
-        {
-          user: actor("chatgpt-codex-connector[bot]", CONNECTOR_ID),
-          state: "COMMENTED",
-          commit_id: SHA,
-          body: "Found an issue",
-          submitted_at: "2026-08-08T12:02:00Z",
-        },
-      ],
-    }),
-  );
-  assert.match(laterFinding.reason, /after the latest connector finding/i);
 });
 
 test("connector evidence allows resolved stale threads but blocks current change requests", () => {
-  const resolved = evaluateConnectorEvidence(
-    connectorEvidence({
-      issueComments: [cleanComment(SHA, "2026-08-08T12:02:00Z")],
-      threads: [
-        {
-          isResolved: true,
-          isOutdated: true,
-          comments: [
-            {
-              author: actor("chatgpt-codex-connector", CONNECTOR_ID),
-              body: "P2: fixed",
-              commit: { oid: SHA },
-              reviewCommit: { oid: OTHER_SHA },
-              createdAt: "2026-08-08T11:00:00Z",
-            },
-          ],
-        },
-      ],
-    }),
-  );
-  assert.equal(resolved.ok, true);
-
-  assert.match(
-    evaluateConnectorEvidence(
-      connectorEvidence({
-        threads: [
-          {
-            isResolved: false,
-            isOutdated: true,
-            comments: [
-              {
-                author: actor("chatgpt-codex-connector", CONNECTOR_ID),
-                reviewCommit: { oid: OTHER_SHA },
-                createdAt: "2026-08-08T11:00:00Z",
-              },
-            ],
-          },
-        ],
-      }),
-    ).reason,
-    /unresolved connector thread/i,
-  );
-
-  const resolvedCurrentFinding = {
-    isResolved: true,
-    isOutdated: false,
-    comments: [
-      {
-        author: actor("chatgpt-codex-connector", CONNECTOR_ID),
-        body: "P2: fixed",
-        commit: { oid: SHA },
-        reviewCommit: { oid: SHA },
-        createdAt: "2026-08-08T12:03:00Z",
-      },
-    ],
-  };
-  assert.match(
-    evaluateConnectorEvidence(
-      connectorEvidence({
-        issueComments: [cleanComment(SHA, "2026-08-08T12:02:00Z")],
-        threads: [resolvedCurrentFinding],
-      }),
-    ).reason,
-    /after the latest connector finding/i,
-  );
-  assert.match(
-    evaluateConnectorEvidence(
-      connectorEvidence({
-        issueComments: [cleanComment(SHA, "2026-08-08T12:03:00Z")],
-        threads: [resolvedCurrentFinding],
-      }),
-    ).reason,
-    /after the latest connector finding/i,
-  );
-  assert.equal(
-    evaluateConnectorEvidence(
-      connectorEvidence({
-        issueComments: [cleanComment(SHA, "2026-08-08T12:04:00Z")],
-        threads: [resolvedCurrentFinding],
-      }),
-    ).ok,
-    true,
-  );
-
   const changesRequested = evaluateConnectorEvidence(
     connectorEvidence({
       reviews: [
@@ -1645,73 +1671,27 @@ test("connector evidence allows resolved stale threads but blocks current change
   );
 });
 
-test("the gate polls only connector blockers that can settle on the same head", () => {
-  for (const reason of [
-    "no clean connector review exists for the exact head",
-    "no clean connector review exists after the latest connector finding",
-    "unresolved connector thread remains",
-  ]) {
-    assert.equal(
-      connectorFailureCanSettleWithoutHeadChange(reason),
-      true,
-      reason,
-    );
-  }
-  for (const reason of [
-    "invalid connector evidence head SHA",
-    "connector thread has no immutable review commit",
-    "changes requested on the current head",
-    "unrecognized connector state",
-  ]) {
-    assert.equal(
-      connectorFailureCanSettleWithoutHeadChange(reason),
-      false,
-      reason,
-    );
-  }
-  assert.equal(
-    controllerConnectorDisposition(
-      "no clean connector review exists for the exact head",
-    ),
-    "request-review",
-  );
-  assert.match(
-    controllerConnectorDisposition("unresolved connector thread remains"),
-    /^connector-blocked:/,
-  );
-  assert.throws(
-    () =>
-      controllerConnectorDisposition(
-        "connector thread has no immutable review commit",
-      ),
-    /not safely observable/i,
-  );
-});
-
-test("the gate polls a mutable connector blocker but propagates terminal evidence", async () => {
+test("the gate reads optional bot evidence once and still enforces exact head", async () => {
   const options = {
     repo: "example",
     number: 7,
     expectedHead: SHA,
   };
-  const timing = { deadline: Date.now() + 1_000, pollSeconds: 0 };
   let calls = 0;
-  const settled = await waitForPullCore(options, timing, async () => {
+  const settled = await readExactPullCore(options, async () => {
     calls += 1;
-    if (calls === 1) {
-      return {
-        pullRequest: { head: { sha: SHA } },
-        connectorPending: "unresolved connector thread remains",
-      };
-    }
-    return { pullRequest: { head: { sha: SHA } } };
+    return {
+      pullRequest: { head: { sha: SHA } },
+      connectorPending: "informational legacy field",
+      copilotPending: "informational legacy field",
+    };
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal(settled.pullRequest.head.sha, SHA);
 
   calls = 0;
   await assert.rejects(
-    waitForPullCore(options, timing, async () => {
+    readExactPullCore(options, async () => {
       calls += 1;
       throw new Error("connector thread has no immutable review commit");
     }),
@@ -1721,69 +1701,15 @@ test("the gate polls a mutable connector blocker but propagates terminal evidenc
 
   calls = 0;
   await assert.rejects(
-    waitForPullCore(options, timing, async () => {
+    readExactPullCore(options, async () => {
       calls += 1;
       return {
-        pullRequest: { head: { sha: calls === 1 ? SHA : OTHER_SHA } },
-        connectorPending: "unresolved connector thread remains",
+        pullRequest: { head: { sha: OTHER_SHA } },
       };
     }),
-    /head changed while polling exact-head reviews/i,
+    /head changed at exact-head evidence read/i,
   );
-  assert.equal(calls, 2);
-});
-
-test("the gate polls mutable Copilot review evidence but rejects malformed identity evidence", async () => {
-  const options = {
-    repo: "example",
-    number: 7,
-    expectedHead: SHA,
-  };
-  const timing = { deadline: Date.now() + 1_000, pollSeconds: 0 };
-  let calls = 0;
-  const settled = await waitForPullCore(options, timing, async () => {
-    calls += 1;
-    if (calls === 1) {
-      return {
-        pullRequest: { head: { sha: SHA } },
-        copilotPending: "no Copilot review COMMENTED exists for the exact head",
-      };
-    }
-    return { pullRequest: { head: { sha: SHA } } };
-  });
-  assert.equal(calls, 2);
-  assert.equal(settled.pullRequest.head.sha, SHA);
-
-  assert.equal(
-    copilotFailureCanSettleWithoutHeadChange(
-      "unresolved Copilot review thread remains",
-    ),
-    true,
-  );
-  assert.equal(
-    copilotFailureCanSettleWithoutHeadChange(
-      "Copilot review attempt failed for the exact head",
-    ),
-    false,
-  );
-  assert.equal(
-    copilotFailureCanSettleWithoutHeadChange(
-      "Copilot thread has no immutable review commit",
-    ),
-    false,
-  );
-  assert.equal(
-    copilotFailureCanSettleWithoutHeadChange(
-      "Copilot finding exists on the current head",
-    ),
-    false,
-  );
-  assert.equal(
-    copilotFailureCanSettleWithoutHeadChange(
-      "Copilot exact-head review has an unrecognized completion body",
-    ),
-    false,
-  );
+  assert.equal(calls, 1);
 });
 
 test("classifyChecks requires exact executor and GHAS identities and all observed checks green", () => {
@@ -2385,6 +2311,226 @@ test("a higher-id same-name Actions check cannot spoof the central gate", async 
   );
 });
 
+test("trusted gate outcome uses the latest authenticated run attempt", () => {
+  const verified = ({
+    checkId,
+    runId,
+    attempt,
+    status = "completed",
+    conclusion = "success",
+  }) => ({
+    checkRun: { id: checkId, status, conclusion },
+    job: { run_attempt: attempt, status, conclusion },
+    run: { id: runId, run_attempt: attempt, status, conclusion },
+    sourceRevisionVerified: true,
+  });
+  const oldFailure = verified({
+    checkId: 10,
+    runId: 100,
+    attempt: 1,
+    conclusion: "failure",
+  });
+  const latestSuccess = verified({ checkId: 11, runId: 100, attempt: 2 });
+  oldFailure.run = latestSuccess.run;
+  assert.equal(
+    selectCurrentTrustedGateRun([oldFailure, latestSuccess]),
+    latestSuccess,
+  );
+
+  const newerRun = verified({
+    checkId: 20,
+    runId: 101,
+    attempt: 1,
+    status: "in_progress",
+    conclusion: null,
+  });
+  assert.equal(
+    selectCurrentTrustedGateRun([latestSuccess, newerRun]),
+    newerRun,
+  );
+  assert.throws(
+    () =>
+      selectCurrentTrustedGateRun([
+        latestSuccess,
+        { ...latestSuccess, checkRun: { ...latestSuccess.checkRun, id: 12 } },
+      ]),
+    /multiple checks.*current run attempt/i,
+  );
+  assert.throws(
+    () =>
+      selectCurrentTrustedGateRun([
+        {
+          ...latestSuccess,
+          job: { ...latestSuccess.job, run_attempt: 1 },
+        },
+      ]),
+    /no check.*current run attempt/i,
+  );
+});
+
+test("resolved bot-review veto reruns only the exact first gate attempt once", async () => {
+  const fixture = trustedGateFixture({ conclusion: "failure", runAttempt: 1 });
+  const current = { ...fixture, sourceRevisionVerified: true };
+  const annotation = {
+    annotation_level: "failure",
+    title: BOT_REVIEW_VETO_ANNOTATION_TITLE,
+    message: `BOT_REVIEW_VETO UNRESOLVED_COPILOT_THREAD example#7@${SHA}: unresolved Copilot review thread remains`,
+  };
+  const decision = {
+    current,
+    annotations: [annotation],
+    owner: "LCV-Ideas-Software",
+    repo: "example",
+    number: 7,
+    headSha: SHA,
+  };
+  assert.equal(isRecoverableBotReviewVetoFailure(decision), true);
+  for (const override of [
+    { annotations: [] },
+    {
+      annotations: [
+        annotation,
+        {
+          ...annotation,
+          message: `BOT_REVIEW_VETO NONRECOVERABLE example#7@${SHA}: malformed review`,
+        },
+      ],
+    },
+    { annotations: [{ ...annotation, title: "LCV_GATE_LATE_REVIEW_TIMEOUT" }] },
+    {
+      annotations: [
+        {
+          ...annotation,
+          message: `BOT_REVIEW_VETO UNRESOLVED_COPILOT_THREAD example#7@${OTHER_SHA}: stale`,
+        },
+      ],
+    },
+    {
+      annotations: [
+        {
+          ...annotation,
+          message: `BOT_REVIEW_VETO NONRECOVERABLE example#7@${SHA}: suppressed finding`,
+        },
+      ],
+    },
+    { current: { ...current, sourceRevisionVerified: false } },
+    {
+      current: {
+        ...current,
+        run: { ...current.run, run_attempt: 2 },
+        job: { ...current.job, run_attempt: 2 },
+      },
+    },
+  ]) {
+    assert.equal(
+      isRecoverableBotReviewVetoFailure({ ...decision, ...override }),
+      false,
+    );
+  }
+
+  const calls = [];
+  const api = {
+    request: async (path, options) => {
+      calls.push([path, options]);
+      if (path === fixture.run.url) return fixture.run;
+      if (path.endsWith("/rerun-failed-jobs") && options?.method === "POST") {
+        return {};
+      }
+      assert.fail(`unexpected request ${path}`);
+    },
+  };
+  const outcome = await requestResolvedBotReviewVetoRerun({
+    api,
+    owner: "LCV-Ideas-Software",
+    repo: "example",
+    number: 7,
+    expectedHead: SHA,
+    expectedBase: BASE_SHA,
+    gate: {
+      outcome: "trusted-gate-bot-veto-rerun-needed",
+      run: fixture.run,
+    },
+    reassess: async () => ({
+      pullRequest: { head: { sha: SHA } },
+      mainSha: BASE_SHA,
+    }),
+  });
+  assert.equal(outcome, "trusted-gate-bot-veto-rerun-requested");
+  assert.deepEqual(calls.at(-2), [fixture.run.url, undefined]);
+  assert.deepEqual(calls.at(-1), [
+    `/repos/LCV-Ideas-Software/example/actions/runs/${fixture.run.id}/rerun-failed-jobs`,
+    { method: "POST" },
+  ]);
+
+  let mutated = false;
+  await assert.rejects(
+    requestResolvedBotReviewVetoRerun({
+      api: {
+        request: async () => {
+          mutated = true;
+        },
+      },
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      number: 7,
+      expectedHead: SHA,
+      expectedBase: BASE_SHA,
+      gate: {
+        outcome: "trusted-gate-bot-veto-rerun-needed",
+        run: fixture.run,
+      },
+      reassess: async () => {
+        throw new BotReviewVetoError("veto still present");
+      },
+    }),
+    /veto still present/i,
+  );
+  assert.equal(mutated, false);
+
+  let reassessments = 0;
+  const raceCalls = [];
+  await assert.rejects(
+    requestResolvedBotReviewVetoRerun({
+      api: {
+        request: async (path, options) => {
+          raceCalls.push([path, options]);
+          if (path === fixture.run.url) return fixture.run;
+          assert.fail("rerun mutation must not follow a late head change");
+        },
+      },
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      number: 7,
+      expectedHead: SHA,
+      expectedBase: BASE_SHA,
+      gate: {
+        outcome: "trusted-gate-bot-veto-rerun-needed",
+        run: fixture.run,
+      },
+      reassess: async () => ({
+        pullRequest: {
+          head: { sha: reassessments++ === 0 ? SHA : OTHER_SHA },
+        },
+        mainSha: BASE_SHA,
+      }),
+    }),
+    /head\/base changed/i,
+  );
+  assert.deepEqual(raceCalls, [[fixture.run.url, undefined]]);
+
+  const command = botReviewVetoWorkflowCommand(
+    new BotReviewVetoError(`example#7@${SHA}: unresolved bot thread`),
+  );
+  assert.equal(
+    command,
+    `::error title=${BOT_REVIEW_VETO_ANNOTATION_TITLE}::BOT_REVIEW_VETO NONRECOVERABLE example#7@${SHA}: unresolved bot thread`,
+  );
+  assert.equal(
+    botReviewVetoWorkflowCommand(new Error("ordinary failure")),
+    null,
+  );
+});
+
 test("trusted gate check, job, run, and source fields all fail closed", async () => {
   const cases = [
     [
@@ -2502,40 +2648,6 @@ test("trusted gate check, job, run, and source fields all fail closed", async ()
   );
 });
 
-test("bootstrap controller never reruns a gate without pinned source provenance", async () => {
-  assert.match(
-    lateReviewTimeoutCommand({ repo: "example", number: 7, headSha: SHA }),
-    new RegExp(SHA),
-  );
-  const failure = trustedGateFixture({ conclusion: "failure" });
-  const api = trustedGateApi(failure, {
-    annotations: [
-      {
-        title: "LCV_GATE_LATE_REVIEW_TIMEOUT",
-        message: `Exact-head bot review timed out for example#7 at ${SHA}`,
-      },
-    ],
-  });
-  assert.equal(
-    await recoverLateTrustedGate({
-      api,
-      owner: "LCV-Ideas-Software",
-      repo: "example",
-      headSha: SHA,
-      cleanAt: Date.parse("2026-08-08T12:01:00Z"),
-      checkRuns: [failure.checkRun],
-    }),
-    "trusted-gate-provenance-unverified",
-  );
-  assert.equal(
-    api.calls.some(
-      ([path, options]) =>
-        path?.endsWith("/rerun-failed-jobs") && options?.method === "POST",
-    ),
-    false,
-  );
-});
-
 test("allCommitsVerified is exact-head, nonempty, and fail-closed", () => {
   const verified = [
     { sha: OTHER_SHA, commit: { verification: { verified: true } } },
@@ -2580,27 +2692,6 @@ test("GitHub API pagination reads every status page and fails on truncation", as
     truncated.pages("/statuses", { maxPages: 1 }),
     /exceeded 100 records/i,
   );
-});
-
-test("pull-file evidence requests every GitHub page up to the documented cap", async () => {
-  const calls = [];
-  const files = await readPullFiles({
-    api: {
-      pages: async (...args) => {
-        calls.push(args);
-        return [{ filename: "package-lock.json", status: "modified" }];
-      },
-    },
-    owner: "LCV-Ideas-Software",
-    repo: "example",
-    number: 7,
-  });
-  assert.deepEqual(files, [
-    { filename: "package-lock.json", status: "modified" },
-  ]);
-  assert.deepEqual(calls, [
-    ["/repos/LCV-Ideas-Software/example/pulls/7/files", { maxPages: 30 }],
-  ]);
 });
 
 test("check evidence enumerates every check-run instance and legacy status page", async () => {
@@ -3198,7 +3289,6 @@ test("workflow contracts isolate the PAT and preserve write-all", async () => {
   assert.match(engine, /enqueuePullRequest/);
   assert.match(engine, /expectedHeadOid/);
   assert.match(engine, /pullRequestReview \{ databaseId commit \{ oid \} \}/);
-  assert.match(engine, /\/requested_reviewers/);
   assert.match(engine, /recheckChecks/);
   assert.match(engine, /scanCode/);
   assert.doesNotMatch(

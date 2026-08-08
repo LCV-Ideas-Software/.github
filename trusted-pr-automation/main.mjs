@@ -2,23 +2,20 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 export const ACTIONS_APP_ID = 15368;
-export const CONNECTOR_APP_ID = 1144995;
 export const CONNECTOR_ID = 199175422;
+export const CONNECTOR_NODE_ID = "BOT_kgDOC98s_g";
 export const COPILOT_REVIEWER_ID = 175728472;
 export const COPILOT_REVIEWER_NODE_ID = "BOT_kgDOCnlnWA";
-export const LATE_REVIEW_TIMEOUT_ANNOTATION = "LCV_GATE_LATE_REVIEW_TIMEOUT";
 export const TRUSTED_GATE_CHECK_NAME = "LCV Trusted Gate";
 export const TRUSTED_GATE_SOURCE_REPOSITORY = "LCV-Ideas-Software/.github";
 export const TRUSTED_GATE_SOURCE_WORKFLOW_ID = 329989853;
 export const TRUSTED_GATE_SOURCE_WORKFLOW_PATH =
   ".github/workflows/trusted-pr-gate.yml";
+export const BOT_REVIEW_VETO_ANNOTATION_TITLE = "LCV_GATE_BOT_REVIEW_VETO";
 
 const API_VERSION = "2026-03-10";
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
-const CONNECTOR_LOGINS = new Set([
-  "chatgpt-codex-connector",
-  "chatgpt-codex-connector[bot]",
-]);
+const CONNECTOR_LOGINS = new Set(["chatgpt-codex-connector"]);
 const COPILOT_REVIEWER_IDENTITY = Object.freeze({
   database_id: COPILOT_REVIEWER_ID,
   node_id: COPILOT_REVIEWER_NODE_ID,
@@ -26,89 +23,27 @@ const COPILOT_REVIEWER_IDENTITY = Object.freeze({
   graphql_login: "copilot-pull-request-reviewer",
   inline_alias_login: "Copilot",
 });
-const COPILOT_CLEAN_COMPLETION_PATTERN =
-  /^Copilot reviewed (\d+) out of (\d+) changed files? in this pull request and generated no(?: new)? comments?\.$/i;
-const COPILOT_FINDING_COMPLETION_PATTERN =
-  /^Copilot reviewed \d+ out of \d+ changed files? in this pull request and generated [1-9]\d* (?:new )?comments?\.$/i;
-const COPILOT_UNREVIEWABLE_COMPLETION =
-  "Copilot wasn't able to review any files in this pull request.";
-const COPILOT_TRANSIENT_ERROR_COMPLETION =
-  "Copilot encountered an error and was unable to review this pull request. You can try again by re-requesting a review.";
-const COPILOT_EXCLUDED_BASENAMES = new Set([
-  ".gitignore",
-  "package.json",
-  "package-lock.json",
-  "yarn.lock",
-  "jest.config.js",
-  "next.config.js",
-  "tailwind.config.js",
-  "tsconfig.json",
-  "requirements.txt",
-  "Pipfile.lock",
-  "Gemfile.lock",
-  "composer.lock",
-  "Cargo.lock",
-  "go.sum",
-  "paket.lock",
-  "pubspec.lock",
-  "stack.yaml",
-  "elm.json",
-  "Project.toml",
-  "Manifest.toml",
-  "renv.lock",
-  "build.sbt",
-  "Package.resolved",
-  "deps.edn",
-  "build.gradle",
-  "mix.lock",
-  "build.gradle.kts",
-  "cpanfile",
-  "Podfile.lock",
-  "conanfile.txt",
-  "info.rkt",
-  "rockspec",
-  "opam",
-  "rebar.config",
-  "nimble",
-  "shard.yml",
-  "dub.json",
-  "dub.sdl",
-  "GPR",
-  "Mason.toml",
-  "fpm.toml",
-  "pack.pl",
-  "baseline.st",
-  "PacletInfo.m",
-  "info.ss",
-  "Jpkg",
-  "box.json",
-  "GNAVI.xml",
-]);
-const COPILOT_EXCLUDED_DIRECTORIES = new Set([
-  "dist",
-  "node_modules",
-  "coverage",
-  "out",
-  "vendor",
-  "generated",
-  "generated-sources",
-]);
-const COPILOT_CHANGED_FILE_STATUSES = new Set([
-  "added",
-  "removed",
-  "modified",
-  "renamed",
-  "copied",
-  "changed",
-  "unchanged",
-]);
-const CLEAN_REVIEW_PREFIX = "Codex Review: Didn't find any major issues.";
-const REVIEW_REQUEST_MARKER = "LCV-TRUSTED-REVIEW-HEAD";
 const DEPENDABOT_REBASE_MARKER = "LCV-DEPENDABOT-REBASE-HEAD";
 const DEFAULT_POLL_SECONDS = 30;
 const DEFAULT_TIMEOUT_SECONDS = 15 * 60;
 
-class PendingEvidenceError extends Error {}
+export class BotReviewVetoError extends Error {
+  constructor(message, recoveryCode = "NONRECOVERABLE") {
+    super(message);
+    this.name = "BotReviewVetoError";
+    this.recoveryCode = recoveryCode;
+  }
+}
+
+export function botReviewVetoWorkflowCommand(error) {
+  if (!(error instanceof BotReviewVetoError)) return null;
+  const message = `BOT_REVIEW_VETO ${error.recoveryCode} ${error.message}`
+    .replaceAll("%", "%25")
+    .replaceAll("\r", "%0D")
+    .replaceAll("\n", "%0A");
+  return `::error title=${BOT_REVIEW_VETO_ANNOTATION_TITLE}::${message}`;
+}
+
 class StaleHeadError extends Error {
   constructor(message) {
     super(message);
@@ -135,15 +70,15 @@ function checkKey(name, appId) {
 }
 
 function isConnector(actor) {
+  const nodeId =
+    actor?.node_id ??
+    actor?.nodeId ??
+    (typeof actor?.id === "string" ? actor.id : null);
   return (
-    (actor?.id === CONNECTOR_ID || actor?.databaseId === CONNECTOR_ID) &&
+    actor?.databaseId === CONNECTOR_ID &&
+    nodeId === CONNECTOR_NODE_ID &&
+    (actor?.type ?? actor?.__typename) === "Bot" &&
     CONNECTOR_LOGINS.has(actor?.login)
-  );
-}
-
-function isConnectorApp(app) {
-  return (
-    app?.id === CONNECTOR_APP_ID && app?.slug === "chatgpt-codex-connector"
   );
 }
 
@@ -173,102 +108,40 @@ function isCopilotReviewer(actor, policy) {
   );
 }
 
-function validCopilotReviewPath(filename) {
-  if (
-    typeof filename !== "string" ||
-    !filename ||
-    filename.startsWith("/") ||
-    filename.includes("\\")
-  ) {
-    return false;
-  }
-  const segments = filename.split("/");
-  if (
-    segments.some((segment) => !segment || segment === "." || segment === "..")
-  ) {
-    return false;
-  }
-  return true;
-}
-
-export function isCopilotReviewExcludedPath(filename) {
-  if (!validCopilotReviewPath(filename)) return false;
-  const segments = filename.split("/");
-  const basename = segments.at(-1);
-  if (COPILOT_EXCLUDED_BASENAMES.has(basename)) return true;
-  if (
-    basename.endsWith(".svg") ||
-    basename.endsWith(".log") ||
-    basename.endsWith(".lock") ||
-    basename.endsWith(".ipynb.raw.html") ||
-    basename.endsWith(".min.js") ||
-    basename.endsWith(".d.ts") ||
-    basename.endsWith(".bundle.js") ||
-    basename.endsWith(".map")
-  ) {
-    return true;
-  }
-  if (segments.some((segment) => COPILOT_EXCLUDED_DIRECTORIES.has(segment))) {
-    return true;
-  }
-  const binIndex = segments.lastIndexOf("bin");
-  if (binIndex === -1 || binIndex === segments.length - 1) return false;
-  if (basename.endsWith(".rs")) return false;
-  const hybrisCustom = segments.some(
-    (segment, index) =>
-      segment === "hybris" &&
-      segments[index + 1] === "bin" &&
-      segments[index + 2] === "custom" &&
-      index + 3 < segments.length,
-  );
-  return !hybrisCustom;
-}
-
-function isCopilotReviewExcludedFile(file) {
-  if (!file || typeof file !== "object" || Array.isArray(file)) return false;
-  if (!COPILOT_CHANGED_FILE_STATUSES.has(file.status)) return false;
-  if (!isCopilotReviewExcludedPath(file.filename)) return false;
-  if (file.status === "renamed") {
-    return isCopilotReviewExcludedPath(file.previous_filename);
-  }
-  if (file.previous_filename !== undefined) {
-    return isCopilotReviewExcludedPath(file.previous_filename);
-  }
-  return true;
-}
-
-function copilotChangedFileEvidence(files) {
-  if (!Array.isArray(files) || files.length === 0) {
-    return { ok: false, reason: "Copilot changed-file evidence is empty" };
-  }
-  for (const file of files) {
-    if (
-      !file ||
-      typeof file !== "object" ||
-      Array.isArray(file) ||
-      !COPILOT_CHANGED_FILE_STATUSES.has(file.status) ||
-      !validCopilotReviewPath(file.filename) ||
-      (file.status === "renamed" &&
-        !validCopilotReviewPath(file.previous_filename)) ||
-      (file.previous_filename !== undefined &&
-        !validCopilotReviewPath(file.previous_filename))
-    ) {
-      return {
-        ok: false,
-        reason: "Copilot changed-file evidence is malformed",
-      };
+function visibleMarkdownLines(body) {
+  if (typeof body !== "string") return [];
+  const lines = [];
+  let fence = null;
+  for (const rawLine of body.split(/\r?\n/)) {
+    if (fence !== null) {
+      const closing = rawLine.match(/^( {0,3})(`{3,}|~{3,})\s*$/);
+      if (
+        closing &&
+        closing[2][0] === fence.marker &&
+        closing[2].length >= fence.length
+      ) {
+        fence = null;
+      }
+      continue;
     }
+    const opening = rawLine.match(/^( {0,3})(`{3,}|~{3,})(.*)$/);
+    if (opening) {
+      fence = { marker: opening[2][0], length: opening[2].length };
+      continue;
+    }
+    if (/^(?: {4,}|\t)/.test(rawLine)) continue;
+    const line = rawLine.trim();
+    if (!line || line.startsWith(">")) continue;
+    lines.push(line);
   }
-  return {
-    ok: true,
-    total: files.length,
-    reviewable: files.filter((file) => !isCopilotReviewExcludedFile(file))
-      .length,
-  };
+  return lines;
+}
+
+function hasExactMarkdownLine(body, expected) {
+  return visibleMarkdownLines(body).includes(expected);
 }
 
 function suppressedCopilotCommentCount(body) {
-  if (typeof body !== "string") return { ok: true, count: 0 };
   const label =
     "(?:Suppressed comments|Comments suppressed due to low confidence)";
   const summaryPattern = new RegExp(
@@ -276,32 +149,12 @@ function suppressedCopilotCommentCount(body) {
     "i",
   );
   const linePattern = new RegExp(`^${label}\\s*\\(\\s*(\\d+)\\s*\\)$`, "i");
-  const labelPattern = new RegExp(label, "i");
-  const standaloneCandidatePattern = new RegExp(
-    `^${label}(?:\\s*\\(|\\s*$)`,
-    "i",
-  );
-  const structuralLines = body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        (line.toLowerCase().includes("<summary") && labelPattern.test(line)) ||
-        standaloneCandidatePattern.test(line),
-    );
-  if (structuralLines.length === 0) return { ok: true, count: 0 };
-  if (structuralLines.length !== 1) return { ok: false };
-  const match =
-    structuralLines[0].match(summaryPattern) ??
-    structuralLines[0].match(linePattern);
-  if (!match) return { ok: false };
-  const count = Number(match[1]);
-  return Number.isSafeInteger(count) ? { ok: true, count } : { ok: false };
-}
-
-function timestamp(value) {
-  const parsed = Date.parse(value ?? "");
-  return Number.isFinite(parsed) ? parsed : 0;
+  const counts = visibleMarkdownLines(body)
+    .map((line) => line.match(summaryPattern) ?? line.match(linePattern))
+    .filter(Boolean)
+    .map((match) => Number(match[1]))
+    .filter(Number.isSafeInteger);
+  return { count: counts.length === 0 ? 0 : Math.max(...counts) };
 }
 
 export function validatePolicy(raw) {
@@ -420,8 +273,8 @@ export function requiredChecksForPhase(repositoryPolicy, phase) {
 export function isTrustedPullRequest(pullRequest, fullRepository, policy) {
   if (pullRequest?.state !== "open")
     return { ok: false, reason: "pull request is not open" };
-  if (pullRequest?.draft)
-    return { ok: false, reason: "draft pull request is not trusted" };
+  if (pullRequest?.draft !== false)
+    return { ok: false, reason: "pull request draft state is not trusted" };
   const expectedActor = policy.allowed_actors.some(
     (allowed) =>
       allowed.login === pullRequest?.user?.login &&
@@ -447,63 +300,34 @@ export function isTrustedPullRequest(pullRequest, fullRepository, policy) {
   return { ok: true };
 }
 
-function reviewedCommit(body) {
-  if (typeof body !== "string" || !body.startsWith(CLEAN_REVIEW_PREFIX))
-    return null;
-  const match = body.match(/\*\*Reviewed commit:\*\*\s+`([0-9a-f]{10,40})`/i);
-  return match?.[1]?.toLowerCase() ?? null;
-}
-
-function evidenceValue(collection, key) {
-  return collection instanceof Map ? collection.get(key) : collection?.[key];
-}
-
 export function evaluateConnectorEvidence({
   headSha,
   issueComments,
   reviews,
   threads,
-  resolvedReviewCommits,
-  requestReactions,
   policy,
 }) {
   if (!validSha(headSha))
     return { ok: false, reason: "invalid connector evidence head SHA" };
-  const exactClean = [];
-  let latestFindingAt = 0;
 
   for (const comment of issueComments ?? []) {
-    if (isReviewRequestForHead(comment, headSha, policy)) {
-      for (const reaction of evidenceValue(
-        requestReactions,
-        String(comment.id),
-      ) ?? []) {
-        if (reaction?.content === "+1" && isConnector(reaction.user)) {
-          const reactedAt = timestamp(reaction.created_at);
-          const requestCreatedAt = timestamp(comment.created_at);
-          if (requestCreatedAt > 0 && reactedAt > requestCreatedAt) {
-            exactClean.push(reactedAt);
-          }
-        }
-      }
-    }
-    if (!isConnector(comment.user)) continue;
-    const reviewed = reviewedCommit(comment.body);
+    if (!isConnector(comment?.user)) continue;
+    const body = typeof comment?.body === "string" ? comment.body.trim() : "";
+    if (!body) continue;
+    const reviewed = body
+      .match(/\*\*Reviewed commit:\*\*\s+`([0-9a-f]{10,40})`/i)?.[1]
+      ?.toLowerCase();
     if (
+      hasExactMarkdownLine(body, "### 💡 Codex Review") &&
       reviewed &&
-      evidenceValue(resolvedReviewCommits, reviewed) === headSha &&
-      isConnectorApp(comment.performed_via_github_app)
+      headSha.startsWith(reviewed)
     ) {
-      const reviewedAt = timestamp(comment.created_at);
-      if (reviewedAt > 0) exactClean.push(reviewedAt);
-    } else if (
-      typeof comment.body === "string" &&
-      comment.body.startsWith("Codex Review:")
-    ) {
-      latestFindingAt = Math.max(
-        latestFindingAt,
-        timestamp(comment.created_at),
-      );
+      return {
+        ok: false,
+        reason:
+          "connector issue comment reports a current-head finding without a resolvable thread",
+        botVeto: true,
+      };
     }
   }
 
@@ -515,70 +339,101 @@ export function evaluateConnectorEvidence({
     ),
     (review) => identityKey(review?.user?.login, review?.user?.id),
   );
-  for (const review of latestDecisiveReviews.values()) {
-    if (review?.state === "CHANGES_REQUESTED") {
-      return { ok: false, reason: "changes requested on the current head" };
-    }
-  }
+  const requestedChanges = [...latestDecisiveReviews.values()].filter(
+    (review) => review?.state === "CHANGES_REQUESTED",
+  );
+  const humanChangeRequest = requestedChanges.some(
+    (review) =>
+      !isConnector(review?.user) && !isCopilotReviewer(review?.user, policy),
+  );
+  const connectorChangeRequest = requestedChanges.some((review) =>
+    isConnector(review?.user),
+  );
+  const copilotChangeRequest = requestedChanges.some((review) =>
+    isCopilotReviewer(review?.user, policy),
+  );
+  const decisiveVeto =
+    requestedChanges.length === 0
+      ? null
+      : {
+          ok: false,
+          reason: "changes requested on the current head",
+          botVeto: !humanChangeRequest,
+          recoveryCode: humanChangeRequest
+            ? undefined
+            : connectorChangeRequest
+              ? "CONNECTOR_CHANGES_REQUESTED"
+              : copilotChangeRequest
+                ? "COPILOT_CHANGES_REQUESTED"
+                : undefined,
+        };
+  if (decisiveVeto && !decisiveVeto.botVeto) return decisiveVeto;
 
-  for (const review of reviews ?? []) {
-    if (!isConnector(review?.user) || review?.commit_id !== headSha) continue;
-    if (typeof review.body === "string" && review.body.trim()) {
-      latestFindingAt = Math.max(
-        latestFindingAt,
-        timestamp(review.submitted_at),
+  const correlatedConnectorComments = new Map();
+  let unresolvedConnectorThread = false;
+  for (const thread of threads ?? []) {
+    const connectorLookingComments = (thread.comments ?? []).filter((comment) =>
+      isConnector(comment.author),
+    );
+    if (connectorLookingComments.length === 0) continue;
+    if (!thread.isResolved) {
+      unresolvedConnectorThread = true;
+    }
+    for (const comment of connectorLookingComments) {
+      const sourceReview = (reviews ?? []).find(
+        (review) => review?.id === comment?.reviewId,
+      );
+      if (
+        !Number.isInteger(comment?.reviewId) ||
+        !validSha(comment?.reviewCommit?.oid) ||
+        !isConnector(sourceReview?.user) ||
+        sourceReview?.commit_id !== comment?.reviewCommit?.oid
+      ) {
+        continue;
+      }
+      correlatedConnectorComments.set(
+        comment.reviewId,
+        (correlatedConnectorComments.get(comment.reviewId) ?? 0) + 1,
       );
     }
   }
-
-  for (const thread of threads ?? []) {
-    const connectorComments = (thread.comments ?? []).filter((comment) =>
-      isConnector(comment.author),
-    );
-    if (connectorComments.length === 0) continue;
+  for (const review of reviews ?? []) {
+    if (!isConnector(review?.user) || review?.commit_id !== headSha) continue;
     if (
-      connectorComments.some((comment) => !validSha(comment?.reviewCommit?.oid))
+      ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review?.state)
+    ) {
+      continue;
+    }
+    if (review?.state !== "COMMENTED") {
+      continue;
+    }
+    const body = typeof review.body === "string" ? review.body.trim() : "";
+    if (!body) continue;
+    if (
+      hasExactMarkdownLine(body, "### 💡 Codex Review") &&
+      (correlatedConnectorComments.get(review.id) ?? 0) === 0
     ) {
       return {
         ok: false,
-        reason: "connector thread has no immutable review commit",
+        reason:
+          "connector review reports a current-head finding without a resolvable thread",
+        botVeto: true,
       };
     }
-    if (!thread.isResolved) {
-      return { ok: false, reason: "unresolved connector thread remains" };
-    }
-    const currentHeadComments = connectorComments.filter(
-      (comment) => comment?.reviewCommit?.oid === headSha,
-    );
-    if (currentHeadComments.length === 0) continue;
-    for (const comment of currentHeadComments) {
-      latestFindingAt = Math.max(latestFindingAt, timestamp(comment.createdAt));
-    }
   }
-
-  if (exactClean.length === 0) {
+  if (unresolvedConnectorThread) {
     return {
       ok: false,
-      reason: "no clean connector review exists for the exact head",
+      reason: "unresolved connector thread remains",
+      botVeto: true,
+      recoveryCode: "UNRESOLVED_CONNECTOR_THREAD",
     };
   }
-  if (Math.max(...exactClean) <= latestFindingAt) {
-    return {
-      ok: false,
-      reason:
-        "no clean connector review exists after the latest connector finding",
-    };
-  }
-  return { ok: true, cleanAt: Math.max(...exactClean) };
+  if (decisiveVeto) return decisiveVeto;
+  return { ok: true };
 }
 
-export function evaluateCopilotEvidence({
-  headSha,
-  reviews,
-  threads,
-  files,
-  policy,
-}) {
+export function evaluateCopilotEvidence({ headSha, reviews, threads, policy }) {
   if (!validSha(headSha)) {
     return { ok: false, reason: "invalid Copilot evidence head SHA" };
   }
@@ -586,49 +441,32 @@ export function evaluateCopilotEvidence({
   const copilotReviews = (reviews ?? []).filter((review) =>
     isCopilotReviewer(review?.user, policy),
   );
+  const correlatedComments = new Map();
+  let unresolvedCopilotThread = false;
 
   for (const thread of threads ?? []) {
-    const copilotComments = (thread.comments ?? []).filter((comment) =>
+    const copilotLookingComments = (thread.comments ?? []).filter((comment) =>
       isCopilotReviewer(comment?.author, policy),
     );
-    if (copilotComments.length === 0) continue;
-    if (
-      copilotComments.some((comment) => !validSha(comment?.reviewCommit?.oid))
-    ) {
-      return {
-        ok: false,
-        reason: "Copilot thread has no immutable review commit",
-      };
-    }
-    if (
-      copilotComments.some((comment) => {
-        const sourceReview = copilotReviews.find(
-          (review) => review?.id === comment?.reviewId,
-        );
-        return (
-          !Number.isInteger(comment?.reviewId) ||
-          sourceReview?.commit_id !== comment?.reviewCommit?.oid
-        );
-      })
-    ) {
-      return {
-        ok: false,
-        reason: "Copilot thread review identity is inconsistent",
-      };
-    }
-    if (
-      copilotComments.some((comment) => comment?.reviewCommit?.oid === headSha)
-    ) {
-      return {
-        ok: false,
-        reason: "Copilot finding exists on the current head",
-      };
-    }
+    if (copilotLookingComments.length === 0) continue;
     if (!thread.isResolved) {
-      return {
-        ok: false,
-        reason: "unresolved Copilot review thread remains",
-      };
+      unresolvedCopilotThread = true;
+    }
+    for (const comment of copilotLookingComments) {
+      const sourceReview = copilotReviews.find(
+        (review) => review?.id === comment?.reviewId,
+      );
+      if (
+        !Number.isInteger(comment?.reviewId) ||
+        !validSha(comment?.reviewCommit?.oid) ||
+        sourceReview?.commit_id !== comment?.reviewCommit?.oid
+      ) {
+        continue;
+      }
+      correlatedComments.set(
+        comment.reviewId,
+        (correlatedComments.get(comment.reviewId) ?? 0) + 1,
+      );
     }
   }
 
@@ -637,272 +475,67 @@ export function evaluateCopilotEvidence({
     .sort((left, right) => Number(right?.id ?? 0) - Number(left?.id ?? 0));
   const exactReview = exactReviews[0];
   if (!exactReview) {
-    return {
-      ok: false,
-      reason: "no Copilot review COMMENTED exists for the exact head",
-    };
-  }
-  if (!Number.isInteger(exactReview.id)) {
-    return {
-      ok: false,
-      reason: "Copilot exact-head review has no immutable identity",
-    };
-  }
-  if (exactReview.state !== "COMMENTED") {
-    return {
-      ok: false,
-      reason: "Copilot exact-head review has an unexpected state",
-    };
-  }
-
-  for (const review of exactReviews) {
-    const suppressed = suppressedCopilotCommentCount(review?.body);
-    if (!suppressed.ok) {
+    if (unresolvedCopilotThread) {
       return {
         ok: false,
-        reason:
-          "Copilot exact-head review has malformed suppressed-comments metadata",
+        reason: "unresolved Copilot review thread remains",
+        recoveryCode: "UNRESOLVED_COPILOT_THREAD",
       };
     }
+    return { ok: true };
+  }
+
+  const latestDecisiveCopilotReview = [...exactReviews]
+    .filter((review) =>
+      ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review?.state),
+    )
+    .sort((left, right) => Number(right?.id ?? 0) - Number(left?.id ?? 0))[0];
+  const decisiveCopilotVeto =
+    latestDecisiveCopilotReview?.state === "CHANGES_REQUESTED"
+      ? {
+          ok: false,
+          reason: "Copilot requested changes on the current head",
+          recoveryCode: "COPILOT_CHANGES_REQUESTED",
+        }
+      : null;
+
+  for (const review of exactReviews) {
+    if (review.state !== "COMMENTED") {
+      continue;
+    }
+    const suppressed = suppressedCopilotCommentCount(review?.body);
     if (suppressed.count > 0) {
       return {
         ok: false,
         reason: "suppressed Copilot finding exists on the current head",
       };
     }
-    const reviewLines =
-      typeof review?.body === "string"
-        ? review.body.split(/\r?\n/).map((line) => line.trim())
-        : [];
-    if (
-      reviewLines.some((line) => COPILOT_FINDING_COMPLETION_PATTERN.test(line))
-    ) {
-      return {
-        ok: false,
-        reason: "Copilot finding exists on the current head",
-      };
-    }
-  }
-
-  const lines =
-    typeof exactReview.body === "string"
-      ? exactReview.body
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter(Boolean)
-      : [];
-  if (lines.includes(COPILOT_TRANSIENT_ERROR_COMPLETION)) {
-    return {
-      ok: false,
-      reason: "Copilot review attempt failed for the exact head",
-    };
-  }
-
-  if (lines.includes(COPILOT_UNREVIEWABLE_COMPLETION)) {
-    const fileEvidence = copilotChangedFileEvidence(files);
-    if (!fileEvidence.ok || fileEvidence.reviewable !== 0) {
-      return {
-        ok: false,
-        reason: "Copilot could not review all changed files on the exact head",
-      };
-    }
-    return { ok: true };
-  }
-
-  const fileEvidence = copilotChangedFileEvidence(files);
-  if (!fileEvidence.ok) return fileEvidence;
-
-  const completions = lines
-    .map((line) => line.match(COPILOT_CLEAN_COMPLETION_PATTERN))
-    .filter(Boolean);
-  if (completions.length !== 1) {
-    return {
-      ok: false,
-      reason: "Copilot exact-head review has an unrecognized completion body",
-    };
-  }
-  const reviewed = Number(completions[0][1]);
-  const changed = Number(completions[0][2]);
-  if (
-    !Number.isSafeInteger(reviewed) ||
-    !Number.isSafeInteger(changed) ||
-    reviewed <= 0 ||
-    reviewed < fileEvidence.reviewable ||
-    reviewed > changed ||
-    changed !== fileEvidence.total
-  ) {
-    return {
-      ok: false,
-      reason: "Copilot review coverage does not match the exact-head diff",
-    };
-  }
-  return { ok: true };
-}
-
-export function connectorFailureCanSettleWithoutHeadChange(reason) {
-  return (
-    typeof reason === "string" &&
-    (reason.startsWith("no clean connector review") ||
-      reason === "unresolved connector thread remains")
-  );
-}
-
-export function copilotFailureCanSettleWithoutHeadChange(reason) {
-  return (
-    reason === "no Copilot review COMMENTED exists for the exact head" ||
-    reason === "unresolved Copilot review thread remains"
-  );
-}
-
-export function controllerCopilotDisposition(reason) {
-  if (!copilotFailureCanSettleWithoutHeadChange(reason)) {
-    throw new Error("Copilot blocker is not safely observable");
-  }
-  return reason === "no Copilot review COMMENTED exists for the exact head"
-    ? "request-review"
-    : `copilot-blocked: ${reason}`;
-}
-
-export function controllerConnectorDisposition(reason) {
-  if (!connectorFailureCanSettleWithoutHeadChange(reason)) {
-    throw new Error("connector blocker is not safely observable");
-  }
-  return reason.startsWith("no clean connector review")
-    ? "request-review"
-    : `connector-blocked: ${reason}`;
-}
-
-export function reviewRequestBody(headSha) {
-  if (!validSha(headSha)) throw new Error("invalid review-request head SHA");
-  return `@codex review\n\n<!-- ${REVIEW_REQUEST_MARKER}:${headSha} -->`;
-}
-
-function isReviewRequestForHead(comment, headSha, policy) {
-  const expectedBody = `@codex review\n\n<!-- ${REVIEW_REQUEST_MARKER}:${headSha} -->`;
-  const createdAt = timestamp(comment?.created_at);
-  const updatedAt = timestamp(comment?.updated_at);
-  return (
-    Number.isInteger(comment?.id) &&
-    createdAt > 0 &&
-    updatedAt > 0 &&
-    comment.created_at === comment.updated_at &&
-    policy?.allowed_actors?.some(
-      (allowed) =>
-        allowed.login === comment?.user?.login &&
-        allowed.id === comment?.user?.id,
-    ) &&
-    comment?.body === expectedBody
-  );
-}
-
-export function hasReviewRequestForHead(issueComments, headSha, policy) {
-  return (issueComments ?? []).some((comment) =>
-    isReviewRequestForHead(comment, headSha, policy),
-  );
-}
-
-export async function resolveConnectorReviewCommits({
-  api,
-  owner,
-  repo,
-  headSha,
-  issueComments,
-}) {
-  if (!validSha(headSha))
-    throw new Error(`${repo}: invalid review-resolution head SHA`);
-  const prefixes = new Set();
-  for (const comment of issueComments ?? []) {
-    if (
-      !isConnector(comment?.user) ||
-      !isConnectorApp(comment?.performed_via_github_app)
-    ) {
-      continue;
-    }
-    const prefix = reviewedCommit(comment.body);
-    if (prefix && headSha.toLowerCase().startsWith(prefix))
-      prefixes.add(prefix);
-  }
-  const resolved = new Map();
-  for (const prefix of prefixes) {
-    const commit = await api.request(
-      `/repos/${owner}/${repo}/commits/${prefix}`,
-    );
-    if (
-      !validSha(commit?.sha) ||
-      !commit.sha.toLowerCase().startsWith(prefix)
-    ) {
-      throw new Error(
-        `${repo}: reviewed commit prefix ${prefix} did not resolve uniquely`,
-      );
-    }
-    resolved.set(prefix, commit.sha);
-  }
-  return resolved;
-}
-
-async function readRequestReactions({
-  api,
-  owner,
-  repo,
-  headSha,
-  issueComments,
-  policy,
-}) {
-  const reactions = new Map();
-  for (const comment of issueComments ?? []) {
-    if (!isReviewRequestForHead(comment, headSha, policy)) continue;
-    reactions.set(
-      String(comment.id),
-      await api.pages(
-        `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions`,
+    const body = typeof review.body === "string" ? review.body : "";
+    const reportsVisibleFinding = visibleMarkdownLines(body).some((line) =>
+      /^Copilot reviewed \d+ out of \d+ changed files? in this pull request and generated [1-9]\d* (?:new )?comments?\.$/i.test(
+        line,
       ),
     );
+    if (
+      reportsVisibleFinding &&
+      (correlatedComments.get(review.id) ?? 0) === 0
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Copilot review reports a current-head finding without a resolvable thread",
+      };
+    }
   }
-  return reactions;
-}
-
-export async function ensureConnectorReviewRequest({
-  api,
-  owner,
-  repo,
-  number,
-  headSha,
-  issueComments,
-  policy,
-}) {
-  if (hasReviewRequestForHead(issueComments, headSha, policy)) {
-    return "connector-review-pending";
+  if (unresolvedCopilotThread) {
+    return {
+      ok: false,
+      reason: "unresolved Copilot review thread remains",
+      recoveryCode: "UNRESOLVED_COPILOT_THREAD",
+    };
   }
-  await api.request(`/repos/${owner}/${repo}/issues/${number}/comments`, {
-    method: "POST",
-    body: { body: reviewRequestBody(headSha) },
-  });
-  return "connector-review-requested";
-}
-
-export async function ensureCopilotReviewRequest({
-  api,
-  owner,
-  repo,
-  number,
-  requestedReviewers,
-  policy,
-}) {
-  if (
-    (requestedReviewers ?? []).some((reviewer) =>
-      isCopilotReviewer(reviewer, policy),
-    )
-  ) {
-    return "copilot-review-pending";
-  }
-  await api.request(
-    `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`,
-    {
-      method: "POST",
-      body: { reviewers: [policy.copilot_reviewer.rest_review_login] },
-    },
-  );
-  return "copilot-review-requested";
+  if (decisiveCopilotVeto) return decisiveCopilotVeto;
+  return { ok: true };
 }
 
 export function dependabotRebaseBody(headSha) {
@@ -916,22 +549,61 @@ export async function ensureDependabotRebaseRequest({
   repo,
   number,
   headSha,
-  issueComments,
+  expectedBase,
   policy,
 }) {
-  const marker = `<!-- ${DEPENDABOT_REBASE_MARKER}:${headSha} -->`;
-  const exists = (issueComments ?? []).some(
+  if (
+    !Number.isInteger(number) ||
+    !validSha(headSha) ||
+    !validSha(expectedBase)
+  ) {
+    throw new Error("invalid Dependabot rebase boundary identity");
+  }
+  const expectedBody = dependabotRebaseBody(headSha);
+  const issueComments = await api.pages(
+    `/repos/${owner}/${repo}/issues/${number}/comments`,
+  );
+  const exists = issueComments.some(
     (comment) =>
       policy.allowed_actors.some(
         (allowed) =>
           allowed.login === comment?.user?.login &&
           allowed.id === comment?.user?.id,
-      ) && comment?.body?.includes(marker),
+      ) && comment?.body === expectedBody,
   );
   if (exists) return "dependabot-rebase-pending";
+
+  const mainSha = await currentMain(api, owner, repo);
+  const pullRequest = await api.request(
+    `/repos/${owner}/${repo}/pulls/${number}`,
+  );
+  const fullRepository = `${owner}/${repo}`;
+  if (
+    pullRequest?.number !== number ||
+    pullRequest?.state !== "open" ||
+    pullRequest?.draft !== false ||
+    pullRequest?.base?.ref !== "main" ||
+    pullRequest?.user?.login !== "dependabot[bot]" ||
+    pullRequest?.user?.id !== 49699333 ||
+    pullRequest?.head?.repo?.full_name !== fullRepository ||
+    pullRequest?.base?.repo?.full_name !== fullRepository ||
+    pullRequest?.head?.sha !== headSha ||
+    pullRequest?.base?.sha !== expectedBase ||
+    mainSha !== expectedBase
+  ) {
+    return "dependabot-rebase-stale";
+  }
+  const mergeability = classifyPullRequestMergeability(pullRequest);
+  if (mergeability === "pending") {
+    return "dependabot-rebase-mergeability-pending";
+  }
+  if (mergeability === "ready") return "dependabot-rebase-no-conflict";
+  if (mergeability !== "conflict") {
+    throw new Error("Dependabot rebase mergeability is incoherent");
+  }
   await api.request(`/repos/${owner}/${repo}/issues/${number}/comments`, {
     method: "POST",
-    body: { body: dependabotRebaseBody(headSha) },
+    body: { body: expectedBody },
   });
   return "dependabot-rebase-requested";
 }
@@ -1201,6 +873,8 @@ async function verifyTrustedGateCheck({
     job?.workflow_name !== TRUSTED_GATE_CHECK_NAME ||
     job?.status !== checkRun.status ||
     job?.conclusion !== checkRun.conclusion ||
+    !Number.isSafeInteger(job?.run_attempt) ||
+    job.run_attempt <= 0 ||
     job?.run_id !== runId
   ) {
     throw new Error("LCV Trusted Gate job identity is inconsistent");
@@ -1237,8 +911,8 @@ async function verifyTrustedGateCheck({
     run?.workflow_url !== workflowUrl ||
     run?.repository?.full_name !== fullRepository ||
     run?.head_repository?.full_name !== fullRepository ||
-    run?.status !== checkRun.status ||
-    run?.conclusion !== checkRun.conclusion
+    !Number.isSafeInteger(run?.run_attempt) ||
+    run.run_attempt < job.run_attempt
   ) {
     throw new Error("LCV Trusted Gate workflow-run identity is inconsistent");
   }
@@ -1259,7 +933,106 @@ async function verifyTrustedGateCheck({
   // but it does not expose job.workflow_sha for a ruleset-required run. Until
   // the .github-private canary supplies an observable, documented pin binding,
   // this bootstrap controller deliberately has no enqueue authority.
-  return { checkRun, run, sourceRevisionVerified: false };
+  return { checkRun, job, run, sourceRevisionVerified: false };
+}
+
+export function selectCurrentTrustedGateRun(verified) {
+  if (!Array.isArray(verified) || verified.length === 0) {
+    throw new Error("no authenticated LCV Trusted Gate run exists");
+  }
+  const byRun = new Map();
+  for (const candidate of verified) {
+    const runId = candidate?.run?.id;
+    const runAttempt = candidate?.run?.run_attempt;
+    const jobAttempt = candidate?.job?.run_attempt;
+    if (
+      !Number.isSafeInteger(runId) ||
+      runId <= 0 ||
+      !Number.isSafeInteger(runAttempt) ||
+      runAttempt <= 0 ||
+      !Number.isSafeInteger(jobAttempt) ||
+      jobAttempt <= 0 ||
+      jobAttempt > runAttempt
+    ) {
+      throw new Error("LCV Trusted Gate run-attempt identity is inconsistent");
+    }
+    const entries = byRun.get(runId) ?? [];
+    entries.push(candidate);
+    byRun.set(runId, entries);
+  }
+  const currentByRun = [];
+  for (const entries of byRun.values()) {
+    const attempts = new Set(entries.map(({ run }) => run.run_attempt));
+    if (attempts.size !== 1) {
+      throw new Error("LCV Trusted Gate run attempt changed across evidence");
+    }
+    const [runAttempt] = attempts;
+    const current = entries.filter(({ job }) => job.run_attempt === runAttempt);
+    if (current.length === 0) {
+      throw new Error("no check exists for the current run attempt");
+    }
+    if (current.length !== 1) {
+      throw new Error("multiple checks exist for the current run attempt");
+    }
+    const [candidate] = current;
+    if (
+      candidate.run.status !== candidate.checkRun.status ||
+      candidate.run.conclusion !== candidate.checkRun.conclusion
+    ) {
+      throw new Error("current LCV Trusted Gate outcome is inconsistent");
+    }
+    currentByRun.push(candidate);
+  }
+  currentByRun.sort((left, right) => right.run.id - left.run.id);
+  if (
+    currentByRun.length > 1 &&
+    currentByRun[0].run.id === currentByRun[1].run.id
+  ) {
+    throw new Error("multiple current LCV Trusted Gate runs are ambiguous");
+  }
+  return currentByRun[0];
+}
+
+export function isRecoverableBotReviewVetoFailure({
+  current,
+  annotations,
+  owner,
+  repo,
+  number,
+  headSha,
+}) {
+  if (
+    current?.sourceRevisionVerified !== true ||
+    !Number.isInteger(number) ||
+    !validSha(headSha) ||
+    current?.checkRun?.status !== "completed" ||
+    current?.checkRun?.conclusion !== "failure" ||
+    current?.job?.run_attempt !== 1 ||
+    current?.run?.run_attempt !== 1 ||
+    current?.run?.head_sha !== headSha ||
+    current?.run?.event !== "pull_request" ||
+    current?.run?.repository?.full_name !== `${owner}/${repo}` ||
+    current?.run?.head_repository?.full_name !== `${owner}/${repo}`
+  ) {
+    return false;
+  }
+  const expectedPrefixes = [
+    "UNRESOLVED_CONNECTOR_THREAD",
+    "UNRESOLVED_COPILOT_THREAD",
+    "CONNECTOR_CHANGES_REQUESTED",
+    "COPILOT_CHANGES_REQUESTED",
+  ].map((code) => `BOT_REVIEW_VETO ${code} ${repo}#${number}@${headSha}: `);
+  const botVetoAnnotations = (annotations ?? []).filter(
+    (annotation) => annotation?.title === BOT_REVIEW_VETO_ANNOTATION_TITLE,
+  );
+  if (botVetoAnnotations.length !== 1) return false;
+  const [annotation] = botVetoAnnotations;
+  return (
+    annotation?.annotation_level === "failure" &&
+    typeof annotation?.message === "string" &&
+    expectedPrefixes.filter((prefix) => annotation.message.startsWith(prefix))
+      .length === 1
+  );
 }
 
 export async function inspectTrustedGate({
@@ -1269,6 +1042,7 @@ export async function inspectTrustedGate({
   headSha,
   checkRuns,
   expectedEvent = "pull_request",
+  number,
 }) {
   if (!validSha(headSha))
     throw new Error("invalid trusted-gate recovery head SHA");
@@ -1287,98 +1061,44 @@ export async function inspectTrustedGate({
       }),
     );
   }
+  const current = selectCurrentTrustedGateRun(verified);
   if (verified.some(({ sourceRevisionVerified }) => !sourceRevisionVerified)) {
     return { outcome: "trusted-gate-provenance-unverified" };
   }
-  if (verified.some(({ checkRun }) => checkRun.status !== "completed")) {
+  if (current.checkRun.status !== "completed") {
     return { outcome: "trusted-gate-pending" };
   }
-  const failures = verified.filter(
-    ({ checkRun }) => checkRun.conclusion !== "success",
-  );
-  if (failures.length === 0) return { outcome: "trusted-gate-success" };
-  if (failures.length !== 1) {
-    throw new Error("multiple LCV Trusted Gate runs failed");
+  if (current.checkRun.conclusion === "success") {
+    return { outcome: "trusted-gate-success" };
   }
-  const [{ checkRun, run }] = failures;
+  const { checkRun, run } = current;
   if (!["failure", "timed_out"].includes(checkRun.conclusion)) {
     throw new Error(
       `LCV Trusted Gate concluded ${checkRun.conclusion ?? "without conclusion"}`,
     );
   }
-  return {
-    outcome: "trusted-gate-rerun-needed",
-    checkRunId: checkRun.id,
-    run,
-  };
-}
-
-function isExactLateReviewTimeoutAnnotation(annotation, repo, headSha) {
-  if (annotation?.title !== LATE_REVIEW_TIMEOUT_ANNOTATION) return false;
-  const prefix = `Exact-head bot review timed out for ${repo}#`;
-  const suffix = ` at ${headSha}`;
-  if (
-    typeof annotation.message !== "string" ||
-    !annotation.message.startsWith(prefix) ||
-    !annotation.message.endsWith(suffix)
-  ) {
-    return false;
-  }
-  const pullNumber = annotation.message.slice(prefix.length, -suffix.length);
-  return /^[1-9]\d*$/.test(pullNumber);
-}
-
-export async function recoverLateTrustedGate({
-  api,
-  owner,
-  repo,
-  headSha,
-  cleanAt,
-  checkRuns,
-}) {
-  const candidate = await inspectTrustedGate({
-    api,
-    owner,
-    repo,
-    checkRuns,
-    headSha,
-  });
-  if (candidate.outcome !== "trusted-gate-rerun-needed")
-    return candidate.outcome;
-  const annotations = await api.pages(
-    `/repos/${owner}/${repo}/check-runs/${candidate.checkRunId}/annotations`,
-  );
-  if (
-    !annotations.some((annotation) =>
-      isExactLateReviewTimeoutAnnotation(annotation, repo, headSha),
-    )
-  ) {
-    throw new Error(
-      "LCV Trusted Gate failure is not an attributable late-review timeout",
+  if (checkRun.conclusion === "failure" && Number.isInteger(number)) {
+    const annotations = await api.pages(
+      `/repos/${owner}/${repo}/check-runs/${checkRun.id}/annotations`,
     );
+    if (
+      isRecoverableBotReviewVetoFailure({
+        current,
+        annotations,
+        owner,
+        repo,
+        number,
+        headSha,
+      })
+    ) {
+      return {
+        outcome: "trusted-gate-bot-veto-rerun-needed",
+        checkRunId: checkRun.id,
+        run,
+      };
+    }
   }
-  const { run } = candidate;
-  const completedAt = timestamp(run.updated_at ?? run.completed_at);
-  if (!Number.isFinite(cleanAt) || cleanAt <= 0 || completedAt <= 0) {
-    throw new Error("LCV Trusted Gate has invalid recovery timestamps");
-  }
-  if (run.run_attempt > 1) {
-    if (run.status !== "completed") return "trusted-gate-rerun-pending";
-    if (run.conclusion === "success") return "trusted-gate-rerun-pending";
-    throw new Error(
-      "LCV Trusted Gate late-review recovery was already exhausted",
-    );
-  }
-  if (run.run_attempt !== 1 || run.status !== "completed") {
-    throw new Error(
-      "LCV Trusted Gate Actions run is not eligible for recovery",
-    );
-  }
-  await api.request(
-    `/repos/${owner}/${repo}/actions/runs/${run.id}/rerun-failed-jobs`,
-    { method: "POST" },
-  );
-  return "trusted-gate-rerun-requested";
+  return { outcome: "trusted-gate-failed", checkRunId: checkRun.id, run };
 }
 
 export function allCommitsVerified(commits, headSha) {
@@ -1580,12 +1300,49 @@ async function loadPolicy() {
   return validatePolicy(raw);
 }
 
-async function reviewThreads(api, owner, repo, number) {
+export async function readBotReviewEvidence(api, owner, repo, number) {
   const query = `
-    query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+    query($owner: String!, $repo: String!, $number: Int!) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $number) {
-          reviewThreads(first: 100, after: $cursor) {
+          number
+          state
+          isDraft
+          headRefOid
+          baseRefOid
+          baseRefName
+          comments(first: 100) {
+            nodes {
+              databaseId
+              body
+              createdAt
+              updatedAt
+              author {
+                __typename
+                login
+                ... on User { databaseId id }
+                ... on Bot { databaseId id }
+              }
+            }
+            pageInfo { hasNextPage }
+          }
+          reviews(first: 100) {
+            nodes {
+              databaseId
+              body
+              state
+              submittedAt
+              commit { oid }
+              author {
+                __typename
+                login
+                ... on User { databaseId id }
+                ... on Bot { databaseId id }
+              }
+            }
+            pageInfo { hasNextPage }
+          }
+          reviewThreads(first: 100) {
             nodes {
               isResolved
               isOutdated
@@ -1606,35 +1363,82 @@ async function reviewThreads(api, owner, repo, number) {
                 pageInfo { hasNextPage }
               }
             }
-            pageInfo { hasNextPage endCursor }
+            pageInfo { hasNextPage }
           }
         }
       }
     }`;
-  const result = [];
-  let cursor = null;
-  for (let page = 0; page < 10; page += 1) {
-    const data = await api.graphql(query, { owner, repo, number, cursor });
-    const connection = data?.repository?.pullRequest?.reviewThreads;
-    if (!connection)
-      throw new Error(`#${number}: review threads were unavailable`);
-    for (const thread of connection.nodes ?? []) {
-      if (thread.comments?.pageInfo?.hasNextPage) {
-        throw new Error(`#${number}: a review thread exceeded 100 comments`);
-      }
-      result.push({
-        ...thread,
-        comments: (thread.comments?.nodes ?? []).map((comment) => ({
-          ...comment,
-          reviewId: comment.pullRequestReview?.databaseId ?? null,
-          reviewCommit: comment.pullRequestReview?.commit ?? null,
-        })),
-      });
-    }
-    if (!connection.pageInfo?.hasNextPage) return result;
-    cursor = connection.pageInfo.endCursor;
+  const data = await api.graphql(query, { owner, repo, number });
+  const pullRequest = data?.repository?.pullRequest;
+  const comments = pullRequest?.comments;
+  const reviews = pullRequest?.reviews;
+  const threads = pullRequest?.reviewThreads;
+  const validConnection = (connection) =>
+    connection &&
+    typeof connection === "object" &&
+    Array.isArray(connection.nodes) &&
+    typeof connection.pageInfo?.hasNextPage === "boolean";
+  if (
+    !Number.isInteger(pullRequest?.number) ||
+    !validSha(pullRequest?.headRefOid) ||
+    !validSha(pullRequest?.baseRefOid) ||
+    typeof pullRequest?.baseRefName !== "string" ||
+    typeof pullRequest?.state !== "string" ||
+    typeof pullRequest?.isDraft !== "boolean" ||
+    !validConnection(comments) ||
+    !validConnection(reviews) ||
+    !validConnection(threads) ||
+    threads.nodes.some(
+      (thread) =>
+        typeof thread?.isResolved !== "boolean" ||
+        !validConnection(thread?.comments),
+    )
+  ) {
+    throw new Error(`#${number}: BOT_EVIDENCE_INVALID`);
   }
-  throw new Error(`#${number}: review threads exceeded 1000 records`);
+  if (
+    comments.pageInfo?.hasNextPage ||
+    reviews.pageInfo?.hasNextPage ||
+    threads.pageInfo?.hasNextPage ||
+    (threads.nodes ?? []).some(
+      (thread) => thread.comments?.pageInfo?.hasNextPage,
+    )
+  ) {
+    throw new Error(`#${number}: BOT_EVIDENCE_TRUNCATED`);
+  }
+  return {
+    pullRequest: {
+      number: pullRequest.number,
+      state: pullRequest.state,
+      isDraft: pullRequest.isDraft,
+      headRefOid: pullRequest.headRefOid,
+      baseRefOid: pullRequest.baseRefOid,
+      baseRefName: pullRequest.baseRefName,
+    },
+    issueComments: (comments.nodes ?? []).map((comment) => ({
+      id: comment.databaseId,
+      user: comment.author,
+      body: comment.body,
+      created_at: comment.createdAt,
+      updated_at: comment.updatedAt,
+    })),
+    reviews: (reviews.nodes ?? []).map((review) => ({
+      id: review.databaseId,
+      user: review.author,
+      state: review.state,
+      commit_id: review.commit?.oid ?? null,
+      body: review.body,
+      submitted_at: review.submittedAt,
+    })),
+    threads: (threads.nodes ?? []).map((thread) => ({
+      ...thread,
+      comments: (thread.comments?.nodes ?? []).map((comment) => ({
+        ...comment,
+        reviewId: comment.pullRequestReview?.databaseId ?? null,
+        reviewCommit: comment.pullRequestReview?.commit ?? null,
+      })),
+    })),
+  };
 }
 
 export async function readCheckEvidence(api, owner, repo, sha) {
@@ -1647,48 +1451,19 @@ export async function readCheckEvidence(api, owner, repo, sha) {
   return { checkRuns, statuses };
 }
 
-export async function readPullFiles({ api, owner, repo, number }) {
-  return api.pages(`/repos/${owner}/${repo}/pulls/${number}/files`, {
-    maxPages: 30,
-  });
-}
-
-async function readPullEvidence(api, owner, repo, number, policy) {
-  const [pullRequest, issueComments, reviews, threads, commits, files] =
-    await Promise.all([
-      api.request(`/repos/${owner}/${repo}/pulls/${number}`),
-      api.pages(`/repos/${owner}/${repo}/issues/${number}/comments`),
-      api.pages(`/repos/${owner}/${repo}/pulls/${number}/reviews`),
-      reviewThreads(api, owner, repo, number),
-      api.pages(`/repos/${owner}/${repo}/pulls/${number}/commits`),
-      readPullFiles({ api, owner, repo, number }),
-    ]);
-  const [resolvedReviewCommits, requestReactions] = await Promise.all([
-    resolveConnectorReviewCommits({
-      api,
-      owner,
-      repo,
-      headSha: pullRequest.head.sha,
-      issueComments,
-    }),
-    readRequestReactions({
-      api,
-      owner,
-      repo,
-      headSha: pullRequest.head.sha,
-      issueComments,
-      policy,
-    }),
+async function readPullEvidence(api, owner, repo, number) {
+  const [pullRequest, botEvidence, commits] = await Promise.all([
+    api.request(`/repos/${owner}/${repo}/pulls/${number}`),
+    readBotReviewEvidence(api, owner, repo, number),
+    api.pages(`/repos/${owner}/${repo}/pulls/${number}/commits`),
   ]);
   return {
     pullRequest,
-    issueComments,
-    reviews,
-    threads,
+    issueComments: botEvidence.issueComments,
+    reviews: botEvidence.reviews,
+    threads: botEvidence.threads,
+    botSnapshotPullRequest: botEvidence.pullRequest,
     commits,
-    files,
-    resolvedReviewCommits,
-    requestReactions,
   };
 }
 
@@ -1699,22 +1474,28 @@ async function currentMain(api, owner, repo) {
   return branch.commit.sha;
 }
 
-async function assessPullCore({
-  api,
-  owner,
-  repo,
-  number,
-  policy,
-  evidenceMayBePending = false,
-}) {
+export async function assessPullCore({ api, owner, repo, number, policy }) {
   const fullRepository = `${owner}/${repo}`;
-  const evidence = await readPullEvidence(api, owner, repo, number, policy);
+  const evidence = await readPullEvidence(api, owner, repo, number);
   const trusted = isTrustedPullRequest(
     evidence.pullRequest,
     fullRepository,
     policy,
   );
   if (!trusted.ok) throw new Error(`${repo}#${number}: ${trusted.reason}`);
+  if (
+    evidence.botSnapshotPullRequest?.number !== evidence.pullRequest.number ||
+    evidence.botSnapshotPullRequest?.state !== "OPEN" ||
+    evidence.botSnapshotPullRequest?.isDraft !== evidence.pullRequest.draft ||
+    evidence.botSnapshotPullRequest?.headRefOid !==
+      evidence.pullRequest.head.sha ||
+    evidence.botSnapshotPullRequest?.baseRefOid !==
+      evidence.pullRequest.base.sha ||
+    evidence.botSnapshotPullRequest?.baseRefName !==
+      evidence.pullRequest.base.ref
+  ) {
+    throw new Error(`${repo}#${number}: BOT_EVIDENCE_SNAPSHOT_MISMATCH`);
+  }
 
   const mainSha = await currentMain(api, owner, repo);
 
@@ -1728,45 +1509,29 @@ async function assessPullCore({
     issueComments: evidence.issueComments,
     reviews: evidence.reviews,
     threads: evidence.threads,
-    resolvedReviewCommits: evidence.resolvedReviewCommits,
-    requestReactions: evidence.requestReactions,
     policy,
   });
-  let connectorPending;
-  if (!connector.ok) {
-    if (
-      evidenceMayBePending &&
-      connectorFailureCanSettleWithoutHeadChange(connector.reason)
-    ) {
-      connectorPending = connector.reason;
-    } else {
-      throw new Error(`${repo}#${number}: ${connector.reason}`);
-    }
-  }
   const copilot = evaluateCopilotEvidence({
     headSha: evidence.pullRequest.head.sha,
     reviews: evidence.reviews,
     threads: evidence.threads,
-    files: evidence.files,
     policy,
   });
-  let copilotPending;
-  if (!copilot.ok) {
-    if (
-      evidenceMayBePending &&
-      copilotFailureCanSettleWithoutHeadChange(copilot.reason)
-    ) {
-      copilotPending = copilot.reason;
-    } else {
-      throw new Error(`${repo}#${number}: ${copilot.reason}`);
+  const negative = [connector, copilot].filter((result) => !result.ok);
+  const nonrecoverable = negative.find(
+    (result) => result.recoveryCode === undefined,
+  );
+  const veto = nonrecoverable ?? negative[0];
+  if (veto) {
+    const message = `${repo}#${number}@${evidence.pullRequest.head.sha}: ${veto.reason}`;
+    if (veto === copilot || veto.botVeto) {
+      throw new BotReviewVetoError(message, veto.recoveryCode);
     }
+    throw new Error(message);
   }
   return {
     ...evidence,
     mainSha,
-    connectorCleanAt: connector.cleanAt,
-    connectorPending,
-    copilotPending,
   };
 }
 
@@ -1818,13 +1583,6 @@ export async function finalizePullTrustBoundary({
   return finalEvidence;
 }
 
-export function lateReviewTimeoutCommand({ repo, number, headSha }) {
-  if (!repo || !Number.isInteger(number) || !validSha(headSha)) {
-    throw new Error("invalid late-review timeout annotation identity");
-  }
-  return `::error title=${LATE_REVIEW_TIMEOUT_ANNOTATION}::Exact-head bot review timed out for ${repo}#${number} at ${headSha}`;
-}
-
 function gateTiming() {
   const timeoutSeconds = Number(
     process.env.LCV_GATE_TIMEOUT_SECONDS ?? DEFAULT_TIMEOUT_SECONDS,
@@ -1841,54 +1599,17 @@ function gateTiming() {
   return { deadline: Date.now() + timeoutSeconds * 1000, pollSeconds };
 }
 
-export async function waitForPullCore(
-  options,
-  timing,
-  assess = assessPullCore,
-) {
-  while (true) {
-    try {
-      const evidence = await assess({
-        ...options,
-        evidenceMayBePending: true,
-      });
-      if (
-        options.expectedHead !== undefined &&
-        evidence?.pullRequest?.head?.sha !== options.expectedHead
-      ) {
-        throw new StaleHeadError(
-          `${options.repo}#${options.number}: head changed while polling exact-head reviews`,
-        );
-      }
-      if (evidence.connectorPending) {
-        throw new PendingEvidenceError(
-          `${options.repo}#${options.number}: ${evidence.connectorPending}`,
-        );
-      }
-      if (evidence.copilotPending) {
-        throw new PendingEvidenceError(
-          `${options.repo}#${options.number}: ${evidence.copilotPending}`,
-        );
-      }
-      return evidence;
-    } catch (error) {
-      if (!(error instanceof PendingEvidenceError)) throw error;
-      if (Date.now() >= timing.deadline) {
-        console.error(
-          lateReviewTimeoutCommand({
-            repo: options.repo,
-            number: options.number,
-            headSha: options.expectedHead,
-          }),
-        );
-        throw error;
-      }
-      console.log(`${error.message}; waiting for exact-head bot reviews`);
-      await new Promise((resolve) =>
-        setTimeout(resolve, timing.pollSeconds * 1000),
-      );
-    }
+export async function readExactPullCore(options, assess = assessPullCore) {
+  const evidence = await assess(options);
+  if (
+    options.expectedHead !== undefined &&
+    evidence?.pullRequest?.head?.sha !== options.expectedHead
+  ) {
+    throw new StaleHeadError(
+      `${options.repo}#${options.number}: head changed at exact-head evidence read`,
+    );
   }
+  return evidence;
 }
 
 async function waitForGateEvidence({
@@ -1938,17 +1659,14 @@ async function runPullRequestGate({ api, event, owner, repo, policy }) {
     throw new Error("pull_request event has no valid head SHA");
   const number = event?.pull_request?.number;
   const timing = gateTiming();
-  const evidence = await waitForPullCore(
-    {
-      api,
-      owner,
-      repo,
-      number,
-      policy,
-      expectedHead: eventHead,
-    },
-    timing,
-  );
+  const evidence = await readExactPullCore({
+    api,
+    owner,
+    repo,
+    number,
+    policy,
+    expectedHead: eventHead,
+  });
   if (evidence.pullRequest.head.sha !== eventHead) {
     throw new Error(`${repo}#${number}: event head is stale`);
   }
@@ -2039,17 +1757,14 @@ async function runMergeGroupGate({ api, event, owner, repo, policy }) {
   const queue = await mergeQueueEvidence(api, owner, repo);
   validateMergeQueueEvidence({ queue, pulls, groupHead, groupBase });
   for (const pullRequest of pulls) {
-    const evidence = await waitForPullCore(
-      {
-        api,
-        owner,
-        repo,
-        number: pullRequest.number,
-        policy,
-        expectedHead: pullRequest.head.sha,
-      },
-      timing,
-    );
+    const evidence = await readExactPullCore({
+      api,
+      owner,
+      repo,
+      number: pullRequest.number,
+      policy,
+      expectedHead: pullRequest.head.sha,
+    });
     if (evidence.pullRequest.head.sha !== pullRequest.head.sha) {
       throw new Error(`${repo}#${pullRequest.number}: associated head changed`);
     }
@@ -2245,6 +1960,61 @@ export async function enqueueAfterFinalTrustAssessment({
   return enqueueMutation();
 }
 
+export async function requestResolvedBotReviewVetoRerun({
+  api,
+  owner,
+  repo,
+  number,
+  expectedHead,
+  expectedBase,
+  gate,
+  reassess,
+}) {
+  if (
+    gate?.outcome !== "trusted-gate-bot-veto-rerun-needed" ||
+    !Number.isSafeInteger(gate?.run?.id) ||
+    !Number.isInteger(number) ||
+    !validSha(expectedHead) ||
+    !validSha(expectedBase) ||
+    typeof reassess !== "function"
+  ) {
+    throw new Error("invalid resolved bot-review veto rerun boundary");
+  }
+  const assertEvidence = (evidence) => {
+    if (
+      evidence?.pullRequest?.head?.sha !== expectedHead ||
+      evidence?.mainSha !== expectedBase
+    ) {
+      throw new Error("bot-review veto rerun head/base changed");
+    }
+  };
+  assertEvidence(await reassess());
+  const run = await api.request(gate.run.url);
+  if (
+    run?.id !== gate.run.id ||
+    run?.url !== gate.run.url ||
+    run?.head_sha !== expectedHead ||
+    run?.event !== "pull_request" ||
+    run?.run_attempt !== 1 ||
+    run?.status !== "completed" ||
+    run?.conclusion !== "failure" ||
+    run?.check_suite_id !== gate.run.check_suite_id ||
+    run?.repository?.full_name !== `${owner}/${repo}` ||
+    run?.head_repository?.full_name !== `${owner}/${repo}` ||
+    run?.workflow_id !== TRUSTED_GATE_SOURCE_WORKFLOW_ID ||
+    run?.workflow_url !== expectedGateWorkflowUrl() ||
+    run?.path !== TRUSTED_GATE_SOURCE_WORKFLOW_PATH
+  ) {
+    throw new Error("bot-review veto rerun identity changed");
+  }
+  assertEvidence(await reassess());
+  await api.request(
+    `/repos/${owner}/${repo}/actions/runs/${run.id}/rerun-failed-jobs`,
+    { method: "POST" },
+  );
+  return "trusted-gate-bot-veto-rerun-requested";
+}
+
 export async function assessForEnqueue({
   api,
   owner,
@@ -2259,7 +2029,6 @@ export async function assessForEnqueue({
     repo,
     number: pullRequest.number,
     policy,
-    evidenceMayBePending: true,
   });
   if (evidence.pullRequest.head.sha !== pullRequest.head.sha) {
     throw new Error(`${repo}#${pullRequest.number}: listed head changed`);
@@ -2288,43 +2057,10 @@ export async function assessForEnqueue({
       repo,
       number: pullRequest.number,
       headSha: evidence.pullRequest.head.sha,
-      issueComments: evidence.issueComments,
+      expectedBase: evidence.mainSha,
       policy,
     });
     return { outcome };
-  }
-  if (evidence.connectorPending) {
-    const disposition = controllerConnectorDisposition(
-      evidence.connectorPending,
-    );
-    if (disposition !== "request-review") {
-      return { outcome: disposition };
-    }
-    const outcome = await ensureConnectorReviewRequest({
-      api,
-      owner,
-      repo,
-      number: pullRequest.number,
-      headSha: evidence.pullRequest.head.sha,
-      issueComments: evidence.issueComments,
-      policy,
-    });
-    return { outcome };
-  }
-  if (evidence.copilotPending) {
-    const disposition = controllerCopilotDisposition(evidence.copilotPending);
-    if (disposition === "request-review") {
-      const outcome = await ensureCopilotReviewRequest({
-        api,
-        owner,
-        repo,
-        number: pullRequest.number,
-        requestedReviewers: evidence.pullRequest.requested_reviewers,
-        policy,
-      });
-      return { outcome };
-    }
-    return { outcome: disposition };
   }
   const checks = await readCheckEvidence(
     api,
@@ -2360,15 +2096,36 @@ export async function assessForEnqueue({
     number: pullRequest.number,
     checkState: "success",
   });
-  const gateOutcome = await recoverLateTrustedGate({
+  const gateOutcome = await inspectTrustedGate({
     api,
     owner,
     repo,
     headSha: evidence.pullRequest.head.sha,
-    cleanAt: evidence.connectorCleanAt,
     checkRuns: checks.checkRuns,
+    number: pullRequest.number,
   });
-  if (gateOutcome !== "trusted-gate-success") return { outcome: gateOutcome };
+  if (gateOutcome.outcome === "trusted-gate-bot-veto-rerun-needed") {
+    return {
+      outcome: await requestResolvedBotReviewVetoRerun({
+        api,
+        owner,
+        repo,
+        number: pullRequest.number,
+        expectedHead: evidence.pullRequest.head.sha,
+        expectedBase: evidence.mainSha,
+        gate: gateOutcome,
+        reassess: () =>
+          assess({
+            api,
+            owner,
+            repo,
+            number: pullRequest.number,
+            policy,
+          }),
+      }),
+    };
+  }
+  if (gateOutcome.outcome !== "trusted-gate-success") return gateOutcome;
 
   const queueState = await pullQueueState(api, owner, repo, pullRequest.number);
   if (!queueState)
@@ -2377,7 +2134,7 @@ export async function assessForEnqueue({
   if (!queueState.mergeQueue) return { outcome: "no-merge-queue" };
   if (
     queueState.state !== "OPEN" ||
-    queueState.isDraft ||
+    queueState.isDraft !== false ||
     queueState.headRefOid !== evidence.pullRequest.head.sha ||
     queueState.baseRefOid !== evidence.mainSha ||
     queueState.baseRefName !== "main"
@@ -2432,6 +2189,7 @@ export async function assessForEnqueue({
         repo,
         checkRuns: finalChecks.checkRuns,
         headSha: queueState.headRefOid,
+        number: pullRequest.number,
       });
       if (finalGate.outcome !== "trusted-gate-success") {
         throw new Error(
@@ -2518,6 +2276,10 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   main().catch((error) => {
+    if (process.env.LCV_MODE === "gate") {
+      const command = botReviewVetoWorkflowCommand(error);
+      if (command) console.error(command);
+    }
     console.error(error instanceof AggregateError ? error.errors : error);
     process.exitCode = 1;
   });
