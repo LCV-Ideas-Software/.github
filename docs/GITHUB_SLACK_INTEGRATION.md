@@ -102,10 +102,11 @@ During a controlled zero-loss rotation, Slack may also hold the optional
 
 The Worker preserves the source timestamp as ISO 8601 in `occurred_at`, and
 that exact technical value remains part of the HMAC input. After successful
-authentication, the Slack app alone renders it as `dd/MM/aaaa às HH:mm:ss
-(Horário Oficial de Brasília, UTC−03:00)`, using `Intl.DateTimeFormat` with
-locale `pt-BR` and fixed IANA zone `Etc/GMT+3`. The POSIX/IANA sign convention
-is inverted, so `+3` means UTC−03:00. Invalid, ambiguous or absent values become
+authentication, the Slack app alone renders it as `dd/MM/aaaa às HH:mm:ss`,
+using `Intl.DateTimeFormat` with locale `pt-BR` and fixed IANA zone
+`Etc/GMT+3`. The POSIX/IANA sign convention is inverted, so `+3` means
+UTC−03:00. The technical timezone suffix is deliberately omitted from the
+user-facing text. Invalid, ambiguous or absent values become
 `Data e hora do evento: não informadas` and are never echoed.
 
 The app deliberately does not use Slack's `<!date>` syntax because Slack
@@ -173,6 +174,12 @@ newly discovered resources during deployment:
 | Private `#github-activity` | `C0BMQMW3L4E` |
 | Private `#github-alerts`   | `C0BMUK793NV` |
 
+Repository variables retain the non-secret production inventory:
+`SLACK_GITHUB_INTEGRATION_APP_ID`, `SLACK_WORKSPACE_ID`,
+`SLACK_GITHUB_ACTIVITY_TRIGGER_ID`, and `SLACK_GITHUB_ALERT_TRIGGER_ID`. The
+trigger URLs are bearer credentials and must never be stored in those
+variables.
+
 During one-time bootstrap, the two private channels are created and their
 immutable IDs are inserted into the workflow source. Any temporary bootstrap
 manifest with an empty workflow list, channel placeholders, or `groups:write`
@@ -233,7 +240,8 @@ The production policy is therefore:
      --skip-update
    ```
 
-3. Record each non-secret trigger ID in the controlled operations inventory.
+3. Store each non-secret trigger ID in the repository variables
+   `SLACK_GITHUB_ACTIVITY_TRIGGER_ID` and `SLACK_GITHUB_ALERT_TRIGGER_ID`.
 4. Enter each returned trigger URL directly into its Cloudflare Secrets Store
    entry through an interactive prompt.
 5. Verify a signed event through each destination before activation is
@@ -316,11 +324,11 @@ channel paths.
    to both.
 3. Finalize and verify the source-controlled Slack manifest, workflows,
    triggers and channel IDs with `deno task --frozen check`.
-4. Store `SLACK_SERVICE_TOKEN` as a GitHub Actions secret and
-   `SLACK_GITHUB_INTEGRATION_APP_ID` plus `SLACK_WORKSPACE_ID` as repository
-   variables. Set the app variable to `A0BMWBGES20`. Slack service tokens are
-   long-lived and non-rotatable; revoke and replace the token immediately if it
-   is exposed.
+4. Store `SLACK_SERVICE_TOKEN` as a secret in the protected
+   `slack-production` environment and `SLACK_GITHUB_INTEGRATION_APP_ID` plus
+   `SLACK_WORKSPACE_ID` as repository variables. Set the app variable to
+   `A0BMWBGES20`. Slack service tokens are long-lived and non-rotatable; revoke
+   and replace the token immediately if it is exposed.
 5. Deploy the Slack app, set its signing-secret environment value, then create
    the two production triggers exactly once.
 6. Create the four remote Secrets Store entries interactively. The HMAC values
@@ -400,9 +408,11 @@ script fails closed unless this is the sole low-or-higher advisory and the hook
 is still the latest stable GitHub release, with the exact tag, annotated-tag
 object, commit
 `b6719c18a18a39ca44fa1b311c3bada28dc3df35`, source lock hash, package
-integrity, and call set all remain exact. The exception expires on 01/11/2026
-and must be removed sooner if Slack publishes a fixed hook. Deploys do not use
-the Slack CLI's broad `--force` warning override.
+integrity, and call set all remain exact. The code-level deadline is
+`2026-11-01T00:00:00Z`, which is 31/10/2026 às 21:00:00 in the program's fixed
+UTC−03:00 timezone. The exception must be removed sooner if Slack publishes a
+fixed hook. Deploys do not use the Slack CLI's broad `--force` warning
+override.
 
 The CI-only Wrangler installation always resolves `wrangler@latest`, verifies
 registry signatures and attestations, and fails on any low-or-higher advisory.
@@ -455,8 +465,9 @@ Monitoring and recovery are layered:
   webhook every 15 minutes, groups attempts by GUID, treats HTTP 200-399 as a
   successful GitHub delivery, and redelivers unresolved attempts within
   GitHub's three-day window;
-- the webhook recovery workflow advances `SLACK_RELAY_LAST_REDELIVERY` only
-  after the entire scan and all accepted redelivery requests succeed.
+- the webhook recovery workflow advances the epoch-millisecond repository
+  variable `SLACK_RELAY_LAST_REDELIVERY` only after the entire scan and all
+  accepted redelivery requests succeed.
 
 GitHub can canonicalize a paginated `/orgs/{name}/...` request into an
 `/organizations/{id}/...` URL in the `Link` header. The recovery controller
@@ -470,6 +481,12 @@ The recovery workflow uses `LCV_AUTOMATION_TOKEN` because the built-in
 The organization hook must also have been created by that PAT. GitHub's
 documented creator-ownership boundary can otherwise return HTTP 404 even when
 the PAT has the required scope and the same human owns the organization.
+Because the organization uses Enterprise SAML SSO, the classic PAT must also
+remain authorized for `LCV-Ideas-Software`. Regenerating the token or changing
+its scopes revokes that authorization; after either operation, authorize it
+again with **Configure SSO** before relying on the protected workflow. Updating
+the environment secret alone is not sufficient. See [Authorizing a personal
+access token for use with SSO][github-pat-sso].
 
 See [`apps.activities.list`][slack-activities], [Slack app activity logging][slack-logging],
 and [GitHub's automatic redelivery design][github-redelivery].
@@ -511,6 +528,7 @@ and [GitHub's automatic redelivery design][github-redelivery].
 - [Validating GitHub webhook deliveries][github-hmac]
 - [Automatically redelivering failed organization webhook deliveries][github-redelivery]
 - [REST API endpoints and creator ownership for organization webhooks][github-org-webhooks]
+- [Authorizing a personal access token for use with SSO][github-pat-sso]
 - [Implementing Slack slash commands][slack-slash-commands]
 - [Formatting dates in Slack messages][slack-date-formatting]
 - [Creating Slack workflows][slack-workflows]
@@ -533,6 +551,7 @@ and [GitHub's automatic redelivery design][github-redelivery].
 [github-events]: https://docs.github.com/en/webhooks/webhook-events-and-payloads
 [github-hmac]: https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
 [github-org-webhooks]: https://docs.github.com/en/rest/orgs/webhooks
+[github-pat-sso]: https://docs.github.com/en/enterprise-cloud@latest/authentication/authenticating-with-single-sign-on/authorizing-a-personal-access-token-for-use-with-single-sign-on
 [github-redelivery]: https://docs.github.com/en/webhooks/using-webhooks/automatically-redelivering-failed-deliveries-for-an-organization-webhook
 [github-slack]: https://docs.github.com/en/integrations/how-tos/slack/use-github-in-slack
 [github-slack-install]: https://docs.github.com/en/integrations/how-tos/slack/integrate-github-with-slack

@@ -1,9 +1,9 @@
 # Third-party notices
 
-`assets/default_new_app_icon.png` is reused from Slack's
-[`deno-hello-world`](https://github.com/slack-samples/deno-hello-world)
-sample at commit `edaabd1b9db5d79e83487625c7e7a2e96ba253f8`, under the MIT
-License:
+`assets/default_new_app_icon.png` is reused from the
+[`deno-hello-world` sample file](https://github.com/slack-samples/deno-hello-world/blob/edaabd1b9db5d79e83487625c7e7a2e96ba253f8/assets/default_new_app_icon.png)
+at commit `edaabd1b9db5d79e83487625c7e7a2e96ba253f8`, under the
+[MIT License](https://github.com/slack-samples/deno-hello-world/blob/edaabd1b9db5d79e83487625c7e7a2e96ba253f8/LICENSE):
 
 Copyright (c) 2023 Slack Technologies, LLC
 

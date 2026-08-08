@@ -2,7 +2,9 @@
 
 This Slack-hosted workflow app receives the flat, sanitized records emitted by
 the Cloudflare relay. It owns two webhook triggers and posts to two private
-channels: routine organization activity and actionable failures/security alerts.
+channels: routine organization activity to `#github-activity` (`C0BMQMW3L4E`)
+and actionable failures/security alerts to `#github-alerts` (`C0BMUK793NV`). The
+deployed production app is `LCV GitHub integration` (`A0BMWBGES20`).
 
 The committed manifest is the production manifest. It imports both workflows,
 binds their immutable private-channel IDs, and intentionally omits the
@@ -39,6 +41,7 @@ moderate advisory and verifies the exact hook tag, annotated-tag object, commit,
 remote source hash, package integrity, reviewed esbuild call set, and latest
 stable GitHub release. Any additional low-or-higher advisory, a newer stable
 hook release, or any changed assumption fails the check. The workflow repeats
-this verification every day at 07h17. The exception expires on 01/11/2026 and
-must be removed as soon as Slack publishes a hook release using esbuild 0.25.0
-or newer.
+this verification every day at 07h17. The code-level deadline is
+`2026-11-01T00:00:00Z`, which is 31/10/2026 às 21:00:00 in the program's fixed
+UTC−03:00 timezone. The exception must be removed as soon as Slack publishes a
+hook release using esbuild 0.25.0 or newer.

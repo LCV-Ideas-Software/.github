@@ -4,7 +4,7 @@
 
 Please do not open a public issue for security vulnerabilities. Report privately to the maintainer instead.
 
-**Contact:** alert@lcvmail.com
+**Contact:** lcv@lcv.dev
 
 Include:
 - affected repository and component
@@ -26,9 +26,9 @@ The maintainer will triage as soon as practical. Critical reports that may expos
 This repository follows the LCV Ideas & Software single-operator security baseline:
 - GitHub secret scanning and push protection
 - Dependabot alerts and security updates
-- CodeQL/default code scanning where supported
-- SHA-pinned GitHub Actions
-- least-privilege workflow permissions
+- versioned CodeQL Advanced Setup workflows in public repositories containing code
+- external GitHub Actions pinned by full commit SHA
+- the organization-defined `permissions: write-all` workflow baseline, with privileged credentials isolated from pull-request code
 - no long-lived secrets in source control
 
 ## Automation Policy

@@ -228,6 +228,9 @@ The source-controlled Deno app owns two static trigger definitions:
 Create each production webhook trigger exactly once after the final Slack app
 is deployed. Record the trigger IDs in controlled operations inventory and
 write the returned URLs directly to the corresponding Secrets Store entries.
+The non-secret IDs are retained in repository variables
+`SLACK_GITHUB_ACTIVITY_TRIGGER_ID` and `SLACK_GITHUB_ALERT_TRIGGER_ID`; the
+bearer URLs never belong in GitHub variables.
 Routine Slack app deployments use `--hide-triggers` and must not create,
 update, delete or display triggers. In particular, do not run
 `slack trigger update` during every deployment.
@@ -322,12 +325,22 @@ succeeds. Pagination accepts only the exact named and numeric canonical paths
 for the configured organization and hook, and reconstructs each request from
 the returned cursor instead of following a `Link` URL blindly.
 
+The controller reads the hook ID from repository variable
+`SLACK_RELAY_ORG_HOOK_ID`, stores its epoch-millisecond checkpoint in repository
+variable `SLACK_RELAY_LAST_REDELIVERY`, and authenticates with
+`LCV_AUTOMATION_TOKEN` from the protected `cloudflare-production` environment.
+That classic PAT needs `admin:org_hook`, repository access, and an active SAML
+SSO authorization for `LCV-Ideas-Software`. Regenerating it or changing its
+scopes requires a fresh **Configure SSO** authorization; replacing the
+environment secret alone does not restore organization access.
+
 ## Official references
 
 - [Using GitHub in Slack](https://docs.github.com/en/integrations/how-tos/slack/use-github-in-slack)
 - [GitHub webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads)
 - [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 - [GitHub organization webhook redelivery](https://docs.github.com/en/webhooks/using-webhooks/automatically-redelivering-failed-deliveries-for-an-organization-webhook)
+- [Authorizing a personal access token for use with SSO](https://docs.github.com/en/enterprise-cloud@latest/authentication/authenticating-with-single-sign-on/authorizing-a-personal-access-token-for-use-with-single-sign-on)
 - [Slack Deno workflows](https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-workflows/)
 - [Slack custom functions](https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-custom-functions/)
 - [Slack webhook triggers](https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-webhook-triggers/)

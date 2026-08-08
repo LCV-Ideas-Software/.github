@@ -1,8 +1,9 @@
 # Dependabot automation architecture
 
-This repository owns the privileged Dependabot controller shared by every active
-LCV Ideas Software repository. Consumer repositories keep only a thin event
-wrapper and an exact list of stack-specific required checks.
+This repository owns the privileged Dependabot controller currently shared by
+the eleven active public LCV Ideas & Software repositories. Consumer repositories
+keep only a thin event wrapper and an exact list of stack-specific required
+checks. The empty internal `.github-private` repository is not yet a consumer.
 
 ## Trust boundary
 
@@ -58,9 +59,10 @@ wrapper and an exact list of stack-specific required checks.
   cannot duplicate approval, rebase requests or merge. Retry time counts toward
   the wrapper's absolute 10-minute job timeout; the bounded settle window remains
   180 seconds and does not weaken that outer cap.
-- An active `CHANGES_REQUESTED` review or unresolved inline thread from the exact
-  `chatgpt-codex-connector` bot ID blocks approval and merge. Reviews, connector
-  threads, checks, `main` and the PR head are all re-read after approval.
+- Any active `CHANGES_REQUESTED` review, regardless of author, blocks approval
+  and merge. An unresolved inline thread from the exact
+  `chatgpt-codex-connector` bot ID does the same. Reviews, connector threads,
+  checks, `main` and the PR head are all re-read after approval.
 
 ## Queue behavior
 
@@ -68,20 +70,22 @@ The pinned JavaScript Action and its wrapper serialize the whole repository and
 perform at most one pull-request queue transition per run.
 
 1. A canonical PR behind `main` receives one identity-bound `@dependabot rebase`
-   request. Its marker contains the exact head and base SHAs, and only a recent
-   comment from the exact login and numeric ID resolved from
-   `LCV_AUTOMATION_TOKEN` suppresses a retry. After that deduplication read, the
-   controller revalidates the PR identity, exact head, one-commit shape, changed
-   paths, live `main`, canonical merge base and a coherent behind comparison. It
-   then re-reads the head and `main` immediately before posting. Dependabot
-   authors the replacement head, so normal restricted Dependabot pull-request CI
-   runs on that SHA. If the immutable Dependabot identity returns its exact
-   documented "already up-to-date" response while the live comparison still says
-   the PR is behind, the controller waits at least ten minutes before performing
-   one separately marked rebase retry. This avoids repeating the command against
-   the same stale update-job snapshot during a burst of sequential Dependabot
-   merges. A second authenticated no-op fails the controller visibly; it is
-   never escalated to a destructive command.
+   request. Its marker contains the exact head and base SHAs, and only a comment
+   from the exact login and numeric ID resolved from `LCV_AUTOMATION_TOKEN` is
+   recognized as an existing request. A recent unprocessed request defers the
+   transition; once it is six hours old, the controller fails visibly instead of
+   posting the same command again. After that deduplication read, the controller
+   revalidates the PR identity, exact head, one-commit shape, changed paths, live
+   `main`, canonical merge base and a coherent behind comparison. It then re-reads
+   the head and `main` immediately before posting. Dependabot authors the
+   replacement head, so normal restricted Dependabot pull-request CI runs on that
+   SHA. If the immutable Dependabot identity returns its exact documented
+   "already up-to-date" response while the live comparison still says the PR is
+   behind, the controller waits at least ten minutes before performing one
+   separately marked rebase retry. This avoids repeating the command against the
+   same stale update-job snapshot during a burst of sequential Dependabot merges.
+   A second authenticated no-op fails the controller visibly; it is never
+   escalated to a destructive command.
 2. A noncanonical PR is logged and skipped without any mutation. There is no
    automatic destructive fallback if rebase fails or if someone has edited the
    Dependabot branch.
@@ -135,30 +139,38 @@ outside this reusable action.
 
 ## Credentials and effective permissions
 
+The current deployment remains PAT-based: `LCV_AUTOMATION_TOKEN` is an
+SSO-authorized classic personal access token stored in each consumer's protected
+`dependabot-automation` environment. No GitHub App installation token has
+replaced it.
+
 - Every workflow and job intentionally declares `permissions: write-all`, as do
   the consumer wrappers. The controller still separates operations by token and
   has no generic command execution path.
-- `GITHUB_TOKEN` is used only for API reads and exact-head approval.
-- `LCV_AUTOMATION_TOKEN` is used only for guarded Dependabot rebase comments and
-  exact-head squash merge. It is never printed or exposed to pull-request code.
+- Within this controller, `GITHUB_TOKEN` is used only for API reads and
+  exact-head approval.
+- Within this controller, `LCV_AUTOMATION_TOKEN` is used only for guarded
+  Dependabot rebase comments and exact-head squash merge. It is never printed or
+  exposed to pull-request code.
 
 ## Dependency and Action coverage
 
-- Every active, non-archived repository has a GitHub Actions update block and a
-  block for every operational npm, Cargo, pip, Deno, Docker or pre-commit
-  manifest. `cross-review` is the sole repository that executes pre-commit; the
-  orphaned historical hook files were removed elsewhere.
+- Each of the eleven active public consumer repositories has a GitHub Actions
+  update block and a block for every operational npm, Cargo, pip, Deno, Docker or
+  pre-commit manifest. `cross-review` is the sole repository that executes
+  pre-commit; the orphaned historical hook files were removed elsewhere.
 - The central Zizmor reusable workflow builds the official image from
   `.github/zizmor/Dockerfile`. Its tag and OCI digest are updated together by the
   Docker ecosystem, while the audit remains offline, read-only and strict about
   collection errors. The reusable workflow checks out its own immutable source
   through `job.workflow_repository` and `job.workflow_sha`, so callers audit only
   their own checkout.
-- Deno version updates cover `deno.json`/`deno.jsonc` and `deno.lock`, but not an
-  HTTPS import in Slack's hook file and not security updates. A daily 07h17
-  verification therefore queries the latest stable upstream hook release,
-  validates the annotated tag, commit, locked source and integrity, and runs
-  `deno audit` from low severity upward.
+- Deno version and security updates cover dependencies declared in
+  `deno.json`/`deno.jsonc`; the controller also accepts the resulting `deno.lock`
+  changes. Dependabot does not manage the HTTPS import in Slack's hook file. A
+  daily 07h17 verification therefore queries the latest stable upstream hook
+  release, validates the annotated tag, commit, locked source and integrity, and
+  runs `deno audit` from low severity upward.
 - Dependabot updates full-SHA `uses:` references when their same-line version
   comment resolves to an upstream tag. GitHub does not generate Dependabot alerts
   for Actions pinned by SHA, so every “Auditoria diária” also inventories all
@@ -185,7 +197,11 @@ outside this reusable action.
 1. The dedicated controller CI must pass both
    `node --check dependabot-automerge/main.mjs` and
    `node --test dependabot-automerge/main.test.mjs`. Lint every workflow with
-   `actionlint` and audit it with zizmor.
+   `actionlint` and audit it with zizmor. Current `actionlint` releases do not yet
+   recognize GitHub's documented `concurrency.queue`, `job.workflow_repository`
+   or `job.workflow_sha`; accept only those exact parser diagnostics after
+   confirming the official syntax and successful live GitHub workflow runs.
+   Every other lint finding remains blocking.
 2. Merge this repository first.
 3. Pin the central `dependabot-automerge` JavaScript Action in every consumer
    wrapper to the reviewed commit SHA.
@@ -198,9 +214,13 @@ outside this reusable action.
 ## Primary references
 
 - [Events that trigger workflows: `workflow_run`](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
+- [Control workflow concurrency, including `queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
 - [Secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)
 - [Dependabot supported ecosystems and repositories](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories)
+- [Dependabot on GitHub Actions](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-on-actions)
 - [Dependabot alerts and the SHA-pinned Actions limitation](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-alerts)
+- [Dependabot options reference, including `cooldown`](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
+- [Authorizing a personal access token for SSO](https://docs.github.com/en/enterprise-cloud@latest/authentication/authenticating-with-single-sign-on/authorizing-a-personal-access-token-for-use-with-single-sign-on)
 - [Job context for immutable reusable-workflow source](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context)
 - [Automating Dependabot with GitHub Actions](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions)
 - [Dependabot pull-request comment commands](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-pull-request-comment-commands)

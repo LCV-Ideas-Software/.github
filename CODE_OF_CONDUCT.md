@@ -3,7 +3,7 @@
 This repository adopts the **Contributor Covenant 3.0** as its community standard. The full canonical text is available at:
 
 - https://www.contributor-covenant.org/version/3/0/code_of_conduct/
-- Plain-text mirror: https://www.contributor-covenant.org/version/3/0/code_of_conduct/code_of_conduct.md
+- Markdown version: https://www.contributor-covenant.org/version/3/0/code_of_conduct/code_of_conduct.md
 
 By participating in this project, you agree to follow the Contributor Covenant 3.0 standard linked above.
 

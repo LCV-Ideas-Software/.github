@@ -37,14 +37,15 @@ For product-specific documentation, see each repository in the [organization lis
 - **Security disclosure**: see [SECURITY.md](./SECURITY.md).
 - **Code of conduct**: see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
 - **Contributing**: see [CONTRIBUTING.md](./CONTRIBUTING.md).
-- **Sponsorship**: see the repo's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor).
-- **Action pinning**: all GitHub Actions are pinned by full SHA per supply-chain hardening baseline.
+- **Sponsorship**: see this repository's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor/).
+- **Action pinning**: all external GitHub Actions are pinned by full commit SHA per supply-chain hardening baseline.
 - **Code owners**: [.github/CODEOWNERS](.github/CODEOWNERS).
 
 ## Links
 
 - Site: [https://www.lcv.dev](https://www.lcv.dev)
-- GitHub: [https://github.com/LCV-Ideas-Software/.github](https://github.com/LCV-Ideas-Software/.github)
+- GitHub organization: [LCV-Ideas-Software](https://github.com/LCV-Ideas-Software)
+- Repository: [.github](https://github.com/LCV-Ideas-Software/.github)
 - Sponsors: [https://github.com/sponsors/LCV-Ideas-Software](https://github.com/sponsors/LCV-Ideas-Software)
 
 ## License
@@ -53,4 +54,4 @@ AGPL-3.0-or-later. See [LICENSE](./LICENSE), [NOTICE](./NOTICE), and [THIRDPARTY
 
 ---
 
-<p align="center"><span style="font-size: 1.5em;"><strong>Copyright © 2026 LCV Ideas &amp; Software</strong></span><br><sub>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713 - Pinheiros<br>São Paulo - SP - CEP 05424-150<br>CNPJ: 66.584.678/0001-77 - IM: 3039854</sub></p>
+<p align="center"><strong>Copyright © 2026 LCV Ideas &amp; Software</strong><br><sub>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713 - Pinheiros<br>São Paulo - SP - CEP 05424-150<br>CNPJ: 66.584.678/0001-77 - IM: 3039854</sub></p>

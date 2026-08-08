@@ -8,11 +8,9 @@ Current main branch and the deployed organization profile/site are supported. Th
 
 Please do not open a public issue for suspected vulnerabilities, credential leaks, private data exposure, authentication bypasses, payment-flow issues, supply-chain issues, or deployment misconfiguration.
 
-Report privately by email:
+Use GitHub's [private vulnerability reporting form](https://github.com/LCV-Ideas-Software/.github/security/advisories/new) or report privately by email:
 
 - lcv@lcv.dev
-
-If GitHub private vulnerability reporting is enabled for this repository, that channel is also acceptable.
 
 Please include:
 
