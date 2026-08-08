@@ -654,6 +654,10 @@ export function classifyChecks({ checkRuns, statuses, requiredChecks }) {
     for (const run of matching) {
       if (run.status !== "completed") {
         pendings.push(`required check ${key} is ${run.status}`);
+      } else if (["neutral", "skipped"].includes(run.conclusion)) {
+        pendings.push(
+          `required check ${key} concluded ${run.conclusion} and has not converged to success`,
+        );
       } else if (run.conclusion !== "success") {
         failures.push(
           `required check ${key} concluded ${run.conclusion ?? "without conclusion"}`,
@@ -1612,7 +1616,7 @@ export async function readExactPullCore(options, assess = assessPullCore) {
   return evidence;
 }
 
-async function waitForGateEvidence({
+export async function waitForGateEvidence({
   api,
   owner,
   repo,

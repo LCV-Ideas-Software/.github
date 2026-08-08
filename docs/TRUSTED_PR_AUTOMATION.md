@@ -72,8 +72,11 @@ time.
    `pullRequestReview.commit.oid`, not the remapped inline-comment commit.
 6. Every configured CI or security requirement is present as the exact
    `{name, app_id}` pair and concludes `success`. Missing, running, skipped, or
-   neutral is not enough for a configured requirement. Every legacy commit
-   status must be successful.
+   neutral is not enough for a configured requirement. A required neutral or
+   skipped result remains pending because GitHub may update the same aggregate
+   check after its raw analyzer finishes; it must converge to success before
+   the timeout. Failure, cancellation, and timeout conclusions remain terminal.
+   Every legacy commit status must be successful.
 7. Only after required checks are green, the gate refreshes Code Scanning and
    requires zero open alerts at every supported severity. The raw CodeQL
    `Analyze <language>` and raw zizmor jobs remain required in addition to their

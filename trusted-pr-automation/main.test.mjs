@@ -44,6 +44,7 @@ import {
   validateMergeQueueEvidence,
   validatePolicy,
   verifyCodeScanningAfterChecks,
+  waitForGateEvidence,
 } from "./main.mjs";
 
 const SHA = "a".repeat(40);
@@ -1841,7 +1842,53 @@ test("classifyChecks requires exact executor and GHAS identities and all observe
       statuses: [],
       requiredChecks: required,
     }).state,
+    "pending",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: runs.map((run) =>
+        run.name === "CodeQL" ? { ...run, conclusion: "neutral" } : run,
+      ),
+      statuses: [],
+      requiredChecks: required,
+    }).state,
+    "pending",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: runs.map((run) => {
+        if (run.name === "CodeQL") return { ...run, conclusion: "neutral" };
+        if (run.name === "Analyze javascript-typescript") {
+          return { ...run, status: "in_progress", conclusion: null };
+        }
+        return run;
+      }),
+      statuses: [],
+      requiredChecks: required,
+    }).state,
+    "pending",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: runs.map((run) => {
+        if (run.name === "CodeQL") return { ...run, conclusion: "failure" };
+        if (run.name === "Analyze javascript-typescript") {
+          return { ...run, status: "in_progress", conclusion: null };
+        }
+        return run;
+      }),
+      statuses: [],
+      requiredChecks: required,
+    }).state,
     "failure",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: runs,
+      statuses: [],
+      requiredChecks: required,
+    }).state,
+    "success",
   );
   assert.equal(
     classifyChecks({
@@ -1886,6 +1933,27 @@ test("classifyChecks requires exact executor and GHAS identities and all observe
       requiredChecks: required,
     }).state,
     "failure",
+  );
+});
+
+test("required neutral checks poll until success or timeout", async () => {
+  const requiredChecks = [{ name: "CodeQL", app_id: 57789 }];
+  const api = {
+    pages: async (path) =>
+      path.includes("/check-runs")
+        ? [check("CodeQL", 57789, "completed", "neutral", 99)]
+        : [],
+  };
+  await assert.rejects(
+    waitForGateEvidence({
+      api,
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      sha: SHA,
+      requiredChecks,
+      timing: { deadline: Date.now() - 1, pollSeconds: 0.001 },
+    }),
+    /did not become green before timeout.*neutral/i,
   );
 });
 
