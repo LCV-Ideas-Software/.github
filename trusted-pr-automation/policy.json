@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "organization": "LCV-Ideas-Software",
+  "allowed_actors": [
+    { "login": "lcv-leo", "id": 268063598 },
+    { "login": "dependabot[bot]", "id": 49699333 }
+  ],
+  "copilot_reviewer": {
+    "database_id": 175728472,
+    "node_id": "BOT_kgDOCnlnWA",
+    "rest_review_login": "copilot-pull-request-reviewer[bot]",
+    "graphql_login": "copilot-pull-request-reviewer",
+    "inline_alias_login": "Copilot"
+  },
+  "repositories": {
+    ".github": {
+      "required_checks": [
+        { "name": "Dependabot controller", "app_id": 15368 },
+        { "name": "Trusted PR controller tests", "app_id": 15368 },
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ],
+      "merge_group_required_checks": [
+        { "name": "Verify relay and recovery controller", "app_id": 15368 },
+        { "name": "Test repository governance", "app_id": 15368 },
+        { "name": "Verify Slack workflow app", "app_id": 15368 }
+      ]
+    },
+    ".github-private": {
+      "required_checks": [
+        { "name": "Governance configuration", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "admin-app": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "astrologo-app": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "OpenSSF Scorecard", "app_id": 15368 },
+        { "name": "Reject unverified binary artifacts", "app_id": 15368 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "calculadora-app": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Test application", "app_id": 15368 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "cross-review": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "Analyze python", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Build, lint and smoke", "app_id": 15368 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "maestro-app": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "Analyze rust", "app_id": 15368 },
+        { "name": "Analyze legacy CodeQL category", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Repository hygiene", "app_id": 15368 },
+        { "name": "Rust gates (cargo --locked)", "app_id": 15368 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "mainsite-app": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "mtasts-motor": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "oraculo-financeiro": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "sponsor-motor": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        { "name": "Format, lint, typecheck and test", "app_id": 15368 },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    },
+    "ultrabrain-mcp": {
+      "required_checks": [
+        { "name": "Dependency Review", "app_id": 15368 },
+        { "name": "Check index.html formatting", "app_id": 15368 },
+        { "name": "Analyze actions", "app_id": 15368 },
+        { "name": "Analyze javascript-typescript", "app_id": 15368 },
+        { "name": "CodeQL", "app_id": 57789 },
+        {
+          "name": "Install, check and smoke (ubuntu-latest, 22)",
+          "app_id": 15368
+        },
+        {
+          "name": "Install, check and smoke (ubuntu-latest, 24)",
+          "app_id": 15368
+        },
+        {
+          "name": "Install, check and smoke (windows-latest, 22)",
+          "app_id": 15368
+        },
+        {
+          "name": "Install, check and smoke (windows-latest, 24)",
+          "app_id": 15368
+        },
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
+        { "name": "zizmor", "app_id": 57789 }
+      ]
+    }
+  }
+}

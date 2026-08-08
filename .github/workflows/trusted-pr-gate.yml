@@ -1,0 +1,51 @@
+name: LCV Trusted Gate
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  merge_group:
+    types:
+      - checks_requested
+
+permissions: write-all
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: trusted-pr-gate-${{ github.repository }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  trusted-gate:
+    name: LCV Trusted Gate
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout immutable trusted-gate tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .lcv-trusted-pr-automation
+          sparse-checkout: trusted-pr-automation
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Evaluate exact-head trusted evidence
+        env:
+          LCV_GATE_POLL_SECONDS: "30"
+          LCV_GATE_TIMEOUT_SECONDS: "840"
+          LCV_MODE: gate
+          TOKEN: ${{ github.token }}
+        run: node .lcv-trusted-pr-automation/trusted-pr-automation/main.mjs
