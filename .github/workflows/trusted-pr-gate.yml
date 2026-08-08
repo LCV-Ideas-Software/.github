@@ -2,6 +2,11 @@ name: LCV Trusted Gate
 
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
   merge_group:
     types:
       - checks_requested

@@ -990,6 +990,37 @@ async function assessPullCore({
   return { ...evidence, mainSha, connectorCleanAt: connector.cleanAt };
 }
 
+export async function finalizePullTrustBoundary({
+  expectedHead,
+  expectedBase,
+  label,
+  reassess,
+  scanCode,
+}) {
+  if (!validSha(expectedHead) || typeof reassess !== "function") {
+    throw new Error("invalid final pull-trust boundary");
+  }
+  if (expectedBase !== undefined && !validSha(expectedBase)) {
+    throw new Error("invalid final pull-trust base");
+  }
+  if (typeof label !== "string" || !label || typeof scanCode !== "function") {
+    throw new Error("invalid final pull-trust callbacks");
+  }
+  const assertBoundary = (evidence) => {
+    if (evidence?.pullRequest?.head?.sha !== expectedHead) {
+      throw new Error(`${label}: head changed at final trust boundary`);
+    }
+    if (expectedBase !== undefined && evidence?.mainSha !== expectedBase) {
+      throw new Error(`${label}: base changed at final trust boundary`);
+    }
+    return evidence;
+  };
+
+  assertBoundary(await reassess());
+  await scanCode();
+  return assertBoundary(await reassess());
+}
+
 export function lateReviewTimeoutCommand({ repo, number, headSha }) {
   if (!repo || !Number.isInteger(number) || !validSha(headSha)) {
     throw new Error("invalid late-review timeout annotation identity");
@@ -1101,12 +1132,18 @@ async function runPullRequestGate({ api, event, owner, repo, policy }) {
     ),
     timing,
   });
-  await verifyCodeScanningAfterChecks({
-    api,
-    owner,
-    repo,
-    number,
-    checkState: "success",
+  await finalizePullTrustBoundary({
+    expectedHead: eventHead,
+    label: `${repo}#${number}`,
+    reassess: () => assessPullCore({ api, owner, repo, number, policy }),
+    scanCode: () =>
+      verifyCodeScanningAfterChecks({
+        api,
+        owner,
+        repo,
+        number,
+        checkState: "success",
+      }),
   });
   console.log(`${repo}#${number}@${eventHead}: trusted gate passed`);
 }
@@ -1198,12 +1235,26 @@ async function runMergeGroupGate({ api, event, owner, repo, policy }) {
     timing,
   });
   for (const pullRequest of pulls) {
-    await verifyCodeScanningAfterChecks({
-      api,
-      owner,
-      repo,
-      number: pullRequest.number,
-      checkState: "success",
+    await finalizePullTrustBoundary({
+      expectedHead: pullRequest.head.sha,
+      expectedBase: groupBase,
+      label: `${repo}#${pullRequest.number}`,
+      reassess: () =>
+        assessPullCore({
+          api,
+          owner,
+          repo,
+          number: pullRequest.number,
+          policy,
+        }),
+      scanCode: () =>
+        verifyCodeScanningAfterChecks({
+          api,
+          owner,
+          repo,
+          number: pullRequest.number,
+          checkState: "success",
+        }),
     });
   }
   console.log(

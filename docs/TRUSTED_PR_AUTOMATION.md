@@ -31,7 +31,9 @@ never be duplicated by the client.
 - `.github/workflows/trusted-pr-gate.yml` is the public ruleset workflow. It
   handles `pull_request` and `merge_group`, retains `permissions: write-all`,
   uses only `github.token`, and checks out its source with
-  `job.workflow_repository` plus `job.workflow_sha`.
+  `job.workflow_repository` plus `job.workflow_sha`. Pull-request activity
+  explicitly includes `ready_for_review`, so making a draft ready creates a
+  fresh gate run without requiring an unrelated push.
 - `.github/workflows/trusted-pr-controller.yml` tests the controller and then,
   only on signed `main`, uses `LCV_AUTOMATION_TOKEN` from the protected
   `github-administration` environment. It runs every five minutes and is
@@ -92,7 +94,11 @@ time:
 8. Only after the exact-head executor and GHAS checks are green, the gate
    refreshes the PR's code-scanning alert inventory and requires zero open
    alerts at any supported severity. A stale open alert observed while a fixing
-   analysis is still running cannot terminally fail the controller.
+   analysis is still running cannot terminally fail the controller. Pull,
+   commit, connector, review, and thread evidence is reread after the CI wait,
+   then reread again after the code-scanning inventory; the exact associated
+   head (and merge-group base, for a synthetic head) must remain unchanged at
+   both final trust boundaries.
 
 When an exact head has no clean connector review, the controller posts this
 idempotent request once for that SHA:

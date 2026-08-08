@@ -16,6 +16,7 @@ import {
   ensureConnectorReviewRequest,
   ensureDependabotRebaseRequest,
   evaluateConnectorEvidence,
+  finalizePullTrustBoundary,
   hasReviewRequestForHead,
   isTrustedPullRequest,
   lateReviewTimeoutCommand,
@@ -799,6 +800,73 @@ test("code-scanning alerts are refreshed only after exact-head checks are green"
   );
 });
 
+test("final trust boundary rereads evidence around code scanning", async () => {
+  const trace = [];
+  const trusted = {
+    pullRequest: { head: { sha: SHA } },
+    mainSha: BASE_SHA,
+  };
+  const result = await finalizePullTrustBoundary({
+    expectedHead: SHA,
+    expectedBase: BASE_SHA,
+    label: "example#7",
+    reassess: async () => {
+      trace.push("reassess");
+      return trusted;
+    },
+    scanCode: async () => trace.push("scan"),
+  });
+  assert.equal(result, trusted);
+  assert.deepEqual(trace, ["reassess", "scan", "reassess"]);
+
+  let scanCalled = false;
+  await assert.rejects(
+    finalizePullTrustBoundary({
+      expectedHead: SHA,
+      label: "example#7",
+      reassess: async () => ({ pullRequest: { head: { sha: OTHER_SHA } } }),
+      scanCode: async () => {
+        scanCalled = true;
+      },
+    }),
+    /head changed at final trust boundary/i,
+  );
+  assert.equal(scanCalled, false);
+
+  let assessment = 0;
+  await assert.rejects(
+    finalizePullTrustBoundary({
+      expectedHead: SHA,
+      label: "example#7",
+      reassess: async () => {
+        assessment += 1;
+        if (assessment === 2) throw new Error("late connector finding");
+        return trusted;
+      },
+      scanCode: async () => undefined,
+    }),
+    /late connector finding/i,
+  );
+
+  assessment = 0;
+  await assert.rejects(
+    finalizePullTrustBoundary({
+      expectedHead: SHA,
+      label: "example#7",
+      reassess: async () => {
+        assessment += 1;
+        return {
+          pullRequest: {
+            head: { sha: assessment === 1 ? SHA : OTHER_SHA },
+          },
+        };
+      },
+      scanCode: async () => undefined,
+    }),
+    /head changed at final trust boundary/i,
+  );
+});
+
 test("controller reruns a timed-out trusted gate once only after later clean evidence", async () => {
   assert.match(
     lateReviewTimeoutCommand({ repo: "example", number: 7, headSha: SHA }),
@@ -1152,6 +1220,7 @@ test("workflow contracts isolate the PAT and preserve write-all", async () => {
     "utf8",
   );
   assert.match(gate, /pull_request:/);
+  assert.match(gate, /ready_for_review/);
   assert.match(gate, /merge_group:/);
   assert.match(gate, /permissions:\s+write-all/);
   assert.match(gate, /repository:\s+\$\{\{ job\.workflow_repository \}\}/);
