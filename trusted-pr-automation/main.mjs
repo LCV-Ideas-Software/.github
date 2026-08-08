@@ -295,7 +295,7 @@ export function evaluateConnectorEvidence({
       reason: "no clean connector review exists for the exact head",
     };
   }
-  if (Math.max(...exactClean) < latestFindingAt) {
+  if (Math.max(...exactClean) <= latestFindingAt) {
     return {
       ok: false,
       reason:
@@ -582,10 +582,8 @@ export function trustedGateRecoveryCandidate({ checkRuns, cleanAt, headSha }) {
     );
   }
   const completedAt = timestamp(gate.completed_at);
-  if (!Number.isFinite(cleanAt) || cleanAt <= completedAt || completedAt <= 0) {
-    throw new Error(
-      "LCV Trusted Gate failed after clean evidence was already available",
-    );
+  if (!Number.isFinite(cleanAt) || cleanAt <= 0 || completedAt <= 0) {
+    throw new Error("LCV Trusted Gate has invalid recovery timestamps");
   }
   const runId = gate.details_url?.match(/\/actions\/runs\/(\d+)(?:\/|$)/)?.[1];
   if (!runId)

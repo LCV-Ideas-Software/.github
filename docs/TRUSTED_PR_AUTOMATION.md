@@ -134,16 +134,16 @@ thread is reported as `connector-blocked`, and only the gate may wait. Invalid
 connector identity, a thread without an immutable review commit, and other
 incoherent evidence remain immediate terminal failures.
 
-If the required gate timed out before the clean connector signal arrived, the
-controller can recover without a human click. Recovery is allowed only after
-all non-gate evidence is currently valid, the clean signal timestamp is later
-than the failed gate completion, and the failed check resolves to an Actions
-run for the exact head. The failed check must also carry the gate's dedicated
-`LCV_GATE_LATE_REVIEW_TIMEOUT` annotation; functional failures do not carry it.
-It calls `rerun-failed-jobs` only when `run_attempt=1`.
-A running second attempt is observed as pending; a failed completed second
-attempt is terminal and is never rerun again. A gate that failed after clean
-evidence existed is treated as a functional failure, not as a timeout recovery.
+If the required gate timed out while mutable connector evidence was unsettled,
+the controller can recover without a human click. Recovery is allowed only
+after all non-gate evidence is currently valid and the failed check resolves to
+an Actions run for the exact head. The failed check must also carry the gate's
+dedicated `LCV_GATE_LATE_REVIEW_TIMEOUT` annotation; functional failures do not
+carry it. The clean signal need not postdate completion because an unresolved
+thread can be resolved after timeout while its already-valid clean signal keeps
+the earlier timestamp. The controller calls `rerun-failed-jobs` only when
+`run_attempt=1`. A running second attempt is observed as pending; a failed
+completed second attempt is terminal and is never rerun again.
 
 ## Merge queue identity
 

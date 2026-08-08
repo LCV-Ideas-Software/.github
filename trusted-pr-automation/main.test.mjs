@@ -547,6 +547,15 @@ test("connector evidence allows resolved stale threads but blocks current change
     ).reason,
     /after the latest connector finding/i,
   );
+  assert.match(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        issueComments: [cleanComment(SHA, "2026-08-08T12:03:00Z")],
+        threads: [resolvedCurrentFinding],
+      }),
+    ).reason,
+    /after the latest connector finding/i,
+  );
   assert.equal(
     evaluateConnectorEvidence(
       connectorEvidence({
@@ -987,7 +996,7 @@ test("final trust boundary rereads evidence around code scanning", async () => {
   );
 });
 
-test("controller reruns a timed-out trusted gate once only after later clean evidence", async () => {
+test("controller reruns once only for an attributable timeout with current clean evidence", async () => {
   assert.match(
     lateReviewTimeoutCommand({ repo: "example", number: 7, headSha: SHA }),
     new RegExp(SHA),
@@ -1036,8 +1045,8 @@ test("controller reruns a timed-out trusted gate once only after later clean evi
     { method: "POST" },
   ]);
 
-  await assert.rejects(
-    recoverLateTrustedGate({
+  assert.equal(
+    await recoverLateTrustedGate({
       api,
       owner: "LCV-Ideas-Software",
       repo: "example",
@@ -1045,7 +1054,19 @@ test("controller reruns a timed-out trusted gate once only after later clean evi
       cleanAt: Date.parse("2026-08-08T11:59:00Z"),
       checkRuns: [gateFailure],
     }),
-    /failed after clean evidence/i,
+    "trusted-gate-rerun-requested",
+  );
+
+  await assert.rejects(
+    recoverLateTrustedGate({
+      api,
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      headSha: SHA,
+      cleanAt: 0,
+      checkRuns: [gateFailure],
+    }),
+    /invalid recovery timestamps/i,
   );
 
   await assert.rejects(
