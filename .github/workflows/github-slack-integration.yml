@@ -15,16 +15,6 @@ on:
       - "workers/github-slack-relay/**"
   pull_request:
     branches: [main]
-    paths:
-      - ".github/workflows/github-slack-integration.yml"
-      - ".github/workflows/github-slack-hook-management.yml"
-      - ".github/workflows/github-slack-webhook-redelivery.yml"
-      - "docs/GITHUB_SLACK_INTEGRATION.md"
-      - "scripts/github-slack-hook-management.mjs"
-      - "scripts/github-slack-hook-management.test.mjs"
-      - "scripts/github-slack-webhook-redelivery.mjs"
-      - "scripts/github-slack-webhook-redelivery.test.mjs"
-      - "workers/github-slack-relay/**"
   merge_group:
     types:
       - checks_requested
@@ -71,7 +61,8 @@ jobs:
       - name: Install and verify latest Wrangler
         id: wrangler
         shell: bash
-        run: | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
+        run:
+          | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
           set -euo pipefail
           wrangler_prefix="$RUNNER_TEMP/wrangler-latest"
           effective_registry="$(npm config get registry --prefix "$wrangler_prefix")"
@@ -156,7 +147,8 @@ jobs:
       - name: Install and verify latest Wrangler
         id: wrangler
         shell: bash
-        run: | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
+        run:
+          | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
           set -euo pipefail
           wrangler_prefix="$RUNNER_TEMP/wrangler-latest"
           effective_registry="$(npm config get registry --prefix "$wrangler_prefix")"

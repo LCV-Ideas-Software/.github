@@ -1,0 +1,11 @@
+name: LCV Native Auto-merge
+description: Enables native auto-merge at an exact head only after verifying effective zero-tolerance rules.
+
+inputs:
+  automation_token:
+    description: Protected PAT used for live enforcement and pull-request reads plus the native auto-merge request.
+    required: true
+
+runs:
+  using: node24
+  main: main.mjs

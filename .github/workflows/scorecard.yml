@@ -6,6 +6,11 @@ on:
       - ".github/workflows/**"
       - ".github/dependabot.yml"
       - "SECURITY.md"
+  pull_request:
+    branches: ["main"]
+  merge_group:
+    types:
+      - checks_requested
   schedule:
     - cron: "37 8 * * 1"
   workflow_dispatch:
@@ -31,13 +36,74 @@ jobs:
           # OpenSSF's publication API rejects workflows with organization-mandated write-all.
           # SARIF and artifacts remain enabled below.
           publish_results: false
+      - name: Enforce the approved Scorecard policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Preserve only the exact signatures of recorded policy decisions.
+          # BranchProtectionID is bootstrap-only and must be removed after the
+          # native protection canary eliminates the historical baseline result.
+          jq -e '
+            def result_uri:
+              .locations[0]?.physicalLocation?.artifactLocation?.uri // "";
+            def result_snippet:
+              .locations[0]?.physicalLocation?.region?.snippet?.text // "";
+            def result_message:
+              .message.text // "";
+            def accepted_policy_finding:
+              (result_uri) as $uri
+              | (result_snippet) as $snippet
+              | (result_message) as $message
+              | if .ruleId == "TokenPermissionsID" then
+                  ($uri | test("^\\.github/workflows/[^/]+\\.ya?ml$"))
+                  and ($message | startswith("score is 0: topLevel permissions set to '\''write-all'\''\n"))
+                elif .ruleId == "PinnedDependenciesID" then
+                  ([
+                    ".github/workflows/cloudflare-pages.yml",
+                    ".github/workflows/github-slack-integration.yml"
+                  ] | index($uri)) != null
+                  and $message == "score is 7: npmCommand not pinned by hash\nClick Remediation section below to solve this issue"
+                  and ([
+                    "npm install --prefix \"$wrangler_prefix\" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest",
+                    "npm install --prefix \"$wrangler_prefix\" --ignore-scripts --no-audit --no-fund"
+                  ] | index($snippet)) != null
+                elif .ruleId == "BranchProtectionID" then
+                  $uri == "no file associated with this alert"
+                  and ($message | startswith("score is 3: branch protection is not maximal on development and all release branches:\nWarn: could not determine whether codeowners review is allowed\nWarn: no status checks found to merge onto branch '\''main'\''\nWarn: PRs are not required to make changes on branch '\''main'\''"))
+                elif .ruleId == "CodeReviewID" then
+                  $uri == "no file associated with this alert"
+                  and ($message | test("^score is 0: Found 0/[0-9]+ approved changesets -- score normalized to 0\\nClick Remediation section below to solve this issue$"))
+                elif .ruleId == "FuzzingID" then
+                  $uri == "no file associated with this alert"
+                  and $message == "score is 0: project is not fuzzed:\nWarn: no fuzzer integrations found\nClick Remediation section below to solve this issue"
+                elif .ruleId == "CIIBestPracticesID" then
+                  $uri == "no file associated with this alert"
+                  and $message == "score is 0: no effort to earn an OpenSSF best practices badge detected\nClick Remediation section below to solve this issue"
+                else
+                  false
+                end;
+            [
+              .runs[]?.results[]?
+              | select(accepted_policy_finding | not)
+              | {
+                  ruleId: (.ruleId // "unknown"),
+                  path: (.locations[0]?.physicalLocation?.artifactLocation?.uri // "unknown")
+                }
+            ] as $unapproved
+            | if ($unapproved | length) == 0
+              then true
+              else error("Unapproved Scorecard findings: \($unapproved | tojson)")
+              end
+          ' scorecard-results.sarif
       - name: Upload SARIF artifact
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-results
           path: scorecard-results.sarif
           retention-days: 5
       - name: Upload SARIF to code-scanning
+        if: always()
         uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: scorecard-results.sarif
