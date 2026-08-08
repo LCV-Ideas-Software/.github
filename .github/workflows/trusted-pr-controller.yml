@@ -1,0 +1,68 @@
+name: LCV Trusted PR Controller
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: write-all
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: trusted-pr-controller
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test trusted PR controller
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout controller source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Check controller syntax
+        run: node --check trusted-pr-automation/main.mjs
+
+      - name: Run controller tests
+        run: node --test trusted-pr-automation/main.test.mjs
+
+  enqueue:
+    name: Enqueue trusted pull requests
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: github-administration
+    steps:
+      - name: Checkout signed main without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Enqueue exact-head trusted pull requests
+        env:
+          LCV_MODE: controller
+          TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+        run: node trusted-pr-automation/main.mjs
