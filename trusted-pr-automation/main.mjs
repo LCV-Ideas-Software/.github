@@ -501,11 +501,15 @@ export function evaluateConnectorEvidence({
     }
   }
 
-  const latestReviews = latestByIdentity(
-    (reviews ?? []).filter((review) => review?.commit_id === headSha),
+  const latestDecisiveReviews = latestByIdentity(
+    (reviews ?? []).filter(
+      (review) =>
+        review?.commit_id === headSha &&
+        ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review?.state),
+    ),
     (review) => identityKey(review?.user?.login, review?.user?.id),
   );
-  for (const review of latestReviews.values()) {
+  for (const review of latestDecisiveReviews.values()) {
     if (review?.state === "CHANGES_REQUESTED") {
       return { ok: false, reason: "changes requested on the current head" };
     }
@@ -937,25 +941,46 @@ function latestByIdentity(items, identity) {
   return latest;
 }
 
+function checkRunInstanceKey(run) {
+  const key = checkKey(run?.name, run?.app?.id);
+  if (run?.app?.id !== ACTIONS_APP_ID) return key;
+  const suiteId = run?.check_suite?.id;
+  return Number.isSafeInteger(suiteId) && suiteId > 0
+    ? `${key}:suite:${suiteId}`
+    : `${key}:invalid-suite:${String(run?.id ?? "missing")}`;
+}
+
+function latestCheckRunsBySuite(checkRuns) {
+  return latestByIdentity(checkRuns, checkRunInstanceKey);
+}
+
 export function classifyChecks({ checkRuns, statuses, requiredChecks }) {
   const failures = [];
   const pendings = [];
-  const latestRuns = latestByIdentity(checkRuns, (run) =>
-    checkKey(run.name, run.app?.id),
+  const latestRuns = [...latestCheckRunsBySuite(checkRuns).values()].filter(
+    (run) =>
+      !(
+        run?.name === TRUSTED_GATE_CHECK_NAME && run?.app?.id === ACTIONS_APP_ID
+      ),
   );
-  latestRuns.delete(checkKey(TRUSTED_GATE_CHECK_NAME, ACTIONS_APP_ID));
 
   for (const required of requiredChecks) {
     const key = checkKey(required.name, required.app_id);
-    const run = latestRuns.get(key);
-    if (!run) {
+    const matching = latestRuns.filter(
+      (run) => checkKey(run?.name, run?.app?.id) === key,
+    );
+    if (matching.length === 0) {
       pendings.push(`missing required check ${key}`);
-    } else if (run.status !== "completed") {
-      pendings.push(`required check ${key} is ${run.status}`);
-    } else if (run.conclusion !== "success") {
-      failures.push(
-        `required check ${key} concluded ${run.conclusion ?? "without conclusion"}`,
-      );
+      continue;
+    }
+    for (const run of matching) {
+      if (run.status !== "completed") {
+        pendings.push(`required check ${key} is ${run.status}`);
+      } else if (run.conclusion !== "success") {
+        failures.push(
+          `required check ${key} concluded ${run.conclusion ?? "without conclusion"}`,
+        );
+      }
     }
   }
 
@@ -967,7 +992,15 @@ export function classifyChecks({ checkRuns, statuses, requiredChecks }) {
     "startup_failure",
     "timed_out",
   ]);
-  for (const [key, run] of latestRuns) {
+  for (const run of latestRuns) {
+    const key = checkRunInstanceKey(run);
+    if (
+      run?.app?.id === ACTIONS_APP_ID &&
+      (!Number.isSafeInteger(run?.check_suite?.id) || run.check_suite.id <= 0)
+    ) {
+      failures.push(`observed check ${key} has no valid check-suite identity`);
+      continue;
+    }
     if (run.status !== "completed") {
       pendings.push(`observed check ${key} is ${run.status}`);
     } else if (optionalFailures.has(run.conclusion)) {
@@ -996,6 +1029,82 @@ export function classifyChecks({ checkRuns, statuses, requiredChecks }) {
         ? "pending"
         : "success",
     reasons,
+  };
+}
+
+function sortFingerprintRecords(records) {
+  return records.sort((left, right) => {
+    const leftJson = JSON.stringify(left);
+    const rightJson = JSON.stringify(right);
+    if (leftJson < rightJson) return -1;
+    if (leftJson > rightJson) return 1;
+    return 0;
+  });
+}
+
+export function checkEvidenceFingerprint({ checkRuns, statuses }) {
+  return JSON.stringify({
+    checkRuns: sortFingerprintRecords(
+      (checkRuns ?? []).map((run) => ({
+        id: run?.id ?? null,
+        name: run?.name ?? null,
+        appId: run?.app?.id ?? null,
+        checkSuiteId: run?.check_suite?.id ?? null,
+        status: run?.status ?? null,
+        conclusion: run?.conclusion ?? null,
+        detailsUrl: run?.details_url ?? null,
+        startedAt: run?.started_at ?? null,
+        completedAt: run?.completed_at ?? null,
+      })),
+    ),
+    statuses: sortFingerprintRecords(
+      (statuses ?? []).map((status) => ({
+        id: status?.id ?? null,
+        context: status?.context ?? null,
+        creatorId: status?.creator?.id ?? null,
+        state: status?.state ?? null,
+        targetUrl: status?.target_url ?? null,
+        createdAt: status?.created_at ?? null,
+        updatedAt: status?.updated_at ?? null,
+      })),
+    ),
+  });
+}
+
+export function inspectRequiredCheckProducerProvenance({
+  checkRuns,
+  requiredChecks,
+}) {
+  const latestRuns = [...latestCheckRunsBySuite(checkRuns).values()];
+  const actionRequirements = (requiredChecks ?? []).filter(
+    (required) => required?.app_id === ACTIONS_APP_ID,
+  );
+  if (actionRequirements.length === 0) {
+    return { outcome: "required-check-producer-provenance-not-applicable" };
+  }
+  for (const required of actionRequirements) {
+    const key = checkKey(required.name, required.app_id);
+    const matching = latestRuns.filter(
+      (run) => checkKey(run?.name, run?.app?.id) === key,
+    );
+    if (matching.length === 0) {
+      throw new Error(`required producer check ${key} is missing`);
+    }
+    if (
+      matching.some(
+        (run) =>
+          !Number.isSafeInteger(run?.check_suite?.id) ||
+          run.check_suite.id <= 0,
+      )
+    ) {
+      throw new Error(
+        `required producer check ${key} has invalid suite identity`,
+      );
+    }
+  }
+  return {
+    outcome: "required-check-producer-provenance-unverified",
+    producerProvenanceVerified: false,
   };
 }
 
@@ -1051,32 +1160,47 @@ async function verifyTrustedGateCheck({
   checkRun,
   expectedEvent,
 }) {
-  if (!Number.isInteger(checkRun?.id)) {
+  if (!Number.isSafeInteger(checkRun?.id) || checkRun.id <= 0) {
     throw new Error("LCV Trusted Gate has no check-run identity");
   }
   const checkSuiteId = checkRun?.check_suite?.id;
-  if (!Number.isInteger(checkSuiteId)) {
+  if (!Number.isSafeInteger(checkSuiteId) || checkSuiteId <= 0) {
     throw new Error("LCV Trusted Gate has no check-suite identity");
   }
   const fullRepository = `${owner}/${repo}`;
+  const detailsPrefix = `https://github.com/${fullRepository}/actions/runs/`;
+  const details = checkRun.details_url?.startsWith(detailsPrefix)
+    ? checkRun.details_url.slice(detailsPrefix.length)
+    : "";
+  const detailsMatch = details.match(/^([1-9]\d*)\/job\/([1-9]\d*)$/);
+  const runId = Number(detailsMatch?.[1]);
+  const jobId = Number(detailsMatch?.[2]);
+  if (
+    !Number.isSafeInteger(runId) ||
+    runId <= 0 ||
+    !Number.isSafeInteger(jobId) ||
+    jobId <= 0
+  ) {
+    throw new Error("LCV Trusted Gate details URL is not canonical");
+  }
   const expectedCheckUrl = `https://api.github.com/repos/${fullRepository}/check-runs/${checkRun.id}`;
   const job = await api.request(
-    `/repos/${owner}/${repo}/actions/jobs/${checkRun.id}`,
+    `/repos/${owner}/${repo}/actions/jobs/${jobId}`,
   );
   if (
-    Number(job?.id) !== checkRun.id ||
+    job?.id !== jobId ||
     job?.check_run_url !== expectedCheckUrl ||
     job?.head_sha !== headSha ||
     job?.name !== TRUSTED_GATE_CHECK_NAME ||
     job?.workflow_name !== TRUSTED_GATE_CHECK_NAME ||
     job?.status !== checkRun.status ||
     job?.conclusion !== checkRun.conclusion ||
-    !Number.isInteger(job?.run_id)
+    job?.run_id !== runId
   ) {
     throw new Error("LCV Trusted Gate job identity is inconsistent");
   }
-  const expectedRunUrl = `https://api.github.com/repos/${fullRepository}/actions/runs/${job.run_id}`;
-  const expectedDetailsUrl = `https://github.com/${fullRepository}/actions/runs/${job.run_id}/job/${checkRun.id}`;
+  const expectedRunUrl = `https://api.github.com/repos/${fullRepository}/actions/runs/${runId}`;
+  const expectedDetailsUrl = `${detailsPrefix}${runId}/job/${jobId}`;
   if (
     job.run_url !== expectedRunUrl ||
     checkRun.details_url !== expectedDetailsUrl
@@ -1096,7 +1220,7 @@ async function verifyTrustedGateCheck({
   const [run] = runs;
   const workflowUrl = expectedGateWorkflowUrl();
   if (
-    Number(run?.id) !== job.run_id ||
+    run?.id !== runId ||
     run?.url !== expectedRunUrl ||
     run?.check_suite_id !== checkSuiteId ||
     run?.head_sha !== headSha ||
@@ -1507,14 +1631,11 @@ async function reviewThreads(api, owner, repo, number) {
   throw new Error(`#${number}: review threads exceeded 1000 records`);
 }
 
-async function readCheckEvidence(api, owner, repo, sha) {
+export async function readCheckEvidence(api, owner, repo, sha) {
   const [checkRuns, statuses] = await Promise.all([
-    api.pages(
-      `/repos/${owner}/${repo}/commits/${sha}/check-runs?filter=latest`,
-      {
-        extract: (payload) => payload?.check_runs,
-      },
-    ),
+    api.pages(`/repos/${owner}/${repo}/commits/${sha}/check-runs?filter=all`, {
+      extract: (payload) => payload?.check_runs,
+    }),
     api.pages(`/repos/${owner}/${repo}/commits/${sha}/statuses`),
   ]);
   return { checkRuns, statuses };
@@ -1676,9 +1797,18 @@ export async function finalizePullTrustBoundary({
   };
 
   assertBoundary(await reassess());
+  const checksBeforeScan = await recheckChecks();
+  if (typeof checksBeforeScan !== "string" || !checksBeforeScan) {
+    throw new Error(`${label}: check inventory fingerprint is invalid`);
+  }
   await scanCode();
   const finalEvidence = assertBoundary(await reassess());
-  await recheckChecks();
+  const checksAfterScan = await recheckChecks();
+  if (checksAfterScan !== checksBeforeScan) {
+    throw new Error(
+      `${label}: exact-SHA check inventory changed while code scanning was verified`,
+    );
+  }
   return finalEvidence;
 }
 
@@ -1785,6 +1915,7 @@ async function requireGateEvidenceNow({
       `final exact-SHA check inventory is ${result.state}: ${result.reasons.join("; ")}`,
     );
   }
+  return checkEvidenceFingerprint(checks);
 }
 
 async function runPullRequestGate({ api, event, owner, repo, policy }) {
@@ -2055,10 +2186,18 @@ export async function enqueueAfterFinalTrustAssessment({
     }
   };
   assertBoundary(await reassess());
-  await recheckChecks();
+  const checksBeforeScan = await recheckChecks();
+  if (typeof checksBeforeScan !== "string" || !checksBeforeScan) {
+    throw new Error("final enqueue check inventory fingerprint is invalid");
+  }
   await scanCode();
   assertBoundary(await reassess());
-  await recheckChecks();
+  const checksAfterScan = await recheckChecks();
+  if (checksAfterScan !== checksBeforeScan) {
+    throw new Error(
+      "exact-SHA check inventory changed while enqueue code scanning was verified",
+    );
+  }
   return enqueueMutation();
 }
 
@@ -2148,6 +2287,15 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
     throw new Error(`${repo}#${pullRequest.number}: ${error.message}`);
   }
   if (checkOutcome === "checks-pending") return { outcome: checkOutcome };
+  const producerProvenance = inspectRequiredCheckProducerProvenance({
+    checkRuns: checks.checkRuns,
+    requiredChecks,
+  });
+  if (
+    producerProvenance.outcome !== "required-check-producer-provenance-verified"
+  ) {
+    return { outcome: producerProvenance.outcome };
+  }
   await verifyCodeScanningAfterChecks({
     api,
     owner,
@@ -2209,6 +2357,18 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
           `${repo}#${pullRequest.number}: final exact-SHA check inventory is ${finalResult.state}: ${finalResult.reasons.join("; ")}`,
         );
       }
+      const finalProducerProvenance = inspectRequiredCheckProducerProvenance({
+        checkRuns: finalChecks.checkRuns,
+        requiredChecks,
+      });
+      if (
+        finalProducerProvenance.outcome !==
+        "required-check-producer-provenance-verified"
+      ) {
+        throw new Error(
+          `${repo}#${pullRequest.number}: ${finalProducerProvenance.outcome}`,
+        );
+      }
       const finalGate = await inspectTrustedGate({
         api,
         owner,
@@ -2221,6 +2381,7 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
           `${repo}#${pullRequest.number}: final LCV Trusted Gate is ${finalGate.outcome}`,
         );
       }
+      return checkEvidenceFingerprint(finalChecks);
     },
     scanCode: () =>
       verifyCodeScanningAfterChecks({

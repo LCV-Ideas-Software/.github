@@ -15,6 +15,7 @@ import {
   TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
   allCommitsVerified,
   buildEnqueueInput,
+  checkEvidenceFingerprint,
   classifyChecks,
   connectorFailureCanSettleWithoutHeadChange,
   copilotFailureCanSettleWithoutHeadChange,
@@ -31,10 +32,12 @@ import {
   finalizePullTrustBoundary,
   hasReviewRequestForHead,
   inspectTrustedGate,
+  inspectRequiredCheckProducerProvenance,
   isTrustedPullRequest,
   isCopilotReviewExcludedPath,
   lateReviewTimeoutCommand,
   recoverLateTrustedGate,
+  readCheckEvidence,
   readPullFiles,
   requiredChecksForPhase,
   resolveConnectorReviewCommits,
@@ -164,12 +167,21 @@ function check(
   status = "completed",
   conclusion = "success",
   id = 1,
+  checkSuiteId = id + 100000,
 ) {
-  return { id, name, status, conclusion, app: { id: appId } };
+  return {
+    id,
+    name,
+    status,
+    conclusion,
+    app: { id: appId },
+    check_suite: { id: checkSuiteId },
+  };
 }
 
 function trustedGateFixture({
   checkId = 93120160052,
+  jobId = checkId + 1000,
   checkSuiteId = 84829903484,
   runId = 31264423091,
   status = "completed",
@@ -193,10 +205,10 @@ function trustedGateFixture({
       ),
       check_suite: { id: checkSuiteId },
       completed_at: status === "completed" ? "2026-08-08T12:00:00Z" : null,
-      details_url: `https://github.com/${fullRepository}/actions/runs/${runId}/job/${checkId}`,
+      details_url: `https://github.com/${fullRepository}/actions/runs/${runId}/job/${jobId}`,
     },
     job: {
-      id: checkId,
+      id: jobId,
       run_id: runId,
       run_url: runUrl,
       check_run_url: `https://api.github.com/repos/${fullRepository}/check-runs/${checkId}`,
@@ -1559,28 +1571,75 @@ test("connector evidence allows resolved stale threads but blocks current change
   );
   assert.match(changesRequested.reason, /changes requested/i);
 
-  assert.equal(
+  const changes = {
+    id: 1,
+    user: actor(),
+    state: "CHANGES_REQUESTED",
+    commit_id: SHA,
+    submitted_at: "2026-08-08T12:01:00Z",
+  };
+  assert.match(
     evaluateConnectorEvidence(
       connectorEvidence({
         reviews: [
+          changes,
           {
-            id: 1,
-            user: actor(),
-            state: "CHANGES_REQUESTED",
-            commit_id: SHA,
-            submitted_at: "2026-08-08T12:01:00Z",
-          },
-          {
+            ...changes,
             id: 2,
-            user: actor(),
-            state: "APPROVED",
-            commit_id: SHA,
+            state: "COMMENTED",
             submitted_at: "2026-08-08T12:02:00Z",
           },
         ],
       }),
-    ).ok,
-    true,
+    ).reason,
+    /changes requested/i,
+  );
+  for (const clearingState of ["APPROVED", "DISMISSED"]) {
+    assert.equal(
+      evaluateConnectorEvidence(
+        connectorEvidence({
+          reviews: [
+            changes,
+            {
+              ...changes,
+              id: 2,
+              state: clearingState,
+              submitted_at: "2026-08-08T12:02:00Z",
+            },
+          ],
+        }),
+      ).ok,
+      true,
+      clearingState,
+    );
+  }
+  assert.match(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        reviews: [
+          changes,
+          {
+            ...changes,
+            id: 2,
+            user: actor("other-reviewer", 99),
+            state: "APPROVED",
+            submitted_at: "2026-08-08T12:02:00Z",
+          },
+        ],
+      }),
+    ).reason,
+    /changes requested/i,
+  );
+  assert.match(
+    evaluateConnectorEvidence(
+      connectorEvidence({
+        reviews: [
+          { ...changes, state: "APPROVED" },
+          { ...changes, id: 2, submitted_at: "2026-08-08T12:02:00Z" },
+        ],
+      }),
+    ).reason,
+    /changes requested/i,
   );
 });
 
@@ -1743,6 +1802,78 @@ test("classifyChecks requires exact executor and GHAS identities and all observe
     }).state,
     "failure",
   );
+  const withoutAnalyzeActions = runs.filter(
+    (run) => run.name !== "Analyze actions",
+  );
+  for (const genuine of [
+    check("Analyze actions", ACTIONS_APP_ID, "in_progress", null, 200),
+    check("Analyze actions", ACTIONS_APP_ID, "completed", "failure", 200),
+  ]) {
+    assert.notEqual(
+      classifyChecks({
+        checkRuns: [
+          ...withoutAnalyzeActions,
+          genuine,
+          check("Analyze actions", ACTIONS_APP_ID, "completed", "success", 201),
+        ],
+        statuses: [],
+        requiredChecks: required,
+      }).state,
+      "success",
+    );
+  }
+  assert.equal(
+    classifyChecks({
+      checkRuns: [
+        ...withoutAnalyzeActions,
+        check(
+          "Analyze actions",
+          ACTIONS_APP_ID,
+          "completed",
+          "failure",
+          200,
+          777,
+        ),
+        check(
+          "Analyze actions",
+          ACTIONS_APP_ID,
+          "completed",
+          "success",
+          201,
+          777,
+        ),
+      ],
+      statuses: [],
+      requiredChecks: required,
+    }).state,
+    "success",
+  );
+  const invalidSuite = check(
+    "Analyze actions",
+    ACTIONS_APP_ID,
+    "completed",
+    "success",
+    202,
+  );
+  invalidSuite.check_suite = null;
+  assert.equal(
+    classifyChecks({
+      checkRuns: [...withoutAnalyzeActions, invalidSuite],
+      statuses: [],
+      requiredChecks: required,
+    }).state,
+    "failure",
+  );
+  assert.deepEqual(
+    inspectRequiredCheckProducerProvenance({
+      checkRuns: runs,
+      requiredChecks: required,
+    }),
+    {
+      outcome: "required-check-producer-provenance-unverified",
+      producerProvenanceVerified: false,
+    },
+  );
   assert.equal(
     classifyChecks({
       checkRuns: [
@@ -1766,9 +1897,6 @@ test("classifyChecks requires exact executor and GHAS identities and all observe
       requiredChecks: required,
     }).state,
     "failure",
-  );
-  const withoutAnalyzeActions = runs.filter(
-    (run) => run.name !== "Analyze actions",
   );
   assert.equal(
     classifyChecks({
@@ -1957,10 +2085,19 @@ test("final trust boundary rereads evidence around code scanning", async () => {
       return trusted;
     },
     scanCode: async () => trace.push("scan"),
-    recheckChecks: async () => trace.push("recheck"),
+    recheckChecks: async () => {
+      trace.push("recheck");
+      return "stable-inventory";
+    },
   });
   assert.equal(result, trusted);
-  assert.deepEqual(trace, ["reassess", "scan", "reassess", "recheck"]);
+  assert.deepEqual(trace, [
+    "reassess",
+    "recheck",
+    "scan",
+    "reassess",
+    "recheck",
+  ]);
 
   let scanCalled = false;
   await assert.rejects(
@@ -1971,7 +2108,7 @@ test("final trust boundary rereads evidence around code scanning", async () => {
       scanCode: async () => {
         scanCalled = true;
       },
-      recheckChecks: async () => undefined,
+      recheckChecks: async () => "stable-inventory",
     }),
     /head changed at final trust boundary/i,
   );
@@ -1988,7 +2125,7 @@ test("final trust boundary rereads evidence around code scanning", async () => {
         return trusted;
       },
       scanCode: async () => undefined,
-      recheckChecks: async () => undefined,
+      recheckChecks: async () => "stable-inventory",
     }),
     /late connector finding/i,
   );
@@ -2007,7 +2144,7 @@ test("final trust boundary rereads evidence around code scanning", async () => {
         };
       },
       scanCode: async () => undefined,
-      recheckChecks: async () => undefined,
+      recheckChecks: async () => "stable-inventory",
     }),
     /head changed at final trust boundary/i,
   );
@@ -2024,6 +2161,64 @@ test("final trust boundary rereads evidence around code scanning", async () => {
     }),
     /check inventory is pending/i,
   );
+
+  let fingerprintRead = 0;
+  await assert.rejects(
+    finalizePullTrustBoundary({
+      expectedHead: SHA,
+      label: "example#7",
+      reassess: async () => trusted,
+      scanCode: async () => undefined,
+      recheckChecks: async () => {
+        fingerprintRead += 1;
+        return fingerprintRead === 1 ? "inventory-a" : "inventory-b";
+      },
+    }),
+    /check inventory changed while code scanning/i,
+  );
+});
+
+test("check evidence fingerprint is order-independent and detects superseding evidence", () => {
+  const first = {
+    checkRuns: [
+      check("Analyze actions", ACTIONS_APP_ID, "completed", "success", 1),
+      check("CodeQL", 57789, "completed", "success", 2),
+    ],
+    statuses: [
+      {
+        id: 3,
+        context: "legacy-ci",
+        creator: { id: 4 },
+        state: "success",
+        target_url: "https://example.test/3",
+      },
+    ],
+  };
+  const reordered = {
+    checkRuns: [...first.checkRuns].reverse(),
+    statuses: [...first.statuses],
+  };
+  assert.equal(
+    checkEvidenceFingerprint(first),
+    checkEvidenceFingerprint(reordered),
+  );
+  assert.notEqual(
+    checkEvidenceFingerprint(first),
+    checkEvidenceFingerprint({
+      ...first,
+      checkRuns: [
+        ...first.checkRuns,
+        check("Analyze actions", ACTIONS_APP_ID, "in_progress", null, 4),
+      ],
+    }),
+  );
+  assert.notEqual(
+    checkEvidenceFingerprint(first),
+    checkEvidenceFingerprint({
+      ...first,
+      statuses: [{ ...first.statuses[0], id: 5, state: "pending" }],
+    }),
+  );
 });
 
 test("central workflow identity remains blocked without observable source revision provenance", async () => {
@@ -2035,6 +2230,20 @@ test("central workflow identity remains blocked without observable source revisi
       repo: "example",
       headSha: SHA,
       checkRuns: [valid.checkRun],
+    }),
+    { outcome: "trusted-gate-provenance-unverified" },
+  );
+  const equalIdentifiers = trustedGateFixture({
+    checkId: 93120160052,
+    jobId: 93120160052,
+  });
+  assert.deepEqual(
+    await inspectTrustedGate({
+      api: trustedGateApi(equalIdentifiers),
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      headSha: SHA,
+      checkRuns: [equalIdentifiers.checkRun],
     }),
     { outcome: "trusted-gate-provenance-unverified" },
   );
@@ -2164,12 +2373,26 @@ test("trusted gate check, job, run, and source fields all fail closed", async ()
       (fixture) => {
         fixture.checkRun.details_url = "https://example.test/spoof";
       },
-      /job URL is not canonical/i,
+      /details URL is not canonical/i,
     ],
     [
       "job check-run URL",
       (fixture) => {
         fixture.job.check_run_url = "https://api.github.com/spoof";
+      },
+      /job identity is inconsistent/i,
+    ],
+    [
+      "job ID",
+      (fixture) => {
+        fixture.job.id += 1;
+      },
+      /job identity is inconsistent/i,
+    ],
+    [
+      "job run back-reference",
+      (fixture) => {
+        fixture.job.run_id += 1;
       },
       /job identity is inconsistent/i,
     ],
@@ -2222,6 +2445,26 @@ test("trusted gate check, job, run, and source fields all fail closed", async ()
       }),
       expected,
       label,
+    );
+  }
+
+  for (const details of [
+    "https://github.com/LCV-Ideas-Software/example/actions/runs/0/job/1",
+    "https://github.com/LCV-Ideas-Software/example/actions/runs/1/job/9007199254740992",
+    "https://github.com/LCV-Ideas-Software/example/actions/runs/1/job/not-a-number",
+  ]) {
+    const malformed = trustedGateFixture();
+    malformed.checkRun.details_url = details;
+    await assert.rejects(
+      inspectTrustedGate({
+        api: trustedGateApi(malformed),
+        owner: "LCV-Ideas-Software",
+        repo: "example",
+        headSha: SHA,
+        checkRuns: [malformed.checkRun],
+      }),
+      /details URL is not canonical/i,
+      details,
     );
   }
 
@@ -2339,6 +2582,35 @@ test("pull-file evidence requests every GitHub page up to the documented cap", a
   assert.deepEqual(calls, [
     ["/repos/LCV-Ideas-Software/example/pulls/7/files", { maxPages: 30 }],
   ]);
+});
+
+test("check evidence enumerates every check-run instance and legacy status page", async () => {
+  const calls = [];
+  const evidence = await readCheckEvidence(
+    {
+      pages: async (...args) => {
+        calls.push(args);
+        return args[0].includes("check-runs")
+          ? [{ id: 1 }, { id: 2 }]
+          : [{ id: 3 }];
+      },
+    },
+    "LCV-Ideas-Software",
+    "example",
+    SHA,
+  );
+  assert.deepEqual(evidence, {
+    checkRuns: [{ id: 1 }, { id: 2 }],
+    statuses: [{ id: 3 }],
+  });
+  assert.deepEqual(calls, [
+    [
+      `/repos/LCV-Ideas-Software/example/commits/${SHA}/check-runs?filter=all`,
+      { extract: calls[0][1].extract },
+    ],
+    [`/repos/LCV-Ideas-Software/example/commits/${SHA}/statuses`],
+  ]);
+  assert.deepEqual(calls[0][1].extract({ check_runs: ["all"] }), ["all"]);
 });
 
 test("GitHub API retries reads but never retries mutations", async () => {
@@ -2479,7 +2751,10 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
         mainSha: BASE_SHA,
       };
     },
-    recheckChecks: async () => trace.push("recheck-checks"),
+    recheckChecks: async () => {
+      trace.push("recheck-checks");
+      return "stable-inventory";
+    },
     scanCode: async () => trace.push("scan-code"),
     enqueueMutation: async () => {
       trace.push("enqueue");
@@ -2504,7 +2779,7 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
       reassess: async () => {
         throw new Error("late connector finding");
       },
-      recheckChecks: async () => undefined,
+      recheckChecks: async () => "stable-inventory",
       scanCode: async () => undefined,
       enqueueMutation: async () => {
         mutated = true;
@@ -2523,7 +2798,7 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
         expectedHead: SHA,
         expectedBase: BASE_SHA,
         reassess: async () => evidence,
-        recheckChecks: async () => undefined,
+        recheckChecks: async () => "stable-inventory",
         scanCode: async () => undefined,
         enqueueMutation: async () => {
           mutated = true;
@@ -2547,6 +2822,7 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
         rechecks += 1;
         if (rechecks === 2)
           throw new Error("final exact-SHA check inventory is pending");
+        return "stable-inventory";
       },
       scanCode: async () => undefined,
       enqueueMutation: async () => {
@@ -2565,7 +2841,7 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
         pullRequest: { head: { sha: SHA } },
         mainSha: BASE_SHA,
       }),
-      recheckChecks: async () => undefined,
+      recheckChecks: async () => "stable-inventory",
       scanCode: async () => {
         throw new Error("late code-scanning alert");
       },
@@ -2574,6 +2850,28 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
       },
     }),
     /late code-scanning alert/i,
+  );
+  assert.equal(mutated, false);
+
+  let fingerprintRead = 0;
+  await assert.rejects(
+    enqueueAfterFinalTrustAssessment({
+      expectedHead: SHA,
+      expectedBase: BASE_SHA,
+      reassess: async () => ({
+        pullRequest: { head: { sha: SHA } },
+        mainSha: BASE_SHA,
+      }),
+      recheckChecks: async () => {
+        fingerprintRead += 1;
+        return fingerprintRead === 1 ? "inventory-a" : "inventory-b";
+      },
+      scanCode: async () => undefined,
+      enqueueMutation: async () => {
+        mutated = true;
+      },
+    }),
+    /check inventory changed while enqueue code scanning/i,
   );
   assert.equal(mutated, false);
 });

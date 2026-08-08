@@ -85,6 +85,11 @@ time:
    timestamp. Editing a reacted comment invalidates it permanently; the
    controller posts a new canonical request instead. This prevents a reaction
    for an older body from being rebound to a new head.
+   Review-state vetoes are evaluated per reviewer and exact head using the
+   latest decisive state among `CHANGES_REQUESTED`, `APPROVED`, and
+   `DISMISSED`; a later `COMMENTED` review is non-decisive and cannot erase a
+   change request. A later `APPROVED` or `DISMISSED` from that same reviewer
+   clears its earlier veto, but a decision from a different reviewer does not.
 6. GitHub Copilot code review is an independent mandatory reviewer. Its Bot
    identity must match database ID `175728472`, node ID
    `BOT_kgDOCnlnWA`, and one of the API-context login forms
@@ -144,7 +149,12 @@ time:
    still fails closed. For other observed jobs, intentionally conditional
    `skipped` or `neutral` conclusions are accepted, while failure, cancelled,
    timed-out, action-required, startup-failure, stale, or unknown conclusions
-   fail closed. Every legacy commit status must be successful.
+   fail closed. Check runs are fetched with `filter=all` and full pagination,
+   then reduced locally only within the same `{name, app_id, check_suite.id}`.
+   Thus a higher-ID same-name success from another suite cannot hide a genuine
+   pending or failed producer; a newer run in the same suite supersedes its
+   own earlier attempt. An Actions check without a positive safe check-suite
+   ID fails closed. Every legacy commit status must be successful.
 8. The raw CodeQL executor jobs (`Analyze <language>`) and the raw zizmor job
    (`Run zizmor` or `Run zizmor / Run zizmor`) are required in addition to the
    corresponding GitHub Advanced Security upload results. A green SARIF upload
@@ -157,14 +167,30 @@ time:
    then reread again after the code-scanning inventory; the exact associated
    head (and merge-group base, for a synthetic head) must remain unchanged at
    both final trust boundaries. The exact-SHA check runs and legacy statuses
-   are then read and classified once more; a newer pending or failed run
-   supersedes an earlier green result and blocks completion.
+   are then read and classified once more. The complete order-independent
+   check/status fingerprint captured immediately before the alert scan must
+   equal the fingerprint captured after the scan and final pull reassessment;
+   a new or changed run/status therefore blocks completion instead of letting
+   an alert-producing analysis race past a stale green snapshot.
+
+The bootstrap also refuses to authenticate required Actions producers by
+display name and App ID. It retains and evaluates every latest-per-suite run,
+which prevents one observed suite from masking another, but the REST inventory
+has not yet been bound to each configured producer's workflow ID, path, and
+source revision. Therefore an otherwise-green inventory returns
+`required-check-producer-provenance-unverified`; the controller cannot scan,
+rerun, or enqueue from it. The observational `.github-private` canary must
+capture a server-verifiable producer binding for every required wrapper, and a
+follow-up reviewed patch must encode those exact bindings before authority is
+enabled.
 
 The controller never trusts the `LCV Trusted Gate` display name and GitHub
 Actions App ID alone. Before even considering success or timeout recovery,
 every matching check is resolved through its exact check-suite ID and
-`GET /actions/jobs/{check-id}` to one workflow run for the exact head. The
-controller then verifies canonical
+the canonical run/job IDs parsed from `details_url`; the job ID, which is not
+assumed to equal the check-run ID, is used with `GET /actions/jobs/{job-id}`.
+The job must point back to the exact check and parsed run before that suite is
+resolved to one workflow run for the exact head. The controller then verifies canonical
 check/job/run URLs, IDs, names, status/conclusion, target and head repository,
 event, source workflow ID `329989853`, source path
 `.github/workflows/trusted-pr-gate.yml`, and the active workflow resource in
@@ -296,9 +322,10 @@ canary after that topology change.
 1. Merge this bootstrap source only after its PR has exact-head connector clearance, an
    accepted exact-head Copilot completion, all bot threads resolved, and all
    local and remote gates green. At this point the scheduled controller is
-   deliberately non-authoritative: every otherwise-valid gate remains
-   `trusted-gate-provenance-unverified`, so no enqueue or timeout rerun can
-   occur.
+   deliberately non-authoritative: every otherwise-valid central gate remains
+   `trusted-gate-provenance-unverified`, and every required Actions inventory
+   remains `required-check-producer-provenance-unverified`, so no enqueue or
+   timeout rerun can occur.
 2. Create one organization branch ruleset in `evaluate` mode targeting only
    `.github-private` and `main`. That single ruleset must contain both the
    `workflows` rule selecting
@@ -308,11 +335,14 @@ canary after that topology change.
    rollout lifecycle. Prove the workflow evaluation produces the expected
    exact-head check without blocking changes. Capture the complete check, job,
    run, workflow, ruleset and rule-suite payloads, including any observable
-   source revision/ref binding. Do not activate the rule or queue yet.
-3. Emit a follow-up source patch that recognizes only the exact provenance
-   shape observed in step 2, rejects missing/unknown/mismatched revisions, and
-   has regression tests for the captured payload. Give that patch fresh
-   exact-head reviews from both bots and merge it only with all gates green.
+   source revision/ref binding for the central gate and the workflow ID, path,
+   and revision binding for every configured required Actions producer. Do not
+   activate the rule or queue yet.
+3. Emit a follow-up source patch that recognizes only the exact gate and
+   producer provenance shapes observed in step 2, rejects missing, unknown, or
+   mismatched identities/revisions, and has regression tests for every
+   captured payload. Give that patch fresh exact-head reviews from both bots
+   and merge it only with all gates green.
 4. Change that same single organization ruleset to `active` while it still
    targets only `.github-private`. The active `workflows` rule is the immutable
    identity anchor; an ordinary required-status context with the same display
@@ -354,6 +384,7 @@ canary after that topology change.
 - [Webhook payload for `merge_group`](https://docs.github.com/en/webhooks/webhook-events-and-payloads#merge_group)
 - [GraphQL pull-request mutations — `enqueuePullRequest`](https://docs.github.com/en/graphql/reference/pulls#enqueuepullrequest)
 - [REST Check Runs authorization](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#create-a-check-run)
+- [REST list check runs for a Git reference (`filter=all`)](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#list-check-runs-for-a-git-reference)
 - [REST Check Run annotations](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#list-check-run-annotations)
 - [REST workflow jobs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-jobs#get-a-job-for-a-workflow-run)
 - [REST workflow runs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-runs#list-workflow-runs-for-a-repository)
