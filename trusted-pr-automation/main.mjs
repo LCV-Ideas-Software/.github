@@ -2173,6 +2173,33 @@ async function enqueue(api, input) {
   return api.graphql(mutation, { input });
 }
 
+export function classifyPullRequestMergeability(pullRequest) {
+  if (pullRequest?.mergeable == null) {
+    return "pending";
+  }
+  if (typeof pullRequest.mergeable !== "boolean") {
+    return "invalid";
+  }
+  if (pullRequest.mergeable === false) {
+    return "conflict";
+  }
+  if (
+    pullRequest.mergeable_state == null ||
+    pullRequest.mergeable_state === "unknown"
+  ) {
+    return "pending";
+  }
+  if (pullRequest.mergeable_state === "dirty") return "conflict";
+  if (
+    ["clean", "has_hooks", "blocked", "behind", "unstable"].includes(
+      pullRequest.mergeable_state,
+    )
+  ) {
+    return "ready";
+  }
+  return "invalid";
+}
+
 export async function enqueueAfterFinalTrustAssessment({
   expectedHead,
   expectedBase,
@@ -2198,6 +2225,9 @@ export async function enqueueAfterFinalTrustAssessment({
     if (evidence?.mainSha !== expectedBase) {
       throw new Error("main changed at final enqueue boundary");
     }
+    if (classifyPullRequestMergeability(evidence?.pullRequest) !== "ready") {
+      throw new Error("pull-request mergeability is not ready for enqueue");
+    }
   };
   assertBoundary(await reassess());
   const checksBeforeScan = await recheckChecks();
@@ -2215,8 +2245,15 @@ export async function enqueueAfterFinalTrustAssessment({
   return enqueueMutation();
 }
 
-async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
-  const evidence = await assessPullCore({
+export async function assessForEnqueue({
+  api,
+  owner,
+  repo,
+  pullRequest,
+  policy,
+  assess = assessPullCore,
+}) {
+  const evidence = await assess({
     api,
     owner,
     repo,
@@ -2227,10 +2264,16 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
   if (evidence.pullRequest.head.sha !== pullRequest.head.sha) {
     throw new Error(`${repo}#${pullRequest.number}: listed head changed`);
   }
-  if (
-    evidence.pullRequest.mergeable === false ||
-    evidence.pullRequest.mergeable_state === "dirty"
-  ) {
+  const mergeability = classifyPullRequestMergeability(evidence.pullRequest);
+  if (mergeability === "pending") {
+    return { outcome: "mergeability-pending" };
+  }
+  if (mergeability === "invalid") {
+    throw new Error(
+      `${repo}#${pullRequest.number}: pull request mergeability is incoherent`,
+    );
+  }
+  if (mergeability === "conflict") {
     const isDependabot =
       evidence.pullRequest.user?.login === "dependabot[bot]" &&
       evidence.pullRequest.user?.id === 49699333;

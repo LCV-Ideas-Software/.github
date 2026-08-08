@@ -295,7 +295,21 @@ The controller calls `enqueuePullRequest` only when GraphQL still reports the
 same open, non-draft head/base and a merge queue. The mutation includes
 `expectedHeadOid` and `jump:false`. An existing queue entry is an idempotent
 success; absence of a queue never falls back to direct merge. Immediately
-before the mutation, the controller rereads the complete pull, commit, review,
+after rereading the pull request, REST `mergeable=null`/missing remains the
+normal `mergeability-pending` outcome because GitHub documents that this means
+its background mergeability computation has not finished. `mergeable=false`
+is a conflict; for Dependabot it follows the existing exact-head rebase path.
+With `mergeable=true`, `unknown`/missing state remains pending, `dirty` is a
+conflict, and only the explicit GraphQL-enum allowlist `clean`, `has_hooks`,
+`blocked`, `behind`, or `unstable` may continue. `blocked` and `unstable` are not treated
+as independently sufficient: they proceed only into the same all-green
+checks/statuses, zero-alert, exact-bot and fixed-point boundaries below, and
+the merge queue retests the combined head. A malformed type, `draft`, or an
+unrecognized state other than canonical `unknown` is terminally incoherent.
+The same classification is repeated
+at both final reassessments; a late unknown/conflict cannot reach the mutation.
+At the final mutation boundary, the controller rereads the complete pull,
+commit, review,
 thread, connector, and current-main evidence and reaffirms the exact head/base;
 it then rereads every exact-SHA check/status, requires the trusted gate itself
 to remain successful, refreshes Code Scanning after that green inventory, and
@@ -392,6 +406,8 @@ canary after that topology change.
 - [REST Check Run annotations](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#list-check-run-annotations)
 - [REST workflow jobs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-jobs#get-a-job-for-a-workflow-run)
 - [REST workflow runs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-runs#list-workflow-runs-for-a-repository)
+- [REST get a pull request — `mergeable` true/false/null semantics](https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request)
+- [GraphQL `MergeStateStatus` values](https://docs.github.com/en/graphql/reference/enums#mergestatestatus)
 - [REST workflows](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflows#get-a-workflow)
 - [REST code-scanning alerts for a repository](https://docs.github.com/en/enterprise-cloud@latest/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository)
 - [REST pull-request commits](https://docs.github.com/en/enterprise-cloud@latest/rest/pulls/pulls#list-commits-on-a-pull-request)

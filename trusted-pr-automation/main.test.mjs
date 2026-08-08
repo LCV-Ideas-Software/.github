@@ -14,8 +14,10 @@ import {
   TRUSTED_GATE_SOURCE_WORKFLOW_ID,
   TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
   allCommitsVerified,
+  assessForEnqueue,
   buildEnqueueInput,
   checkEvidenceFingerprint,
+  classifyPullRequestMergeability,
   classifyChecks,
   connectorFailureCanSettleWithoutHeadChange,
   copilotFailureCanSettleWithoutHeadChange,
@@ -2756,6 +2758,137 @@ test("enqueue input pins expectedHeadOid and never jumps the queue", () => {
   assert.throws(() => buildEnqueueInput("PR_node", "bad"), /head sha/i);
 });
 
+test("enqueue mergeability follows the REST tri-state and a closed state allowlist", () => {
+  for (const mergeableState of [
+    "clean",
+    "has_hooks",
+    "blocked",
+    "behind",
+    "unstable",
+  ]) {
+    assert.equal(
+      classifyPullRequestMergeability({
+        mergeable: true,
+        mergeable_state: mergeableState,
+      }),
+      "ready",
+    );
+  }
+  for (const candidate of [
+    { mergeable: null, mergeable_state: "unknown" },
+    { mergeable: null, mergeable_state: "clean" },
+    { mergeable: null, mergeable_state: "dirty" },
+    { mergeable: undefined, mergeable_state: "unknown" },
+    { mergeable: undefined, mergeable_state: "clean" },
+    {},
+    { mergeable: true },
+    { mergeable: true, mergeable_state: "unknown" },
+  ]) {
+    assert.equal(classifyPullRequestMergeability(candidate), "pending");
+  }
+  for (const candidate of [
+    { mergeable: false, mergeable_state: "unknown" },
+    { mergeable: false, mergeable_state: "clean" },
+    { mergeable: true, mergeable_state: "dirty" },
+  ]) {
+    assert.equal(classifyPullRequestMergeability(candidate), "conflict");
+  }
+  for (const candidate of [
+    { mergeable: true, mergeable_state: "draft" },
+    { mergeable: true, mergeable_state: "unexpected" },
+    { mergeable: "true", mergeable_state: "clean" },
+  ]) {
+    assert.equal(classifyPullRequestMergeability(candidate), "invalid");
+  }
+});
+
+test("controller observes unknown mergeability without touching a mutation path", async () => {
+  let apiTouched = false;
+  const result = await assessForEnqueue({
+    api: new Proxy(
+      {},
+      {
+        get() {
+          apiTouched = true;
+          throw new Error("API must not be touched after unknown mergeability");
+        },
+      },
+    ),
+    owner: "LCV-Ideas-Software",
+    repo: "example",
+    pullRequest: pull(),
+    policy: policy(),
+    assess: async () => ({
+      pullRequest: {
+        ...pull(),
+        mergeable: null,
+        mergeable_state: "unknown",
+      },
+    }),
+  });
+  assert.deepEqual(result, { outcome: "mergeability-pending" });
+  assert.equal(apiTouched, false);
+
+  await assert.rejects(
+    assessForEnqueue({
+      api: {},
+      owner: "LCV-Ideas-Software",
+      repo: "example",
+      pullRequest: pull(),
+      policy: policy(),
+      assess: async () => ({
+        pullRequest: {
+          ...pull(),
+          mergeable: "true",
+          mergeable_state: "clean",
+        },
+      }),
+    }),
+    /mergeability is incoherent/i,
+  );
+});
+
+test("blocked and unstable reach enqueue only through the full final fixed point", async () => {
+  for (const finalState of ["blocked", "unstable"]) {
+    const trace = [];
+    let assessment = 0;
+    const result = await enqueueAfterFinalTrustAssessment({
+      expectedHead: SHA,
+      expectedBase: BASE_SHA,
+      reassess: async () => {
+        const mergeableState = assessment++ === 0 ? "clean" : finalState;
+        trace.push(`reassess:${mergeableState}`);
+        return {
+          pullRequest: {
+            head: { sha: SHA },
+            mergeable: true,
+            mergeable_state: mergeableState,
+          },
+          mainSha: BASE_SHA,
+        };
+      },
+      recheckChecks: async () => {
+        trace.push("checks");
+        return "stable-inventory";
+      },
+      scanCode: async () => trace.push("scan"),
+      enqueueMutation: async () => {
+        trace.push("enqueue");
+        return "queued";
+      },
+    });
+    assert.equal(result, "queued");
+    assert.deepEqual(trace, [
+      "reassess:clean",
+      "checks",
+      "scan",
+      `reassess:${finalState}`,
+      "checks",
+      "enqueue",
+    ]);
+  }
+});
+
 test("enqueue mutation is preceded by a final exact-head trust assessment", async () => {
   const trace = [];
   const outcome = await enqueueAfterFinalTrustAssessment({
@@ -2764,7 +2897,11 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
     reassess: async () => {
       trace.push("reassess");
       return {
-        pullRequest: { head: { sha: SHA } },
+        pullRequest: {
+          head: { sha: SHA },
+          mergeable: true,
+          mergeable_state: "clean",
+        },
         mainSha: BASE_SHA,
       };
     },
@@ -2832,7 +2969,11 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
       expectedHead: SHA,
       expectedBase: BASE_SHA,
       reassess: async () => ({
-        pullRequest: { head: { sha: SHA } },
+        pullRequest: {
+          head: { sha: SHA },
+          mergeable: true,
+          mergeable_state: "clean",
+        },
         mainSha: BASE_SHA,
       }),
       recheckChecks: async () => {
@@ -2855,7 +2996,11 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
       expectedHead: SHA,
       expectedBase: BASE_SHA,
       reassess: async () => ({
-        pullRequest: { head: { sha: SHA } },
+        pullRequest: {
+          head: { sha: SHA },
+          mergeable: true,
+          mergeable_state: "clean",
+        },
         mainSha: BASE_SHA,
       }),
       recheckChecks: async () => "stable-inventory",
@@ -2876,7 +3021,11 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
       expectedHead: SHA,
       expectedBase: BASE_SHA,
       reassess: async () => ({
-        pullRequest: { head: { sha: SHA } },
+        pullRequest: {
+          head: { sha: SHA },
+          mergeable: true,
+          mergeable_state: "clean",
+        },
         mainSha: BASE_SHA,
       }),
       recheckChecks: async () => {
@@ -2891,6 +3040,38 @@ test("enqueue mutation is preceded by a final exact-head trust assessment", asyn
     /check inventory changed while enqueue code scanning/i,
   );
   assert.equal(mutated, false);
+
+  for (const mergeabilitySequence of [
+    [{ mergeable: null, mergeable_state: "unknown" }],
+    [
+      { mergeable: true, mergeable_state: "clean" },
+      { mergeable: null, mergeable_state: "unknown" },
+    ],
+  ]) {
+    let assessment = 0;
+    await assert.rejects(
+      enqueueAfterFinalTrustAssessment({
+        expectedHead: SHA,
+        expectedBase: BASE_SHA,
+        reassess: async () => ({
+          pullRequest: {
+            head: { sha: SHA },
+            ...mergeabilitySequence[
+              Math.min(assessment++, mergeabilitySequence.length - 1)
+            ],
+          },
+          mainSha: BASE_SHA,
+        }),
+        recheckChecks: async () => "stable-inventory",
+        scanCode: async () => undefined,
+        enqueueMutation: async () => {
+          mutated = true;
+        },
+      }),
+      /mergeability is not ready/i,
+    );
+    assert.equal(mutated, false);
+  }
 });
 
 test("checked-in policy covers every active repository and raw analyzer wrappers", async () => {
