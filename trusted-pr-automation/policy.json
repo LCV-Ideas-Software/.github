@@ -38,7 +38,57 @@
         { "name": "CodeQL", "app_id": 57789 },
         { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
         { "name": "zizmor", "app_id": 57789 }
-      ]
+      ],
+      "provenance": {
+        "trusted_gate": {
+          "ruleset_id": 20591490,
+          "repository_id": 1327548248,
+          "required_workflow_id": 330131320,
+          "source_repository_id": 1224096002,
+          "source_repository": "LCV-Ideas-Software/.github",
+          "source_workflow_id": 329989853,
+          "source_workflow_path": ".github/workflows/trusted-pr-gate.yml",
+          "source_sha": "50fdb99aae9864da829d649e695ac3c4729f18b7",
+          "source_blob_sha": "3d61c1c7a3cc909537d34f824bdd9574ffeb285e"
+        },
+        "required_check_producers": [
+          {
+            "check_name": "Governance configuration",
+            "app_id": 15368,
+            "workflow_id": 329920424,
+            "workflow_name": "Enterprise governance validation",
+            "workflow_path": ".github/workflows/enterprise-governance-validation.yml",
+            "workflow_blob_sha": "62429f53521507f975dba58a61e50d22734420f6",
+            "referenced_workflows": []
+          },
+          {
+            "check_name": "Analyze actions",
+            "app_id": 15368,
+            "workflow_id": 329928478,
+            "workflow_name": "CodeQL",
+            "workflow_path": ".github/workflows/codeql.yml",
+            "workflow_blob_sha": "f6e0a120f9c221687bfb01d7fabc6fa18e371ca3",
+            "referenced_workflows": []
+          },
+          {
+            "check_name": "Run zizmor / Run zizmor",
+            "app_id": 15368,
+            "workflow_id": 329920427,
+            "workflow_name": "Zizmor",
+            "workflow_path": ".github/workflows/zizmor.yml",
+            "workflow_blob_sha": "fe39f2311cd46a3f639547fd70823d4db527fbd3",
+            "referenced_workflows": [
+              {
+                "path": "LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@ac3d4ad22073ee419cb9b861c38fe7bfa93b132a",
+                "sha": "ac3d4ad22073ee419cb9b861c38fe7bfa93b132a",
+                "repository": "LCV-Ideas-Software/.github",
+                "workflow_path": ".github/workflows/zizmor.yml",
+                "blob_sha": "a2679fe213abffdf527597df9a61d31cf2ee76f6"
+              }
+            ]
+          }
+        ]
+      }
     },
     "admin-app": {
       "required_checks": [

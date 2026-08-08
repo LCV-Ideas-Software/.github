@@ -50,6 +50,14 @@ import {
 const SHA = "a".repeat(40);
 const BASE_SHA = "b".repeat(40);
 const OTHER_SHA = "c".repeat(40);
+const CANARY_RULESET_ID = 20591490;
+const CANARY_REPOSITORY_ID = 1327548248;
+const CANARY_REQUIRED_WORKFLOW_ID = 330131320;
+const TRUSTED_GATE_SOURCE_REPOSITORY_ID = 1224096002;
+const TRUSTED_GATE_SOURCE_SHA = "50fdb99aae9864da829d649e695ac3c4729f18b7";
+const TRUSTED_GATE_SOURCE_BLOB = "3d61c1c7a3cc909537d34f824bdd9574ffeb285e";
+const ZIZMOR_REUSABLE_SHA = "ac3d4ad22073ee419cb9b861c38fe7bfa93b132a";
+const ZIZMOR_REUSABLE_BLOB = "a2679fe213abffdf527597df9a61d31cf2ee76f6";
 
 function actor(login = "lcv-leo", id = 268063598) {
   return { login, id };
@@ -277,6 +285,375 @@ function trustedGateApi(fixtures, { annotations = [] } = {}) {
   };
 }
 
+function canaryRepositoryPolicy() {
+  return {
+    required_checks: [
+      { name: "Governance configuration", app_id: ACTIONS_APP_ID },
+      { name: "Analyze actions", app_id: ACTIONS_APP_ID },
+      { name: "CodeQL", app_id: 57789 },
+      { name: "Run zizmor / Run zizmor", app_id: ACTIONS_APP_ID },
+      { name: "zizmor", app_id: 57789 },
+    ],
+    provenance: {
+      trusted_gate: {
+        ruleset_id: CANARY_RULESET_ID,
+        repository_id: CANARY_REPOSITORY_ID,
+        required_workflow_id: CANARY_REQUIRED_WORKFLOW_ID,
+        source_repository_id: TRUSTED_GATE_SOURCE_REPOSITORY_ID,
+        source_repository: TRUSTED_GATE_SOURCE_REPOSITORY,
+        source_workflow_id: TRUSTED_GATE_SOURCE_WORKFLOW_ID,
+        source_workflow_path: TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
+        source_sha: TRUSTED_GATE_SOURCE_SHA,
+        source_blob_sha: TRUSTED_GATE_SOURCE_BLOB,
+      },
+      required_check_producers: [
+        {
+          check_name: "Governance configuration",
+          app_id: ACTIONS_APP_ID,
+          workflow_id: 329920424,
+          workflow_name: "Enterprise governance validation",
+          workflow_path:
+            ".github/workflows/enterprise-governance-validation.yml",
+          workflow_blob_sha: "62429f53521507f975dba58a61e50d22734420f6",
+          referenced_workflows: [],
+        },
+        {
+          check_name: "Analyze actions",
+          app_id: ACTIONS_APP_ID,
+          workflow_id: 329928478,
+          workflow_name: "CodeQL",
+          workflow_path: ".github/workflows/codeql.yml",
+          workflow_blob_sha: "f6e0a120f9c221687bfb01d7fabc6fa18e371ca3",
+          referenced_workflows: [],
+        },
+        {
+          check_name: "Run zizmor / Run zizmor",
+          app_id: ACTIONS_APP_ID,
+          workflow_id: 329920427,
+          workflow_name: "Zizmor",
+          workflow_path: ".github/workflows/zizmor.yml",
+          workflow_blob_sha: "fe39f2311cd46a3f639547fd70823d4db527fbd3",
+          referenced_workflows: [
+            {
+              path: `LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@${ZIZMOR_REUSABLE_SHA}`,
+              sha: ZIZMOR_REUSABLE_SHA,
+              repository: TRUSTED_GATE_SOURCE_REPOSITORY,
+              workflow_path: ".github/workflows/zizmor.yml",
+              blob_sha: ZIZMOR_REUSABLE_BLOB,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function canaryTrustedGateFixture({
+  enforcement = "active",
+  status = "completed",
+  conclusion = "success",
+  runAttempt = 1,
+  graphSourceSha = TRUSTED_GATE_SOURCE_SHA,
+  rulesetSourceSha = TRUSTED_GATE_SOURCE_SHA,
+  sourceBlobSha = TRUSTED_GATE_SOURCE_BLOB,
+} = {}) {
+  const fullRepository = "LCV-Ideas-Software/.github-private";
+  const checkId = 93146599203;
+  const runId = 31274823213;
+  const suiteId = 84854954363;
+  const runUrl = `https://api.github.com/repos/${fullRepository}/actions/runs/${runId}`;
+  const sourceWorkflowUrl = `https://api.github.com/repos/${TRUSTED_GATE_SOURCE_REPOSITORY}/actions/workflows/${TRUSTED_GATE_SOURCE_WORKFLOW_ID}`;
+  const requiredWorkflowUrl = `https://api.github.com/repos/${fullRepository}/actions/required_workflows/${CANARY_REQUIRED_WORKFLOW_ID}`;
+  return {
+    checkRun: {
+      ...check(
+        TRUSTED_GATE_CHECK_NAME,
+        ACTIONS_APP_ID,
+        status,
+        conclusion,
+        checkId,
+        suiteId,
+      ),
+      details_url: `https://github.com/${fullRepository}/actions/runs/${runId}/job/${checkId}`,
+    },
+    job: {
+      id: checkId,
+      run_id: runId,
+      run_url: runUrl,
+      check_run_url: `https://api.github.com/repos/${fullRepository}/check-runs/${checkId}`,
+      head_sha: SHA,
+      name: TRUSTED_GATE_CHECK_NAME,
+      workflow_name: TRUSTED_GATE_CHECK_NAME,
+      run_attempt: runAttempt,
+      status,
+      conclusion,
+    },
+    run: {
+      id: runId,
+      node_id: "WFR_canary_trusted_gate",
+      url: runUrl,
+      check_suite_id: suiteId,
+      head_sha: SHA,
+      event: "pull_request",
+      name: TRUSTED_GATE_CHECK_NAME,
+      path: TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
+      workflow_id: CANARY_REQUIRED_WORKFLOW_ID,
+      workflow_url: requiredWorkflowUrl,
+      repository: { id: CANARY_REPOSITORY_ID, full_name: fullRepository },
+      head_repository: { id: CANARY_REPOSITORY_ID, full_name: fullRepository },
+      referenced_workflows: [],
+      status,
+      conclusion,
+      run_attempt: runAttempt,
+    },
+    graphRun: {
+      databaseId: runId,
+      event: "pull_request",
+      runAttempt,
+      url: `https://github.com/${fullRepository}/actions/runs/${runId}`,
+      file: {
+        id: "WFRF_canary_trusted_gate",
+        path: TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
+        repositoryName: TRUSTED_GATE_SOURCE_REPOSITORY,
+        repositoryFileUrl: `https://github.com/${TRUSTED_GATE_SOURCE_REPOSITORY}/blob/${graphSourceSha}/${TRUSTED_GATE_SOURCE_WORKFLOW_PATH}`,
+        resourcePath: `/${fullRepository}/actions/runs/${runId}/workflow`,
+        url: `https://github.com/${fullRepository}/actions/runs/${runId}/workflow`,
+      },
+      workflow: {
+        databaseId: CANARY_REQUIRED_WORKFLOW_ID,
+        name: TRUSTED_GATE_CHECK_NAME,
+        state: "ACTIVE",
+        resourcePath: `/${fullRepository}/actions/workflows/required/${TRUSTED_GATE_SOURCE_REPOSITORY}/${TRUSTED_GATE_SOURCE_WORKFLOW_PATH}`,
+        url: `https://github.com/${fullRepository}/actions/workflows/required/${TRUSTED_GATE_SOURCE_REPOSITORY}/${TRUSTED_GATE_SOURCE_WORKFLOW_PATH}`,
+      },
+    },
+    sourceWorkflow: {
+      id: TRUSTED_GATE_SOURCE_WORKFLOW_ID,
+      name: TRUSTED_GATE_CHECK_NAME,
+      path: TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
+      state: "active",
+      url: sourceWorkflowUrl,
+    },
+    sourceFile: {
+      path: TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
+      sha: sourceBlobSha,
+      html_url: `https://github.com/${TRUSTED_GATE_SOURCE_REPOSITORY}/blob/${TRUSTED_GATE_SOURCE_SHA}/${TRUSTED_GATE_SOURCE_WORKFLOW_PATH}`,
+    },
+    ruleset: {
+      id: CANARY_RULESET_ID,
+      name: "Canary: .github-private trusted workflow and Copilot",
+      target: "branch",
+      source_type: "Organization",
+      source: "LCV-Ideas-Software",
+      enforcement,
+      bypass_actors: [],
+      conditions: {
+        repository_id: { repository_ids: [CANARY_REPOSITORY_ID] },
+        ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] },
+      },
+      rules: [
+        {
+          type: "workflows",
+          parameters: {
+            do_not_enforce_on_create: false,
+            workflows: [
+              {
+                repository_id: TRUSTED_GATE_SOURCE_REPOSITORY_ID,
+                path: TRUSTED_GATE_SOURCE_WORKFLOW_PATH,
+                sha: rulesetSourceSha,
+              },
+            ],
+          },
+        },
+        {
+          type: "copilot_code_review",
+          parameters: {
+            review_on_push: true,
+            review_draft_pull_requests: false,
+          },
+        },
+      ],
+    },
+  };
+}
+
+function canaryTrustedGateApi(fixture) {
+  return {
+    pages: async (path) => {
+      if (path.includes("/actions/runs?check_suite_id=")) return [fixture.run];
+      assert.fail(`unexpected paginated request: ${path}`);
+    },
+    request: async (path) => {
+      if (path.endsWith(`/actions/jobs/${fixture.job.id}`)) return fixture.job;
+      if (
+        path.endsWith(`/actions/workflows/${TRUSTED_GATE_SOURCE_WORKFLOW_ID}`)
+      )
+        return fixture.sourceWorkflow;
+      if (path.includes("/contents/") && path.includes("?ref="))
+        return fixture.sourceFile;
+      if (path === `/orgs/LCV-Ideas-Software/rulesets/${CANARY_RULESET_ID}`)
+        return fixture.ruleset;
+      assert.fail(`unexpected request: ${path}`);
+    },
+    graphql: async (_query, variables) => {
+      assert.equal(variables.id, fixture.run.node_id);
+      return { node: fixture.graphRun };
+    },
+  };
+}
+
+function canaryProducerFixtures() {
+  const repository = "LCV-Ideas-Software/.github-private";
+  const configs = canaryRepositoryPolicy().provenance.required_check_producers;
+  const identities = [
+    { checkId: 93146599292, suiteId: 84854954427, runId: 31274823248 },
+    { checkId: 93146599301, suiteId: 84854954377, runId: 31274823227 },
+    { checkId: 93146599963, suiteId: 84854955116, runId: 31274823552 },
+  ];
+  return configs.map((config, index) => {
+    const { checkId, suiteId, runId } = identities[index];
+    const runUrl = `https://api.github.com/repos/${repository}/actions/runs/${runId}`;
+    const workflowUrl = `https://api.github.com/repos/${repository}/actions/workflows/${config.workflow_id}`;
+    const htmlRunUrl = `https://github.com/${repository}/actions/runs/${runId}`;
+    return {
+      config,
+      checkRun: {
+        ...check(
+          config.check_name,
+          ACTIONS_APP_ID,
+          "completed",
+          "success",
+          checkId,
+          suiteId,
+        ),
+        details_url: `${htmlRunUrl}/job/${checkId}`,
+      },
+      job: {
+        id: checkId,
+        run_id: runId,
+        run_url: runUrl,
+        check_run_url: `https://api.github.com/repos/${repository}/check-runs/${checkId}`,
+        head_sha: SHA,
+        name: config.check_name,
+        workflow_name: config.workflow_name,
+        run_attempt: 1,
+        status: "completed",
+        conclusion: "success",
+      },
+      run: {
+        id: runId,
+        node_id: `WFR_producer_${index}`,
+        url: runUrl,
+        check_suite_id: suiteId,
+        head_sha: SHA,
+        event: "pull_request",
+        name: config.workflow_name,
+        path: config.workflow_path,
+        workflow_id: config.workflow_id,
+        workflow_url: workflowUrl,
+        repository: { id: CANARY_REPOSITORY_ID, full_name: repository },
+        head_repository: { id: CANARY_REPOSITORY_ID, full_name: repository },
+        referenced_workflows: config.referenced_workflows.map(
+          ({ path, sha }) => ({
+            path,
+            sha,
+          }),
+        ),
+        status: "completed",
+        conclusion: "success",
+        run_attempt: 1,
+      },
+      graphRun: {
+        databaseId: runId,
+        event: "pull_request",
+        runAttempt: 1,
+        url: htmlRunUrl,
+        file: {
+          id: `WFRF_producer_${index}`,
+          path: config.workflow_path,
+          repositoryName: repository,
+          repositoryFileUrl: `https://github.com/${repository}/blob/${SHA}/${config.workflow_path}`,
+          resourcePath: `/${repository}/actions/runs/${runId}/workflow`,
+          url: `${htmlRunUrl}/workflow`,
+        },
+        workflow: {
+          databaseId: config.workflow_id,
+          name: config.workflow_name,
+          state: "ACTIVE",
+          resourcePath: `/${repository}/actions/workflows/${config.workflow_path.split("/").at(-1)}`,
+          url: `https://github.com/${repository}/actions/workflows/${config.workflow_path.split("/").at(-1)}`,
+        },
+      },
+      workflow: {
+        id: config.workflow_id,
+        name: config.workflow_name,
+        path: config.workflow_path,
+        state: "active",
+        url: workflowUrl,
+      },
+      sourceFile: {
+        path: config.workflow_path,
+        sha: config.workflow_blob_sha,
+        html_url: `https://github.com/${repository}/blob/${SHA}/${config.workflow_path}`,
+      },
+    };
+  });
+}
+
+function canaryProducerApi(fixtures) {
+  return {
+    pages: async (path) => {
+      if (path.includes("/actions/runs?check_suite_id=")) {
+        const suite = Number(
+          new URL(`https://api.github.test${path}`).searchParams.get(
+            "check_suite_id",
+          ),
+        );
+        return fixtures
+          .filter(({ run }) => run.check_suite_id === suite)
+          .map(({ run }) => run);
+      }
+      assert.fail(`unexpected paginated request: ${path}`);
+    },
+    request: async (path) => {
+      const jobMatch = path.match(/\/actions\/jobs\/(\d+)$/);
+      if (jobMatch) {
+        return fixtures.find(({ job }) => job.id === Number(jobMatch[1]))?.job;
+      }
+      const workflowMatch = path.match(/\/actions\/workflows\/(\d+)$/);
+      if (workflowMatch) {
+        return fixtures.find(
+          ({ workflow }) => workflow.id === Number(workflowMatch[1]),
+        )?.workflow;
+      }
+      if (path.includes("/contents/")) {
+        const reusable =
+          canaryRepositoryPolicy().provenance.required_check_producers[2]
+            .referenced_workflows[0];
+        if (
+          path ===
+          `/repos/${reusable.repository}/contents/${reusable.workflow_path}?ref=${reusable.sha}`
+        ) {
+          return {
+            path: reusable.workflow_path,
+            sha: reusable.blob_sha,
+            html_url: `https://github.com/${reusable.repository}/blob/${reusable.sha}/${reusable.workflow_path}`,
+          };
+        }
+        return fixtures.find(
+          ({ sourceFile }) =>
+            path ===
+            `/repos/LCV-Ideas-Software/.github-private/contents/${sourceFile.path}?ref=${SHA}`,
+        )?.sourceFile;
+      }
+      assert.fail(`unexpected request: ${path}`);
+    },
+    graphql: async (_query, variables) => ({
+      node: fixtures.find(({ run }) => run.node_id === variables.id)?.graphRun,
+    }),
+  };
+}
+
 function connectorComment(body, createdAt = "2026-08-08T12:00:00Z") {
   return {
     user: graphqlConnectorActor(),
@@ -361,6 +738,48 @@ test("validatePolicy rejects duplicate identities, duplicate checks, and self-ga
       field,
     );
   }
+});
+
+test("validatePolicy admits provenance only for the complete .github-private canary", () => {
+  const valid = policy();
+  valid.repositories[".github-private"] = canaryRepositoryPolicy();
+  assert.deepEqual(
+    validatePolicy(valid).repositories[".github-private"].provenance,
+    canaryRepositoryPolicy().provenance,
+  );
+
+  const wrongScope = policy();
+  wrongScope.repositories.example.provenance =
+    canaryRepositoryPolicy().provenance;
+  assert.throws(
+    () => validatePolicy(wrongScope),
+    /example must not define provenance authority/i,
+  );
+
+  const incomplete = policy();
+  incomplete.repositories[".github-private"] = canaryRepositoryPolicy();
+  incomplete.repositories[
+    ".github-private"
+  ].provenance.required_check_producers.pop();
+  assert.throws(() => validatePolicy(incomplete), /provenance is incomplete/i);
+
+  const wrongPin = policy();
+  wrongPin.repositories[".github-private"] = canaryRepositoryPolicy();
+  wrongPin.repositories[".github-private"].provenance.trusted_gate.source_sha =
+    "not-a-sha";
+  assert.throws(() => validatePolicy(wrongPin), /source pin is invalid/i);
+
+  const wrongReference = policy();
+  wrongReference.repositories[".github-private"] = canaryRepositoryPolicy();
+  wrongReference.repositories[
+    ".github-private"
+  ].provenance.required_check_producers[2].referenced_workflows[0].path =
+    "LCV-Ideas-Software/.github/.github/workflows/spoof.yml@" +
+    ZIZMOR_REUSABLE_SHA;
+  assert.throws(
+    () => validatePolicy(wrongReference),
+    /referenced workflow pin is invalid/i,
+  );
 });
 
 test("isTrustedPullRequest accepts only exact allowlisted same-repository main PRs", () => {
@@ -1936,6 +2355,78 @@ test("classifyChecks requires exact executor and GHAS identities and all observe
   );
 });
 
+test("canary Actions producers bind every check to an approved workflow blob", async () => {
+  const repositoryPolicy = canaryRepositoryPolicy();
+  const fixtures = canaryProducerFixtures();
+  assert.deepEqual(
+    await inspectRequiredCheckProducerProvenance({
+      api: canaryProducerApi(fixtures),
+      owner: "LCV-Ideas-Software",
+      repo: ".github-private",
+      headSha: SHA,
+      expectedEvent: "pull_request",
+      checkRuns: fixtures.map(({ checkRun }) => checkRun),
+      requiredChecks: repositoryPolicy.required_checks,
+      repositoryPolicy,
+    }),
+    {
+      outcome: "required-check-producer-provenance-verified",
+      producerProvenanceVerified: true,
+    },
+  );
+});
+
+test("canary producer provenance rejects spoofed, duplicate, truncated, and changed sources", async () => {
+  const repositoryPolicy = canaryRepositoryPolicy();
+  const base = canaryProducerFixtures();
+  const run = (fixtures, api = canaryProducerApi(fixtures)) =>
+    inspectRequiredCheckProducerProvenance({
+      api,
+      owner: "LCV-Ideas-Software",
+      repo: ".github-private",
+      headSha: SHA,
+      expectedEvent: "pull_request",
+      checkRuns: fixtures.map(({ checkRun }) => checkRun),
+      requiredChecks: repositoryPolicy.required_checks,
+      repositoryPolicy,
+    });
+
+  const graphMismatch = structuredClone(base);
+  graphMismatch[0].graphRun.file.repositoryFileUrl =
+    "https://github.com/LCV-Ideas-Software/.github-private/blob/spoof/.github/workflows/enterprise-governance-validation.yml";
+  await assert.rejects(run(graphMismatch), /GraphQL identity is inconsistent/i);
+
+  const blobMismatch = structuredClone(base);
+  blobMismatch[1].sourceFile.sha = OTHER_SHA;
+  await assert.rejects(run(blobMismatch), /blob is inconsistent/i);
+
+  const referenceMismatch = structuredClone(base);
+  referenceMismatch[2].run.referenced_workflows[0].sha = OTHER_SHA;
+  await assert.rejects(run(referenceMismatch), /run is inconsistent/i);
+
+  const lookalike = structuredClone(base);
+  const spoof = structuredClone(lookalike[0]);
+  spoof.checkRun.id += 1000;
+  lookalike.push(spoof);
+  await assert.rejects(run(lookalike), /suite does not map to one run/i);
+
+  const duplicateRunApi = canaryProducerApi(base);
+  const originalPages = duplicateRunApi.pages;
+  duplicateRunApi.pages = async (path, options) => {
+    const values = await originalPages(path, options);
+    return path.includes(`check_suite_id=${base[0].run.check_suite_id}`)
+      ? [...values, ...values]
+      : values;
+  };
+  await assert.rejects(run(base, duplicateRunApi), /does not map to one run/i);
+
+  const truncatedApi = canaryProducerApi(base);
+  truncatedApi.pages = async () => {
+    throw new Error("paginated endpoint exceeded 1000 records");
+  };
+  await assert.rejects(run(base, truncatedApi), /exceeded 1000 records/i);
+});
+
 test("required neutral checks poll until success or timeout", async () => {
   const requiredChecks = [{ name: "CodeQL", app_id: 57789 }];
   const api = {
@@ -2232,6 +2723,67 @@ test("check evidence fingerprint is order-independent and detects superseding ev
       statuses: [{ ...first.statuses[0], id: 5, state: "pending" }],
     }),
   );
+});
+
+test("active canary ruleset binds the synthetic required workflow to the pinned source", async () => {
+  const fixture = canaryTrustedGateFixture();
+  assert.deepEqual(
+    await inspectTrustedGate({
+      api: canaryTrustedGateApi(fixture),
+      owner: "LCV-Ideas-Software",
+      repo: ".github-private",
+      headSha: SHA,
+      checkRuns: [fixture.checkRun],
+      repositoryPolicy: canaryRepositoryPolicy(),
+    }),
+    { outcome: "trusted-gate-success" },
+  );
+});
+
+test("canary source provenance is observational in evaluate and fails closed on every pin", async () => {
+  const evaluated = canaryTrustedGateFixture({ enforcement: "evaluate" });
+  assert.deepEqual(
+    await inspectTrustedGate({
+      api: canaryTrustedGateApi(evaluated),
+      owner: "LCV-Ideas-Software",
+      repo: ".github-private",
+      headSha: SHA,
+      checkRuns: [evaluated.checkRun],
+      repositoryPolicy: canaryRepositoryPolicy(),
+    }),
+    { outcome: "trusted-gate-provenance-unverified" },
+  );
+
+  for (const [label, fixture, expected] of [
+    [
+      "GraphQL source SHA",
+      canaryTrustedGateFixture({ graphSourceSha: OTHER_SHA }),
+      /GraphQL source identity is inconsistent/i,
+    ],
+    [
+      "ruleset source SHA",
+      canaryTrustedGateFixture({ rulesetSourceSha: OTHER_SHA }),
+      /ruleset identity is inconsistent/i,
+    ],
+    [
+      "source blob",
+      canaryTrustedGateFixture({ sourceBlobSha: OTHER_SHA }),
+      /source blob identity is inconsistent/i,
+    ],
+  ]) {
+    await assert.rejects(
+      inspectTrustedGate({
+        api: canaryTrustedGateApi(fixture),
+        owner: "LCV-Ideas-Software",
+        repo: ".github-private",
+        headSha: SHA,
+        checkRuns: [fixture.checkRun],
+        repositoryPolicy: canaryRepositoryPolicy(),
+      }),
+      expected,
+      label,
+    );
+  }
 });
 
 test("central workflow identity remains blocked without observable source revision provenance", async () => {
@@ -2596,6 +3148,65 @@ test("resolved bot-review veto reruns only the exact first gate attempt once", a
   assert.equal(
     botReviewVetoWorkflowCommand(new Error("ordinary failure")),
     null,
+  );
+});
+
+test("resolved bot-review veto accepts only the authenticated canary synthetic run", async () => {
+  const fixture = canaryTrustedGateFixture({ conclusion: "failure" });
+  const calls = [];
+  const outcome = await requestResolvedBotReviewVetoRerun({
+    api: {
+      request: async (path, options) => {
+        calls.push([path, options]);
+        if (path === fixture.run.url) return fixture.run;
+        if (path.endsWith("/rerun-failed-jobs") && options?.method === "POST") {
+          return {};
+        }
+        assert.fail(`unexpected request ${path}`);
+      },
+    },
+    owner: "LCV-Ideas-Software",
+    repo: ".github-private",
+    number: 5,
+    expectedHead: SHA,
+    expectedBase: BASE_SHA,
+    gate: {
+      outcome: "trusted-gate-bot-veto-rerun-needed",
+      run: fixture.run,
+    },
+    repositoryPolicy: canaryRepositoryPolicy(),
+    reassess: async () => ({
+      pullRequest: { head: { sha: SHA } },
+      mainSha: BASE_SHA,
+    }),
+  });
+  assert.equal(outcome, "trusted-gate-bot-veto-rerun-requested");
+  assert.equal(calls.at(-1)[0].endsWith("/rerun-failed-jobs"), true);
+
+  const centralSpoof = {
+    ...fixture.run,
+    workflow_id: TRUSTED_GATE_SOURCE_WORKFLOW_ID,
+    workflow_url: `https://api.github.com/repos/${TRUSTED_GATE_SOURCE_REPOSITORY}/actions/workflows/${TRUSTED_GATE_SOURCE_WORKFLOW_ID}`,
+  };
+  await assert.rejects(
+    requestResolvedBotReviewVetoRerun({
+      api: { request: async () => centralSpoof },
+      owner: "LCV-Ideas-Software",
+      repo: ".github-private",
+      number: 5,
+      expectedHead: SHA,
+      expectedBase: BASE_SHA,
+      gate: {
+        outcome: "trusted-gate-bot-veto-rerun-needed",
+        run: fixture.run,
+      },
+      repositoryPolicy: canaryRepositoryPolicy(),
+      reassess: async () => ({
+        pullRequest: { head: { sha: SHA } },
+        mainSha: BASE_SHA,
+      }),
+    }),
+    /rerun identity changed/i,
   );
 });
 
@@ -3283,7 +3894,18 @@ test("checked-in policy covers every active repository and raw analyzer wrappers
       [...identities].some((identity) => identity.startsWith("Run zizmor")),
       `${repo}: missing raw zizmor executor`,
     );
+    if (repo !== ".github-private") {
+      assert.equal(
+        config.provenance,
+        undefined,
+        `${repo}: unexpected authority`,
+      );
+    }
   }
+  assert.deepEqual(
+    checked.repositories[".github-private"].provenance,
+    canaryRepositoryPolicy().provenance,
+  );
   const githubPullChecks = new Set(
     requiredChecksForPhase(checked.repositories[".github"], "pull_request").map(
       ({ name, app_id: appId }) => `${name}@${appId}`,

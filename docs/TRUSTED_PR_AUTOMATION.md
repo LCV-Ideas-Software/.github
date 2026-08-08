@@ -1,8 +1,10 @@
 # LCV Trusted PR Automation
 
 This document describes the fail-closed automation that may be attached to an
-organization ruleset after a monitored canary. The checked-in bootstrap does
-not create, update, or activate a ruleset.
+organization ruleset after a monitored canary. The checked-in policy grants
+provenance authority only to `.github-private`, and only after its already
+created canary ruleset is changed from `evaluate` to `active`. This repository
+does not create, update, or activate that ruleset.
 
 ## Decision
 
@@ -182,30 +184,40 @@ The two fingerprints must be identical. A new or superseded run appearing
 while alerts are checked therefore blocks rather than racing past stale green
 evidence.
 
-## Authenticated workflow provenance and bootstrap limit
+## Authenticated workflow provenance and canary limit
 
 The controller never trusts `LCV Trusted Gate` by display name and App ID
 alone. Every matching check is resolved through its check-suite ID and the
-canonical run and job IDs parsed from `details_url`. The job must point back to
-the exact check and run. The run must match exact head, event, repository,
-status, conclusion, source workflow ID `329989853`, path
-`.github/workflows/trusted-pr-gate.yml`, and the active workflow resource in
-`LCV-Ideas-Software/.github`.
+canonical run and job IDs parsed from `details_url`. The required workflow has
+the target-local synthetic workflow ID `330131320`; its deprecated REST URL is
+not dereferenced. Instead, GraphQL `WorkflowRun.file` must bind that run to
+`LCV-Ideas-Software/.github`, path
+`.github/workflows/trusted-pr-gate.yml`, and commit
+`50fdb99aae9864da829d649e695ac3c4729f18b7`. The source file must retain blob
+`3d61c1c7a3cc909537d34f824bdd9574ffeb285e`.
 
-The current REST chain does not expose the source `job.workflow_sha` for the
-required workflow. Consequently this bootstrap deliberately returns
-`trusted-gate-provenance-unverified`; it cannot enqueue or rerun. Likewise,
-required Actions checks are evaluated latest-per-suite so one suite cannot
-mask another, but their producer workflow ID, path, and source revision are not
-yet authenticated. The bootstrap therefore returns
-`required-check-producer-provenance-unverified` before Code Scanning or any
-mutation.
+Ruleset `20591490` must independently contain the same source repository ID,
+path, and immutable commit, must target only `.github-private`'s default
+branch, must have no bypass actors, and must preserve the paired Copilot rule.
+`evaluate` is observational and always returns
+`trusted-gate-provenance-unverified`; only exact `active` state can grant
+authority. The permanent `50fdb99…` pin is intentional: the required workflow
+uses `job.workflow_sha` to check out both the YAML and its trusted automation
+engine from that commit. The later controller implementation runs separately
+from current `.github/main`.
 
-The observational `.github-private` canary must capture server-verifiable
-bindings for both the central gate source revision and every required producer.
-A follow-up reviewed patch may accept only the exact live shapes observed.
-Guessing an `@sha` path suffix or trusting an active ruleset without binding the
-specific run is forbidden.
+Every matching required Actions check is authenticated before the current run
+attempt is selected. The controller binds check to job, suite, run, active
+workflow resource, GraphQL workflow file at the exact PR head, and an
+allowlisted workflow blob. Governance, CodeQL, and the local Zizmor wrapper are
+the only producer bindings. The Zizmor wrapper must also retain its exact
+reusable workflow SHA and blob. Missing fields, pagination overflow, duplicate
+runs, additional same-name producers, source changes, or reference changes
+fail closed.
+
+No other repository has provenance authority. It continues to return
+`required-check-producer-provenance-unverified` and
+`trusted-gate-provenance-unverified` even when its checks are green.
 
 ## Minimal same-SHA bot-veto recovery
 
@@ -274,35 +286,30 @@ Retargeting an existing PR to `main` is unsupported. The central gate alone
 cannot recreate all producer checks for an `edited` event. Trusted automation
 must create the PR directly against `main`.
 
-## Rollout (not performed by this change)
+## Remaining canary rollout
 
-1. Merge this bootstrap only with signed commits, all mandatory checks green,
+The signed bootstrap, evaluate-only ruleset, and draft/ready provenance probes
+have already established the identities recorded above. This change is the
+follow-up source binding; it still performs no settings mutation.
+
+1. Merge this binding only with signed commits, all mandatory checks green,
    zero alerts, and every actual bot finding resolved. Bot absence or partial
    review coverage is not a gate.
-2. Create one organization ruleset in `evaluate` mode targeting only
-   `.github-private` and `main`. In that same ruleset, configure the central
-   `workflows` rule and `copilot_code_review` with `review_on_push=true` and
-   `review_draft_pull_requests=false`.
-3. Capture complete check, job, run, workflow, ruleset, and rule-suite payloads
-   for the central gate and every required producer. Do not activate the queue.
-4. Emit a follow-up source PR that authenticates only the captured provenance
-   shapes, with spoof, missing-field, wrong-revision, attempt, and stale-head
-   regression tests.
-5. Only after that patch is merged, change the same organization ruleset to
+2. Only after that patch is merged, change the same organization ruleset to
    `active` while still targeting only `.github-private`, and activate a
    no-bypass repository merge-queue ruleset with both maxima set to one.
-6. Run an `lcv-leo` canary. Verify both bot integrations were invited or ran,
+3. Run an `lcv-leo` canary. Verify both bot integrations were invited or ran,
    read every interaction, resolve every actual finding, and prove signed
    commits, all check identities, zero alerts, queue entry, `merge_group`,
    automatic merge, and branch deletion.
-7. After the `.github-private` merge, prove Enterprise Pages remained private,
+4. After the `.github-private` merge, prove Enterprise Pages remained private,
    uses `build_type=workflow`, keeps CNAME `enterprise.lcv.dev`, enforces HTTPS,
    has an approved certificate, and serves a green HTTP redirect and HTTPS
    response.
-8. On one public repository with Dependabot, disable the old direct-merge
+5. On one public repository with Dependabot, disable the old direct-merge
    mutation, activate the same narrow rules plus queue, and prove a real
    Dependabot PR including conflict-only rebase if needed and branch deletion.
-9. Expand the one organization ruleset atomically in monitored batches only
+6. Expand the one organization ruleset atomically in monitored batches only
    after both canaries are green.
 
 ## Primary GitHub documentation

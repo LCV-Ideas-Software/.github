@@ -61,6 +61,138 @@ function validSha(value) {
   return typeof value === "string" && SHA_PATTERN.test(value);
 }
 
+function positiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function assertExactKeys(value, expected, label) {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.join(",") !== wanted.join(",")) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+}
+
+function validateRepositoryProvenance(repository, config) {
+  if (config.provenance === undefined) return;
+  if (repository !== ".github-private") {
+    throw new Error(`${repository} must not define provenance authority`);
+  }
+  assertObject(config.provenance, `${repository} provenance`);
+  assertExactKeys(
+    config.provenance,
+    ["trusted_gate", "required_check_producers"],
+    `${repository} provenance`,
+  );
+
+  const gate = config.provenance.trusted_gate;
+  assertObject(gate, `${repository} trusted gate provenance`);
+  assertExactKeys(
+    gate,
+    [
+      "ruleset_id",
+      "repository_id",
+      "required_workflow_id",
+      "source_repository_id",
+      "source_repository",
+      "source_workflow_id",
+      "source_workflow_path",
+      "source_sha",
+      "source_blob_sha",
+    ],
+    `${repository} trusted gate provenance`,
+  );
+  for (const field of [
+    "ruleset_id",
+    "repository_id",
+    "required_workflow_id",
+    "source_repository_id",
+    "source_workflow_id",
+  ]) {
+    if (!positiveSafeInteger(gate[field])) {
+      throw new Error(`${repository} trusted gate ${field} is invalid`);
+    }
+  }
+  if (
+    gate.source_repository !== TRUSTED_GATE_SOURCE_REPOSITORY ||
+    gate.source_workflow_id !== TRUSTED_GATE_SOURCE_WORKFLOW_ID ||
+    gate.source_workflow_path !== TRUSTED_GATE_SOURCE_WORKFLOW_PATH ||
+    !validSha(gate.source_sha) ||
+    !validSha(gate.source_blob_sha)
+  ) {
+    throw new Error(`${repository} trusted gate source pin is invalid`);
+  }
+
+  const producers = config.provenance.required_check_producers;
+  if (!Array.isArray(producers) || producers.length === 0) {
+    throw new Error(`${repository} producer provenance must be nonempty`);
+  }
+  const requiredActions = new Set(
+    config.required_checks
+      .filter(({ app_id: appId }) => appId === ACTIONS_APP_ID)
+      .map(({ name, app_id: appId }) => checkKey(name, appId)),
+  );
+  const producerKeys = new Set();
+  for (const producer of producers) {
+    assertObject(producer, `${repository} producer provenance`);
+    assertExactKeys(
+      producer,
+      [
+        "check_name",
+        "app_id",
+        "workflow_id",
+        "workflow_name",
+        "workflow_path",
+        "workflow_blob_sha",
+        "referenced_workflows",
+      ],
+      `${repository} producer provenance`,
+    );
+    const key = checkKey(producer.check_name, producer.app_id);
+    if (
+      producer.app_id !== ACTIONS_APP_ID ||
+      !requiredActions.has(key) ||
+      producerKeys.has(key) ||
+      !positiveSafeInteger(producer.workflow_id) ||
+      typeof producer.workflow_name !== "string" ||
+      !producer.workflow_name ||
+      typeof producer.workflow_path !== "string" ||
+      !producer.workflow_path.startsWith(".github/workflows/") ||
+      !validSha(producer.workflow_blob_sha) ||
+      !Array.isArray(producer.referenced_workflows)
+    ) {
+      throw new Error(`${repository} producer provenance ${key} is invalid`);
+    }
+    producerKeys.add(key);
+    for (const reference of producer.referenced_workflows) {
+      assertObject(reference, `${repository} referenced workflow`);
+      assertExactKeys(
+        reference,
+        ["path", "sha", "repository", "workflow_path", "blob_sha"],
+        `${repository} referenced workflow`,
+      );
+      if (
+        typeof reference.repository !== "string" ||
+        !reference.repository.includes("/") ||
+        typeof reference.workflow_path !== "string" ||
+        !reference.workflow_path.startsWith(".github/workflows/") ||
+        !validSha(reference.sha) ||
+        !validSha(reference.blob_sha) ||
+        reference.path !==
+          `${reference.repository}/${reference.workflow_path}@${reference.sha}`
+      ) {
+        throw new Error(`${repository} referenced workflow pin is invalid`);
+      }
+    }
+  }
+  if (
+    producerKeys.size !== requiredActions.size ||
+    [...requiredActions].some((key) => !producerKeys.has(key))
+  ) {
+    throw new Error(`${repository} producer provenance is incomplete`);
+  }
+}
+
 function identityKey(login, id) {
   return `${login}:${id}`;
 }
@@ -251,6 +383,7 @@ export function validatePolicy(raw) {
         keys.add(key);
       }
     }
+    validateRepositoryProvenance(repository, config);
   }
   return structuredClone(raw);
 }
@@ -753,9 +886,260 @@ export function checkEvidenceFingerprint({ checkRuns, statuses }) {
   });
 }
 
+function canonicalRepositoryFileUrl(repository, revision, workflowPath) {
+  return `https://github.com/${repository}/blob/${revision}/${workflowPath}`;
+}
+
+function referencedWorkflowIdentity(entries) {
+  if (!Array.isArray(entries)) return null;
+  return entries.map((entry) => ({
+    path: entry?.path,
+    sha: entry?.sha,
+  }));
+}
+
+async function verifyReferencedWorkflowBlobs(api, references) {
+  for (const reference of references) {
+    const file = await api.request(
+      `/repos/${reference.repository}/contents/${reference.workflow_path}?ref=${reference.sha}`,
+    );
+    if (
+      file?.path !== reference.workflow_path ||
+      file?.sha !== reference.blob_sha ||
+      file?.html_url !==
+        canonicalRepositoryFileUrl(
+          reference.repository,
+          reference.sha,
+          reference.workflow_path,
+        )
+    ) {
+      throw new Error(
+        `referenced workflow ${reference.path} blob is inconsistent`,
+      );
+    }
+  }
+}
+
+async function verifyRequiredCheckProducer({
+  api,
+  owner,
+  repo,
+  headSha,
+  expectedEvent,
+  checkRun,
+  producer,
+  repositoryId,
+}) {
+  if (
+    !positiveSafeInteger(checkRun?.id) ||
+    checkRun?.name !== producer.check_name ||
+    checkRun?.app?.id !== producer.app_id ||
+    !positiveSafeInteger(checkRun?.check_suite?.id)
+  ) {
+    throw new Error(
+      `required producer ${producer.check_name} check identity is invalid`,
+    );
+  }
+  const fullRepository = `${owner}/${repo}`;
+  const detailsPrefix = `https://github.com/${fullRepository}/actions/runs/`;
+  const details = checkRun.details_url?.startsWith(detailsPrefix)
+    ? checkRun.details_url.slice(detailsPrefix.length)
+    : "";
+  const detailsMatch = details.match(/^([1-9]\d*)\/job\/([1-9]\d*)$/);
+  const runId = Number(detailsMatch?.[1]);
+  const jobId = Number(detailsMatch?.[2]);
+  if (!positiveSafeInteger(runId) || !positiveSafeInteger(jobId)) {
+    throw new Error(
+      `required producer ${producer.check_name} details URL is invalid`,
+    );
+  }
+  const expectedCheckUrl = `https://api.github.com/repos/${fullRepository}/check-runs/${checkRun.id}`;
+  const expectedRunUrl = `https://api.github.com/repos/${fullRepository}/actions/runs/${runId}`;
+  const job = await api.request(
+    `/repos/${owner}/${repo}/actions/jobs/${jobId}`,
+  );
+  if (
+    job?.id !== jobId ||
+    job?.run_id !== runId ||
+    job?.run_url !== expectedRunUrl ||
+    job?.check_run_url !== expectedCheckUrl ||
+    job?.head_sha !== headSha ||
+    job?.name !== producer.check_name ||
+    job?.workflow_name !== producer.workflow_name ||
+    job?.status !== checkRun.status ||
+    job?.conclusion !== checkRun.conclusion ||
+    !positiveSafeInteger(job?.run_attempt)
+  ) {
+    throw new Error(
+      `required producer ${producer.check_name} job is inconsistent`,
+    );
+  }
+
+  const runs = await api.pages(
+    `/repos/${owner}/${repo}/actions/runs?check_suite_id=${checkRun.check_suite.id}&head_sha=${headSha}`,
+    { extract: (payload) => payload?.workflow_runs },
+  );
+  if (runs.length !== 1) {
+    throw new Error(
+      `required producer ${producer.check_name} suite does not map to one run`,
+    );
+  }
+  const [run] = runs;
+  const workflowUrl = `https://api.github.com/repos/${fullRepository}/actions/workflows/${producer.workflow_id}`;
+  const expectedReferences = producer.referenced_workflows.map(
+    ({ path, sha }) => ({ path, sha }),
+  );
+  if (
+    run?.id !== runId ||
+    run?.url !== expectedRunUrl ||
+    run?.check_suite_id !== checkRun.check_suite.id ||
+    run?.head_sha !== headSha ||
+    run?.event !== expectedEvent ||
+    run?.name !== producer.workflow_name ||
+    run?.path !== producer.workflow_path ||
+    run?.workflow_id !== producer.workflow_id ||
+    run?.workflow_url !== workflowUrl ||
+    run?.repository?.id !== repositoryId ||
+    run?.repository?.full_name !== fullRepository ||
+    run?.head_repository?.id !== repositoryId ||
+    run?.head_repository?.full_name !== fullRepository ||
+    !positiveSafeInteger(run?.run_attempt) ||
+    run.run_attempt < job.run_attempt ||
+    JSON.stringify(referencedWorkflowIdentity(run?.referenced_workflows)) !==
+      JSON.stringify(expectedReferences)
+  ) {
+    throw new Error(
+      `required producer ${producer.check_name} run is inconsistent`,
+    );
+  }
+
+  const workflow = await api.request(workflowUrl);
+  if (
+    workflow?.id !== producer.workflow_id ||
+    workflow?.name !== producer.workflow_name ||
+    workflow?.path !== producer.workflow_path ||
+    workflow?.state !== "active" ||
+    workflow?.url !== workflowUrl
+  ) {
+    throw new Error(
+      `required producer ${producer.check_name} workflow is inconsistent`,
+    );
+  }
+
+  const graphRun = await readWorkflowRunIdentity(api, run.node_id);
+  const htmlRunUrl = `https://github.com/${fullRepository}/actions/runs/${runId}`;
+  const sourceFileUrl = canonicalRepositoryFileUrl(
+    fullRepository,
+    headSha,
+    producer.workflow_path,
+  );
+  const workflowResourcePath = `/${fullRepository}/actions/workflows/${producer.workflow_path.split("/").at(-1)}`;
+  if (
+    graphRun?.databaseId !== runId ||
+    graphRun?.event !== expectedEvent ||
+    graphRun?.runAttempt !== run.run_attempt ||
+    graphRun?.url !== htmlRunUrl ||
+    typeof graphRun?.file?.id !== "string" ||
+    !graphRun.file.id ||
+    graphRun.file.path !== producer.workflow_path ||
+    graphRun.file.repositoryName !== fullRepository ||
+    graphRun.file.repositoryFileUrl !== sourceFileUrl ||
+    graphRun.file.resourcePath !==
+      `/${fullRepository}/actions/runs/${runId}/workflow` ||
+    graphRun.file.url !== `${htmlRunUrl}/workflow` ||
+    graphRun?.workflow?.databaseId !== producer.workflow_id ||
+    graphRun.workflow.name !== producer.workflow_name ||
+    graphRun.workflow.state !== "ACTIVE" ||
+    graphRun.workflow.resourcePath !== workflowResourcePath ||
+    graphRun.workflow.url !== `https://github.com${workflowResourcePath}`
+  ) {
+    throw new Error(
+      `required producer ${producer.check_name} GraphQL identity is inconsistent`,
+    );
+  }
+  const sourceFile = await api.request(
+    `/repos/${fullRepository}/contents/${producer.workflow_path}?ref=${headSha}`,
+  );
+  if (
+    sourceFile?.path !== producer.workflow_path ||
+    sourceFile?.sha !== producer.workflow_blob_sha ||
+    sourceFile?.html_url !== sourceFileUrl
+  ) {
+    throw new Error(
+      `required producer ${producer.check_name} blob is inconsistent`,
+    );
+  }
+  await verifyReferencedWorkflowBlobs(api, producer.referenced_workflows);
+  return { checkRun, job, run, sourceRevisionVerified: true };
+}
+
+async function verifyRequiredCheckProducerProvenance(options) {
+  const {
+    api,
+    owner,
+    repo,
+    headSha,
+    expectedEvent,
+    checkRuns,
+    requiredChecks,
+    repositoryPolicy,
+  } = options;
+  const provenance = repositoryPolicy.provenance;
+  if (
+    repo !== ".github-private" ||
+    !validSha(headSha) ||
+    !["pull_request", "merge_group"].includes(expectedEvent)
+  ) {
+    throw new Error("required producer provenance scope is invalid");
+  }
+  const actionRequirements = requiredChecks.filter(
+    (required) => required?.app_id === ACTIONS_APP_ID,
+  );
+  for (const required of actionRequirements) {
+    const key = checkKey(required.name, required.app_id);
+    const producer = provenance.required_check_producers.find(
+      (candidate) => checkKey(candidate.check_name, candidate.app_id) === key,
+    );
+    if (!producer)
+      throw new Error(`required producer policy ${key} is missing`);
+    const candidates = checkRuns.filter(
+      (run) => checkKey(run?.name, run?.app?.id) === key,
+    );
+    if (candidates.length === 0) {
+      throw new Error(`required producer check ${key} is missing`);
+    }
+    const verified = [];
+    for (const checkRun of candidates) {
+      verified.push(
+        await verifyRequiredCheckProducer({
+          api,
+          owner,
+          repo,
+          headSha,
+          expectedEvent,
+          checkRun,
+          producer,
+          repositoryId: provenance.trusted_gate.repository_id,
+        }),
+      );
+    }
+    selectCurrentTrustedGateRun(verified);
+  }
+  return {
+    outcome: "required-check-producer-provenance-verified",
+    producerProvenanceVerified: true,
+  };
+}
+
 export function inspectRequiredCheckProducerProvenance({
+  api,
+  owner,
+  repo,
+  headSha,
+  expectedEvent = "pull_request",
   checkRuns,
   requiredChecks,
+  repositoryPolicy,
 }) {
   const latestRuns = [...latestCheckRunsBySuite(checkRuns).values()];
   const actionRequirements = (requiredChecks ?? []).filter(
@@ -763,6 +1147,18 @@ export function inspectRequiredCheckProducerProvenance({
   );
   if (actionRequirements.length === 0) {
     return { outcome: "required-check-producer-provenance-not-applicable" };
+  }
+  if (repositoryPolicy?.provenance) {
+    return verifyRequiredCheckProducerProvenance({
+      api,
+      owner,
+      repo,
+      headSha,
+      expectedEvent,
+      checkRuns,
+      requiredChecks,
+      repositoryPolicy,
+    });
   }
   for (const required of actionRequirements) {
     const key = checkKey(required.name, required.app_id);
@@ -830,8 +1226,99 @@ function trustedGateCheckRuns(checkRuns) {
   );
 }
 
-function expectedGateWorkflowUrl() {
-  return `https://api.github.com/repos/${TRUSTED_GATE_SOURCE_REPOSITORY}/actions/workflows/${TRUSTED_GATE_SOURCE_WORKFLOW_ID}`;
+function expectedGateWorkflowUrl(gate) {
+  const sourceRepository =
+    gate?.source_repository ?? TRUSTED_GATE_SOURCE_REPOSITORY;
+  const sourceWorkflowId =
+    gate?.source_workflow_id ?? TRUSTED_GATE_SOURCE_WORKFLOW_ID;
+  return `https://api.github.com/repos/${sourceRepository}/actions/workflows/${sourceWorkflowId}`;
+}
+
+const WORKFLOW_RUN_IDENTITY_QUERY = `
+  query($id: ID!) {
+    node(id: $id) {
+      ... on WorkflowRun {
+        databaseId
+        event
+        runAttempt
+        url
+        file {
+          id
+          path
+          repositoryName
+          repositoryFileUrl
+          resourcePath
+          url
+        }
+        workflow {
+          databaseId
+          name
+          resourcePath
+          url
+          state
+        }
+      }
+    }
+  }
+`;
+
+async function readWorkflowRunIdentity(api, nodeId) {
+  if (typeof nodeId !== "string" || !nodeId) {
+    throw new Error("workflow run has no GraphQL node identity");
+  }
+  const data = await api.graphql(WORKFLOW_RUN_IDENTITY_QUERY, { id: nodeId });
+  if (!data?.node || typeof data.node !== "object") {
+    throw new Error("workflow run GraphQL identity is missing");
+  }
+  return data.node;
+}
+
+function exactArray(value, expected) {
+  return (
+    Array.isArray(value) &&
+    value.length === expected.length &&
+    value.every((entry, index) => entry === expected[index])
+  );
+}
+
+function verifyCanaryRuleset(ruleset, owner, gate) {
+  const workflowsRules = (ruleset?.rules ?? []).filter(
+    (rule) => rule?.type === "workflows",
+  );
+  const copilotRules = (ruleset?.rules ?? []).filter(
+    (rule) => rule?.type === "copilot_code_review",
+  );
+  const workflowPins = workflowsRules[0]?.parameters?.workflows;
+  const workflowPin = Array.isArray(workflowPins) ? workflowPins[0] : null;
+  const copilot = copilotRules[0]?.parameters;
+  if (
+    ruleset?.id !== gate.ruleset_id ||
+    ruleset?.target !== "branch" ||
+    ruleset?.source_type !== "Organization" ||
+    ruleset?.source !== owner ||
+    !["active", "evaluate"].includes(ruleset?.enforcement) ||
+    !exactArray(ruleset?.bypass_actors, []) ||
+    !exactArray(ruleset?.conditions?.repository_id?.repository_ids, [
+      gate.repository_id,
+    ]) ||
+    !exactArray(ruleset?.conditions?.ref_name?.include, ["~DEFAULT_BRANCH"]) ||
+    !exactArray(ruleset?.conditions?.ref_name?.exclude, []) ||
+    workflowsRules.length !== 1 ||
+    copilotRules.length !== 1 ||
+    ruleset.rules.length !== 2 ||
+    workflowsRules[0]?.parameters?.do_not_enforce_on_create !== false ||
+    !Array.isArray(workflowPins) ||
+    workflowPins.length !== 1 ||
+    workflowPin?.repository_id !== gate.source_repository_id ||
+    workflowPin?.path !== gate.source_workflow_path ||
+    workflowPin?.sha !== gate.source_sha ||
+    (workflowPin?.ref !== undefined && workflowPin.ref !== null) ||
+    copilot?.review_on_push !== true ||
+    copilot?.review_draft_pull_requests !== false
+  ) {
+    throw new Error("trusted gate canary ruleset identity is inconsistent");
+  }
+  return ruleset.enforcement;
 }
 
 async function verifyTrustedGateCheck({
@@ -841,6 +1328,7 @@ async function verifyTrustedGateCheck({
   headSha,
   checkRun,
   expectedEvent,
+  repositoryPolicy,
 }) {
   if (!Number.isSafeInteger(checkRun?.id) || checkRun.id <= 0) {
     throw new Error("LCV Trusted Gate has no check-run identity");
@@ -902,7 +1390,12 @@ async function verifyTrustedGateCheck({
     );
   }
   const [run] = runs;
-  const workflowUrl = expectedGateWorkflowUrl();
+  const gate = repositoryPolicy?.provenance?.trusted_gate;
+  const workflowUrl = expectedGateWorkflowUrl(gate);
+  const expectedWorkflowId = gate?.required_workflow_id;
+  const expectedRunWorkflowUrl = gate
+    ? `https://api.github.com/repos/${fullRepository}/actions/required_workflows/${expectedWorkflowId}`
+    : workflowUrl;
   if (
     run?.id !== runId ||
     run?.url !== expectedRunUrl ||
@@ -910,9 +1403,11 @@ async function verifyTrustedGateCheck({
     run?.head_sha !== headSha ||
     run?.event !== expectedEvent ||
     run?.name !== TRUSTED_GATE_CHECK_NAME ||
-    run?.path !== TRUSTED_GATE_SOURCE_WORKFLOW_PATH ||
-    run?.workflow_id !== TRUSTED_GATE_SOURCE_WORKFLOW_ID ||
-    run?.workflow_url !== workflowUrl ||
+    run?.path !==
+      (gate?.source_workflow_path ?? TRUSTED_GATE_SOURCE_WORKFLOW_PATH) ||
+    run?.workflow_id !==
+      (expectedWorkflowId ?? TRUSTED_GATE_SOURCE_WORKFLOW_ID) ||
+    run?.workflow_url !== expectedRunWorkflowUrl ||
     run?.repository?.full_name !== fullRepository ||
     run?.head_repository?.full_name !== fullRepository ||
     !Number.isSafeInteger(run?.run_attempt) ||
@@ -923,15 +1418,75 @@ async function verifyTrustedGateCheck({
 
   const workflow = await api.request(workflowUrl);
   if (
-    workflow?.id !== TRUSTED_GATE_SOURCE_WORKFLOW_ID ||
+    workflow?.id !==
+      (gate?.source_workflow_id ?? TRUSTED_GATE_SOURCE_WORKFLOW_ID) ||
     workflow?.name !== TRUSTED_GATE_CHECK_NAME ||
-    workflow?.path !== TRUSTED_GATE_SOURCE_WORKFLOW_PATH ||
+    workflow?.path !==
+      (gate?.source_workflow_path ?? TRUSTED_GATE_SOURCE_WORKFLOW_PATH) ||
     workflow?.state !== "active" ||
     workflow?.url !== workflowUrl
   ) {
     throw new Error(
       "LCV Trusted Gate source workflow identity is inconsistent",
     );
+  }
+  if (gate) {
+    if (
+      run?.repository?.id !== gate.repository_id ||
+      run?.head_repository?.id !== gate.repository_id ||
+      !Array.isArray(run?.referenced_workflows) ||
+      run.referenced_workflows.length !== 0
+    ) {
+      throw new Error(
+        "trusted gate target repository identity is inconsistent",
+      );
+    }
+    const graphRun = await readWorkflowRunIdentity(api, run.node_id);
+    const htmlRunUrl = `https://github.com/${fullRepository}/actions/runs/${runId}`;
+    const sourceFileUrl = `https://github.com/${gate.source_repository}/blob/${gate.source_sha}/${gate.source_workflow_path}`;
+    const workflowResourcePath = `/${fullRepository}/actions/workflows/required/${gate.source_repository}/${gate.source_workflow_path}`;
+    const runWorkflowUrl = `https://github.com${workflowResourcePath}`;
+    if (
+      graphRun?.databaseId !== runId ||
+      graphRun?.event !== expectedEvent ||
+      graphRun?.runAttempt !== run.run_attempt ||
+      graphRun?.url !== htmlRunUrl ||
+      typeof graphRun?.file?.id !== "string" ||
+      !graphRun.file.id ||
+      graphRun.file.path !== gate.source_workflow_path ||
+      graphRun.file.repositoryName !== gate.source_repository ||
+      graphRun.file.repositoryFileUrl !== sourceFileUrl ||
+      graphRun.file.resourcePath !==
+        `/${fullRepository}/actions/runs/${runId}/workflow` ||
+      graphRun.file.url !== `${htmlRunUrl}/workflow` ||
+      graphRun?.workflow?.databaseId !== gate.required_workflow_id ||
+      graphRun.workflow.name !== TRUSTED_GATE_CHECK_NAME ||
+      graphRun.workflow.state !== "ACTIVE" ||
+      graphRun.workflow.resourcePath !== workflowResourcePath ||
+      graphRun.workflow.url !== runWorkflowUrl
+    ) {
+      throw new Error("trusted gate GraphQL source identity is inconsistent");
+    }
+    const sourceFile = await api.request(
+      `/repos/${gate.source_repository}/contents/${gate.source_workflow_path}?ref=${gate.source_sha}`,
+    );
+    if (
+      sourceFile?.path !== gate.source_workflow_path ||
+      sourceFile?.sha !== gate.source_blob_sha ||
+      sourceFile?.html_url !== sourceFileUrl
+    ) {
+      throw new Error("trusted gate source blob identity is inconsistent");
+    }
+    const ruleset = await api.request(
+      `/orgs/${owner}/rulesets/${gate.ruleset_id}`,
+    );
+    const enforcement = verifyCanaryRuleset(ruleset, owner, gate);
+    return {
+      checkRun,
+      job,
+      run,
+      sourceRevisionVerified: enforcement === "active",
+    };
   }
   // The current REST payload proves check -> job -> run -> central workflow,
   // but it does not expose job.workflow_sha for a ruleset-required run. Until
@@ -1047,6 +1602,7 @@ export async function inspectTrustedGate({
   checkRuns,
   expectedEvent = "pull_request",
   number,
+  repositoryPolicy,
 }) {
   if (!validSha(headSha))
     throw new Error("invalid trusted-gate recovery head SHA");
@@ -1062,6 +1618,7 @@ export async function inspectTrustedGate({
         headSha,
         checkRun,
         expectedEvent,
+        repositoryPolicy,
       }),
     );
   }
@@ -1973,6 +2530,7 @@ export async function requestResolvedBotReviewVetoRerun({
   expectedBase,
   gate,
   reassess,
+  repositoryPolicy,
 }) {
   if (
     gate?.outcome !== "trusted-gate-bot-veto-rerun-needed" ||
@@ -1994,6 +2552,14 @@ export async function requestResolvedBotReviewVetoRerun({
   };
   assertEvidence(await reassess());
   const run = await api.request(gate.run.url);
+  const provenanceGate = repositoryPolicy?.provenance?.trusted_gate;
+  const expectedWorkflowId =
+    provenanceGate?.required_workflow_id ?? TRUSTED_GATE_SOURCE_WORKFLOW_ID;
+  const expectedWorkflowUrl = provenanceGate
+    ? `https://api.github.com/repos/${owner}/${repo}/actions/required_workflows/${expectedWorkflowId}`
+    : expectedGateWorkflowUrl();
+  const expectedWorkflowPath =
+    provenanceGate?.source_workflow_path ?? TRUSTED_GATE_SOURCE_WORKFLOW_PATH;
   if (
     run?.id !== gate.run.id ||
     run?.url !== gate.run.url ||
@@ -2005,9 +2571,15 @@ export async function requestResolvedBotReviewVetoRerun({
     run?.check_suite_id !== gate.run.check_suite_id ||
     run?.repository?.full_name !== `${owner}/${repo}` ||
     run?.head_repository?.full_name !== `${owner}/${repo}` ||
-    run?.workflow_id !== TRUSTED_GATE_SOURCE_WORKFLOW_ID ||
-    run?.workflow_url !== expectedGateWorkflowUrl() ||
-    run?.path !== TRUSTED_GATE_SOURCE_WORKFLOW_PATH
+    run?.workflow_id !== expectedWorkflowId ||
+    run?.workflow_url !== expectedWorkflowUrl ||
+    run?.path !== expectedWorkflowPath ||
+    run?.workflow_id !== gate.run.workflow_id ||
+    run?.workflow_url !== gate.run.workflow_url ||
+    run?.path !== gate.run.path ||
+    (provenanceGate &&
+      (run?.repository?.id !== provenanceGate.repository_id ||
+        run?.head_repository?.id !== provenanceGate.repository_id))
   ) {
     throw new Error("bot-review veto rerun identity changed");
   }
@@ -2084,9 +2656,15 @@ export async function assessForEnqueue({
     throw new Error(`${repo}#${pullRequest.number}: ${error.message}`);
   }
   if (checkOutcome === "checks-pending") return { outcome: checkOutcome };
-  const producerProvenance = inspectRequiredCheckProducerProvenance({
+  const producerProvenance = await inspectRequiredCheckProducerProvenance({
+    api,
+    owner,
+    repo,
+    headSha: evidence.pullRequest.head.sha,
+    expectedEvent: "pull_request",
     checkRuns: checks.checkRuns,
     requiredChecks,
+    repositoryPolicy: policy.repositories[repo],
   });
   if (
     producerProvenance.outcome !== "required-check-producer-provenance-verified"
@@ -2107,6 +2685,7 @@ export async function assessForEnqueue({
     headSha: evidence.pullRequest.head.sha,
     checkRuns: checks.checkRuns,
     number: pullRequest.number,
+    repositoryPolicy: policy.repositories[repo],
   });
   if (gateOutcome.outcome === "trusted-gate-bot-veto-rerun-needed") {
     return {
@@ -2118,6 +2697,7 @@ export async function assessForEnqueue({
         expectedHead: evidence.pullRequest.head.sha,
         expectedBase: evidence.mainSha,
         gate: gateOutcome,
+        repositoryPolicy: policy.repositories[repo],
         reassess: () =>
           assess({
             api,
@@ -2175,10 +2755,17 @@ export async function assessForEnqueue({
           `${repo}#${pullRequest.number}: final exact-SHA check inventory is ${finalResult.state}: ${finalResult.reasons.join("; ")}`,
         );
       }
-      const finalProducerProvenance = inspectRequiredCheckProducerProvenance({
-        checkRuns: finalChecks.checkRuns,
-        requiredChecks,
-      });
+      const finalProducerProvenance =
+        await inspectRequiredCheckProducerProvenance({
+          api,
+          owner,
+          repo,
+          headSha: queueState.headRefOid,
+          expectedEvent: "pull_request",
+          checkRuns: finalChecks.checkRuns,
+          requiredChecks,
+          repositoryPolicy: policy.repositories[repo],
+        });
       if (
         finalProducerProvenance.outcome !==
         "required-check-producer-provenance-verified"
@@ -2194,6 +2781,7 @@ export async function assessForEnqueue({
         checkRuns: finalChecks.checkRuns,
         headSha: queueState.headRefOid,
         number: pullRequest.number,
+        repositoryPolicy: policy.repositories[repo],
       });
       if (finalGate.outcome !== "trusted-gate-success") {
         throw new Error(
