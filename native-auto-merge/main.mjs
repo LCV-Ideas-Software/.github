@@ -10,6 +10,8 @@ const API_VERSION = "2026-03-10";
 const API_TIMEOUT_MILLISECONDS = 15_000;
 const GH_TIMEOUT_MILLISECONDS = 60_000;
 const GITHUB_ACTIONS_APP_ID = 15368;
+const OPEN_PULLS_PER_PAGE = 100;
+const MAX_OPEN_PULL_PAGES = 100;
 const POLICY_URL = new URL("../native-governance/policy.json", import.meta.url);
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const ALLOWED_ACTORS = new Map([
@@ -198,6 +200,40 @@ export function extractCandidates(eventName, event, repository) {
       source: "workflow_run",
     },
   ];
+}
+
+export function workflowRunEventFromInputs(env) {
+  let pullRequests;
+  try {
+    pullRequests = JSON.parse(
+      nonEmpty(
+        env.INPUT_WORKFLOW_PULL_REQUESTS,
+        "workflow_pull_requests input",
+      ),
+    );
+  } catch (error) {
+    throw new Error(
+      `workflow_pull_requests input is invalid: ${error.message}`,
+    );
+  }
+  if (!Array.isArray(pullRequests)) {
+    throw new Error("workflow_pull_requests input must contain a JSON array");
+  }
+  return {
+    repository: {
+      full_name: nonEmpty(env.INPUT_EVENT_REPOSITORY, "event_repository input"),
+    },
+    workflow_run: {
+      name: nonEmpty(env.INPUT_WORKFLOW_NAME, "workflow_name input"),
+      status: nonEmpty(env.INPUT_WORKFLOW_STATUS, "workflow_status input"),
+      event: nonEmpty(env.INPUT_WORKFLOW_EVENT, "workflow_event input"),
+      head_sha: nonEmpty(
+        env.INPUT_WORKFLOW_HEAD_SHA,
+        "workflow_head_sha input",
+      ),
+      pull_requests: pullRequests,
+    },
+  };
 }
 
 export function isEligiblePull(pull, candidate, repository) {
@@ -409,6 +445,27 @@ export async function githubGetPull(repository, number, token, runtime = {}) {
   );
 }
 
+export async function githubListOpenPulls(repository, token, runtime = {}) {
+  parseRepository(repository);
+  nonEmpty(token, "automation_token input");
+  const pulls = [];
+  for (let page = 1; page <= MAX_OPEN_PULL_PAGES; page += 1) {
+    const payload = await githubRequest(
+      `/repos/${repository}/pulls?state=open&base=main&per_page=${OPEN_PULLS_PER_PAGE}&page=${page}`,
+      { method: "GET", token },
+      runtime,
+    );
+    if (!Array.isArray(payload)) {
+      throw new Error("Malformed open pull request inventory payload");
+    }
+    pulls.push(...payload);
+    if (payload.length < OPEN_PULLS_PER_PAGE) {
+      return pulls;
+    }
+  }
+  throw new Error("Open pull request inventory exceeded the pagination limit");
+}
+
 export async function githubGetEffectiveRules(repository, token, runtime = {}) {
   parseRepository(repository);
   nonEmpty(token, "automation_token input");
@@ -516,10 +573,8 @@ export async function runGhAutoMerge(
 export async function runNativeAutoMerge(env = process.env, runtime = {}) {
   const { repository } = parseRepository(env.GITHUB_REPOSITORY);
   const eventName = nonEmpty(env.GITHUB_EVENT_NAME, "GITHUB_EVENT_NAME");
-  const eventPath = nonEmpty(env.GITHUB_EVENT_PATH, "GITHUB_EVENT_PATH");
   const token = nonEmpty(env.INPUT_AUTOMATION_TOKEN, "automation_token input");
-  const readFile = runtime.readFile ?? nodeReadFile;
-  const event = JSON.parse(await readFile(eventPath, "utf8"));
+  const event = workflowRunEventFromInputs(env);
   const candidates = extractCandidates(eventName, event, repository);
   if (candidates.length === 0) {
     log("No completed CodeQL pull-request run with an exact head was found.");
@@ -527,23 +582,37 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
   }
 
   const getPull = runtime.getPull ?? githubGetPull;
+  const listOpenPulls = runtime.listOpenPulls ?? githubListOpenPulls;
   const loadPolicyChecks = runtime.loadRequiredChecks ?? loadRequiredChecks;
   const getEffectiveRules =
     runtime.getEffectiveRules ?? githubGetEffectiveRules;
   const getNativeState = runtime.getNativeState ?? githubGetNativeState;
   const enableAutoMerge = runtime.enableAutoMerge ?? runGhAutoMerge;
   const candidate = candidates[0];
-  const currentPull = await getPull(repository, candidate.number, token);
-  if (!isEligiblePull(currentPull, candidate, repository)) {
+  const openPulls = await listOpenPulls(repository, token);
+  if (!Array.isArray(openPulls)) {
+    throw new Error("Malformed open pull request inventory payload");
+  }
+  const currentPull = openPulls.find((pull) =>
+    isEligiblePull(pull, candidate, repository),
+  );
+  if (!currentPull) {
     log(
       `PR #${candidate.number}: current identity, state, base or exact head is ineligible.`,
     );
     return { action: "skipped", reason: "ineligible" };
   }
+  const canonicalCandidate = {
+    number: currentPull.number,
+    headSha: currentPull.head.sha,
+    source: "github",
+  };
 
   const requiredChecks = await loadPolicyChecks(repository);
   if (requiredChecks === null) {
-    log(`PR #${candidate.number}: repository is absent from pinned policy.`);
+    log(
+      `PR #${canonicalCandidate.number}: repository is absent from pinned policy.`,
+    );
     return {
       action: "skipped",
       reason: "repository-not-in-policy",
@@ -553,7 +622,7 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
   const effectiveRules = await getEffectiveRules(repository, token);
   if (!hasRequiredNativeEnforcement(effectiveRules, requiredChecks)) {
     log(
-      `PR #${candidate.number}: required native enforcement is not fully active on main.`,
+      `PR #${canonicalCandidate.number}: required native enforcement is not fully active on main.`,
     );
     return {
       action: "skipped",
@@ -561,20 +630,26 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
     };
   }
 
-  const state = await getNativeState(repository, candidate.number, token);
+  const state = await getNativeState(
+    repository,
+    canonicalCandidate.number,
+    token,
+  );
   if (state.mergeQueueEntry) {
-    log(`PR #${candidate.number}: already in the native merge queue.`);
-    return { action: "already-queued", pull: candidate.number };
+    log(`PR #${canonicalCandidate.number}: already in the native merge queue.`);
+    return { action: "already-queued", pull: canonicalCandidate.number };
   }
   if (state.autoMergeRequest) {
-    log(`PR #${candidate.number}: native auto-merge is already enabled.`);
-    return { action: "already-enabled", pull: candidate.number };
+    log(
+      `PR #${canonicalCandidate.number}: native auto-merge is already enabled.`,
+    );
+    return { action: "already-enabled", pull: canonicalCandidate.number };
   }
 
   const finalEffectiveRules = await getEffectiveRules(repository, token);
   if (!hasRequiredNativeEnforcement(finalEffectiveRules, requiredChecks)) {
     log(
-      `PR #${candidate.number}: required native enforcement changed before the mutation.`,
+      `PR #${canonicalCandidate.number}: required native enforcement changed before the mutation.`,
     );
     return {
       action: "skipped",
@@ -582,22 +657,27 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
     };
   }
 
-  const finalPull = await getPull(repository, candidate.number, token);
-  if (!isEligiblePull(finalPull, candidate, repository)) {
+  const finalPull = await getPull(repository, canonicalCandidate.number, token);
+  if (!isEligiblePull(finalPull, canonicalCandidate, repository)) {
     log(
-      `PR #${candidate.number}: pull request identity, state, base or exact head changed before the mutation.`,
+      `PR #${canonicalCandidate.number}: pull request identity, state, base or exact head changed before the mutation.`,
     );
     return { action: "skipped", reason: "ineligible" };
   }
 
-  await enableAutoMerge(repository, candidate.number, candidate.headSha, token);
+  await enableAutoMerge(
+    repository,
+    canonicalCandidate.number,
+    canonicalCandidate.headSha,
+    token,
+  );
   log(
-    `PR #${candidate.number}: native auto-merge enabled for exact head ${candidate.headSha}.`,
+    `PR #${canonicalCandidate.number}: native auto-merge enabled for exact head ${canonicalCandidate.headSha}.`,
   );
   return {
     action: "enabled",
-    pull: candidate.number,
-    head: candidate.headSha,
+    pull: canonicalCandidate.number,
+    head: canonicalCandidate.headSha,
   };
 }
 

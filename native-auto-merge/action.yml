@@ -5,6 +5,24 @@ inputs:
   automation_token:
     description: Protected PAT used for live enforcement and pull-request reads plus the native auto-merge request.
     required: true
+  event_repository:
+    description: Repository full name from the trusted workflow_run context.
+    required: true
+  workflow_name:
+    description: Completed workflow name from the workflow_run context.
+    required: true
+  workflow_status:
+    description: Completed workflow status from the workflow_run context.
+    required: true
+  workflow_event:
+    description: Triggering event name from the workflow_run context.
+    required: true
+  workflow_head_sha:
+    description: Exact head SHA from the workflow_run context.
+    required: true
+  workflow_pull_requests:
+    description: JSON pull-request associations from the workflow_run context.
+    required: true
 
 runs:
   using: node24

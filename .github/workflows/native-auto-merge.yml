@@ -51,3 +51,9 @@ jobs:
         uses: ./native-auto-merge
         with:
           automation_token: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+          event_repository: ${{ github.event.repository.full_name }}
+          workflow_name: ${{ github.event.workflow_run.name }}
+          workflow_status: ${{ github.event.workflow_run.status }}
+          workflow_event: ${{ github.event.workflow_run.event }}
+          workflow_head_sha: ${{ github.event.workflow_run.head_sha }}
+          workflow_pull_requests: ${{ toJSON(github.event.workflow_run.pull_requests) }}

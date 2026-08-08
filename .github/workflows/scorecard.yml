@@ -56,7 +56,8 @@ jobs:
               | (result_message) as $message
               | if .ruleId == "TokenPermissionsID" then
                   ($uri | test("^\\.github/workflows/[^/]+\\.ya?ml$"))
-                  and ($message | startswith("score is 0: topLevel permissions set to '\''write-all'\''\n"))
+                  and $snippet == "write-all"
+                  and ($message | test("^score is [0-9]+: topLevel permissions set to '\''write-all'\''\\n"))
                 elif .ruleId == "PinnedDependenciesID" then
                   ([
                     ".github/workflows/cloudflare-pages.yml",

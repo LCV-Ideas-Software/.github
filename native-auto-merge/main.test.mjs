@@ -7,11 +7,13 @@ import {
   githubGetEffectiveRules,
   githubGetNativeState,
   githubGetPull,
+  githubListOpenPulls,
   hasRequiredNativeEnforcement,
   isEligiblePull,
   loadRequiredChecks,
   runGhAutoMerge,
   runNativeAutoMerge,
+  workflowRunEventFromInputs,
 } from "./main.mjs";
 
 const REPOSITORY = "LCV-Ideas-Software/.github";
@@ -69,6 +71,21 @@ function workflowRunEvent(overrides = {}) {
       ],
       ...overrides,
     },
+  };
+}
+
+function workflowRunInputEnv(event = workflowRunEvent()) {
+  return {
+    GITHUB_REPOSITORY: REPOSITORY,
+    GITHUB_EVENT_NAME: "workflow_run",
+    INPUT_EVENT_REPOSITORY: event.repository.full_name,
+    INPUT_WORKFLOW_NAME: event.workflow_run.name,
+    INPUT_WORKFLOW_STATUS: event.workflow_run.status,
+    INPUT_WORKFLOW_EVENT: event.workflow_run.event,
+    INPUT_WORKFLOW_HEAD_SHA: event.workflow_run.head_sha,
+    INPUT_WORKFLOW_PULL_REQUESTS: JSON.stringify(
+      event.workflow_run.pull_requests,
+    ),
   };
 }
 
@@ -177,6 +194,24 @@ test("workflow_run yields exact-head candidates only for completed CodeQL pull r
   );
 });
 
+test("explicit workflow inputs reconstruct only the candidate fields used by the controller", () => {
+  assert.deepEqual(
+    workflowRunEventFromInputs(workflowRunInputEnv()),
+    workflowRunEvent(),
+  );
+
+  for (const value of [undefined, "", "{", "{}", "null"]) {
+    assert.throws(
+      () =>
+        workflowRunEventFromInputs({
+          ...workflowRunInputEnv(),
+          INPUT_WORKFLOW_PULL_REQUESTS: value,
+        }),
+      /workflow_pull_requests input/i,
+    );
+  }
+});
+
 test("eligibility binds login plus immutable actor ID and the exact same-repository head", () => {
   const candidate = {
     number: 81,
@@ -234,6 +269,40 @@ test("GitHub REST reads use the automation PAT", async () => {
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.redirect, "error");
   assert.equal(calls[0].options.signal, timeoutSignal);
+});
+
+test("open pull inventory uses fixed pagination before event candidate matching", async () => {
+  const calls = [];
+  const firstPage = Array.from({ length: 100 }, () => pull());
+  const pulls = await githubListOpenPulls(REPOSITORY, "pat-token", {
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      const payload = calls.length === 1 ? firstPage : [pull()];
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(pulls.length, 101);
+  assert.deepEqual(
+    calls.map(({ url }) => url),
+    [
+      "https://api.github.com/repos/LCV-Ideas-Software/.github/pulls?state=open&base=main&per_page=100&page=1",
+      "https://api.github.com/repos/LCV-Ideas-Software/.github/pulls?state=open&base=main&per_page=100&page=2",
+    ],
+  );
+  assert.equal(
+    calls.every(({ url }) => !url.includes("/pulls/81")),
+    true,
+  );
+  assert.equal(
+    calls.every(
+      ({ options }) => options.headers.authorization === "Bearer pat-token",
+    ),
+    true,
+  );
 });
 
 test("native idempotency state reads autoMergeRequest and mergeQueueEntry", async () => {
@@ -632,14 +701,15 @@ test("controller refetches exact state and enables native auto-merge once", asyn
   const mutations = [];
   const result = await runNativeAutoMerge(
     {
-      GITHUB_REPOSITORY: REPOSITORY,
-      GITHUB_EVENT_NAME: "workflow_run",
-      GITHUB_EVENT_PATH: "event.json",
+      ...workflowRunInputEnv(),
       INPUT_AUTOMATION_TOKEN: "pat-token",
       GITHUB_TOKEN: "must-not-be-used",
     },
     {
-      readFile: async () => JSON.stringify(workflowRunEvent()),
+      listOpenPulls: async () => {
+        trace.push("pull-list");
+        return [pull({ user: DEPENDABOT })];
+      },
       getPull: async () => {
         trace.push("pull");
         pullReads += 1;
@@ -673,10 +743,10 @@ test("controller refetches exact state and enables native auto-merge once", asyn
     pull: 81,
     head: HEAD_SHA,
   });
-  assert.equal(pullReads, 2);
+  assert.equal(pullReads, 1);
   assert.equal(policyReads, 1);
   assert.deepEqual(trace, [
-    "pull",
+    "pull-list",
     "policy",
     "rules",
     "state",
@@ -685,6 +755,95 @@ test("controller refetches exact state and enables native auto-merge once", asyn
     "gh",
   ]);
   assert.deepEqual(mutations, [[REPOSITORY, 81, HEAD_SHA, "pat-token"]]);
+});
+
+test("controller binds workflow candidates to a fixed open-pull inventory before targeted requests", async () => {
+  const trace = [];
+  let pullReads = 0;
+  const result = await runNativeAutoMerge(
+    {
+      ...workflowRunInputEnv(),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      listOpenPulls: async () => {
+        trace.push("pull-list");
+        return [pull()];
+      },
+      getPull: async () => {
+        assert.equal(
+          trace.includes("pull-list"),
+          true,
+          "an input-derived pull number reached a targeted request",
+        );
+        trace.push("pull");
+        pullReads += 1;
+        return pull();
+      },
+      loadRequiredChecks: async () => {
+        trace.push("policy");
+        return POLICY_REQUIRED_CHECKS;
+      },
+      getEffectiveRules: async () => {
+        trace.push("rules");
+        return effectiveRules();
+      },
+      getNativeState: async () => {
+        trace.push("state");
+        return {
+          autoMergeRequest: null,
+          mergeQueueEntry: null,
+        };
+      },
+      enableAutoMerge: async () => {
+        trace.push("gh");
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    action: "enabled",
+    pull: 81,
+    head: HEAD_SHA,
+  });
+  assert.equal(pullReads, 1);
+  assert.deepEqual(trace, [
+    "pull-list",
+    "policy",
+    "rules",
+    "state",
+    "rules",
+    "pull",
+    "gh",
+  ]);
+});
+
+test("controller consumes explicit workflow inputs without reading GITHUB_EVENT_PATH", async () => {
+  const result = await runNativeAutoMerge(
+    {
+      ...workflowRunInputEnv(),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      readFile: async () => {
+        assert.fail("the workflow event file must not be read");
+      },
+      listOpenPulls: async () => [pull()],
+      getPull: async () => pull(),
+      getEffectiveRules: async () => effectiveRules(),
+      getNativeState: async () => ({
+        autoMergeRequest: null,
+        mergeQueueEntry: null,
+      }),
+      enableAutoMerge: async () => {},
+    },
+  );
+
+  assert.deepEqual(result, {
+    action: "enabled",
+    pull: 81,
+    head: HEAD_SHA,
+  });
 });
 
 test("controller is idempotent for native auto-merge and merge queue state", async () => {
@@ -704,13 +863,11 @@ test("controller is idempotent for native auto-merge and merge queue state", asy
     let mutations = 0;
     const result = await runNativeAutoMerge(
       {
-        GITHUB_REPOSITORY: REPOSITORY,
-        GITHUB_EVENT_NAME: "workflow_run",
-        GITHUB_EVENT_PATH: "event.json",
+        ...workflowRunInputEnv(),
         INPUT_AUTOMATION_TOKEN: "pat-token",
       },
       {
-        readFile: async () => JSON.stringify(workflowRunEvent()),
+        listOpenPulls: async () => [pull()],
         getPull: async () => pull(),
         getEffectiveRules: async () => effectiveRules(),
         getNativeState: async () => state,
@@ -730,13 +887,11 @@ test("controller cannot arm auto-merge before all effective rules are active", a
   let mutations = 0;
   const result = await runNativeAutoMerge(
     {
-      GITHUB_REPOSITORY: REPOSITORY,
-      GITHUB_EVENT_NAME: "workflow_run",
-      GITHUB_EVENT_PATH: "event.json",
+      ...workflowRunInputEnv(),
       INPUT_AUTOMATION_TOKEN: "pat-token",
     },
     {
-      readFile: async () => JSON.stringify(workflowRunEvent()),
+      listOpenPulls: async () => [pull()],
       getPull: async () => pull(),
       getEffectiveRules: async () =>
         effectiveRules().filter(({ type }) => type !== "merge_queue"),
@@ -763,13 +918,11 @@ test("controller skips an unknown policy repository before GraphQL and gh", asyn
   let mutations = 0;
   const result = await runNativeAutoMerge(
     {
-      GITHUB_REPOSITORY: REPOSITORY,
-      GITHUB_EVENT_NAME: "workflow_run",
-      GITHUB_EVENT_PATH: "event.json",
+      ...workflowRunInputEnv(),
       INPUT_AUTOMATION_TOKEN: "pat-token",
     },
     {
-      readFile: async () => JSON.stringify(workflowRunEvent()),
+      listOpenPulls: async () => [pull()],
       getPull: async () => pull(),
       loadRequiredChecks: async () => null,
       getNativeState: async () => {
@@ -830,13 +983,11 @@ test("policy check absence or identity drift blocks before GraphQL and gh", asyn
     let mutations = 0;
     const result = await runNativeAutoMerge(
       {
-        GITHUB_REPOSITORY: REPOSITORY,
-        GITHUB_EVENT_NAME: "workflow_run",
-        GITHUB_EVENT_PATH: "event.json",
+        ...workflowRunInputEnv(),
         INPUT_AUTOMATION_TOKEN: "pat-token",
       },
       {
-        readFile: async () => JSON.stringify(workflowRunEvent()),
+        listOpenPulls: async () => [pull()],
         getPull: async () => pull(),
         loadRequiredChecks: async () => POLICY_REQUIRED_CHECKS,
         getEffectiveRules: async () => rules,
@@ -864,13 +1015,11 @@ test("controller revalidates effective enforcement after GraphQL and before gh",
   let mutations = 0;
   const result = await runNativeAutoMerge(
     {
-      GITHUB_REPOSITORY: REPOSITORY,
-      GITHUB_EVENT_NAME: "workflow_run",
-      GITHUB_EVENT_PATH: "event.json",
+      ...workflowRunInputEnv(),
       INPUT_AUTOMATION_TOKEN: "pat-token",
     },
     {
-      readFile: async () => JSON.stringify(workflowRunEvent()),
+      listOpenPulls: async () => [pull()],
       getPull: async () => pull(),
       getEffectiveRules: async () => {
         enforcementReads += 1;
@@ -914,16 +1063,14 @@ test("controller refetches and revalidates the PR immediately before gh", async 
     let mutations = 0;
     const result = await runNativeAutoMerge(
       {
-        GITHUB_REPOSITORY: REPOSITORY,
-        GITHUB_EVENT_NAME: "workflow_run",
-        GITHUB_EVENT_PATH: "event.json",
+        ...workflowRunInputEnv(),
         INPUT_AUTOMATION_TOKEN: "pat-token",
       },
       {
-        readFile: async () => JSON.stringify(workflowRunEvent()),
+        listOpenPulls: async () => [pull()],
         getPull: async () => {
           pullReads += 1;
-          return pullReads === 1 ? pull() : changedPull;
+          return changedPull;
         },
         getEffectiveRules: async () => {
           enforcementReads += 1;
@@ -940,7 +1087,7 @@ test("controller refetches and revalidates the PR immediately before gh", async 
     );
 
     assert.deepEqual(result, { action: "skipped", reason: "ineligible" });
-    assert.equal(pullReads, 2);
+    assert.equal(pullReads, 1);
     assert.equal(enforcementReads, 2);
     assert.equal(mutations, 0);
   }
@@ -952,13 +1099,11 @@ test("controller fails before GraphQL and gh on malformed effective rules", asyn
   await assert.rejects(
     runNativeAutoMerge(
       {
-        GITHUB_REPOSITORY: REPOSITORY,
-        GITHUB_EVENT_NAME: "workflow_run",
-        GITHUB_EVENT_PATH: "event.json",
+        ...workflowRunInputEnv(),
         INPUT_AUTOMATION_TOKEN: "pat-token",
       },
       {
-        readFile: async () => JSON.stringify(workflowRunEvent()),
+        listOpenPulls: async () => [pull()],
         getPull: async () => pull(),
         getEffectiveRules: async () => ({ rules: effectiveRules() }),
         getNativeState: async () => {
@@ -980,15 +1125,13 @@ test("controller fails closed on a stale event head", async () => {
   let mutations = 0;
   const result = await runNativeAutoMerge(
     {
-      GITHUB_REPOSITORY: REPOSITORY,
-      GITHUB_EVENT_NAME: "workflow_run",
-      GITHUB_EVENT_PATH: "event.json",
+      ...workflowRunInputEnv(),
       INPUT_AUTOMATION_TOKEN: "pat-token",
     },
     {
-      readFile: async () => JSON.stringify(workflowRunEvent()),
-      getPull: async () =>
+      listOpenPulls: async () => [
         pull({ head: { ...pull().head, sha: "f".repeat(40) } }),
+      ],
       getNativeState: async () => ({
         autoMergeRequest: null,
         mergeQueueEntry: null,
@@ -1007,14 +1150,10 @@ test("controller never falls back to GITHUB_TOKEN", async () => {
   await assert.rejects(
     runNativeAutoMerge(
       {
-        GITHUB_REPOSITORY: REPOSITORY,
-        GITHUB_EVENT_NAME: "workflow_run",
-        GITHUB_EVENT_PATH: "event.json",
+        ...workflowRunInputEnv(),
         GITHUB_TOKEN: "ephemeral-token",
       },
-      {
-        readFile: async () => JSON.stringify(workflowRunEvent()),
-      },
+      {},
     ),
     /automation_token input must be a non-empty string/,
   );
@@ -1025,6 +1164,10 @@ test("action and consumer workflow keep the credential and execution boundary na
     new URL("./action.yml", import.meta.url),
     "utf8",
   );
+  const implementation = await readFile(
+    new URL("./main.mjs", import.meta.url),
+    "utf8",
+  );
   const workflow = await readFile(
     new URL("../.github/workflows/native-auto-merge.yml", import.meta.url),
     "utf8",
@@ -1033,6 +1176,22 @@ test("action and consumer workflow keep the credential and execution boundary na
   assert.match(action, /automation_token:/);
   assert.doesNotMatch(action, /github_token:/);
   assert.match(action, /using:\s*node24/);
+  for (const input of [
+    "event_repository",
+    "workflow_name",
+    "workflow_status",
+    "workflow_event",
+    "workflow_head_sha",
+    "workflow_pull_requests",
+  ]) {
+    assert.match(action, new RegExp(`\\n  ${input}:`));
+    assert.match(workflow, new RegExp(`\\n          ${input}:`));
+  }
+  assert.match(
+    workflow,
+    /workflow_pull_requests:\s*\$\{\{ toJSON\(github\.event\.workflow_run\.pull_requests\) \}\}/,
+  );
+  assert.doesNotMatch(implementation, /GITHUB_EVENT_PATH/);
 
   assert.match(workflow, /workflow_run:/);
   assert.match(workflow, /- CodeQL/);
