@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 export const ACTIONS_APP_ID = 15368;
 export const CONNECTOR_APP_ID = 1144995;
 export const CONNECTOR_ID = 199175422;
+export const COPILOT_REVIEWER_ID = 175728472;
+export const COPILOT_REVIEWER_NODE_ID = "BOT_kgDOCnlnWA";
 export const LATE_REVIEW_TIMEOUT_ANNOTATION = "LCV_GATE_LATE_REVIEW_TIMEOUT";
 export const TRUSTED_GATE_CHECK_NAME = "LCV Trusted Gate";
 
@@ -12,6 +14,83 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const CONNECTOR_LOGINS = new Set([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
+]);
+const COPILOT_REVIEWER_IDENTITY = Object.freeze({
+  database_id: COPILOT_REVIEWER_ID,
+  node_id: COPILOT_REVIEWER_NODE_ID,
+  rest_review_login: "copilot-pull-request-reviewer[bot]",
+  graphql_login: "copilot-pull-request-reviewer",
+  inline_alias_login: "Copilot",
+});
+const COPILOT_UNREVIEWABLE_PATTERN =
+  /\b(?:was(?:n't| not) able|could(?:n't| not)|unable) to review\b[^.\n]*\bfiles?\b/i;
+const COPILOT_EXCLUDED_BASENAMES = new Set([
+  ".gitignore",
+  "package.json",
+  "package-lock.json",
+  "yarn.lock",
+  "jest.config.js",
+  "next.config.js",
+  "tailwind.config.js",
+  "tsconfig.json",
+  "requirements.txt",
+  "Pipfile.lock",
+  "Gemfile.lock",
+  "composer.lock",
+  "Cargo.lock",
+  "go.sum",
+  "paket.lock",
+  "pubspec.lock",
+  "stack.yaml",
+  "elm.json",
+  "Project.toml",
+  "Manifest.toml",
+  "renv.lock",
+  "build.sbt",
+  "Package.resolved",
+  "deps.edn",
+  "build.gradle",
+  "mix.lock",
+  "build.gradle.kts",
+  "cpanfile",
+  "Podfile.lock",
+  "conanfile.txt",
+  "info.rkt",
+  "rockspec",
+  "opam",
+  "rebar.config",
+  "nimble",
+  "shard.yml",
+  "dub.json",
+  "dub.sdl",
+  "GPR",
+  "Mason.toml",
+  "fpm.toml",
+  "pack.pl",
+  "baseline.st",
+  "PacletInfo.m",
+  "info.ss",
+  "Jpkg",
+  "box.json",
+  "GNAVI.xml",
+]);
+const COPILOT_EXCLUDED_DIRECTORIES = new Set([
+  "dist",
+  "node_modules",
+  "coverage",
+  "out",
+  "vendor",
+  "generated",
+  "generated-sources",
+]);
+const COPILOT_CHANGED_FILE_STATUSES = new Set([
+  "added",
+  "removed",
+  "modified",
+  "renamed",
+  "copied",
+  "changed",
+  "unchanged",
 ]);
 const CLEAN_REVIEW_PREFIX = "Codex Review: Didn't find any major issues.";
 const REVIEW_REQUEST_MARKER = "LCV-TRUSTED-REVIEW-HEAD";
@@ -52,6 +131,90 @@ function isConnectorApp(app) {
   );
 }
 
+function isCopilotReviewer(actor, policy) {
+  const expected = policy?.copilot_reviewer;
+  if (!expected) return false;
+  const databaseId = Number.isInteger(actor?.databaseId)
+    ? actor.databaseId
+    : Number.isInteger(actor?.id)
+      ? actor.id
+      : null;
+  const nodeId =
+    actor?.node_id ??
+    actor?.nodeId ??
+    (typeof actor?.id === "string" ? actor.id : null);
+  const type = actor?.type ?? actor?.__typename;
+  const logins = new Set([
+    expected.rest_review_login,
+    expected.graphql_login,
+    expected.inline_alias_login,
+  ]);
+  return (
+    databaseId === expected.database_id &&
+    nodeId === expected.node_id &&
+    type === "Bot" &&
+    logins.has(actor?.login)
+  );
+}
+
+export function isCopilotReviewExcludedPath(filename) {
+  if (
+    typeof filename !== "string" ||
+    !filename ||
+    filename.startsWith("/") ||
+    filename.includes("\\")
+  ) {
+    return false;
+  }
+  const segments = filename.split("/");
+  if (
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    return false;
+  }
+  const basename = segments.at(-1);
+  if (COPILOT_EXCLUDED_BASENAMES.has(basename)) return true;
+  if (
+    basename.endsWith(".svg") ||
+    basename.endsWith(".log") ||
+    basename.endsWith(".lock") ||
+    basename.endsWith(".ipynb.raw.html") ||
+    basename.endsWith(".min.js") ||
+    basename.endsWith(".d.ts") ||
+    basename.endsWith(".bundle.js") ||
+    basename.endsWith(".map")
+  ) {
+    return true;
+  }
+  if (segments.some((segment) => COPILOT_EXCLUDED_DIRECTORIES.has(segment))) {
+    return true;
+  }
+  const binIndex = segments.lastIndexOf("bin");
+  if (binIndex === -1 || binIndex === segments.length - 1) return false;
+  if (basename.endsWith(".rs")) return false;
+  const hybrisCustom = segments.some(
+    (segment, index) =>
+      segment === "hybris" &&
+      segments[index + 1] === "bin" &&
+      segments[index + 2] === "custom" &&
+      index + 3 < segments.length,
+  );
+  return !hybrisCustom;
+}
+
+function isCopilotReviewExcludedFile(file) {
+  if (!file || typeof file !== "object" || Array.isArray(file)) return false;
+  if (!COPILOT_CHANGED_FILE_STATUSES.has(file.status)) return false;
+  if (!isCopilotReviewExcludedPath(file.filename)) return false;
+  if (file.status === "renamed") {
+    return isCopilotReviewExcludedPath(file.previous_filename);
+  }
+  if (file.previous_filename !== undefined) {
+    return isCopilotReviewExcludedPath(file.previous_filename);
+  }
+  return true;
+}
+
 function timestamp(value) {
   const parsed = Date.parse(value ?? "");
   return Number.isFinite(parsed) ? parsed : 0;
@@ -67,6 +230,19 @@ export function validatePolicy(raw) {
   }
   if (!Array.isArray(raw.allowed_actors) || raw.allowed_actors.length === 0) {
     throw new Error("policy allowed_actors must be nonempty");
+  }
+
+  assertObject(raw.copilot_reviewer, "Copilot reviewer identity");
+  for (const [field, value] of Object.entries(COPILOT_REVIEWER_IDENTITY)) {
+    if (raw.copilot_reviewer[field] !== value) {
+      throw new Error(`Copilot reviewer identity has invalid ${field}`);
+    }
+  }
+  if (
+    Object.keys(raw.copilot_reviewer).sort().join(",") !==
+    Object.keys(COPILOT_REVIEWER_IDENTITY).sort().join(",")
+  ) {
+    throw new Error("Copilot reviewer identity has unexpected fields");
   }
 
   const actorKeys = new Set();
@@ -305,11 +481,115 @@ export function evaluateConnectorEvidence({
   return { ok: true, cleanAt: Math.max(...exactClean) };
 }
 
+export function evaluateCopilotEvidence({
+  headSha,
+  reviews,
+  threads,
+  files,
+  policy,
+}) {
+  if (!validSha(headSha)) {
+    return { ok: false, reason: "invalid Copilot evidence head SHA" };
+  }
+
+  const copilotReviews = (reviews ?? []).filter((review) =>
+    isCopilotReviewer(review?.user, policy),
+  );
+
+  for (const thread of threads ?? []) {
+    const copilotComments = (thread.comments ?? []).filter((comment) =>
+      isCopilotReviewer(comment?.author, policy),
+    );
+    if (copilotComments.length === 0) continue;
+    if (
+      copilotComments.some((comment) => !validSha(comment?.reviewCommit?.oid))
+    ) {
+      return {
+        ok: false,
+        reason: "Copilot thread has no immutable review commit",
+      };
+    }
+    if (
+      copilotComments.some((comment) => {
+        const sourceReview = copilotReviews.find(
+          (review) => review?.id === comment?.reviewId,
+        );
+        return (
+          !Number.isInteger(comment?.reviewId) ||
+          sourceReview?.commit_id !== comment?.reviewCommit?.oid
+        );
+      })
+    ) {
+      return {
+        ok: false,
+        reason: "Copilot thread review identity is inconsistent",
+      };
+    }
+    if (
+      copilotComments.some((comment) => comment?.reviewCommit?.oid === headSha)
+    ) {
+      return {
+        ok: false,
+        reason: "Copilot finding exists on the current head",
+      };
+    }
+    if (!thread.isResolved) {
+      return {
+        ok: false,
+        reason: "unresolved Copilot review thread remains",
+      };
+    }
+  }
+
+  const exactReviews = copilotReviews
+    .filter((review) => review?.commit_id === headSha)
+    .sort((left, right) => Number(right?.id ?? 0) - Number(left?.id ?? 0));
+  const exactReview = exactReviews[0];
+  if (!exactReview) {
+    return {
+      ok: false,
+      reason: "no Copilot review COMMENTED exists for the exact head",
+    };
+  }
+  if (!Number.isInteger(exactReview.id)) {
+    return {
+      ok: false,
+      reason: "Copilot exact-head review has no immutable identity",
+    };
+  }
+  if (exactReview.state !== "COMMENTED") {
+    return {
+      ok: false,
+      reason: "Copilot exact-head review has an unexpected state",
+    };
+  }
+  if (COPILOT_UNREVIEWABLE_PATTERN.test(exactReview.body ?? "")) {
+    const changedFiles = files ?? [];
+    if (
+      changedFiles.length === 0 ||
+      changedFiles.some((file) => !isCopilotReviewExcludedFile(file))
+    ) {
+      return {
+        ok: false,
+        reason: "Copilot could not review all changed files on the exact head",
+      };
+    }
+  }
+  return { ok: true };
+}
+
 export function connectorFailureCanSettleWithoutHeadChange(reason) {
   return (
     typeof reason === "string" &&
     (reason.startsWith("no clean connector review") ||
       reason === "unresolved connector thread remains")
+  );
+}
+
+export function copilotFailureCanSettleWithoutHeadChange(reason) {
+  return (
+    reason === "no Copilot review COMMENTED exists for the exact head" ||
+    reason === "unresolved Copilot review thread remains"
   );
 }
 
@@ -423,6 +703,31 @@ export async function ensureConnectorReviewRequest({
     body: { body: reviewRequestBody(headSha) },
   });
   return "connector-review-requested";
+}
+
+export async function ensureCopilotReviewRequest({
+  api,
+  owner,
+  repo,
+  number,
+  requestedReviewers,
+  policy,
+}) {
+  if (
+    (requestedReviewers ?? []).some((reviewer) =>
+      isCopilotReviewer(reviewer, policy),
+    )
+  ) {
+    return "copilot-review-pending";
+  }
+  await api.request(
+    `/repos/${owner}/${repo}/pulls/${number}/requested_reviewers`,
+    {
+      method: "POST",
+      body: { reviewers: [policy.copilot_reviewer.rest_review_login] },
+    },
+  );
+  return "copilot-review-requested";
 }
 
 export function dependabotRebaseBody(headSha) {
@@ -866,12 +1171,17 @@ async function reviewThreads(api, owner, repo, number) {
               isOutdated
               comments(first: 100) {
                 nodes {
-                  author { login ... on User { databaseId } ... on Bot { databaseId } }
+                  author {
+                    __typename
+                    login
+                    ... on User { databaseId id }
+                    ... on Bot { databaseId id }
+                  }
                   body
                   createdAt
                   commit { oid }
                   originalCommit { oid }
-                  pullRequestReview { commit { oid } }
+                  pullRequestReview { databaseId commit { oid } }
                 }
                 pageInfo { hasNextPage }
               }
@@ -896,6 +1206,7 @@ async function reviewThreads(api, owner, repo, number) {
         ...thread,
         comments: (thread.comments?.nodes ?? []).map((comment) => ({
           ...comment,
+          reviewId: comment.pullRequestReview?.databaseId ?? null,
           reviewCommit: comment.pullRequestReview?.commit ?? null,
         })),
       });
@@ -919,14 +1230,21 @@ async function readCheckEvidence(api, owner, repo, sha) {
   return { checkRuns, statuses };
 }
 
+export async function readPullFiles({ api, owner, repo, number }) {
+  return api.pages(`/repos/${owner}/${repo}/pulls/${number}/files`, {
+    maxPages: 30,
+  });
+}
+
 async function readPullEvidence(api, owner, repo, number, policy) {
-  const [pullRequest, issueComments, reviews, threads, commits] =
+  const [pullRequest, issueComments, reviews, threads, commits, files] =
     await Promise.all([
       api.request(`/repos/${owner}/${repo}/pulls/${number}`),
       api.pages(`/repos/${owner}/${repo}/issues/${number}/comments`),
       api.pages(`/repos/${owner}/${repo}/pulls/${number}/reviews`),
       reviewThreads(api, owner, repo, number),
       api.pages(`/repos/${owner}/${repo}/pulls/${number}/commits`),
+      readPullFiles({ api, owner, repo, number }),
     ]);
   const [resolvedReviewCommits, requestReactions] = await Promise.all([
     resolveConnectorReviewCommits({
@@ -951,6 +1269,7 @@ async function readPullEvidence(api, owner, repo, number, policy) {
     reviews,
     threads,
     commits,
+    files,
     resolvedReviewCommits,
     requestReactions,
   };
@@ -996,16 +1315,42 @@ async function assessPullCore({
     requestReactions: evidence.requestReactions,
     policy,
   });
+  let connectorPending;
   if (!connector.ok) {
     if (
       connectorMayBePending &&
       connectorFailureCanSettleWithoutHeadChange(connector.reason)
     ) {
-      return { ...evidence, mainSha, connectorPending: connector.reason };
+      connectorPending = connector.reason;
+    } else {
+      throw new Error(`${repo}#${number}: ${connector.reason}`);
     }
-    throw new Error(`${repo}#${number}: ${connector.reason}`);
   }
-  return { ...evidence, mainSha, connectorCleanAt: connector.cleanAt };
+  const copilot = evaluateCopilotEvidence({
+    headSha: evidence.pullRequest.head.sha,
+    reviews: evidence.reviews,
+    threads: evidence.threads,
+    files: evidence.files,
+    policy,
+  });
+  let copilotPending;
+  if (!copilot.ok) {
+    if (
+      connectorMayBePending &&
+      copilotFailureCanSettleWithoutHeadChange(copilot.reason)
+    ) {
+      copilotPending = copilot.reason;
+    } else {
+      throw new Error(`${repo}#${number}: ${copilot.reason}`);
+    }
+  }
+  return {
+    ...evidence,
+    mainSha,
+    connectorCleanAt: connector.cleanAt,
+    connectorPending,
+    copilotPending,
+  };
 }
 
 export async function finalizePullTrustBoundary({
@@ -1051,7 +1396,7 @@ export function lateReviewTimeoutCommand({ repo, number, headSha }) {
   if (!repo || !Number.isInteger(number) || !validSha(headSha)) {
     throw new Error("invalid late-review timeout annotation identity");
   }
-  return `::error title=${LATE_REVIEW_TIMEOUT_ANNOTATION}::Exact-head connector review timed out for ${repo}#${number} at ${headSha}`;
+  return `::error title=${LATE_REVIEW_TIMEOUT_ANNOTATION}::Exact-head bot review timed out for ${repo}#${number} at ${headSha}`;
 }
 
 function gateTiming() {
@@ -1086,6 +1431,11 @@ export async function waitForPullCore(
           `${options.repo}#${options.number}: ${evidence.connectorPending}`,
         );
       }
+      if (evidence.copilotPending) {
+        throw new PendingEvidenceError(
+          `${options.repo}#${options.number}: ${evidence.copilotPending}`,
+        );
+      }
       return evidence;
     } catch (error) {
       if (!(error instanceof PendingEvidenceError)) throw error;
@@ -1099,7 +1449,7 @@ export async function waitForPullCore(
         );
         throw error;
       }
-      console.log(`${error.message}; waiting for exact-head connector review`);
+      console.log(`${error.message}; waiting for exact-head bot reviews`);
       await new Promise((resolve) =>
         setTimeout(resolve, timing.pollSeconds * 1000),
       );
@@ -1392,23 +1742,33 @@ export async function enqueueAfterFinalTrustAssessment({
   expectedHead,
   expectedBase,
   reassess,
+  recheckChecks,
+  scanCode,
   enqueueMutation,
 }) {
   if (
     !validSha(expectedHead) ||
     !validSha(expectedBase) ||
     typeof reassess !== "function" ||
+    typeof recheckChecks !== "function" ||
+    typeof scanCode !== "function" ||
     typeof enqueueMutation !== "function"
   ) {
     throw new Error("invalid final enqueue boundary");
   }
-  const evidence = await reassess();
-  if (evidence?.pullRequest?.head?.sha !== expectedHead) {
-    throw new Error("pull-request head changed at final enqueue boundary");
-  }
-  if (evidence?.mainSha !== expectedBase) {
-    throw new Error("main changed at final enqueue boundary");
-  }
+  const assertBoundary = (evidence) => {
+    if (evidence?.pullRequest?.head?.sha !== expectedHead) {
+      throw new Error("pull-request head changed at final enqueue boundary");
+    }
+    if (evidence?.mainSha !== expectedBase) {
+      throw new Error("main changed at final enqueue boundary");
+    }
+  };
+  assertBoundary(await reassess());
+  await recheckChecks();
+  await scanCode();
+  assertBoundary(await reassess());
+  await recheckChecks();
   return enqueueMutation();
 }
 
@@ -1464,6 +1824,30 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
       policy,
     });
     return { outcome };
+  }
+  if (evidence.copilotPending) {
+    if (
+      evidence.copilotPending ===
+      "no Copilot review COMMENTED exists for the exact head"
+    ) {
+      const outcome = await ensureCopilotReviewRequest({
+        api,
+        owner,
+        repo,
+        number: pullRequest.number,
+        requestedReviewers: evidence.pullRequest.requested_reviewers,
+        policy,
+      });
+      return { outcome };
+    }
+    if (
+      evidence.copilotPending === "unresolved Copilot review thread remains"
+    ) {
+      return { outcome: `copilot-blocked: ${evidence.copilotPending}` };
+    }
+    throw new Error(
+      `${repo}#${pullRequest.number}: Copilot blocker is not safely observable`,
+    );
   }
   const checks = await readCheckEvidence(
     api,
@@ -1527,6 +1911,41 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
         repo,
         number: pullRequest.number,
         policy,
+      }),
+    recheckChecks: async () => {
+      const finalChecks = await readCheckEvidence(
+        api,
+        owner,
+        repo,
+        queueState.headRefOid,
+      );
+      const finalResult = classifyChecks({
+        ...finalChecks,
+        requiredChecks,
+      });
+      if (finalResult.state !== "success") {
+        throw new Error(
+          `${repo}#${pullRequest.number}: final exact-SHA check inventory is ${finalResult.state}: ${finalResult.reasons.join("; ")}`,
+        );
+      }
+      const finalGate = trustedGateRecoveryCandidate({
+        checkRuns: finalChecks.checkRuns,
+        cleanAt: evidence.connectorCleanAt,
+        headSha: queueState.headRefOid,
+      });
+      if (finalGate.outcome !== "trusted-gate-success") {
+        throw new Error(
+          `${repo}#${pullRequest.number}: final LCV Trusted Gate is ${finalGate.outcome}`,
+        );
+      }
+    },
+    scanCode: () =>
+      verifyCodeScanningAfterChecks({
+        api,
+        owner,
+        repo,
+        number: pullRequest.number,
+        checkState: "success",
       }),
     enqueueMutation: () => enqueue(api, input),
   });

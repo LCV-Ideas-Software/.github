@@ -5,6 +5,13 @@
     { "login": "lcv-leo", "id": 268063598 },
     { "login": "dependabot[bot]", "id": 49699333 }
   ],
+  "copilot_reviewer": {
+    "database_id": 175728472,
+    "node_id": "BOT_kgDOCnlnWA",
+    "rest_review_login": "copilot-pull-request-reviewer[bot]",
+    "graphql_login": "copilot-pull-request-reviewer",
+    "inline_alias_login": "Copilot"
+  },
   "repositories": {
     ".github": {
       "required_checks": [

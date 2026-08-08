@@ -19,9 +19,10 @@ a PAT-created commit status or check run because:
 
 The administrative PAT remains confined to the protected
 `github-administration` environment. Its mutations are limited to requesting a
-Codex review, requesting a conflict-only Dependabot rebase, recovering one
-attributable late-review timeout, or enqueueing an already trusted pull request.
-It never publishes the gate result and never merges directly.
+Codex review, requesting a GitHub Copilot code review, requesting a
+conflict-only Dependabot rebase, recovering one attributable late-review
+timeout, or enqueueing an already trusted pull request. It never publishes the
+gate result and never merges directly.
 Read-only REST and GraphQL operations have bounded transient retries. Comments,
 reruns, and GraphQL mutations are attempted once so an ambiguous write can
 never be duplicated by the client.
@@ -43,7 +44,9 @@ never be duplicated by the client.
   environment or its secret.
 - `trusted-pr-automation/policy.json` binds each active repository to exact
   check names and GitHub App IDs, separating producers guaranteed on both PR
-  and merge-group heads from wrappers guaranteed only on merge-group heads.
+  and merge-group heads from wrappers guaranteed only on merge-group heads. It
+  also pins the live Copilot reviewer Bot identity by database ID, node ID, and
+  the three context-specific login forms exposed by REST and GraphQL.
 - `trusted-pr-automation/main.mjs` is the shared fail-closed engine.
 
 Local workflow validation uses actionlint 1.7.12 with a narrow ignore for its
@@ -76,7 +79,35 @@ time:
    `COMMENTED` review with a finding is not success. Thread attribution uses
    `pullRequestReview.commit.oid`, not GitHub's mutable remapping in
    `comment.commit.oid`.
-6. Every configured check is present as the exact `{name, app_id}` pair and has
+6. GitHub Copilot code review is an independent mandatory reviewer. Its Bot
+   identity must match database ID `175728472`, node ID
+   `BOT_kgDOCnlnWA`, and one of the API-context login forms
+   `copilot-pull-request-reviewer[bot]`, `copilot-pull-request-reviewer`, or
+   `Copilot`. No inferred GitHub App ID is trusted. The exact head must have at
+   least one review with structured state `COMMENTED`, and every thread that
+   contains a Copilot comment—including a thread from an older head—must be
+   resolved. Thread attribution again uses the immutable
+   `pullRequestReview.commit.oid`; a remapped inline-comment commit is not
+   evidence. Any Copilot inline comment attributed to the current head rejects
+   that SHA even after the conversation is resolved; remediation requires a new
+   SHA and a fresh review. Resolved stale-head threads do not contaminate the new
+   SHA, while unresolved stale threads still block.
+
+   The engine does not parse generated-comment counts or invent an approval
+   state. GitHub documents that Copilot uses Comment, not Approve or Request
+   changes, so `COMMENTED` only proves completion of an attempt. If Copilot says
+   it could not review any file, that text is never sufficient by itself: the
+   engine's paginated changed-file inventory must prove that every path is
+   in the explicit official excluded-file allowlist. That allowlist mirrors the
+   documented basenames and patterns for dependency/configuration files, logs,
+   SVG, generated/vendor/output paths and binary directories, including the
+   documented Rust and Hybris `bin` exceptions. An empty, malformed, mixed, or
+   unknown file set fails closed. File status must be a documented REST value;
+   a rename must provide both current and previous paths, and both must be
+   excluded. The canary must exercise normal reviewable, excluded-only, mixed,
+   renamed, and exception-path diffs.
+
+7. Every configured check is present as the exact `{name, app_id}` pair and has
    conclusion `success`; skipped or neutral is never enough for a configured
    requirement. `required_checks` applies to both PR and merge-group heads;
    `merge_group_required_checks` is added only for the synthetic group, where
@@ -87,11 +118,11 @@ time:
    `skipped` or `neutral` conclusions are accepted, while failure, cancelled,
    timed-out, action-required, startup-failure, stale, or unknown conclusions
    fail closed. Every legacy commit status must be successful.
-7. The raw CodeQL executor jobs (`Analyze <language>`) and the raw zizmor job
+8. The raw CodeQL executor jobs (`Analyze <language>`) and the raw zizmor job
    (`Run zizmor` or `Run zizmor / Run zizmor`) are required in addition to the
    corresponding GitHub Advanced Security upload results. A green SARIF upload
    cannot mask a failing zero-findings executor.
-8. Only after the exact-head executor and GHAS checks are green, the gate
+9. Only after the exact-head executor and GHAS checks are green, the gate
    refreshes the PR's code-scanning alert inventory and requires zero open
    alerts at any supported severity. A stale open alert observed while a fixing
    analysis is still running cannot terminally fail the controller. Pull,
@@ -125,16 +156,30 @@ normal observational outcome for the scheduled controller: it logs and waits
 without enqueueing and without failing the five-minute run. A terminal bad
 conclusion remains an error.
 
-Within the required gate, connector states that can settle without changing
-the commit—no clean response yet or an unresolved connector thread—remain
-pending and are polled fail-closed until the same bounded deadline. This avoids
-a race in which the workflow starts before an agent can reply to and resolve a
-fixed thread. The controller never treats that state as trusted: an unresolved
-thread is reported as `connector-blocked`, and only the gate may wait. Invalid
-connector identity, a thread without an immutable review commit, and other
-incoherent evidence remain immediate terminal failures.
+When the exact head has no Copilot `COMMENTED` review, the controller first
+checks the structured `requested_reviewers` identities. If Copilot is already
+requested it only observes; otherwise it makes one non-retried REST review
+request for `copilot-pull-request-reviewer[bot]` and never enqueues in that
+cycle. The organization `copilot_code_review` ruleset will additionally be
+configured with `review_on_push=true`, so every new exact head receives a fresh
+automatic review. `review_draft_pull_requests` is unnecessary because trusted
+PRs are created open and drafts are rejected. An exhausted user, enterprise, or
+cost-center AI-credit budget prevents Copilot review; the missing exact-head
+`COMMENTED` review then intentionally keeps this gate fail-closed.
 
-If the required gate timed out while mutable connector evidence was unsettled,
+Within the required gate, mutable review states that can settle without
+changing the commit—no clean connector response, an unresolved connector or
+stale-head Copilot thread, or no exact-head Copilot `COMMENTED` review
+yet—remain pending and are polled fail-closed until the same bounded deadline.
+This avoids a race in which the workflow starts before an agent can reply to
+and resolve a fixed thread. The controller never treats those states as
+trusted: unresolved threads are reported as bot-specific blockers, and only
+the gate may wait. A current-head Copilot finding remains terminal even if its
+thread is resolved. Invalid identity, a bot thread without an immutable review
+commit, an unreviewable mixed/unknown diff, and other incoherent evidence are
+also immediate terminal failures.
+
+If the required gate timed out while mutable bot-review evidence was unsettled,
 the controller can recover without a human click. Recovery is allowed only
 after all non-gate evidence is currently valid and the failed check resolves to
 an Actions run for the exact head. The failed check must also carry the gate's
@@ -167,8 +212,11 @@ same open, non-draft head/base and a merge queue. The mutation includes
 success; absence of a queue never falls back to direct merge. Immediately
 before the mutation, the controller rereads the complete pull, commit, review,
 thread, connector, and current-main evidence and reaffirms the exact head/base;
-late feedback therefore blocks enqueue rather than merely occupying the
-one-entry queue until the synthetic gate rejects it.
+it then rereads every exact-SHA check/status, requires the trusted gate itself
+to remain successful, refreshes Code Scanning after that green inventory, and
+repeats pull plus check validation once more. Late feedback, a superseding
+check run/status, or a late alert therefore blocks enqueue rather than merely
+occupying the one-entry queue until the synthetic gate rejects it.
 
 ## Dependabot transition
 
@@ -190,38 +238,47 @@ canary after that topology change.
 
 ## Rollout (not performed by this change)
 
-1. Merge this source only after its PR has exact-head connector clearance and
-   all local and remote gates are green.
-2. Create an organization required-workflow ruleset in `evaluate` mode
-   targeting only `.github-private` and `main`. Select
-   `.github/.github/workflows/trusted-pr-gate.yml` and first prove that the
-   evaluation produces the expected exact-head check without blocking changes.
-3. Change that same organization workflow ruleset to `active` while it still
+1. Merge this source only after its PR has exact-head connector clearance, an
+   exact-head Copilot `COMMENTED` review, all bot threads resolved, and all
+   local and remote gates green.
+2. Create one organization branch ruleset in `evaluate` mode targeting only
+   `.github-private` and `main`. That single ruleset must contain both the
+   `workflows` rule selecting
+   `.github/.github/workflows/trusted-pr-gate.yml` and the
+   `copilot_code_review` rule with `review_on_push=true` and
+   `review_draft_pull_requests=false`; these two rules share one target and one
+   rollout lifecycle. Prove the workflow evaluation produces the expected
+   exact-head check without blocking changes.
+3. Change that same single organization ruleset to `active` while it still
    targets only `.github-private`. The active `workflows` rule is the immutable
    identity anchor; an ordinary required-status context with the same display
-   name is not an equivalent substitute and is not added by default.
+   name is not an equivalent substitute and is not added by default. Confirm
+   automatic exact-head Copilot reviews and the controller's REST fallback
+   without widening the target.
 4. Create a separate `.github-private` repository canary ruleset in `active`
    mode, without bypass. Require pull requests, signed commits, and merge queue
    with both maxima set to one. Run one `lcv-leo` canary and prove the exact PR
-   head, exact connector review, all check identities, zero alerts, verified
-   commits, queue entry, synthetic `merge_group` head, automatic merge, and
-   branch deletion. After the merge, also prove that the Enterprise Pages site
+   head, exact connector and Copilot reviews, every bot thread resolved, all
+   check identities, zero alerts, verified commits, queue entry, synthetic
+   `merge_group` head, automatic merge, and branch deletion. After the merge,
+   also prove that the Enterprise Pages site
    was not regressed: repository visibility remains private (`public=false`),
    `build_type=workflow`, CNAME `enterprise.lcv.dev`, `https_enforced=true`, an
    approved certificate, a green Pages deployment, and successful HTTP-to-HTTPS
    redirect plus HTTPS response.
 5. Inspect ruleset insights and audit logs. Resolve every discrepancy before
-   expanding the organization workflow ruleset beyond `.github-private`.
+   expanding the single organization ruleset beyond `.github-private`.
 6. Select one of the eleven public repositories that actually has Dependabot
    update automation. Disable its old direct-merge controller, extend the
-   active organization workflow rule to that single repository, and activate a
-   matching repository merge-queue ruleset without bypass. Run one real
+   active organization ruleset's two rules to that single repository, and
+   activate a matching repository merge-queue ruleset without bypass. Run one real
    Dependabot PR through review, conflict-only rebase if needed, every required
    wrapper, queue retest, automatic merge, and automatic branch deletion.
    `.github-private` has no Dependabot configuration and therefore is not a
    valid Dependabot canary.
-7. Only after both narrow canaries are green may the targets be expanded in
-   batches. Recheck insights, audit logs, controller behavior, and repository
+7. Only after both narrow canaries are green may the single organization
+   ruleset's two rules be expanded atomically in batches. Recheck insights,
+   audit logs, controller behavior, and repository
    invariants after every batch.
 
 ## Primary GitHub documentation
@@ -238,5 +295,11 @@ canary after that topology change.
 - [REST pull requests associated with a commit](https://docs.github.com/en/enterprise-cloud@latest/rest/commits/commits#list-pull-requests-associated-with-a-commit)
 - [REST compare two commits](https://docs.github.com/en/enterprise-cloud@latest/rest/commits/commits#compare-two-commits)
 - [REST issue-comment reactions](https://docs.github.com/en/enterprise-cloud@latest/rest/reactions/reactions#list-reactions-for-an-issue-comment)
+- [Using GitHub Copilot code review on GitHub](https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review)
+- [Configuring automatic Copilot code review](https://docs.github.com/en/copilot/how-tos/copilot-on-github/set-up-copilot/configure-automatic-review)
+- [About GitHub Copilot code review — usage and budget behavior](https://docs.github.com/en/copilot/concepts/agents/code-review)
+- [Files excluded from GitHub Copilot code review](https://docs.github.com/en/copilot/reference/review-excluded-files)
+- [REST organization rules — `copilot_code_review`](https://docs.github.com/en/rest/orgs/rules)
+- [REST review requests](https://docs.github.com/en/rest/pulls/review-requests#request-reviewers-for-a-pull-request)
 - [REST rerun failed workflow jobs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-runs#re-run-failed-jobs-from-a-workflow-run)
 - [REST commit statuses](https://docs.github.com/en/enterprise-cloud@latest/rest/commits/statuses#list-commit-statuses-for-a-reference)
