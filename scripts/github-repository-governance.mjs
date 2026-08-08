@@ -244,23 +244,74 @@ export async function reconcileRepositoryGovernance(
     .filter((repository) => !repository.archived && !repository.disabled)
     .sort((left, right) => left.name.localeCompare(right.name));
   const results = [];
+  const failures = [];
 
   for (const repository of activeRepositories) {
-    const outcome = isCompliant(repository)
-      ? "unchanged"
-      : await updateRepository(configuration, repository, fetchImpl);
-    results.push(Object.freeze({ name: repository.name, outcome }));
+    try {
+      const outcome = isCompliant(repository)
+        ? "unchanged"
+        : await updateRepository(configuration, repository, fetchImpl);
+      results.push(Object.freeze({ name: repository.name, outcome }));
+    } catch (error) {
+      failures.push(
+        Object.freeze({
+          name: repository.name,
+          error:
+            error instanceof Error
+              ? error
+              : new Error("Repository reconciliation failed unexpectedly."),
+        }),
+      );
+    }
   }
 
-  const verification = await listRepositories(configuration, fetchImpl);
-  const drift = verification
-    .filter((repository) => !repository.archived && !repository.disabled)
-    .filter((repository) => !isCompliant(repository))
-    .map((repository) => repository.name)
-    .sort();
+  let drift = [];
+  try {
+    const verification = await listRepositories(configuration, fetchImpl);
+    drift = verification
+      .filter((repository) => !repository.archived && !repository.disabled)
+      .filter((repository) => !isCompliant(repository))
+      .map((repository) => repository.name)
+      .sort();
+  } catch (error) {
+    failures.push(
+      Object.freeze({
+        name: "final verification",
+        error:
+          error instanceof Error
+            ? error
+            : new Error("Final verification failed unexpectedly."),
+      }),
+    );
+  }
+
   if (drift.length > 0) {
-    throw new Error(
-      `Repository governance verification failed for: ${drift.join(", ")}.`,
+    failures.push(
+      Object.freeze({
+        name: "final verification",
+        error: new Error(
+          `Repository governance verification found drift in: ${drift.join(", ")}.`,
+        ),
+      }),
+    );
+  }
+
+  if (failures.length > 0) {
+    const affectedRepositories = [
+      ...new Set([
+        ...failures
+          .map(({ name }) => name)
+          .filter((name) => name !== "final verification"),
+        ...drift,
+      ]),
+    ].sort();
+    const suffix =
+      affectedRepositories.length > 0
+        ? ` for: ${affectedRepositories.join(", ")}`
+        : " during final verification";
+    throw new AggregateError(
+      failures.map(({ error }) => error),
+      `Repository governance reconciliation failed${suffix}.`,
     );
   }
 

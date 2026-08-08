@@ -174,8 +174,64 @@ test("an ambiguous patch fails closed when the repository still drifts", async (
 
   await assert.rejects(
     reconcileRepositoryGovernance(configuration(), { fetchImpl }),
-    /could not be reached/,
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /drift/);
+      assert.ok(
+        error.errors.some((cause) =>
+          /could not be reached/.test(cause.message),
+        ),
+      );
+      return true;
+    },
   );
+});
+
+test("a repository failure does not prevent later repositories from reconciling", async () => {
+  const alpha = repository("alpha", { policy: "all" });
+  const bravo = repository("bravo", { id: 2, policy: "all" });
+  const patchAttempts = [];
+  let listCallCount = 0;
+  const fetchImpl = async (url, options) => {
+    const pathname = new URL(url).pathname;
+    if (options.method === "PATCH") {
+      const repositoryName = pathname.split("/").at(-1);
+      patchAttempts.push(repositoryName);
+      if (repositoryName === "alpha") throw new TypeError("network closed");
+      return response(200, {
+        ...bravo,
+        pull_request_creation_policy: "collaborators_only",
+      });
+    }
+    if (pathname.endsWith("/alpha")) return response(200, alpha);
+    listCallCount += 1;
+    return response(200, [
+      alpha,
+      listCallCount === 1
+        ? bravo
+        : { ...bravo, pull_request_creation_policy: "collaborators_only" },
+    ]);
+  };
+
+  await assert.rejects(
+    reconcileRepositoryGovernance(configuration(), { fetchImpl }),
+    (error) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /alpha/);
+      assert.ok(
+        error.errors.some((cause) =>
+          /could not be reached/.test(cause.message),
+        ),
+      );
+      assert.ok(
+        error.errors.some((cause) =>
+          /verification found drift/.test(cause.message),
+        ),
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(patchAttempts, ["alpha", "bravo"]);
 });
 
 test("owner mismatches and duplicate repository metadata fail before mutation", async () => {
