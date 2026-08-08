@@ -8,6 +8,10 @@ export const COPILOT_REVIEWER_ID = 175728472;
 export const COPILOT_REVIEWER_NODE_ID = "BOT_kgDOCnlnWA";
 export const LATE_REVIEW_TIMEOUT_ANNOTATION = "LCV_GATE_LATE_REVIEW_TIMEOUT";
 export const TRUSTED_GATE_CHECK_NAME = "LCV Trusted Gate";
+export const TRUSTED_GATE_SOURCE_REPOSITORY = "LCV-Ideas-Software/.github";
+export const TRUSTED_GATE_SOURCE_WORKFLOW_ID = 329989853;
+export const TRUSTED_GATE_SOURCE_WORKFLOW_PATH =
+  ".github/workflows/trusted-pr-gate.yml";
 
 const API_VERSION = "2026-03-10";
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -22,8 +26,14 @@ const COPILOT_REVIEWER_IDENTITY = Object.freeze({
   graphql_login: "copilot-pull-request-reviewer",
   inline_alias_login: "Copilot",
 });
-const COPILOT_UNREVIEWABLE_PATTERN =
-  /\b(?:was(?:n't| not) able|could(?:n't| not)|unable) to review\b[^.\n]*\bfiles?\b/i;
+const COPILOT_CLEAN_COMPLETION_PATTERN =
+  /^Copilot reviewed (\d+) out of (\d+) changed files? in this pull request and generated no(?: new)? comments?\.$/i;
+const COPILOT_FINDING_COMPLETION_PATTERN =
+  /^Copilot reviewed \d+ out of \d+ changed files? in this pull request and generated [1-9]\d* (?:new )?comments?\.$/i;
+const COPILOT_UNREVIEWABLE_COMPLETION =
+  "Copilot wasn't able to review any files in this pull request.";
+const COPILOT_TRANSIENT_ERROR_COMPLETION =
+  "Copilot encountered an error and was unable to review this pull request. You can try again by re-requesting a review.";
 const COPILOT_EXCLUDED_BASENAMES = new Set([
   ".gitignore",
   "package.json",
@@ -157,7 +167,7 @@ function isCopilotReviewer(actor, policy) {
   );
 }
 
-export function isCopilotReviewExcludedPath(filename) {
+function validCopilotReviewPath(filename) {
   if (
     typeof filename !== "string" ||
     !filename ||
@@ -172,6 +182,12 @@ export function isCopilotReviewExcludedPath(filename) {
   ) {
     return false;
   }
+  return true;
+}
+
+export function isCopilotReviewExcludedPath(filename) {
+  if (!validCopilotReviewPath(filename)) return false;
+  const segments = filename.split("/");
   const basename = segments.at(-1);
   if (COPILOT_EXCLUDED_BASENAMES.has(basename)) return true;
   if (
@@ -213,6 +229,68 @@ function isCopilotReviewExcludedFile(file) {
     return isCopilotReviewExcludedPath(file.previous_filename);
   }
   return true;
+}
+
+function copilotChangedFileEvidence(files) {
+  if (!Array.isArray(files) || files.length === 0) {
+    return { ok: false, reason: "Copilot changed-file evidence is empty" };
+  }
+  for (const file of files) {
+    if (
+      !file ||
+      typeof file !== "object" ||
+      Array.isArray(file) ||
+      !COPILOT_CHANGED_FILE_STATUSES.has(file.status) ||
+      !validCopilotReviewPath(file.filename) ||
+      (file.status === "renamed" &&
+        !validCopilotReviewPath(file.previous_filename)) ||
+      (file.previous_filename !== undefined &&
+        !validCopilotReviewPath(file.previous_filename))
+    ) {
+      return {
+        ok: false,
+        reason: "Copilot changed-file evidence is malformed",
+      };
+    }
+  }
+  return {
+    ok: true,
+    total: files.length,
+    reviewable: files.filter((file) => !isCopilotReviewExcludedFile(file))
+      .length,
+  };
+}
+
+function suppressedCopilotCommentCount(body) {
+  if (typeof body !== "string") return { ok: true, count: 0 };
+  const label =
+    "(?:Suppressed comments|Comments suppressed due to low confidence)";
+  const summaryPattern = new RegExp(
+    `^<summary>\\s*${label}\\s*\\(\\s*(\\d+)\\s*\\)\\s*</summary>$`,
+    "i",
+  );
+  const linePattern = new RegExp(`^${label}\\s*\\(\\s*(\\d+)\\s*\\)$`, "i");
+  const labelPattern = new RegExp(label, "i");
+  const standaloneCandidatePattern = new RegExp(
+    `^${label}(?:\\s*\\(|\\s*$)`,
+    "i",
+  );
+  const structuralLines = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        (line.toLowerCase().includes("<summary") && labelPattern.test(line)) ||
+        standaloneCandidatePattern.test(line),
+    );
+  if (structuralLines.length === 0) return { ok: true, count: 0 };
+  if (structuralLines.length !== 1) return { ok: false };
+  const match =
+    structuralLines[0].match(summaryPattern) ??
+    structuralLines[0].match(linePattern);
+  if (!match) return { ok: false };
+  const count = Number(match[1]);
+  return Number.isSafeInteger(count) ? { ok: true, count } : { ok: false };
 }
 
 function timestamp(value) {
@@ -396,7 +474,10 @@ export function evaluateConnectorEvidence({
       ) ?? []) {
         if (reaction?.content === "+1" && isConnector(reaction.user)) {
           const reactedAt = timestamp(reaction.created_at);
-          if (reactedAt > 0) exactClean.push(reactedAt);
+          const requestCreatedAt = timestamp(comment.created_at);
+          if (requestCreatedAt > 0 && reactedAt > requestCreatedAt) {
+            exactClean.push(reactedAt);
+          }
         }
       }
     }
@@ -563,17 +644,87 @@ export function evaluateCopilotEvidence({
       reason: "Copilot exact-head review has an unexpected state",
     };
   }
-  if (COPILOT_UNREVIEWABLE_PATTERN.test(exactReview.body ?? "")) {
-    const changedFiles = files ?? [];
+
+  for (const review of exactReviews) {
+    const suppressed = suppressedCopilotCommentCount(review?.body);
+    if (!suppressed.ok) {
+      return {
+        ok: false,
+        reason:
+          "Copilot exact-head review has malformed suppressed-comments metadata",
+      };
+    }
+    if (suppressed.count > 0) {
+      return {
+        ok: false,
+        reason: "suppressed Copilot finding exists on the current head",
+      };
+    }
+    const reviewLines =
+      typeof review?.body === "string"
+        ? review.body.split(/\r?\n/).map((line) => line.trim())
+        : [];
     if (
-      changedFiles.length === 0 ||
-      changedFiles.some((file) => !isCopilotReviewExcludedFile(file))
+      reviewLines.some((line) => COPILOT_FINDING_COMPLETION_PATTERN.test(line))
     ) {
+      return {
+        ok: false,
+        reason: "Copilot finding exists on the current head",
+      };
+    }
+  }
+
+  const lines =
+    typeof exactReview.body === "string"
+      ? exactReview.body
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+      : [];
+  if (lines.includes(COPILOT_TRANSIENT_ERROR_COMPLETION)) {
+    return {
+      ok: false,
+      reason: "Copilot review attempt failed for the exact head",
+    };
+  }
+
+  if (lines.includes(COPILOT_UNREVIEWABLE_COMPLETION)) {
+    const fileEvidence = copilotChangedFileEvidence(files);
+    if (!fileEvidence.ok || fileEvidence.reviewable !== 0) {
       return {
         ok: false,
         reason: "Copilot could not review all changed files on the exact head",
       };
     }
+    return { ok: true };
+  }
+
+  const fileEvidence = copilotChangedFileEvidence(files);
+  if (!fileEvidence.ok) return fileEvidence;
+
+  const completions = lines
+    .map((line) => line.match(COPILOT_CLEAN_COMPLETION_PATTERN))
+    .filter(Boolean);
+  if (completions.length !== 1) {
+    return {
+      ok: false,
+      reason: "Copilot exact-head review has an unrecognized completion body",
+    };
+  }
+  const reviewed = Number(completions[0][1]);
+  const changed = Number(completions[0][2]);
+  if (
+    !Number.isSafeInteger(reviewed) ||
+    !Number.isSafeInteger(changed) ||
+    reviewed <= 0 ||
+    reviewed < fileEvidence.reviewable ||
+    reviewed > changed ||
+    changed !== fileEvidence.total
+  ) {
+    return {
+      ok: false,
+      reason: "Copilot review coverage does not match the exact-head diff",
+    };
   }
   return { ok: true };
 }
@@ -593,6 +744,15 @@ export function copilotFailureCanSettleWithoutHeadChange(reason) {
   );
 }
 
+export function controllerCopilotDisposition(reason) {
+  if (!copilotFailureCanSettleWithoutHeadChange(reason)) {
+    throw new Error("Copilot blocker is not safely observable");
+  }
+  return reason === "no Copilot review COMMENTED exists for the exact head"
+    ? "request-review"
+    : `copilot-blocked: ${reason}`;
+}
+
 export function controllerConnectorDisposition(reason) {
   if (!connectorFailureCanSettleWithoutHeadChange(reason)) {
     throw new Error("connector blocker is not safely observable");
@@ -608,15 +768,20 @@ export function reviewRequestBody(headSha) {
 }
 
 function isReviewRequestForHead(comment, headSha, policy) {
-  const marker = `<!-- ${REVIEW_REQUEST_MARKER}:${headSha} -->`;
+  const expectedBody = `@codex review\n\n<!-- ${REVIEW_REQUEST_MARKER}:${headSha} -->`;
+  const createdAt = timestamp(comment?.created_at);
+  const updatedAt = timestamp(comment?.updated_at);
   return (
     Number.isInteger(comment?.id) &&
+    createdAt > 0 &&
+    updatedAt > 0 &&
+    comment.created_at === comment.updated_at &&
     policy?.allowed_actors?.some(
       (allowed) =>
         allowed.login === comment?.user?.login &&
         allowed.id === comment?.user?.id,
     ) &&
-    comment?.body?.includes(marker)
+    comment?.body === expectedBody
   );
 }
 
@@ -867,39 +1032,170 @@ export async function verifyCodeScanningAfterChecks({
   return "code-scanning-success";
 }
 
-export function trustedGateRecoveryCandidate({ checkRuns, cleanAt, headSha }) {
-  if (!validSha(headSha))
-    throw new Error("invalid trusted-gate recovery head SHA");
-  const gateRuns = (checkRuns ?? [])
-    .filter(
-      (run) =>
-        run?.name === TRUSTED_GATE_CHECK_NAME &&
-        run?.app?.id === ACTIONS_APP_ID,
-    )
-    .sort((left, right) => Number(right.id ?? 0) - Number(left.id ?? 0));
-  const gate = gateRuns[0];
-  if (!gate || gate.status !== "completed")
-    return { outcome: "trusted-gate-pending" };
-  if (gate.conclusion === "success") return { outcome: "trusted-gate-success" };
-  if (!["failure", "timed_out"].includes(gate.conclusion)) {
+function trustedGateCheckRuns(checkRuns) {
+  return (checkRuns ?? []).filter(
+    (run) =>
+      run?.name === TRUSTED_GATE_CHECK_NAME && run?.app?.id === ACTIONS_APP_ID,
+  );
+}
+
+function expectedGateWorkflowUrl() {
+  return `https://api.github.com/repos/${TRUSTED_GATE_SOURCE_REPOSITORY}/actions/workflows/${TRUSTED_GATE_SOURCE_WORKFLOW_ID}`;
+}
+
+async function verifyTrustedGateCheck({
+  api,
+  owner,
+  repo,
+  headSha,
+  checkRun,
+  expectedEvent,
+}) {
+  if (!Number.isInteger(checkRun?.id)) {
+    throw new Error("LCV Trusted Gate has no check-run identity");
+  }
+  const checkSuiteId = checkRun?.check_suite?.id;
+  if (!Number.isInteger(checkSuiteId)) {
+    throw new Error("LCV Trusted Gate has no check-suite identity");
+  }
+  const fullRepository = `${owner}/${repo}`;
+  const expectedCheckUrl = `https://api.github.com/repos/${fullRepository}/check-runs/${checkRun.id}`;
+  const job = await api.request(
+    `/repos/${owner}/${repo}/actions/jobs/${checkRun.id}`,
+  );
+  if (
+    Number(job?.id) !== checkRun.id ||
+    job?.check_run_url !== expectedCheckUrl ||
+    job?.head_sha !== headSha ||
+    job?.name !== TRUSTED_GATE_CHECK_NAME ||
+    job?.workflow_name !== TRUSTED_GATE_CHECK_NAME ||
+    job?.status !== checkRun.status ||
+    job?.conclusion !== checkRun.conclusion ||
+    !Number.isInteger(job?.run_id)
+  ) {
+    throw new Error("LCV Trusted Gate job identity is inconsistent");
+  }
+  const expectedRunUrl = `https://api.github.com/repos/${fullRepository}/actions/runs/${job.run_id}`;
+  const expectedDetailsUrl = `https://github.com/${fullRepository}/actions/runs/${job.run_id}/job/${checkRun.id}`;
+  if (
+    job.run_url !== expectedRunUrl ||
+    checkRun.details_url !== expectedDetailsUrl
+  ) {
+    throw new Error("LCV Trusted Gate job URL is not canonical");
+  }
+
+  const runs = await api.pages(
+    `/repos/${owner}/${repo}/actions/runs?check_suite_id=${checkSuiteId}&head_sha=${headSha}`,
+    { extract: (payload) => payload?.workflow_runs },
+  );
+  if (runs.length !== 1) {
     throw new Error(
-      `LCV Trusted Gate concluded ${gate.conclusion ?? "without conclusion"}`,
+      "LCV Trusted Gate check suite does not map to exactly one workflow run",
     );
   }
-  const completedAt = timestamp(gate.completed_at);
-  if (!Number.isFinite(cleanAt) || cleanAt <= 0 || completedAt <= 0) {
-    throw new Error("LCV Trusted Gate has invalid recovery timestamps");
+  const [run] = runs;
+  const workflowUrl = expectedGateWorkflowUrl();
+  if (
+    Number(run?.id) !== job.run_id ||
+    run?.url !== expectedRunUrl ||
+    run?.check_suite_id !== checkSuiteId ||
+    run?.head_sha !== headSha ||
+    run?.event !== expectedEvent ||
+    run?.name !== TRUSTED_GATE_CHECK_NAME ||
+    run?.path !== TRUSTED_GATE_SOURCE_WORKFLOW_PATH ||
+    run?.workflow_id !== TRUSTED_GATE_SOURCE_WORKFLOW_ID ||
+    run?.workflow_url !== workflowUrl ||
+    run?.repository?.full_name !== fullRepository ||
+    run?.head_repository?.full_name !== fullRepository ||
+    run?.status !== checkRun.status ||
+    run?.conclusion !== checkRun.conclusion
+  ) {
+    throw new Error("LCV Trusted Gate workflow-run identity is inconsistent");
   }
-  const runId = gate.details_url?.match(/\/actions\/runs\/(\d+)(?:\/|$)/)?.[1];
-  if (!runId)
-    throw new Error("LCV Trusted Gate has no attributable Actions run");
-  if (!Number.isInteger(gate.id))
-    throw new Error("LCV Trusted Gate has no check-run identity");
+
+  const workflow = await api.request(workflowUrl);
+  if (
+    workflow?.id !== TRUSTED_GATE_SOURCE_WORKFLOW_ID ||
+    workflow?.name !== TRUSTED_GATE_CHECK_NAME ||
+    workflow?.path !== TRUSTED_GATE_SOURCE_WORKFLOW_PATH ||
+    workflow?.state !== "active" ||
+    workflow?.url !== workflowUrl
+  ) {
+    throw new Error(
+      "LCV Trusted Gate source workflow identity is inconsistent",
+    );
+  }
+  // The current REST payload proves check -> job -> run -> central workflow,
+  // but it does not expose job.workflow_sha for a ruleset-required run. Until
+  // the .github-private canary supplies an observable, documented pin binding,
+  // this bootstrap controller deliberately has no enqueue authority.
+  return { checkRun, run, sourceRevisionVerified: false };
+}
+
+export async function inspectTrustedGate({
+  api,
+  owner,
+  repo,
+  headSha,
+  checkRuns,
+  expectedEvent = "pull_request",
+}) {
+  if (!validSha(headSha))
+    throw new Error("invalid trusted-gate recovery head SHA");
+  const gateRuns = trustedGateCheckRuns(checkRuns);
+  if (gateRuns.length === 0) return { outcome: "trusted-gate-pending" };
+  const verified = [];
+  for (const checkRun of gateRuns) {
+    verified.push(
+      await verifyTrustedGateCheck({
+        api,
+        owner,
+        repo,
+        headSha,
+        checkRun,
+        expectedEvent,
+      }),
+    );
+  }
+  if (verified.some(({ sourceRevisionVerified }) => !sourceRevisionVerified)) {
+    return { outcome: "trusted-gate-provenance-unverified" };
+  }
+  if (verified.some(({ checkRun }) => checkRun.status !== "completed")) {
+    return { outcome: "trusted-gate-pending" };
+  }
+  const failures = verified.filter(
+    ({ checkRun }) => checkRun.conclusion !== "success",
+  );
+  if (failures.length === 0) return { outcome: "trusted-gate-success" };
+  if (failures.length !== 1) {
+    throw new Error("multiple LCV Trusted Gate runs failed");
+  }
+  const [{ checkRun, run }] = failures;
+  if (!["failure", "timed_out"].includes(checkRun.conclusion)) {
+    throw new Error(
+      `LCV Trusted Gate concluded ${checkRun.conclusion ?? "without conclusion"}`,
+    );
+  }
   return {
     outcome: "trusted-gate-rerun-needed",
-    runId,
-    checkRunId: gate.id,
+    checkRunId: checkRun.id,
+    run,
   };
+}
+
+function isExactLateReviewTimeoutAnnotation(annotation, repo, headSha) {
+  if (annotation?.title !== LATE_REVIEW_TIMEOUT_ANNOTATION) return false;
+  const prefix = `Exact-head bot review timed out for ${repo}#`;
+  const suffix = ` at ${headSha}`;
+  if (
+    typeof annotation.message !== "string" ||
+    !annotation.message.startsWith(prefix) ||
+    !annotation.message.endsWith(suffix)
+  ) {
+    return false;
+  }
+  const pullNumber = annotation.message.slice(prefix.length, -suffix.length);
+  return /^[1-9]\d*$/.test(pullNumber);
 }
 
 export async function recoverLateTrustedGate({
@@ -910,9 +1206,11 @@ export async function recoverLateTrustedGate({
   cleanAt,
   checkRuns,
 }) {
-  const candidate = trustedGateRecoveryCandidate({
+  const candidate = await inspectTrustedGate({
+    api,
+    owner,
+    repo,
     checkRuns,
-    cleanAt,
     headSha,
   });
   if (candidate.outcome !== "trusted-gate-rerun-needed")
@@ -921,26 +1219,18 @@ export async function recoverLateTrustedGate({
     `/repos/${owner}/${repo}/check-runs/${candidate.checkRunId}/annotations`,
   );
   if (
-    !annotations.some(
-      (annotation) =>
-        annotation?.title === LATE_REVIEW_TIMEOUT_ANNOTATION &&
-        annotation?.message?.includes(headSha),
+    !annotations.some((annotation) =>
+      isExactLateReviewTimeoutAnnotation(annotation, repo, headSha),
     )
   ) {
     throw new Error(
       "LCV Trusted Gate failure is not an attributable late-review timeout",
     );
   }
-  const run = await api.request(
-    `/repos/${owner}/${repo}/actions/runs/${candidate.runId}`,
-  );
-  if (
-    run?.head_sha !== headSha ||
-    Number(run?.id) !== Number(candidate.runId)
-  ) {
-    throw new Error(
-      "LCV Trusted Gate Actions run does not match the exact head",
-    );
+  const { run } = candidate;
+  const completedAt = timestamp(run.updated_at ?? run.completed_at);
+  if (!Number.isFinite(cleanAt) || cleanAt <= 0 || completedAt <= 0) {
+    throw new Error("LCV Trusted Gate has invalid recovery timestamps");
   }
   if (run.run_attempt > 1) {
     if (run.status !== "completed") return "trusted-gate-rerun-pending";
@@ -955,7 +1245,7 @@ export async function recoverLateTrustedGate({
     );
   }
   await api.request(
-    `/repos/${owner}/${repo}/actions/runs/${candidate.runId}/rerun-failed-jobs`,
+    `/repos/${owner}/${repo}/actions/runs/${run.id}/rerun-failed-jobs`,
     { method: "POST" },
   );
   return "trusted-gate-rerun-requested";
@@ -1288,7 +1578,7 @@ async function assessPullCore({
   repo,
   number,
   policy,
-  connectorMayBePending = false,
+  evidenceMayBePending = false,
 }) {
   const fullRepository = `${owner}/${repo}`;
   const evidence = await readPullEvidence(api, owner, repo, number, policy);
@@ -1318,7 +1608,7 @@ async function assessPullCore({
   let connectorPending;
   if (!connector.ok) {
     if (
-      connectorMayBePending &&
+      evidenceMayBePending &&
       connectorFailureCanSettleWithoutHeadChange(connector.reason)
     ) {
       connectorPending = connector.reason;
@@ -1336,7 +1626,7 @@ async function assessPullCore({
   let copilotPending;
   if (!copilot.ok) {
     if (
-      connectorMayBePending &&
+      evidenceMayBePending &&
       copilotFailureCanSettleWithoutHeadChange(copilot.reason)
     ) {
       copilotPending = copilot.reason;
@@ -1424,7 +1714,7 @@ export async function waitForPullCore(
     try {
       const evidence = await assess({
         ...options,
-        connectorMayBePending: true,
+        evidenceMayBePending: true,
       });
       if (evidence.connectorPending) {
         throw new PendingEvidenceError(
@@ -1779,7 +2069,7 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
     repo,
     number: pullRequest.number,
     policy,
-    connectorMayBePending: true,
+    evidenceMayBePending: true,
   });
   if (evidence.pullRequest.head.sha !== pullRequest.head.sha) {
     throw new Error(`${repo}#${pullRequest.number}: listed head changed`);
@@ -1826,10 +2116,8 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
     return { outcome };
   }
   if (evidence.copilotPending) {
-    if (
-      evidence.copilotPending ===
-      "no Copilot review COMMENTED exists for the exact head"
-    ) {
+    const disposition = controllerCopilotDisposition(evidence.copilotPending);
+    if (disposition === "request-review") {
       const outcome = await ensureCopilotReviewRequest({
         api,
         owner,
@@ -1840,14 +2128,7 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
       });
       return { outcome };
     }
-    if (
-      evidence.copilotPending === "unresolved Copilot review thread remains"
-    ) {
-      return { outcome: `copilot-blocked: ${evidence.copilotPending}` };
-    }
-    throw new Error(
-      `${repo}#${pullRequest.number}: Copilot blocker is not safely observable`,
-    );
+    return { outcome: disposition };
   }
   const checks = await readCheckEvidence(
     api,
@@ -1928,9 +2209,11 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
           `${repo}#${pullRequest.number}: final exact-SHA check inventory is ${finalResult.state}: ${finalResult.reasons.join("; ")}`,
         );
       }
-      const finalGate = trustedGateRecoveryCandidate({
+      const finalGate = await inspectTrustedGate({
+        api,
+        owner,
+        repo,
         checkRuns: finalChecks.checkRuns,
-        cleanAt: evidence.connectorCleanAt,
         headSha: queueState.headRefOid,
       });
       if (finalGate.outcome !== "trusted-gate-success") {

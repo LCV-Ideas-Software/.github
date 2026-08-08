@@ -78,7 +78,13 @@ time:
    A reaction counts only from bot ID `199175422`. EYES, a pending run, or a
    `COMMENTED` review with a finding is not success. Thread attribution uses
    `pullRequestReview.commit.oid`, not GitHub's mutable remapping in
-   `comment.commit.oid`.
+   `comment.commit.oid`. The marked request must equal the canonical two-line
+   request exactly, contain one SHA marker, and be immutable: its valid
+   `created_at` and `updated_at` values must be identical. A connector `+1`
+   counts only when its valid `created_at` is strictly later than that request
+   timestamp. Editing a reacted comment invalidates it permanently; the
+   controller posts a new canonical request instead. This prevents a reaction
+   for an older body from being rebound to a new head.
 6. GitHub Copilot code review is an independent mandatory reviewer. Its Bot
    identity must match database ID `175728472`, node ID
    `BOT_kgDOCnlnWA`, and one of the API-context login forms
@@ -93,19 +99,40 @@ time:
    SHA and a fresh review. Resolved stale-head threads do not contaminate the new
    SHA, while unresolved stale threads still block.
 
-   The engine does not parse generated-comment counts or invent an approval
-   state. GitHub documents that Copilot uses Comment, not Approve or Request
-   changes, so `COMMENTED` only proves completion of an attempt. If Copilot says
-   it could not review any file, that text is never sufficient by itself: the
-   engine's paginated changed-file inventory must prove that every path is
-   in the explicit official excluded-file allowlist. That allowlist mirrors the
-   documented basenames and patterns for dependency/configuration files, logs,
-   SVG, generated/vendor/output paths and binary directories, including the
-   documented Rust and Hybris `bin` exceptions. An empty, malformed, mixed, or
-   unknown file set fails closed. File status must be a documented REST value;
-   a rename must provide both current and previous paths, and both must be
-   excluded. The canary must exercise normal reviewable, excluded-only, mixed,
-   renamed, and exception-path diffs.
+   GitHub documents that Copilot uses Comment, not Approve or Request changes,
+   so `COMMENTED` alone is never approval. The review body is classified through
+   a closed allowlist. A normal completion must contain the standard line
+   `Copilot reviewed X out of Y changed files ... generated no [new] comments`;
+   both counts must be safe integers, `Y` must equal the complete paginated
+   changed-file inventory, and `reviewable-path count <= X <= Y` with `X >= 1`.
+   The lower bound proves that every skipped file fits the explicit excluded
+   allowlist without requiring equality: GitHub sometimes counts excluded files
+   as reviewed. A zero-review normal completion is rejected; an all-excluded
+   diff is neutral only through the separate standard unreviewable message.
+
+   Every exact-head review body is also inspected for both known suppressed
+   finding labels: `Suppressed comments (N)` and
+   `Comments suppressed due to low confidence (N)`. A positive count rejects
+   that SHA even if a newer same-SHA review looks clean; only a new commit and
+   review can release it. A zero count is harmless, while malformed or
+   ambiguous suppressed metadata fails closed. An inline finding or a standard
+   positive generated-comment count has the same current-head permanence.
+
+   The only neutral completion is the standard all-files-unreviewable message,
+   and its text is never sufficient by itself: the changed-file inventory must
+   prove that every path is in the explicit official excluded-file allowlist.
+   That allowlist mirrors the documented basenames and patterns for
+   dependency/configuration files, logs, SVG, generated/vendor/output paths and
+   binary directories, including the documented Rust and Hybris `bin`
+   exceptions. An empty, malformed, mixed, or unknown file set fails closed.
+   File status must be a documented REST value; a rename must provide both
+   current and previous paths, and both must be excluded. A known service-error
+   body, quota-exhaustion body, empty body, unknown marker, partial/malformed
+   completion, or count mismatch is not success. A later valid same-SHA review
+   may supersede a service error, but the controller does not repeatedly request
+   reviews after an exact-head error artifact exists. The canary must exercise
+   normal reviewable, excluded-only, mixed, renamed, error/quota, suppressed,
+   and exception-path diffs.
 
 7. Every configured check is present as the exact `{name, app_id}` pair and has
    conclusion `success`; skipped or neutral is never enough for a configured
@@ -132,6 +159,31 @@ time:
    both final trust boundaries. The exact-SHA check runs and legacy statuses
    are then read and classified once more; a newer pending or failed run
    supersedes an earlier green result and blocks completion.
+
+The controller never trusts the `LCV Trusted Gate` display name and GitHub
+Actions App ID alone. Before even considering success or timeout recovery,
+every matching check is resolved through its exact check-suite ID and
+`GET /actions/jobs/{check-id}` to one workflow run for the exact head. The
+controller then verifies canonical
+check/job/run URLs, IDs, names, status/conclusion, target and head repository,
+event, source workflow ID `329989853`, source path
+`.github/workflows/trusted-pr-gate.yml`, and the active workflow resource in
+`LCV-Ideas-Software/.github`. A same-name job from the target repository,
+ambiguous suite mapping, missing field, or inconsistent payload fails closed;
+it cannot mask a pending or failed central gate.
+
+That REST chain does **not** currently expose `job.workflow_sha`, so it cannot
+prove which source revision the ruleset pinned—especially in the source
+`.github` repository, where an ordinary PR run retains the same workflow ID,
+URL and path. This bootstrap intentionally returns
+`trusted-gate-provenance-unverified` for every otherwise-valid bare-path run;
+the controller cannot enqueue or rerun it. A visually plausible `@sha` suffix
+or `referenced_workflows` object is also not accepted without captured live
+evidence and a regression test. The `.github-private` required-workflow canary
+must reveal a server-observable binding from its check/run to the ruleset's
+source SHA. A follow-up reviewed patch will encode only that demonstrated
+shape. Inspecting the active ruleset can be an additional precondition, but it
+cannot substitute for associating the specific run with the pinned revision.
 
 Retargeting an existing PR from another base branch to `main` is deliberately
 unsupported. GitHub's `edited` activity would need to be added consistently to
@@ -164,8 +216,10 @@ cycle. The organization `copilot_code_review` ruleset will additionally be
 configured with `review_on_push=true`, so every new exact head receives a fresh
 automatic review. `review_draft_pull_requests` is unnecessary because trusted
 PRs are created open and drafts are rejected. An exhausted user, enterprise, or
-cost-center AI-credit budget prevents Copilot review; the missing exact-head
-`COMMENTED` review then intentionally keeps this gate fail-closed.
+cost-center AI-credit budget can either prevent a review or produce a
+`COMMENTED` quota-error artifact; both outcomes intentionally remain
+fail-closed, and the latter is not automatically re-requested on every
+controller cycle.
 
 Within the required gate, mutable review states that can settle without
 changing the commit—no clean connector response, an unresolved connector or
@@ -179,8 +233,9 @@ thread is resolved. Invalid identity, a bot thread without an immutable review
 commit, an unreviewable mixed/unknown diff, and other incoherent evidence are
 also immediate terminal failures.
 
-If the required gate timed out while mutable bot-review evidence was unsettled,
-the controller can recover without a human click. Recovery is allowed only
+After the canary-derived source-provenance binding is implemented, if the
+required gate timed out while mutable bot-review evidence was unsettled, the
+controller can recover without a human click. Recovery is allowed only
 after all non-gate evidence is currently valid and the failed check resolves to
 an Actions run for the exact head. The failed check must also carry the gate's
 dedicated `LCV_GATE_LATE_REVIEW_TIMEOUT` annotation; functional failures do not
@@ -238,9 +293,12 @@ canary after that topology change.
 
 ## Rollout (not performed by this change)
 
-1. Merge this source only after its PR has exact-head connector clearance, an
-   exact-head Copilot `COMMENTED` review, all bot threads resolved, and all
-   local and remote gates green.
+1. Merge this bootstrap source only after its PR has exact-head connector clearance, an
+   accepted exact-head Copilot completion, all bot threads resolved, and all
+   local and remote gates green. At this point the scheduled controller is
+   deliberately non-authoritative: every otherwise-valid gate remains
+   `trusted-gate-provenance-unverified`, so no enqueue or timeout rerun can
+   occur.
 2. Create one organization branch ruleset in `evaluate` mode targeting only
    `.github-private` and `main`. That single ruleset must contain both the
    `workflows` rule selecting
@@ -248,27 +306,34 @@ canary after that topology change.
    `copilot_code_review` rule with `review_on_push=true` and
    `review_draft_pull_requests=false`; these two rules share one target and one
    rollout lifecycle. Prove the workflow evaluation produces the expected
-   exact-head check without blocking changes.
-3. Change that same single organization ruleset to `active` while it still
+   exact-head check without blocking changes. Capture the complete check, job,
+   run, workflow, ruleset and rule-suite payloads, including any observable
+   source revision/ref binding. Do not activate the rule or queue yet.
+3. Emit a follow-up source patch that recognizes only the exact provenance
+   shape observed in step 2, rejects missing/unknown/mismatched revisions, and
+   has regression tests for the captured payload. Give that patch fresh
+   exact-head reviews from both bots and merge it only with all gates green.
+4. Change that same single organization ruleset to `active` while it still
    targets only `.github-private`. The active `workflows` rule is the immutable
    identity anchor; an ordinary required-status context with the same display
    name is not an equivalent substitute and is not added by default. Confirm
    automatic exact-head Copilot reviews and the controller's REST fallback
    without widening the target.
-4. Create a separate `.github-private` repository canary ruleset in `active`
+5. Create a separate `.github-private` repository canary ruleset in `active`
    mode, without bypass. Require pull requests, signed commits, and merge queue
    with both maxima set to one. Run one `lcv-leo` canary and prove the exact PR
-   head, exact connector and Copilot reviews, every bot thread resolved, all
-   check identities, zero alerts, verified commits, queue entry, synthetic
+   head, accepted exact connector and Copilot reviews, every bot thread resolved, all
+   check identities—including the complete check-to-job-to-run-to-central-
+   workflow chain—zero alerts, verified commits, queue entry, synthetic
    `merge_group` head, automatic merge, and branch deletion. After the merge,
    also prove that the Enterprise Pages site
    was not regressed: repository visibility remains private (`public=false`),
    `build_type=workflow`, CNAME `enterprise.lcv.dev`, `https_enforced=true`, an
    approved certificate, a green Pages deployment, and successful HTTP-to-HTTPS
    redirect plus HTTPS response.
-5. Inspect ruleset insights and audit logs. Resolve every discrepancy before
+6. Inspect ruleset insights and audit logs. Resolve every discrepancy before
    expanding the single organization ruleset beyond `.github-private`.
-6. Select one of the eleven public repositories that actually has Dependabot
+7. Select one of the eleven public repositories that actually has Dependabot
    update automation. Disable its old direct-merge controller, extend the
    active organization ruleset's two rules to that single repository, and
    activate a matching repository merge-queue ruleset without bypass. Run one real
@@ -276,7 +341,7 @@ canary after that topology change.
    wrapper, queue retest, automatic merge, and automatic branch deletion.
    `.github-private` has no Dependabot configuration and therefore is not a
    valid Dependabot canary.
-7. Only after both narrow canaries are green may the single organization
+8. Only after both narrow canaries are green may the single organization
    ruleset's two rules be expanded atomically in batches. Recheck insights,
    audit logs, controller behavior, and repository
    invariants after every batch.
@@ -290,6 +355,9 @@ canary after that topology change.
 - [GraphQL pull-request mutations — `enqueuePullRequest`](https://docs.github.com/en/graphql/reference/pulls#enqueuepullrequest)
 - [REST Check Runs authorization](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#create-a-check-run)
 - [REST Check Run annotations](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#list-check-run-annotations)
+- [REST workflow jobs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-jobs#get-a-job-for-a-workflow-run)
+- [REST workflow runs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-runs#list-workflow-runs-for-a-repository)
+- [REST workflows](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflows#get-a-workflow)
 - [REST code-scanning alerts for a repository](https://docs.github.com/en/enterprise-cloud@latest/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository)
 - [REST pull-request commits](https://docs.github.com/en/enterprise-cloud@latest/rest/pulls/pulls#list-commits-on-a-pull-request)
 - [REST pull requests associated with a commit](https://docs.github.com/en/enterprise-cloud@latest/rest/commits/commits#list-pull-requests-associated-with-a-commit)
@@ -303,3 +371,14 @@ canary after that topology change.
 - [REST review requests](https://docs.github.com/en/rest/pulls/review-requests#request-reviewers-for-a-pull-request)
 - [REST rerun failed workflow jobs](https://docs.github.com/en/enterprise-cloud@latest/rest/actions/workflow-runs#re-run-failed-jobs-from-a-workflow-run)
 - [REST commit statuses](https://docs.github.com/en/enterprise-cloud@latest/rest/commits/statuses#list-commit-statuses-for-a-reference)
+
+## Observed Copilot payload evidence
+
+These public artifacts are regression fixtures, not substitutes for the
+primary documentation above:
+
+- [Exact-head review with a positive `Suppressed comments` section](https://github.com/LCV-Ideas-Software/.github/pull/78#pullrequestreview-4889079285)
+- [Documented `Comments suppressed due to low confidence` body variant](https://github.com/orgs/community/discussions/157330)
+- [Service-error `COMMENTED` review body](https://github.com/bootstrap-vue-next/bootstrap-vue-next/pull/3216#pullrequestreview-4365036615)
+- [Quota-exhaustion `COMMENTED` review body](https://github.com/jackwener/OpenCLI/pull/2012#pullrequestreview-4559017397)
+- [Review-count evidence showing that excluded paths and displayed counts do not map one-to-one](https://github.com/bootstrap-vue-next/bootstrap-vue-next/pull/3216#pullrequestreview-4358924527)
