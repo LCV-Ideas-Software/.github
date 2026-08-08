@@ -771,6 +771,9 @@ export class GitHubApi {
             Authorization: `Bearer ${this.token}`,
             "X-GitHub-Api-Version": API_VERSION,
             "User-Agent": "lcv-trusted-pr-automation",
+            ...(body === undefined
+              ? {}
+              : { "Content-Type": "application/json" }),
           },
           body: body === undefined ? undefined : JSON.stringify(body),
         });

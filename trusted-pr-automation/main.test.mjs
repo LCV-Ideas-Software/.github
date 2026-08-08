@@ -1179,6 +1179,21 @@ test("GitHub API retries reads but never retries mutations", async () => {
   assert.equal(mutationCalls, 1);
 });
 
+test("GitHub API labels JSON request bodies without mislabeling bodyless reads", async () => {
+  const requests = [];
+  const api = new GitHubApi("redacted", async (url, init) => {
+    requests.push({ url, init });
+    return { ok: true, status: 200, text: async () => "{}" };
+  });
+  await api.request("/bodyless");
+  await api.graphql("query { viewer { login } }", {});
+
+  assert.equal(requests[0].init.headers["Content-Type"], undefined);
+  assert.equal(requests[0].init.body, undefined);
+  assert.equal(requests[1].init.headers["Content-Type"], "application/json");
+  assert.equal(typeof requests[1].init.body, "string");
+});
+
 test("merge-group association is nonempty, unique, and exact repository/main", () => {
   const checked = validatePolicy(policy());
   assert.equal(
