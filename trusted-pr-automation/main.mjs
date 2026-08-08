@@ -1679,31 +1679,10 @@ export function allCommitsVerified(commits, headSha) {
   return { ok: true };
 }
 
-export function selectAssociatedPullRequests(pulls, fullRepository, policy) {
-  if (!Array.isArray(pulls) || pulls.length === 0) {
-    throw new Error("merge group has no associated pull request");
+export function validateMergeQueueEvidence({ queue, groupHead, groupBase }) {
+  if (!validSha(groupHead) || !validSha(groupBase)) {
+    throw new Error("merge group has invalid head/base SHA evidence");
   }
-  const seen = new Set();
-  for (const pullRequest of pulls) {
-    if (seen.has(pullRequest.number)) {
-      throw new Error(
-        `merge group returned duplicate pull request #${pullRequest.number}`,
-      );
-    }
-    seen.add(pullRequest.number);
-    const trusted = isTrustedPullRequest(pullRequest, fullRepository, policy);
-    if (!trusted.ok)
-      throw new Error(`#${pullRequest.number}: ${trusted.reason}`);
-  }
-  return pulls;
-}
-
-export function validateMergeQueueEvidence({
-  queue,
-  pulls,
-  groupHead,
-  groupBase,
-}) {
   if (!queue) throw new Error("main has no merge queue");
   if (
     queue.configuration?.maximumEntriesToBuild !== 1 ||
@@ -1713,36 +1692,74 @@ export function validateMergeQueueEvidence({
       "merge queue must use maximumEntriesToBuild=1 and maximumEntriesToMerge=1",
     );
   }
-  if (pulls.length !== 1)
-    throw new Error("merge group must contain exactly one pull request");
-  const [pullRequest] = pulls;
-  const matching = (queue.entries?.nodes ?? []).filter(
-    (entry) => entry?.pullRequest?.number === pullRequest.number,
+  if (
+    !Array.isArray(queue.entries?.nodes) ||
+    !Number.isInteger(queue.entries?.totalCount) ||
+    queue.entries.totalCount !== queue.entries.nodes.length ||
+    queue.entries?.pageInfo?.hasNextPage !== false ||
+    queue.entries.nodes.some(
+      (entry) => !entry || typeof entry !== "object" || Array.isArray(entry),
+    )
+  ) {
+    throw new Error("merge queue returned incomplete entry evidence");
+  }
+  const matching = queue.entries.nodes.filter(
+    (entry) =>
+      entry?.headCommit?.oid === groupHead &&
+      entry?.baseCommit?.oid === groupBase,
   );
   if (matching.length !== 1) {
     throw new Error(
-      "merge group does not map to exactly one merge-queue entry",
+      "merge group does not map to exactly one merge-queue entry by head/base",
     );
   }
   const [entry] = matching;
-  if (entry?.baseCommit?.oid !== groupBase) {
-    throw new Error("merge-queue entry base does not match the event base");
+  if (
+    !Number.isInteger(entry?.pullRequest?.number) ||
+    entry.pullRequest.number < 1
+  ) {
+    throw new Error("merge-queue entry has no pull-request number");
   }
-  if (entry?.headCommit?.oid !== groupHead) {
-    throw new Error(
-      "merge-queue entry head does not match the synthetic group head",
-    );
+  if (!validSha(entry?.pullRequest?.headRefOid)) {
+    throw new Error("merge-queue entry has an invalid pull-request head");
   }
-  if (entry?.pullRequest?.headRefOid !== pullRequest.head.sha) {
-    throw new Error("merge-queue pull-request head changed");
+  if (entry?.pullRequest?.baseRefOid !== groupBase) {
+    throw new Error("merge-queue pull-request base changed");
   }
   if (entry?.pullRequest?.baseRefName !== "main") {
     throw new Error("merge-queue pull request does not target main");
   }
-  if (entry?.state === "UNMERGEABLE") {
-    throw new Error("merge-queue entry is unmergeable");
+  if (
+    !["AWAITING_CHECKS", "LOCKED", "MERGEABLE", "QUEUED"].includes(entry?.state)
+  ) {
+    throw new Error("merge-queue entry state is not trusted");
   }
   return entry;
+}
+
+export function validateMergeQueuePullRequest({
+  entry,
+  pullRequest,
+  fullRepository,
+  policy,
+  groupBase,
+}) {
+  if (entry?.pullRequest?.number !== pullRequest?.number) {
+    throw new Error("merge-queue pull-request number changed");
+  }
+  const trusted = isTrustedPullRequest(pullRequest, fullRepository, policy);
+  if (!trusted.ok)
+    throw new Error(`#${pullRequest?.number}: ${trusted.reason}`);
+  if (entry.pullRequest.headRefOid !== pullRequest.head.sha) {
+    throw new Error("merge-queue pull-request head changed");
+  }
+  if (
+    entry.pullRequest.baseRefOid !== groupBase ||
+    pullRequest.base.sha !== groupBase
+  ) {
+    throw new Error("merge-queue pull-request base changed");
+  }
+  return pullRequest;
 }
 
 export function buildEnqueueInput(pullRequestId, headSha) {
@@ -2307,16 +2324,19 @@ async function runMergeGroupGate({ api, event, owner, repo, policy }) {
   if ((await currentMain(api, owner, repo)) !== groupBase) {
     throw new Error(`${repo}: merge-group base is no longer current main`);
   }
-  const associated = await api.pages(
-    `/repos/${owner}/${repo}/commits/${groupHead}/pulls`,
-  );
-  const pulls = selectAssociatedPullRequests(
-    associated,
-    `${owner}/${repo}`,
-    policy,
-  );
   const queue = await mergeQueueEvidence(api, owner, repo);
-  validateMergeQueueEvidence({ queue, pulls, groupHead, groupBase });
+  const entry = validateMergeQueueEvidence({ queue, groupHead, groupBase });
+  const pullRequest = await api.request(
+    `/repos/${owner}/${repo}/pulls/${entry.pullRequest.number}`,
+  );
+  validateMergeQueuePullRequest({
+    entry,
+    pullRequest,
+    fullRepository: `${owner}/${repo}`,
+    policy,
+    groupBase,
+  });
+  const pulls = [pullRequest];
   for (const pullRequest of pulls) {
     const evidence = await readExactPullCore({
       api,
@@ -2328,17 +2348,6 @@ async function runMergeGroupGate({ api, event, owner, repo, policy }) {
     });
     if (evidence.pullRequest.head.sha !== pullRequest.head.sha) {
       throw new Error(`${repo}#${pullRequest.number}: associated head changed`);
-    }
-    const comparison = await api.request(
-      `/repos/${owner}/${repo}/compare/${pullRequest.head.sha}...${groupHead}`,
-    );
-    if (
-      comparison?.behind_by !== 0 ||
-      comparison?.merge_base_commit?.sha !== pullRequest.head.sha
-    ) {
-      throw new Error(
-        `${repo}#${pullRequest.number}: head is not included in merge-group head`,
-      );
     }
   }
   await waitForGateEvidence({

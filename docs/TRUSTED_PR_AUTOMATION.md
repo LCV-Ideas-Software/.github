@@ -255,9 +255,12 @@ zero mutation.
 
 The merge queue must use `maximumEntriesToBuild=1` and
 `maximumEntriesToMerge=1`. On `merge_group`, the gate does not trust `sender`
-or parse `head_ref`. It requires current `main`, exactly one trusted associated
-PR, exactly one matching GraphQL queue entry, exact synthetic head/base, and
-proof that the PR head is included in the synthetic group head.
+or parse `head_ref`. It derives identity from exactly one GraphQL
+`MergeQueueEntry` whose `headCommit` and `baseCommit` equal the event, then
+cross-checks that entry's PR number, head, base, repository, actor, and `main`
+target against a fresh REST PR read. It never uses commit-to-PR association or
+PR-head ancestry: the queue head is a temporary synthetic commit, and with
+`SQUASH` it need not descend from the PR head.
 
 The controller calls `enqueuePullRequest` only when GraphQL still reports the
 same open, non-draft head/base and a merge queue. Existing queue membership is
@@ -288,28 +291,33 @@ must create the PR directly against `main`.
 
 ## Remaining canary rollout
 
-The signed bootstrap, evaluate-only ruleset, and draft/ready provenance probes
-have already established the identities recorded above. This change is the
-follow-up source binding; it still performs no settings mutation.
+The signed bootstrap and provenance binding are merged. The first active queue
+attempt proved automatic controller enqueue, then failed closed because the
+pinned bootstrap runtime used commit-to-PR association for the synthetic queue
+SHA. The repository queue ruleset remains disabled while this source runtime is
+repaired.
 
-1. Merge this binding only with signed commits, all mandatory checks green,
-   zero alerts, and every actual bot finding resolved. Bot absence or partial
-   review coverage is not a gate.
-2. Only after that patch is merged, change the same organization ruleset to
-   `active` while still targeting only `.github-private`, and activate a
-   no-bypass repository merge-queue ruleset with both maxima set to one.
-3. Run an `lcv-leo` canary. Verify both bot integrations were invited or ran,
-   read every interaction, resolve every actual finding, and prove signed
-   commits, all check identities, zero alerts, queue entry, `merge_group`,
-   automatic merge, and branch deletion.
-4. After the `.github-private` merge, prove Enterprise Pages remained private,
+1. Merge the source-runtime repair only with signed commits, all mandatory
+   checks green, zero alerts, and every actual bot finding resolved. Bot absence
+   or partial review coverage is not a gate.
+2. Keep the repository queue ruleset disabled. Repin the narrow organization
+   ruleset to the signed source merge SHA, run a new PR-head provenance probe,
+   and capture the required-workflow identity emitted for that immutable SHA.
+3. In a separate signed binding change, update the controller policy to the new
+   source SHA and captured identity. The mismatch intervals remain fail-closed;
+   a source commit never attempts to embed its own SHA.
+4. After the binding is green, reactivate the no-bypass repository queue
+   ruleset and resume the existing `lcv-leo` canary. Read every actual bot
+   finding and prove signed commits, all check identities, zero alerts, queue
+   entry, `merge_group`, automatic merge, and branch deletion.
+5. After the `.github-private` merge, prove Enterprise Pages remained private,
    uses `build_type=workflow`, keeps CNAME `enterprise.lcv.dev`, enforces HTTPS,
    has an approved certificate, and serves a green HTTP redirect and HTTPS
    response.
-5. On one public repository with Dependabot, disable the old direct-merge
+6. On one public repository with Dependabot, disable the old direct-merge
    mutation, activate the same narrow rules plus queue, and prove a real
    Dependabot PR including conflict-only rebase if needed and branch deletion.
-6. Expand the one organization ruleset atomically in monitored batches only
+7. Expand the one organization ruleset atomically in monitored batches only
    after both canaries are green.
 
 ## Primary GitHub documentation
@@ -317,6 +325,7 @@ follow-up source binding; it still performs no settings mutation.
 - [Require workflows with rulesets](https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-workflows-to-pass-before-merging)
 - [Workflow identity in the `job` context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#example-usage-of-job-context-workflow-identity)
 - [`merge_group` workflow event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group)
+- [GraphQL `MergeQueueEntry`](https://docs.github.com/en/graphql/reference/pulls#mergequeueentry)
 - [`enqueuePullRequest`](https://docs.github.com/en/graphql/reference/pulls#enqueuepullrequest)
 - [List check runs with `filter=all`](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#list-check-runs-for-a-git-reference)
 - [Check Run annotations](https://docs.github.com/en/enterprise-cloud@latest/rest/checks/runs#list-check-run-annotations)

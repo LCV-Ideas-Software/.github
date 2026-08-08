@@ -39,9 +39,9 @@ import {
   readExactPullCore,
   requestResolvedBotReviewVetoRerun,
   requiredChecksForPhase,
-  selectAssociatedPullRequests,
   selectCurrentTrustedGateRun,
   validateMergeQueueEvidence,
+  validateMergeQueuePullRequest,
   validatePolicy,
   verifyCodeScanningAfterChecks,
   waitForGateEvidence,
@@ -3439,37 +3439,77 @@ test("GitHub API labels JSON request bodies without mislabeling bodyless reads",
   assert.equal(typeof requests[1].init.body, "string");
 });
 
-test("merge-group association is nonempty, unique, and exact repository/main", () => {
+test("merge-group pull request must match the exact queue entry", () => {
   const checked = validatePolicy(policy());
+  const entry = {
+    pullRequest: {
+      number: 7,
+      headRefOid: SHA,
+      baseRefOid: BASE_SHA,
+      baseRefName: "main",
+    },
+  };
   assert.equal(
-    selectAssociatedPullRequests(
-      [pull()],
-      "LCV-Ideas-Software/example",
-      checked,
-    ).length,
-    1,
+    validateMergeQueuePullRequest({
+      entry,
+      pullRequest: pull(),
+      fullRepository: "LCV-Ideas-Software/example",
+      policy: checked,
+      groupBase: BASE_SHA,
+    }).number,
+    7,
   );
   assert.throws(
     () =>
-      selectAssociatedPullRequests([], "LCV-Ideas-Software/example", checked),
-    /no associated pull request/i,
+      validateMergeQueuePullRequest({
+        entry,
+        pullRequest: pull({ number: 8 }),
+        fullRepository: "LCV-Ideas-Software/example",
+        policy: checked,
+        groupBase: BASE_SHA,
+      }),
+    /number changed/i,
   );
   assert.throws(
     () =>
-      selectAssociatedPullRequests(
-        [pull(), pull()],
-        "LCV-Ideas-Software/example",
-        checked,
-      ),
-    /duplicate/i,
+      validateMergeQueuePullRequest({
+        entry,
+        pullRequest: pull({
+          head: {
+            sha: OTHER_SHA,
+            repo: { full_name: "LCV-Ideas-Software/example" },
+          },
+        }),
+        fullRepository: "LCV-Ideas-Software/example",
+        policy: checked,
+        groupBase: BASE_SHA,
+      }),
+    /head changed/i,
+  );
+  assert.throws(
+    () =>
+      validateMergeQueuePullRequest({
+        entry,
+        pullRequest: pull({
+          base: {
+            ref: "main",
+            sha: OTHER_SHA,
+            repo: { full_name: "LCV-Ideas-Software/example" },
+          },
+        }),
+        fullRepository: "LCV-Ideas-Software/example",
+        policy: checked,
+        groupBase: BASE_SHA,
+      }),
+    /base changed/i,
   );
 });
 
 test("merge-group identity requires a one-at-a-time queue and exact entry", () => {
-  const candidate = pull();
   const queue = {
     configuration: { maximumEntriesToBuild: 1, maximumEntriesToMerge: 1 },
     entries: {
+      totalCount: 1,
       nodes: [
         {
           state: "AWAITING_CHECKS",
@@ -3483,12 +3523,12 @@ test("merge-group identity requires a one-at-a-time queue and exact entry", () =
           },
         },
       ],
+      pageInfo: { hasNextPage: false },
     },
   };
   assert.equal(
     validateMergeQueueEvidence({
       queue,
-      pulls: [candidate],
       groupHead: OTHER_SHA,
       groupBase: BASE_SHA,
     }).pullRequest.number,
@@ -3501,7 +3541,6 @@ test("merge-group identity requires a one-at-a-time queue and exact entry", () =
           ...queue,
           configuration: { maximumEntriesToBuild: 2, maximumEntriesToMerge: 1 },
         },
-        pulls: [candidate],
         groupHead: OTHER_SHA,
         groupBase: BASE_SHA,
       }),
@@ -3510,13 +3549,100 @@ test("merge-group identity requires a one-at-a-time queue and exact entry", () =
   assert.throws(
     () =>
       validateMergeQueueEvidence({
-        queue,
-        pulls: [candidate, { ...candidate, number: 8 }],
+        queue: {
+          ...queue,
+          entries: {
+            ...queue.entries,
+            totalCount: 2,
+            nodes: [...queue.entries.nodes, queue.entries.nodes[0]],
+          },
+        },
         groupHead: OTHER_SHA,
         groupBase: BASE_SHA,
       }),
-    /exactly one pull request/i,
+    /exactly one merge-queue entry/i,
   );
+  assert.throws(
+    () =>
+      validateMergeQueueEvidence({
+        queue: {
+          ...queue,
+          entries: {
+            ...queue.entries,
+            nodes: [
+              {
+                ...queue.entries.nodes[0],
+                headCommit: { oid: SHA },
+              },
+            ],
+          },
+        },
+        groupHead: OTHER_SHA,
+        groupBase: BASE_SHA,
+      }),
+    /exactly one merge-queue entry/i,
+  );
+  assert.throws(
+    () =>
+      validateMergeQueueEvidence({
+        queue: {
+          ...queue,
+          entries: {
+            ...queue.entries,
+            pageInfo: { hasNextPage: true },
+          },
+        },
+        groupHead: OTHER_SHA,
+        groupBase: BASE_SHA,
+      }),
+    /incomplete entry evidence/i,
+  );
+  assert.throws(
+    () =>
+      validateMergeQueueEvidence({
+        queue: {
+          ...queue,
+          entries: {
+            ...queue.entries,
+            totalCount: 2,
+            nodes: [...queue.entries.nodes, null],
+          },
+        },
+        groupHead: OTHER_SHA,
+        groupBase: BASE_SHA,
+      }),
+    /incomplete entry evidence/i,
+  );
+  assert.throws(
+    () =>
+      validateMergeQueueEvidence({
+        queue: {
+          ...queue,
+          entries: {
+            ...queue.entries,
+            nodes: [
+              {
+                ...queue.entries.nodes[0],
+                state: "UNMERGEABLE",
+              },
+            ],
+          },
+        },
+        groupHead: OTHER_SHA,
+        groupBase: BASE_SHA,
+      }),
+    /state is not trusted/i,
+  );
+});
+
+test("merge-group gate never infers PR identity from a synthetic commit", async () => {
+  const engine = await readFile(new URL("./main.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(engine, /commits\/\$\{groupHead\}\/pulls/);
+  assert.doesNotMatch(
+    engine,
+    /compare\/\$\{pullRequest\.head\.sha\}\.\.\.\$\{groupHead\}/,
+  );
+  assert.match(engine, /pulls\/\$\{entry\.pullRequest\.number\}/);
 });
 
 test("enqueue input pins expectedHeadOid and never jumps the queue", () => {
