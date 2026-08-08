@@ -1013,6 +1013,7 @@ export async function finalizePullTrustBoundary({
   label,
   reassess,
   scanCode,
+  recheckChecks,
 }) {
   if (!validSha(expectedHead) || typeof reassess !== "function") {
     throw new Error("invalid final pull-trust boundary");
@@ -1020,7 +1021,12 @@ export async function finalizePullTrustBoundary({
   if (expectedBase !== undefined && !validSha(expectedBase)) {
     throw new Error("invalid final pull-trust base");
   }
-  if (typeof label !== "string" || !label || typeof scanCode !== "function") {
+  if (
+    typeof label !== "string" ||
+    !label ||
+    typeof scanCode !== "function" ||
+    typeof recheckChecks !== "function"
+  ) {
     throw new Error("invalid final pull-trust callbacks");
   }
   const assertBoundary = (evidence) => {
@@ -1035,7 +1041,9 @@ export async function finalizePullTrustBoundary({
 
   assertBoundary(await reassess());
   await scanCode();
-  return assertBoundary(await reassess());
+  const finalEvidence = assertBoundary(await reassess());
+  await recheckChecks();
+  return finalEvidence;
 }
 
 export function lateReviewTimeoutCommand({ repo, number, headSha }) {
@@ -1122,6 +1130,22 @@ async function waitForGateEvidence({
   }
 }
 
+async function requireGateEvidenceNow({
+  api,
+  owner,
+  repo,
+  sha,
+  requiredChecks,
+}) {
+  const checks = await readCheckEvidence(api, owner, repo, sha);
+  const result = classifyChecks({ ...checks, requiredChecks });
+  if (result.state !== "success") {
+    throw new Error(
+      `final exact-SHA check inventory is ${result.state}: ${result.reasons.join("; ")}`,
+    );
+  }
+}
+
 async function runPullRequestGate({ api, event, owner, repo, policy }) {
   const eventHead = event?.pull_request?.head?.sha;
   if (!validSha(eventHead))
@@ -1164,6 +1188,17 @@ async function runPullRequestGate({ api, event, owner, repo, policy }) {
         repo,
         number,
         checkState: "success",
+      }),
+    recheckChecks: () =>
+      requireGateEvidenceNow({
+        api,
+        owner,
+        repo,
+        sha: eventHead,
+        requiredChecks: requiredChecksForPhase(
+          policy.repositories[repo],
+          "pull_request",
+        ),
       }),
   });
   console.log(`${repo}#${number}@${eventHead}: trusted gate passed`);
@@ -1276,6 +1311,17 @@ async function runMergeGroupGate({ api, event, owner, repo, policy }) {
           number: pullRequest.number,
           checkState: "success",
         }),
+      recheckChecks: () =>
+        requireGateEvidenceNow({
+          api,
+          owner,
+          repo,
+          sha: groupHead,
+          requiredChecks: requiredChecksForPhase(
+            policy.repositories[repo],
+            "merge_group",
+          ),
+        }),
     });
   }
   console.log(
@@ -1339,6 +1385,30 @@ async function enqueue(api, input) {
       }
     }`;
   return api.graphql(mutation, { input });
+}
+
+export async function enqueueAfterFinalTrustAssessment({
+  expectedHead,
+  expectedBase,
+  reassess,
+  enqueueMutation,
+}) {
+  if (
+    !validSha(expectedHead) ||
+    !validSha(expectedBase) ||
+    typeof reassess !== "function" ||
+    typeof enqueueMutation !== "function"
+  ) {
+    throw new Error("invalid final enqueue boundary");
+  }
+  const evidence = await reassess();
+  if (evidence?.pullRequest?.head?.sha !== expectedHead) {
+    throw new Error("pull-request head changed at final enqueue boundary");
+  }
+  if (evidence?.mainSha !== expectedBase) {
+    throw new Error("main changed at final enqueue boundary");
+  }
+  return enqueueMutation();
 }
 
 async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
@@ -1446,7 +1516,19 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
     );
   }
   const input = buildEnqueueInput(queueState.id, queueState.headRefOid);
-  await enqueue(api, input);
+  await enqueueAfterFinalTrustAssessment({
+    expectedHead: queueState.headRefOid,
+    expectedBase: queueState.baseRefOid,
+    reassess: () =>
+      assessPullCore({
+        api,
+        owner,
+        repo,
+        number: pullRequest.number,
+        policy,
+      }),
+    enqueueMutation: () => enqueue(api, input),
+  });
   return { outcome: "enqueued" };
 }
 

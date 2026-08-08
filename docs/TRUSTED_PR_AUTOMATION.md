@@ -98,7 +98,16 @@ time:
    commit, connector, review, and thread evidence is reread after the CI wait,
    then reread again after the code-scanning inventory; the exact associated
    head (and merge-group base, for a synthetic head) must remain unchanged at
-   both final trust boundaries.
+   both final trust boundaries. The exact-SHA check runs and legacy statuses
+   are then read and classified once more; a newer pending or failed run
+   supersedes an earlier green result and blocks completion.
+
+Retargeting an existing PR from another base branch to `main` is deliberately
+unsupported. GitHub's `edited` activity would need to be added consistently to
+every required check producer in all covered repositories; triggering only the
+central gate would leave the producer checks absent and time out. Automation
+must create each trusted PR directly against `main`; a retargeted PR remains
+fail-closed and must be closed and recreated against `main`.
 
 When an exact head has no clean connector review, the controller posts this
 idempotent request once for that SHA:
@@ -155,7 +164,11 @@ the following:
 The controller calls `enqueuePullRequest` only when GraphQL still reports the
 same open, non-draft head/base and a merge queue. The mutation includes
 `expectedHeadOid` and `jump:false`. An existing queue entry is an idempotent
-success; absence of a queue never falls back to direct merge.
+success; absence of a queue never falls back to direct merge. Immediately
+before the mutation, the controller rereads the complete pull, commit, review,
+thread, connector, and current-main evidence and reaffirms the exact head/base;
+late feedback therefore blocks enqueue rather than merely occupying the
+one-entry queue until the synthetic gate rejects it.
 
 ## Dependabot transition
 

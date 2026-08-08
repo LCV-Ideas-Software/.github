@@ -17,6 +17,7 @@ import {
   dependabotRebaseBody,
   ensureConnectorReviewRequest,
   ensureDependabotRebaseRequest,
+  enqueueAfterFinalTrustAssessment,
   evaluateConnectorEvidence,
   finalizePullTrustBoundary,
   hasReviewRequestForHead,
@@ -727,6 +728,33 @@ test("classifyChecks requires exact executor and GHAS identities and all observe
     }).state,
     "failure",
   );
+  const withoutAnalyzeActions = runs.filter(
+    (run) => run.name !== "Analyze actions",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: [
+        ...withoutAnalyzeActions,
+        check("Analyze actions", ACTIONS_APP_ID, "completed", "success", 100),
+        check("Analyze actions", ACTIONS_APP_ID, "in_progress", null, 101),
+      ],
+      statuses: [],
+      requiredChecks: required,
+    }).state,
+    "pending",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: [
+        ...withoutAnalyzeActions,
+        check("Analyze actions", ACTIONS_APP_ID, "completed", "success", 100),
+        check("Analyze actions", ACTIONS_APP_ID, "completed", "failure", 101),
+      ],
+      statuses: [],
+      requiredChecks: required,
+    }).state,
+    "failure",
+  );
   assert.equal(
     classifyChecks({
       checkRuns: runs.map((run) =>
@@ -890,9 +918,10 @@ test("final trust boundary rereads evidence around code scanning", async () => {
       return trusted;
     },
     scanCode: async () => trace.push("scan"),
+    recheckChecks: async () => trace.push("recheck"),
   });
   assert.equal(result, trusted);
-  assert.deepEqual(trace, ["reassess", "scan", "reassess"]);
+  assert.deepEqual(trace, ["reassess", "scan", "reassess", "recheck"]);
 
   let scanCalled = false;
   await assert.rejects(
@@ -903,6 +932,7 @@ test("final trust boundary rereads evidence around code scanning", async () => {
       scanCode: async () => {
         scanCalled = true;
       },
+      recheckChecks: async () => undefined,
     }),
     /head changed at final trust boundary/i,
   );
@@ -919,6 +949,7 @@ test("final trust boundary rereads evidence around code scanning", async () => {
         return trusted;
       },
       scanCode: async () => undefined,
+      recheckChecks: async () => undefined,
     }),
     /late connector finding/i,
   );
@@ -937,8 +968,22 @@ test("final trust boundary rereads evidence around code scanning", async () => {
         };
       },
       scanCode: async () => undefined,
+      recheckChecks: async () => undefined,
     }),
     /head changed at final trust boundary/i,
+  );
+
+  await assert.rejects(
+    finalizePullTrustBoundary({
+      expectedHead: SHA,
+      label: "example#7",
+      reassess: async () => trusted,
+      scanCode: async () => undefined,
+      recheckChecks: async () => {
+        throw new Error("final exact-SHA check inventory is pending");
+      },
+    }),
+    /check inventory is pending/i,
   );
 });
 
@@ -1202,6 +1247,61 @@ test("enqueue input pins expectedHeadOid and never jumps the queue", () => {
   assert.throws(() => buildEnqueueInput("PR_node", "bad"), /head sha/i);
 });
 
+test("enqueue mutation is preceded by a final exact-head trust assessment", async () => {
+  const trace = [];
+  const outcome = await enqueueAfterFinalTrustAssessment({
+    expectedHead: SHA,
+    expectedBase: BASE_SHA,
+    reassess: async () => {
+      trace.push("reassess");
+      return {
+        pullRequest: { head: { sha: SHA } },
+        mainSha: BASE_SHA,
+      };
+    },
+    enqueueMutation: async () => {
+      trace.push("enqueue");
+      return "queued";
+    },
+  });
+  assert.equal(outcome, "queued");
+  assert.deepEqual(trace, ["reassess", "enqueue"]);
+
+  let mutated = false;
+  await assert.rejects(
+    enqueueAfterFinalTrustAssessment({
+      expectedHead: SHA,
+      expectedBase: BASE_SHA,
+      reassess: async () => {
+        throw new Error("late connector finding");
+      },
+      enqueueMutation: async () => {
+        mutated = true;
+      },
+    }),
+    /late connector finding/i,
+  );
+  assert.equal(mutated, false);
+
+  for (const evidence of [
+    { pullRequest: { head: { sha: OTHER_SHA } }, mainSha: BASE_SHA },
+    { pullRequest: { head: { sha: SHA } }, mainSha: OTHER_SHA },
+  ]) {
+    await assert.rejects(
+      enqueueAfterFinalTrustAssessment({
+        expectedHead: SHA,
+        expectedBase: BASE_SHA,
+        reassess: async () => evidence,
+        enqueueMutation: async () => {
+          mutated = true;
+        },
+      }),
+      /changed at final enqueue boundary/i,
+    );
+  }
+  assert.equal(mutated, false);
+});
+
 test("checked-in policy covers every active repository and raw analyzer wrappers", async () => {
   const raw = JSON.parse(
     await readFile(new URL("./policy.json", import.meta.url), "utf8"),
@@ -1296,6 +1396,7 @@ test("workflow contracts isolate the PAT and preserve write-all", async () => {
   );
   assert.match(gate, /pull_request:/);
   assert.match(gate, /ready_for_review/);
+  assert.doesNotMatch(gate, /\bedited\b/);
   assert.match(gate, /merge_group:/);
   assert.match(gate, /permissions:\s+write-all/);
   assert.match(gate, /repository:\s+\$\{\{ job\.workflow_repository \}\}/);
