@@ -25,6 +25,9 @@ on:
       - "scripts/github-slack-webhook-redelivery.mjs"
       - "scripts/github-slack-webhook-redelivery.test.mjs"
       - "workers/github-slack-relay/**"
+  merge_group:
+    types:
+      - checks_requested
   workflow_dispatch:
 
 permissions: write-all
