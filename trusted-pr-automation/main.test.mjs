@@ -11,6 +11,8 @@ import {
   allCommitsVerified,
   buildEnqueueInput,
   classifyChecks,
+  connectorFailureCanSettleWithoutHeadChange,
+  controllerConnectorDisposition,
   controllerCheckOutcome,
   dependabotRebaseBody,
   ensureConnectorReviewRequest,
@@ -28,6 +30,7 @@ import {
   validateMergeQueueEvidence,
   validatePolicy,
   verifyCodeScanningAfterChecks,
+  waitForPullCore,
 } from "./main.mjs";
 
 const SHA = "a".repeat(40);
@@ -591,6 +594,78 @@ test("connector evidence allows resolved stale threads but blocks current change
     ).ok,
     true,
   );
+});
+
+test("the gate polls only connector blockers that can settle on the same head", () => {
+  for (const reason of [
+    "no clean connector review exists for the exact head",
+    "no clean connector review exists after the latest connector finding",
+    "unresolved connector thread remains",
+  ]) {
+    assert.equal(
+      connectorFailureCanSettleWithoutHeadChange(reason),
+      true,
+      reason,
+    );
+  }
+  for (const reason of [
+    "invalid connector evidence head SHA",
+    "connector thread has no immutable review commit",
+    "changes requested on the current head",
+    "unrecognized connector state",
+  ]) {
+    assert.equal(
+      connectorFailureCanSettleWithoutHeadChange(reason),
+      false,
+      reason,
+    );
+  }
+  assert.equal(
+    controllerConnectorDisposition(
+      "no clean connector review exists for the exact head",
+    ),
+    "request-review",
+  );
+  assert.match(
+    controllerConnectorDisposition("unresolved connector thread remains"),
+    /^connector-blocked:/,
+  );
+  assert.throws(
+    () =>
+      controllerConnectorDisposition(
+        "connector thread has no immutable review commit",
+      ),
+    /not safely observable/i,
+  );
+});
+
+test("the gate polls a mutable connector blocker but propagates terminal evidence", async () => {
+  const options = {
+    repo: "example",
+    number: 7,
+    expectedHead: SHA,
+  };
+  const timing = { deadline: Date.now() + 1_000, pollSeconds: 0 };
+  let calls = 0;
+  const settled = await waitForPullCore(options, timing, async () => {
+    calls += 1;
+    if (calls === 1) {
+      return { connectorPending: "unresolved connector thread remains" };
+    }
+    return { pullRequest: { head: { sha: SHA } } };
+  });
+  assert.equal(calls, 2);
+  assert.equal(settled.pullRequest.head.sha, SHA);
+
+  calls = 0;
+  await assert.rejects(
+    waitForPullCore(options, timing, async () => {
+      calls += 1;
+      throw new Error("connector thread has no immutable review commit");
+    }),
+    /no immutable review commit/i,
+  );
+  assert.equal(calls, 1);
 });
 
 test("classifyChecks requires exact executor and GHAS identities and all observed checks green", () => {

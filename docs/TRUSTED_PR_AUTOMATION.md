@@ -116,6 +116,15 @@ normal observational outcome for the scheduled controller: it logs and waits
 without enqueueing and without failing the five-minute run. A terminal bad
 conclusion remains an error.
 
+Within the required gate, connector states that can settle without changing
+the commit—no clean response yet or an unresolved connector thread—remain
+pending and are polled fail-closed until the same bounded deadline. This avoids
+a race in which the workflow starts before an agent can reply to and resolve a
+fixed thread. The controller never treats that state as trusted: an unresolved
+thread is reported as `connector-blocked`, and only the gate may wait. Invalid
+connector identity, a thread without an immutable review commit, and other
+incoherent evidence remain immediate terminal failures.
+
 If the required gate timed out before the clean connector signal arrived, the
 controller can recover without a human click. Recovery is allowed only after
 all non-gate evidence is currently valid, the clean signal timestamp is later

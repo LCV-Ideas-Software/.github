@@ -305,6 +305,23 @@ export function evaluateConnectorEvidence({
   return { ok: true, cleanAt: Math.max(...exactClean) };
 }
 
+export function connectorFailureCanSettleWithoutHeadChange(reason) {
+  return (
+    typeof reason === "string" &&
+    (reason.startsWith("no clean connector review") ||
+      reason === "unresolved connector thread remains")
+  );
+}
+
+export function controllerConnectorDisposition(reason) {
+  if (!connectorFailureCanSettleWithoutHeadChange(reason)) {
+    throw new Error("connector blocker is not safely observable");
+  }
+  return reason.startsWith("no clean connector review")
+    ? "request-review"
+    : `connector-blocked: ${reason}`;
+}
+
 export function reviewRequestBody(headSha) {
   if (!validSha(headSha)) throw new Error("invalid review-request head SHA");
   return `@codex review\n\n<!-- ${REVIEW_REQUEST_MARKER}:${headSha} -->`;
@@ -981,7 +998,7 @@ async function assessPullCore({
   if (!connector.ok) {
     if (
       connectorMayBePending &&
-      connector.reason.startsWith("no clean connector review")
+      connectorFailureCanSettleWithoutHeadChange(connector.reason)
     ) {
       return { ...evidence, mainSha, connectorPending: connector.reason };
     }
@@ -1044,10 +1061,14 @@ function gateTiming() {
   return { deadline: Date.now() + timeoutSeconds * 1000, pollSeconds };
 }
 
-async function waitForPullCore(options, timing) {
+export async function waitForPullCore(
+  options,
+  timing,
+  assess = assessPullCore,
+) {
   while (true) {
     try {
-      const evidence = await assessPullCore({
+      const evidence = await assess({
         ...options,
         connectorMayBePending: true,
       });
@@ -1356,6 +1377,12 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
     return { outcome };
   }
   if (evidence.connectorPending) {
+    const disposition = controllerConnectorDisposition(
+      evidence.connectorPending,
+    );
+    if (disposition !== "request-review") {
+      return { outcome: disposition };
+    }
     const outcome = await ensureConnectorReviewRequest({
       api,
       owner,
