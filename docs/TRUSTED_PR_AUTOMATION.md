@@ -7,11 +7,11 @@ not create, update, or activate a ruleset.
 ## Decision
 
 `LCV Trusted Gate` is a public central ruleset workflow. GitHub can require that
-workflow in every covered repository, creates its check on the exact pull
-request or merge-group SHA, and prevents a target pull request from replacing
-the workflow selected by the ruleset. This is stronger than a PAT-authored
-commit status and does not require an administrative token to publish a gate
-result.
+workflow in every covered repository. The required workflow creates its check
+on the exact pull-request or merge-group SHA and prevents a target pull request
+from replacing the workflow selected by the ruleset. This is stronger than a
+PAT-authored commit status and does not require an administrative token to
+publish a gate result.
 
 The administrative PAT remains confined to the protected
 `github-administration` environment. It may perform only three mutation
