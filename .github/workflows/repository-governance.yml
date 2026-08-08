@@ -1,0 +1,81 @@
+name: Repository Governance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/repository-governance.yml"
+      - "scripts/github-repository-governance.mjs"
+      - "scripts/github-repository-governance.test.mjs"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/repository-governance.yml"
+      - "scripts/github-repository-governance.mjs"
+      - "scripts/github-repository-governance.test.mjs"
+  merge_group:
+    types:
+      - checks_requested
+  schedule:
+    - cron: "11 * * * *"
+  workflow_dispatch:
+
+permissions: write-all
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: repository-governance-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test repository governance
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Test repository governance controller
+        run: node --test scripts/github-repository-governance.test.mjs
+
+  reconcile:
+    name: Reconcile active repositories
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    needs: test
+    permissions: write-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github-administration
+    steps:
+      - name: Checkout repository without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Enforce collaborators-only pull requests
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ORGANIZATION_NAME: ${{ github.repository_owner }}
+          TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+        run: node scripts/github-repository-governance.mjs

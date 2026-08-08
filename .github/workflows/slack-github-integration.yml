@@ -15,6 +15,9 @@ on:
       - "slack/github-integration/**"
       - "scripts/slack-workflow-monitor.mjs"
       - "scripts/slack-workflow-monitor.test.mjs"
+  merge_group:
+    types:
+      - checks_requested
   schedule:
     - cron: "12,27,42,57 * * * *"
     - cron: "17 7 * * *"
@@ -80,7 +83,7 @@ jobs:
       - name: Audit Slack workflow app dependencies
         working-directory: slack/github-integration
         env:
-          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.token || '' }}
+          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.token || '' }}
         run: deno task --frozen audit
 
   deploy:
