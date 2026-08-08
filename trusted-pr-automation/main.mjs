@@ -105,28 +105,56 @@ export function validatePolicy(raw) {
     ) {
       throw new Error(`${repository} required_checks must be nonempty`);
     }
+    if (
+      config.merge_group_required_checks !== undefined &&
+      !Array.isArray(config.merge_group_required_checks)
+    ) {
+      throw new Error(
+        `${repository} merge_group_required_checks must be an array`,
+      );
+    }
     const keys = new Set();
-    for (const required of config.required_checks) {
-      assertObject(required, `${repository} required check`);
-      if (
-        typeof required.name !== "string" ||
-        !Number.isInteger(required.app_id)
-      ) {
-        throw new Error(
-          `${repository} required check needs name and integer app_id`,
-        );
+    for (const [listName, requiredChecks] of [
+      ["required_checks", config.required_checks],
+      ["merge_group_required_checks", config.merge_group_required_checks ?? []],
+    ]) {
+      for (const required of requiredChecks) {
+        assertObject(required, `${repository} ${listName} check`);
+        if (
+          typeof required.name !== "string" ||
+          !Number.isInteger(required.app_id)
+        ) {
+          throw new Error(
+            `${repository} ${listName} check needs name and integer app_id`,
+          );
+        }
+        if (required.name === TRUSTED_GATE_CHECK_NAME) {
+          throw new Error(`${repository} must not require itself`);
+        }
+        const key = checkKey(required.name, required.app_id);
+        if (keys.has(key)) {
+          throw new Error(`duplicate required check for ${repository}: ${key}`);
+        }
+        keys.add(key);
       }
-      if (required.name === TRUSTED_GATE_CHECK_NAME) {
-        throw new Error(`${repository} must not require itself`);
-      }
-      const key = checkKey(required.name, required.app_id);
-      if (keys.has(key)) {
-        throw new Error(`duplicate required check for ${repository}: ${key}`);
-      }
-      keys.add(key);
     }
   }
   return structuredClone(raw);
+}
+
+export function requiredChecksForPhase(repositoryPolicy, phase) {
+  assertObject(repositoryPolicy, "repository policy");
+  if (!Array.isArray(repositoryPolicy.required_checks)) {
+    throw new Error("repository policy has no required_checks");
+  }
+  if (phase === "pull_request") return repositoryPolicy.required_checks;
+  if (phase === "merge_group") {
+    return [
+      ...repositoryPolicy.required_checks,
+      ...(repositoryPolicy.merge_group_required_checks ?? []),
+    ];
+  }
+  throw new Error(`unsupported check phase: ${phase}`);
 }
 
 export function isTrustedPullRequest(pullRequest, fullRepository, policy) {
@@ -1067,7 +1095,10 @@ async function runPullRequestGate({ api, event, owner, repo, policy }) {
     owner,
     repo,
     sha: eventHead,
-    requiredChecks: policy.repositories[repo].required_checks,
+    requiredChecks: requiredChecksForPhase(
+      policy.repositories[repo],
+      "pull_request",
+    ),
     timing,
   });
   await verifyCodeScanningAfterChecks({
@@ -1160,7 +1191,10 @@ async function runMergeGroupGate({ api, event, owner, repo, policy }) {
     owner,
     repo,
     sha: groupHead,
-    requiredChecks: policy.repositories[repo].required_checks,
+    requiredChecks: requiredChecksForPhase(
+      policy.repositories[repo],
+      "merge_group",
+    ),
     timing,
   });
   for (const pullRequest of pulls) {
@@ -1288,7 +1322,10 @@ async function assessForEnqueue({ api, owner, repo, pullRequest, policy }) {
     repo,
     evidence.pullRequest.head.sha,
   );
-  const requiredChecks = policy.repositories[repo].required_checks;
+  const requiredChecks = requiredChecksForPhase(
+    policy.repositories[repo],
+    "pull_request",
+  );
   const result = classifyChecks({ ...checks, requiredChecks });
   let checkOutcome;
   try {

@@ -20,6 +20,7 @@ import {
   isTrustedPullRequest,
   lateReviewTimeoutCommand,
   recoverLateTrustedGate,
+  requiredChecksForPhase,
   resolveConnectorReviewCommits,
   reviewRequestBody,
   selectAssociatedPullRequests,
@@ -67,6 +68,9 @@ function policy() {
           { name: "CodeQL", app_id: 57789 },
           { name: "Run zizmor / Run zizmor", app_id: ACTIONS_APP_ID },
           { name: "zizmor", app_id: 57789 },
+        ],
+        merge_group_required_checks: [
+          { name: "Synthetic integration", app_id: ACTIONS_APP_ID },
         ],
       },
     },
@@ -146,7 +150,7 @@ test("validatePolicy rejects duplicate identities, duplicate checks, and self-ga
   );
 
   const duplicateCheck = policy();
-  duplicateCheck.repositories.example.required_checks.push({
+  duplicateCheck.repositories.example.merge_group_required_checks.push({
     name: "CodeQL",
     app_id: 57789,
   });
@@ -156,11 +160,18 @@ test("validatePolicy rejects duplicate identities, duplicate checks, and self-ga
   );
 
   const recursive = policy();
-  recursive.repositories.example.required_checks.push({
+  recursive.repositories.example.merge_group_required_checks.push({
     name: TRUSTED_GATE_CHECK_NAME,
     app_id: ACTIONS_APP_ID,
   });
   assert.throws(() => validatePolicy(recursive), /must not require itself/i);
+
+  const malformedPhase = policy();
+  malformedPhase.repositories.example.merge_group_required_checks = {};
+  assert.throws(
+    () => validatePolicy(malformedPhase),
+    /merge_group_required_checks must be an array/i,
+  );
 });
 
 test("isTrustedPullRequest accepts only exact allowlisted same-repository main PRs", () => {
@@ -662,6 +673,71 @@ test("classifyChecks requires exact executor and GHAS identities and all observe
   );
 });
 
+test("phase-specific checks are optional on PRs and fail closed on merge groups", () => {
+  const checked = validatePolicy(policy());
+  const repository = checked.repositories.example;
+  const pullChecks = requiredChecksForPhase(repository, "pull_request");
+  const mergeChecks = requiredChecksForPhase(repository, "merge_group");
+  const commonRuns = pullChecks.map((entry, index) =>
+    check(entry.name, entry.app_id, "completed", "success", index + 1),
+  );
+
+  assert.equal(
+    classifyChecks({
+      checkRuns: commonRuns,
+      statuses: [],
+      requiredChecks: pullChecks,
+    }).state,
+    "success",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: commonRuns,
+      statuses: [],
+      requiredChecks: mergeChecks,
+    }).state,
+    "pending",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: [
+        ...commonRuns,
+        check(
+          "Synthetic integration",
+          ACTIONS_APP_ID,
+          "completed",
+          "failure",
+          99,
+        ),
+      ],
+      statuses: [],
+      requiredChecks: pullChecks,
+    }).state,
+    "failure",
+  );
+  assert.equal(
+    classifyChecks({
+      checkRuns: [
+        ...commonRuns,
+        check(
+          "Synthetic integration",
+          ACTIONS_APP_ID,
+          "completed",
+          "success",
+          99,
+        ),
+      ],
+      statuses: [],
+      requiredChecks: mergeChecks,
+    }).state,
+    "success",
+  );
+  assert.throws(
+    () => requiredChecksForPhase(repository, "push"),
+    /unsupported check phase/i,
+  );
+});
+
 test("controller treats normal pending checks as observation and terminal failures as errors", () => {
   assert.equal(
     controllerCheckOutcome({
@@ -1027,18 +1103,34 @@ test("checked-in policy covers every active repository and raw analyzer wrappers
       `${repo}: missing raw zizmor executor`,
     );
   }
-  const githubChecks = new Set(
-    checked.repositories[".github"].required_checks.map(
+  const githubPullChecks = new Set(
+    requiredChecksForPhase(checked.repositories[".github"], "pull_request").map(
       ({ name, app_id: appId }) => `${name}@${appId}`,
     ),
   );
+  const githubMergeChecks = new Set(
+    requiredChecksForPhase(checked.repositories[".github"], "merge_group").map(
+      ({ name, app_id: appId }) => `${name}@${appId}`,
+    ),
+  );
+  assert.ok(
+    githubPullChecks.has("Trusted PR controller tests@15368"),
+    ".github PR phase: missing Trusted PR controller tests",
+  );
   for (const name of [
-    "Trusted PR controller tests",
     "Verify relay and recovery controller",
     "Test repository governance",
     "Verify Slack workflow app",
   ]) {
-    assert.ok(githubChecks.has(`${name}@15368`), `.github: missing ${name}`);
+    assert.equal(
+      githubPullChecks.has(`${name}@15368`),
+      false,
+      `.github PR phase must not require path-filtered ${name}`,
+    );
+    assert.ok(
+      githubMergeChecks.has(`${name}@15368`),
+      `.github merge-group phase: missing ${name}`,
+    );
   }
 });
 

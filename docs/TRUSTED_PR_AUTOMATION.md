@@ -40,7 +40,8 @@ never be duplicated by the client.
   suite on pull-request and merge-group heads without loading the protected
   environment or its secret.
 - `trusted-pr-automation/policy.json` binds each active repository to exact
-  check names and GitHub App IDs.
+  check names and GitHub App IDs, separating producers guaranteed on both PR
+  and merge-group heads from wrappers guaranteed only on merge-group heads.
 - `trusted-pr-automation/main.mjs` is the shared fail-closed engine.
 
 Local workflow validation uses actionlint 1.7.12 with a narrow ignore for its
@@ -75,11 +76,15 @@ time:
    `comment.commit.oid`.
 6. Every configured check is present as the exact `{name, app_id}` pair and has
    conclusion `success`; skipped or neutral is never enough for a configured
-   requirement. Missing or running checks are polled. For other observed jobs,
-   intentionally conditional `skipped` or `neutral` conclusions are accepted,
-   while failure, cancelled, timed-out, action-required, startup-failure, stale,
-   or unknown conclusions fail closed. Every legacy commit status must be
-   successful.
+   requirement. `required_checks` applies to both PR and merge-group heads;
+   `merge_group_required_checks` is added only for the synthetic group, where
+   path-filtered PR workflows are guaranteed to run without path filters.
+   Missing or running required checks are polled. If a group-only wrapper does
+   run on a PR, it remains part of the observed inventory and a bad conclusion
+   still fails closed. For other observed jobs, intentionally conditional
+   `skipped` or `neutral` conclusions are accepted, while failure, cancelled,
+   timed-out, action-required, startup-failure, stale, or unknown conclusions
+   fail closed. Every legacy commit status must be successful.
 7. The raw CodeQL executor jobs (`Analyze <language>`) and the raw zizmor job
    (`Run zizmor` or `Run zizmor / Run zizmor`) are required in addition to the
    corresponding GitHub Advanced Security upload results. A green SARIF upload
