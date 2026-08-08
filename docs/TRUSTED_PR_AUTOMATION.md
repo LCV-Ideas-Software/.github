@@ -66,9 +66,9 @@ time.
    latest base. Exact head and base are rechecked at every mutation boundary.
 4. Every PR commit has `verification.verified=true`, and the final returned
    commit is the exact current head.
-5. All issue comments, reviews, and review threads are read for both
-   `chatgpt-codex-connector[bot]` and
-   `copilot-pull-request-reviewer[bot]`. Thread attribution uses the immutable
+5. All issue comments, reviews, and review threads are read for both canonical
+   GraphQL bot identities, `chatgpt-codex-connector` and
+   `copilot-pull-request-reviewer`. Thread attribution uses the immutable
    `pullRequestReview.commit.oid`, not the remapped inline-comment commit.
 6. Every configured CI or security requirement is present as the exact
    `{name, app_id}` pair and concludes `success`. Missing, running, skipped, or
