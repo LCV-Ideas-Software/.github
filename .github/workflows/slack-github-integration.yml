@@ -10,11 +10,6 @@ on:
       - "scripts/slack-workflow-monitor.test.mjs"
   pull_request:
     branches: [main]
-    paths:
-      - ".github/workflows/slack-github-integration.yml"
-      - "slack/github-integration/**"
-      - "scripts/slack-workflow-monitor.mjs"
-      - "scripts/slack-workflow-monitor.test.mjs"
   merge_group:
     types:
       - checks_requested

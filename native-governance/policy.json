@@ -1,144 +1,190 @@
 {
   "schema_version": 1,
   "organization": "LCV-Ideas-Software",
-  "allowed_actors": [
-    { "login": "lcv-leo", "id": 268063598 },
-    { "login": "dependabot[bot]", "id": 49699333 }
-  ],
-  "copilot_reviewer": {
-    "database_id": 175728472,
-    "node_id": "BOT_kgDOCnlnWA",
-    "rest_review_login": "copilot-pull-request-reviewer[bot]",
-    "graphql_login": "copilot-pull-request-reviewer",
-    "inline_alias_login": "Copilot"
+  "organization_ruleset": {
+    "name": "LCV native zero tolerance",
+    "target": "branch",
+    "enforcement": "evaluate",
+    "bypass_actors": [],
+    "conditions": {
+      "repository_name": {
+        "include": ["~ALL"],
+        "exclude": [],
+        "protected": true
+      },
+      "ref_name": {
+        "include": ["~DEFAULT_BRANCH"],
+        "exclude": []
+      }
+    },
+    "rules": [
+      { "type": "deletion" },
+      { "type": "required_linear_history" },
+      { "type": "required_signatures" },
+      {
+        "type": "pull_request",
+        "parameters": {
+          "allowed_merge_methods": ["squash"],
+          "dismiss_stale_reviews_on_push": false,
+          "dismissal_restriction": {
+            "allowed_actors": [],
+            "enabled": false
+          },
+          "require_code_owner_review": false,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true,
+          "required_reviewers": []
+        }
+      },
+      { "type": "non_fast_forward" },
+      {
+        "type": "code_scanning",
+        "parameters": {
+          "code_scanning_tools": [
+            {
+              "tool": "CodeQL",
+              "alerts_threshold": "all",
+              "security_alerts_threshold": "all"
+            },
+            {
+              "tool": "zizmor",
+              "alerts_threshold": "all",
+              "security_alerts_threshold": "all"
+            }
+          ]
+        }
+      },
+      {
+        "type": "copilot_code_review",
+        "parameters": {
+          "review_draft_pull_requests": false,
+          "review_on_push": true
+        }
+      }
+    ]
+  },
+  "repository_status_ruleset": {
+    "name": "main: native required status checks",
+    "target": "branch",
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {
+        "include": ["~DEFAULT_BRANCH"],
+        "exclude": []
+      }
+    }
+  },
+  "repository_queue_ruleset": {
+    "name": "main: native merge queue",
+    "target": "branch",
+    "bypass_actors": [],
+    "conditions": {
+      "ref_name": {
+        "include": ["~DEFAULT_BRANCH"],
+        "exclude": []
+      }
+    },
+    "merge_queue": {
+      "check_response_timeout_minutes": 60,
+      "grouping_strategy": "ALLGREEN",
+      "max_entries_to_build": 1,
+      "max_entries_to_merge": 1,
+      "merge_method": "SQUASH",
+      "min_entries_to_merge": 1,
+      "min_entries_to_merge_wait_minutes": 0
+    }
+  },
+  "repository_settings": {
+    "has_pull_requests": true,
+    "pull_request_creation_policy": "collaborators_only",
+    "allow_squash_merge": true,
+    "allow_merge_commit": false,
+    "allow_rebase_merge": false,
+    "allow_auto_merge": true,
+    "delete_branch_on_merge": true
   },
   "repositories": {
     ".github": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
-        { "name": "Dependabot controller", "app_id": 15368 },
-        { "name": "Trusted PR controller tests", "app_id": 15368 },
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
         { "name": "Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
-      ],
-      "merge_group_required_checks": [
-        { "name": "Verify relay and recovery controller", "app_id": 15368 },
-        { "name": "Test repository governance", "app_id": 15368 },
-        { "name": "Verify Slack workflow app", "app_id": 15368 }
+        { "name": "OpenSSF Scorecard", "app_id": 15368 },
+        { "name": "Build Pages artifact", "app_id": 15368 },
+        {
+          "name": "Verify relay and recovery controller",
+          "app_id": 15368
+        },
+        { "name": "Verify Slack workflow app", "app_id": 15368 },
+        { "name": "Test native governance", "app_id": 15368 },
+        { "name": "Test native auto-merge", "app_id": 15368 }
       ]
     },
     ".github-private": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Governance configuration", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
-      ],
-      "provenance": {
-        "trusted_gate": {
-          "ruleset_id": 20591490,
-          "repository_id": 1327548248,
-          "required_workflow_id": 330131320,
-          "source_repository_id": 1224096002,
-          "source_repository": "LCV-Ideas-Software/.github",
-          "source_workflow_id": 329989853,
-          "source_workflow_path": ".github/workflows/trusted-pr-gate.yml",
-          "source_sha": "50fdb99aae9864da829d649e695ac3c4729f18b7",
-          "source_blob_sha": "3d61c1c7a3cc909537d34f824bdd9574ffeb285e"
-        },
-        "required_check_producers": [
-          {
-            "check_name": "Governance configuration",
-            "app_id": 15368,
-            "workflow_id": 329920424,
-            "workflow_name": "Enterprise governance validation",
-            "workflow_path": ".github/workflows/enterprise-governance-validation.yml",
-            "workflow_blob_sha": "62429f53521507f975dba58a61e50d22734420f6",
-            "referenced_workflows": []
-          },
-          {
-            "check_name": "Analyze actions",
-            "app_id": 15368,
-            "workflow_id": 329928478,
-            "workflow_name": "CodeQL",
-            "workflow_path": ".github/workflows/codeql.yml",
-            "workflow_blob_sha": "f6e0a120f9c221687bfb01d7fabc6fa18e371ca3",
-            "referenced_workflows": []
-          },
-          {
-            "check_name": "Run zizmor / Run zizmor",
-            "app_id": 15368,
-            "workflow_id": 329920427,
-            "workflow_name": "Zizmor",
-            "workflow_path": ".github/workflows/zizmor.yml",
-            "workflow_blob_sha": "fe39f2311cd46a3f639547fd70823d4db527fbd3",
-            "referenced_workflows": [
-              {
-                "path": "LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@ac3d4ad22073ee419cb9b861c38fe7bfa93b132a",
-                "sha": "ac3d4ad22073ee419cb9b861c38fe7bfa93b132a",
-                "repository": "LCV-Ideas-Software/.github",
-                "workflow_path": ".github/workflows/zizmor.yml",
-                "blob_sha": "a2679fe213abffdf527597df9a61d31cf2ee76f6"
-              }
-            ]
-          }
-        ]
-      }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
+      ]
     },
     "admin-app": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "astrologo-app": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
         { "name": "OpenSSF Scorecard", "app_id": 15368 },
         { "name": "Reject unverified binary artifacts", "app_id": 15368 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "calculadora-app": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
         { "name": "Test application", "app_id": 15368 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "cross-review": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
         { "name": "Analyze python", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
         { "name": "Build, lint and smoke", "app_id": 15368 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "maestro-app": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
@@ -146,65 +192,64 @@
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
         { "name": "Analyze rust", "app_id": 15368 },
         { "name": "Analyze legacy CodeQL category", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
         { "name": "Repository hygiene", "app_id": 15368 },
         { "name": "Rust gates (cargo --locked)", "app_id": 15368 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "mainsite-app": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "mtasts-motor": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "oraculo-financeiro": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "sponsor-motor": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
         { "name": "Format, lint, typecheck and test", "app_id": 15368 },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     },
     "ultrabrain-mcp": {
+      "status_enforcement": "disabled",
+      "queue_enforcement": "disabled",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Check index.html formatting", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
         { "name": "Analyze javascript-typescript", "app_id": 15368 },
-        { "name": "CodeQL", "app_id": 57789 },
         {
           "name": "Install, check and smoke (ubuntu-latest, 22)",
           "app_id": 15368
@@ -221,8 +266,7 @@
           "name": "Install, check and smoke (windows-latest, 24)",
           "app_id": 15368
         },
-        { "name": "Run zizmor / Run zizmor", "app_id": 15368 },
-        { "name": "zizmor", "app_id": 57789 }
+        { "name": "Run zizmor / Run zizmor", "app_id": 15368 }
       ]
     }
   }

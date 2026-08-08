@@ -1,0 +1,59 @@
+name: Native Auto-merge
+
+on:
+  workflow_run:
+    workflows:
+      - CodeQL
+    types:
+      - completed
+  pull_request:
+  merge_group:
+    types:
+      - checks_requested
+
+permissions: write-all
+
+concurrency:
+  group: native-auto-merge-${{ github.repository }}-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test native auto-merge
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    permissions: write-all
+    timeout-minutes: 5
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check syntax
+        run: node --check native-auto-merge/main.mjs
+      - name: Run focused tests
+        run: node --test native-auto-merge/main.test.mjs
+
+  enable:
+    name: Enable native auto-merge
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions: write-all
+    environment: dependabot-automation
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted action source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Enable GitHub native auto-merge
+        uses: ./native-auto-merge
+        with:
+          automation_token: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+          event_repository: ${{ github.event.repository.full_name }}
+          workflow_name: ${{ github.event.workflow_run.name }}
+          workflow_status: ${{ github.event.workflow_run.status }}
+          workflow_event: ${{ github.event.workflow_run.event }}
+          workflow_head_sha: ${{ github.event.workflow_run.head_sha }}
+          workflow_pull_requests: ${{ toJSON(github.event.workflow_run.pull_requests) }}

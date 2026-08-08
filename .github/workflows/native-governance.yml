@@ -1,23 +1,14 @@
-name: Repository Governance
+name: Native Governance
 
 on:
   push:
     branches: [main]
-    paths:
-      - ".github/workflows/repository-governance.yml"
-      - "scripts/github-repository-governance.mjs"
-      - "scripts/github-repository-governance.test.mjs"
   pull_request:
     branches: [main]
-    paths:
-      - ".github/workflows/repository-governance.yml"
-      - "scripts/github-repository-governance.mjs"
-      - "scripts/github-repository-governance.test.mjs"
   merge_group:
-    types:
-      - checks_requested
+    types: [checks_requested]
   schedule:
-    - cron: "11 * * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions: write-all
@@ -26,17 +17,17 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 concurrency:
-  group: repository-governance-${{ github.repository }}-${{ github.ref }}
+  group: native-governance-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   test:
-    name: Test repository governance
-    permissions: write-all
+    name: Test native governance
+    permissions: write-all # zizmor: ignore[excessive-permissions] Organization policy requires write-all.
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Checkout repository without persisted credentials
+      - name: Checkout without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -47,21 +38,31 @@ jobs:
           node-version: 24
           check-latest: true
 
-      - name: Test repository governance controller
-        run: node --test scripts/github-repository-governance.test.mjs
+      - name: Check governance and auditor syntax
+        run: |
+          node --check scripts/github-native-governance.mjs
+          node --check scripts/github-actions-pin-audit.mjs
+          node --check scripts/oss-advisory-watch.mjs
+
+      - name: Test native governance and organization auditors
+        run: >-
+          node --test
+          scripts/github-native-governance.test.mjs
+          scripts/github-actions-pin-audit.test.mjs
+          scripts/oss-advisory-watch.test.mjs
 
   reconcile:
-    name: Reconcile active repositories
+    name: Reconcile native GitHub settings
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     needs: test
-    permissions: write-all
+    permissions: write-all # zizmor: ignore[excessive-permissions] Organization policy requires write-all.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     environment: github-administration
     steps:
-      - name: Checkout repository without persisted credentials
+      - name: Checkout signed main without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -72,10 +73,10 @@ jobs:
           node-version: 24
           check-latest: true
 
-      - name: Enforce collaborators-only pull requests
+      - name: Reconcile native configuration only
         env:
           GITHUB_REF: ${{ github.ref }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           ORGANIZATION_NAME: ${{ github.repository_owner }}
           TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
-        run: node scripts/github-repository-governance.mjs
+        run: node scripts/github-native-governance.mjs
