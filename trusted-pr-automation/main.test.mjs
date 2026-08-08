@@ -1697,7 +1697,10 @@ test("the gate polls a mutable connector blocker but propagates terminal evidenc
   const settled = await waitForPullCore(options, timing, async () => {
     calls += 1;
     if (calls === 1) {
-      return { connectorPending: "unresolved connector thread remains" };
+      return {
+        pullRequest: { head: { sha: SHA } },
+        connectorPending: "unresolved connector thread remains",
+      };
     }
     return { pullRequest: { head: { sha: SHA } } };
   });
@@ -1713,6 +1716,19 @@ test("the gate polls a mutable connector blocker but propagates terminal evidenc
     /no immutable review commit/i,
   );
   assert.equal(calls, 1);
+
+  calls = 0;
+  await assert.rejects(
+    waitForPullCore(options, timing, async () => {
+      calls += 1;
+      return {
+        pullRequest: { head: { sha: calls === 1 ? SHA : OTHER_SHA } },
+        connectorPending: "unresolved connector thread remains",
+      };
+    }),
+    /head changed while polling exact-head reviews/i,
+  );
+  assert.equal(calls, 2);
 });
 
 test("the gate polls mutable Copilot review evidence but rejects malformed identity evidence", async () => {
@@ -1727,6 +1743,7 @@ test("the gate polls mutable Copilot review evidence but rejects malformed ident
     calls += 1;
     if (calls === 1) {
       return {
+        pullRequest: { head: { sha: SHA } },
         copilotPending: "no Copilot review COMMENTED exists for the exact head",
       };
     }

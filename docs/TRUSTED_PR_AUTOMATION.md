@@ -251,6 +251,10 @@ Within the required gate, mutable review states that can settle without
 changing the commit—no clean connector response, an unresolved connector or
 stale-head Copilot thread, or no exact-head Copilot `COMMENTED` review
 yet—remain pending and are polled fail-closed until the same bounded deadline.
+Every polling iteration first reaffirms that the reread pull-request head is
+the event's exact expected SHA. A missing or changed head is a terminal stale-
+head error before any pending classification or sleep; the gate never keeps
+polling bot evidence for a superseded commit.
 This avoids a race in which the workflow starts before an agent can reply to
 and resolve a fixed thread. The controller never treats those states as
 trusted: unresolved threads are reported as bot-specific blockers, and only

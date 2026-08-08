@@ -109,6 +109,12 @@ const DEFAULT_POLL_SECONDS = 30;
 const DEFAULT_TIMEOUT_SECONDS = 15 * 60;
 
 class PendingEvidenceError extends Error {}
+class StaleHeadError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "StaleHeadError";
+  }
+}
 
 function assertObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -1846,6 +1852,14 @@ export async function waitForPullCore(
         ...options,
         evidenceMayBePending: true,
       });
+      if (
+        options.expectedHead !== undefined &&
+        evidence?.pullRequest?.head?.sha !== options.expectedHead
+      ) {
+        throw new StaleHeadError(
+          `${options.repo}#${options.number}: head changed while polling exact-head reviews`,
+        );
+      }
       if (evidence.connectorPending) {
         throw new PendingEvidenceError(
           `${options.repo}#${options.number}: ${evidence.connectorPending}`,
