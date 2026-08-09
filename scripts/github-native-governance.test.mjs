@@ -75,6 +75,7 @@ function rulesetRecord(id, owner, payload, sourceType) {
 function fakeGitHub({
   repositories,
   organizationRulesets = [],
+  inheritedOrganizationRulesets = [],
   rulesets = {},
 }) {
   const state = {
@@ -86,6 +87,9 @@ function fakeGitHub({
     ),
     organizationRulesets: organizationRulesets.map((candidate) =>
       structuredClone(candidate),
+    ),
+    inheritedOrganizationRulesets: inheritedOrganizationRulesets.map(
+      (candidate) => structuredClone(candidate),
     ),
     repositoryRulesets: new Map(
       Object.entries(rulesets).map(([name, candidates]) => [
@@ -119,18 +123,21 @@ function fakeGitHub({
 
     if (parsed.pathname === `/orgs/${ORGANIZATION}/rulesets`) {
       if (method === "GET") {
+        const organizationRulesets = state.organizationRulesets.map(
+          ({ id, name, target, enforcement, source_type, source }) => ({
+            id,
+            name,
+            target,
+            enforcement,
+            source_type,
+            source,
+          }),
+        );
         return response(
           200,
-          state.organizationRulesets.map(
-            ({ id, name, target, enforcement, source_type, source }) => ({
-              id,
-              name,
-              target,
-              enforcement,
-              source_type,
-              source,
-            }),
-          ),
+          parsed.searchParams.get("includes_parents") === "false"
+            ? organizationRulesets
+            : [...organizationRulesets, ...state.inheritedOrganizationRulesets],
         );
       }
       if (method === "POST") {
@@ -1176,6 +1183,54 @@ test("managed ruleset drift is updated, while duplicate ownership fails closed",
   assert.equal(
     equivalentDisabledRestriction.requests.some(
       ({ method }) => method !== "GET",
+    ),
+    false,
+  );
+
+  const inheritedEnterpriseRuleset = fakeGitHub({
+    repositories: [active],
+    organizationRulesets: [
+      rulesetRecord(10, ORGANIZATION, desiredOrganization, "Organization"),
+    ],
+    inheritedOrganizationRulesets: [
+      rulesetRecord(
+        20,
+        "lcv-ideas-software",
+        {
+          ...desiredOrganization,
+          name: "Enterprise signed commits",
+        },
+        "Enterprise",
+      ),
+    ],
+    rulesets: {
+      ".github": [
+        rulesetRecord(
+          11,
+          `${ORGANIZATION}/.github`,
+          desiredStatus,
+          "Repository",
+        ),
+        rulesetRecord(
+          12,
+          `${ORGANIZATION}/.github`,
+          desiredQueue,
+          "Repository",
+        ),
+      ],
+    },
+  });
+  const inheritedResult = await reconcileNativeGovernance(
+    configuration(),
+    policy,
+    { fetchImpl: inheritedEnterpriseRuleset.fetchImpl },
+  );
+  assert.equal(inheritedResult.organizationRulesetOutcome, "unchanged");
+  assert.equal(
+    inheritedEnterpriseRuleset.requests.some(
+      ({ pathname, search }) =>
+        pathname === `/orgs/${ORGANIZATION}/rulesets` &&
+        !new URLSearchParams(search).has("includes_parents"),
     ),
     false,
   );
