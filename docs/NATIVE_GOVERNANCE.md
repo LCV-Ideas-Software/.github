@@ -76,7 +76,7 @@ re-reads the pull request, binds the operation to its current head SHA and
 allowed immutable author identity, and invokes only:
 
 ```text
-gh pr merge <number> --repo <owner/repository> --auto --match-head-commit <sha>
+gh pr merge <number> --repo <owner/repository> --auto --squash --match-head-commit <sha>
 ```
 
 Before that request, the action loads `native-governance/policy.json` by a URL
@@ -96,10 +96,12 @@ the last PR read is an API limitation rather than an asserted atomic guarantee;
 GitHub disables already-enabled auto-merge when the base changes, and the
 automation never treats that behavior as permission to bypass branch rules.
 
-It never uses `--admin`, never chooses a merge method, never approves a review,
-never requests a rebase, and never calls the REST merge endpoint. On a branch
-that requires a merge queue, GitHub either enables auto-merge while requirements
-are pending or adds the exact head to the queue after they pass.
+It never uses `--admin`, never approves a review, never requests a rebase, and
+never calls the REST merge endpoint. It explicitly requests the only permitted
+merge method, `--squash`, so the same command is deterministic before and after
+queue enforcement. On a branch that requires a merge queue, GitHub either
+enables auto-merge while requirements are pending or adds the exact head to the
+queue after they pass.
 
 The consumer migration adds `ready_for_review` to every CodeQL workflow before
 native enforcement is promoted. A draft that becomes ready then produces a

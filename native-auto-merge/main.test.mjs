@@ -679,6 +679,7 @@ test("the mutation delegates only to native auto-merge with an atomic head guard
     "--repo",
     REPOSITORY,
     "--auto",
+    "--squash",
     "--match-head-commit",
     HEAD_SHA,
   ]);
@@ -689,7 +690,7 @@ test("the mutation delegates only to native auto-merge with an atomic head guard
   assert.equal(calls[0].options.env.PATH, "test-path");
   assert.equal(calls[0].options.shell, false);
   assert.equal(calls[0].options.timeout, 60_000);
-  for (const forbidden of ["--admin", "--squash", "--merge", "--rebase"]) {
+  for (const forbidden of ["--admin", "--merge", "--rebase"]) {
     assert.equal(calls[0].args.includes(forbidden), false, forbidden);
   }
 });
