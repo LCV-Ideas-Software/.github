@@ -6,6 +6,9 @@ on:
       - ".github/workflows/**"
       - ".github/dependabot.yml"
       - "SECURITY.md"
+      - "scripts/scorecard-policy.jq"
+      - "scripts/scorecard-policy.test.mjs"
+      - "scripts/scorecard-workflow.test.mjs"
   pull_request:
     branches: ["main"]
   merge_group:
@@ -29,73 +32,55 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+      - name: Set up Node.js for the workflow regression
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Test Scorecard workflow contract
+        run: >-
+          node --test
+          scripts/scorecard-workflow.test.mjs
+          scripts/scorecard-policy.test.mjs
+      - name: Run Scorecard on supported events
+        if: github.event_name != 'merge_group'
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
           # OpenSSF's publication API rejects workflows with organization-mandated write-all.
           # SARIF and artifacts remain enabled below.
           publish_results: false
-      - name: Enforce the approved Scorecard policy
+      - name: Run Scorecard on merge group
+        if: github.event_name == 'merge_group'
         shell: bash
+        env:
+          # v2.4.4 validates token presence before selecting its tokenless local client.
+          INPUT_REPO_TOKEN: local-merge-group-no-credential
+          INPUT_RESULTS_FILE: scorecard-results.sarif
+          INPUT_RESULTS_FORMAT: sarif
         run: |
           set -euo pipefail
-          # Preserve only the exact signatures of recorded policy decisions.
-          # BranchProtectionID is bootstrap-only and must be removed after the
-          # native protection canary eliminates the historical baseline result.
-          jq -e '
-            def result_uri:
-              .locations[0]?.physicalLocation?.artifactLocation?.uri // "";
-            def result_snippet:
-              .locations[0]?.physicalLocation?.region?.snippet?.text // "";
-            def result_message:
-              .message.text // "";
-            def accepted_policy_finding:
-              (result_uri) as $uri
-              | (result_snippet) as $snippet
-              | (result_message) as $message
-              | if .ruleId == "TokenPermissionsID" then
-                  ($uri | test("^\\.github/workflows/[^/]+\\.ya?ml$"))
-                  and $snippet == "write-all"
-                  and ($message | test("^score is [0-9]+: topLevel permissions set to '\''write-all'\''\\n"))
-                elif .ruleId == "PinnedDependenciesID" then
-                  ([
-                    ".github/workflows/cloudflare-pages.yml",
-                    ".github/workflows/github-slack-integration.yml"
-                  ] | index($uri)) != null
-                  and $message == "score is 7: npmCommand not pinned by hash\nClick Remediation section below to solve this issue"
-                  and ([
-                    "npm install --prefix \"$wrangler_prefix\" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest",
-                    "npm install --prefix \"$wrangler_prefix\" --ignore-scripts --no-audit --no-fund"
-                  ] | index($snippet)) != null
-                elif .ruleId == "BranchProtectionID" then
-                  $uri == "no file associated with this alert"
-                  and ($message | startswith("score is 3: branch protection is not maximal on development and all release branches:\nWarn: could not determine whether codeowners review is allowed\nWarn: no status checks found to merge onto branch '\''main'\''\nWarn: PRs are not required to make changes on branch '\''main'\''"))
-                elif .ruleId == "CodeReviewID" then
-                  $uri == "no file associated with this alert"
-                  and ($message | test("^score is 0: Found 0/[0-9]+ approved changesets -- score normalized to 0\\nClick Remediation section below to solve this issue$"))
-                elif .ruleId == "FuzzingID" then
-                  $uri == "no file associated with this alert"
-                  and $message == "score is 0: project is not fuzzed:\nWarn: no fuzzer integrations found\nClick Remediation section below to solve this issue"
-                elif .ruleId == "CIIBestPracticesID" then
-                  $uri == "no file associated with this alert"
-                  and $message == "score is 0: no effort to earn an OpenSSF best practices badge detected\nClick Remediation section below to solve this issue"
-                else
-                  false
-                end;
-            [
-              .runs[]?.results[]?
-              | select(accepted_policy_finding | not)
-              | {
-                  ruleId: (.ruleId // "unknown"),
-                  path: (.locations[0]?.physicalLocation?.artifactLocation?.uri // "unknown")
-                }
-            ] as $unapproved
-            | if ($unapproved | length) == 0
-              then true
-              else error("Unapproved Scorecard findings: \($unapproved | tojson)")
-              end
-          ' scorecard-results.sarif
+          # v2.4.4 supports local candidate analysis only through its pull_request mode.
+          # Run that exact official image over GitHub's checked-out merge-group commit.
+          docker run --rm \
+            --volume "$GITHUB_EVENT_PATH:/github/event.json:ro" \
+            --volume "$GITHUB_WORKSPACE:/github/workspace" \
+            --workdir /github/workspace \
+            --env GITHUB_EVENT_NAME=pull_request \
+            --env GITHUB_EVENT_PATH=/github/event.json \
+            --env GITHUB_WORKSPACE=/github/workspace \
+            --env INPUT_REPO_TOKEN \
+            --env INPUT_RESULTS_FILE \
+            --env INPUT_RESULTS_FORMAT \
+            ghcr.io/ossf/scorecard-action:v2.4.4@sha256:ae5104dd3cc28466ebeb11144354be4cac4b7ff829654f9fab89021d71c46670
+      - name: Require Scorecard SARIF
+        shell: bash
+        run: test -s scorecard-results.sarif
+      - name: Enforce the approved Scorecard policy
+        shell: bash
+        run: >-
+          jq -e --arg event "$GITHUB_EVENT_NAME"
+          -f scripts/scorecard-policy.jq scorecard-results.sarif
       - name: Upload SARIF artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

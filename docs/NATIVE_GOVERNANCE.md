@@ -46,13 +46,22 @@ synthetic merge-group revision.
 The `.github` Scorecard job also runs before merge and rejects every result that
 does not match an auditable exception signature. A rule ID alone is not enough:
 the matcher also binds the recorded message, path and, for Wrangler, exact
-command snippet. The signatures preserve the existing `won't fix` decisions
-for organization-mandated `permissions: write-all`, verified Wrangler `@latest`,
-zero mandatory human approvals, no CII badge program, and fuzzing not applicable
-to this repository's content. `BranchProtectionID` is a temporary bootstrap
-signature and must be removed after the native protection canary makes that
-historical finding disappear. A new or changed rule, path, message or command
-fails the required job.
+command snippet. The durable dependency signatures preserve the explicit
+`won't fix` decisions for organization-mandated `permissions: write-all` and
+verified Wrangler `@latest`. The relay Worker has property-based tests over its
+untrusted webhook boundary, so `FuzzingID` is remediated rather than waived.
+
+Repository-level Scorecard heuristics are bound separately to the declared
+native-governance policy. Trusted `push`, `schedule`, and `workflow_dispatch`
+runs accept only the complete `BranchProtectionID` warning set produced by the
+zero-human-approval rules, the complete `CodeReviewID` result with zero approved
+changesets, and the exact `CIIBestPracticesID` result recording that this
+organization does not participate in the external badge program. Candidate
+runs cannot use those trusted-event signatures. The tokenless local candidate
+scan has one exact bootstrap `BranchProtectionID` signature because upstream
+v2.4.4 cannot inspect live rules in that mode. Any additional warning, changed
+message body, score outside Scorecard's official 0–10 domain, unexpected path,
+nonzero review numerator, new rule, or code finding fails the job.
 
 ## Native auto-merge arming
 
@@ -67,7 +76,7 @@ re-reads the pull request, binds the operation to its current head SHA and
 allowed immutable author identity, and invokes only:
 
 ```text
-gh pr merge <number> --repo <owner/repository> --auto --match-head-commit <sha>
+gh pr merge <number> --repo <owner/repository> --auto --squash --match-head-commit <sha>
 ```
 
 Before that request, the action loads `native-governance/policy.json` by a URL
@@ -87,10 +96,12 @@ the last PR read is an API limitation rather than an asserted atomic guarantee;
 GitHub disables already-enabled auto-merge when the base changes, and the
 automation never treats that behavior as permission to bypass branch rules.
 
-It never uses `--admin`, never chooses a merge method, never approves a review,
-never requests a rebase, and never calls the REST merge endpoint. On a branch
-that requires a merge queue, GitHub either enables auto-merge while requirements
-are pending or adds the exact head to the queue after they pass.
+It never uses `--admin`, never approves a review, never requests a rebase, and
+never calls the REST merge endpoint. It explicitly requests the only permitted
+merge method, `--squash`, so the same command is deterministic before and after
+queue enforcement. On a branch that requires a merge queue, GitHub either
+enables auto-merge while requirements are pending or adds the exact head to the
+queue after they pass.
 
 The consumer migration adds `ready_for_review` to every CodeQL workflow before
 native enforcement is promoted. A draft that becomes ready then produces a

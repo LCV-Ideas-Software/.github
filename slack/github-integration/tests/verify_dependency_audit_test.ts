@@ -1,4 +1,5 @@
 import {
+  readVerificationConfiguration,
   verifyAuditOutput,
   verifyEsbuildReachability,
   verifyExceptionWindow,
@@ -49,6 +50,49 @@ const LOCK = JSON.stringify({
     "https://deno.land/x/deno_slack_hooks@1.5.0/bundler/esbuild_bundler.ts":
       "3d1dc26a0bacc50e31bdb5b90afa3e4229d07405e042f783aebd1235da5c761a",
   },
+});
+
+Deno.test("keeps candidate events tokenless and trusted events live", () => {
+  for (const eventName of ["pull_request", "merge_group"]) {
+    const configuration = readVerificationConfiguration({
+      GITHUB_EVENT_NAME: eventName,
+      GITHUB_TOKEN: "",
+    });
+    if (configuration.verifyUpstreamLive) {
+      throw new Error(`${eventName} unexpectedly enabled live verification`);
+    }
+    assertThrows(
+      () =>
+        readVerificationConfiguration({
+          GITHUB_EVENT_NAME: eventName,
+          GITHUB_TOKEN: "candidate-must-not-receive-this-token",
+        }),
+      "must not receive GITHUB_TOKEN",
+    );
+  }
+
+  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
+    const configuration = readVerificationConfiguration({
+      GITHUB_EVENT_NAME: eventName,
+      GITHUB_TOKEN: "trusted-job-token",
+    });
+    if (!configuration.verifyUpstreamLive) {
+      throw new Error(`${eventName} unexpectedly skipped live verification`);
+    }
+    assertThrows(
+      () =>
+        readVerificationConfiguration({
+          GITHUB_EVENT_NAME: eventName,
+          GITHUB_TOKEN: "",
+        }),
+      "requires GITHUB_TOKEN",
+    );
+  }
+
+  assertThrows(
+    () => readVerificationConfiguration({ GITHUB_TOKEN: "" }),
+    "GITHUB_EVENT_NAME",
+  );
 });
 
 Deno.test("accepts only the reviewed audit finding", () => {

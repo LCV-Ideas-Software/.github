@@ -43,12 +43,56 @@ interface GitHubRelease {
   prerelease?: boolean;
 }
 
+interface VerificationConfiguration {
+  eventName: string;
+  token: string | undefined;
+  verifyUpstreamLive: boolean;
+}
+
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
 function stripAnsi(value: string): string {
   return value.replace(ANSI_SEQUENCE, "");
+}
+
+export function readVerificationConfiguration(
+  environment: Record<string, string | undefined>,
+): Readonly<VerificationConfiguration> {
+  const eventName = environment.GITHUB_EVENT_NAME?.trim();
+  invariant(eventName, "GITHUB_EVENT_NAME is required");
+
+  const token = environment.GITHUB_TOKEN;
+  const candidateEvent = eventName === "pull_request" ||
+    eventName === "merge_group";
+  if (candidateEvent) {
+    invariant(
+      !token,
+      `${eventName} candidate verification must not receive GITHUB_TOKEN`,
+    );
+    return Object.freeze({
+      eventName,
+      token: undefined,
+      verifyUpstreamLive: false,
+    });
+  }
+
+  invariant(
+    eventName === "push" || eventName === "schedule" ||
+      eventName === "workflow_dispatch",
+    `unsupported GITHUB_EVENT_NAME: ${eventName}`,
+  );
+  invariant(token, `${eventName} trusted verification requires GITHUB_TOKEN`);
+  invariant(
+    token === token.trim(),
+    `${eventName} trusted GITHUB_TOKEN has surrounding whitespace`,
+  );
+  return Object.freeze({
+    eventName,
+    token,
+    verifyUpstreamLive: true,
+  });
 }
 
 export function verifyAuditOutput(output: string, exitCode: number): void {
@@ -182,13 +226,12 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   );
 }
 
-async function githubJson<T>(path: string): Promise<T> {
-  const token = Deno.env.get("GITHUB_TOKEN");
+async function githubJson<T>(path: string, token: string): Promise<T> {
   const headers = new Headers({
     Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
     "X-GitHub-Api-Version": "2026-03-10",
   });
-  if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(`https://api.github.com${path}`, { headers });
   invariant(
@@ -203,14 +246,16 @@ function decodeBase64(value: string): Uint8Array {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-async function verifyUpstreamPin(): Promise<void> {
+async function verifyUpstreamPin(token: string): Promise<void> {
   const latestRelease = await githubJson<GitHubRelease>(
     `/repos/${HOOK_REPOSITORY}/releases/latest`,
+    token,
   );
   verifyLatestHookRelease(latestRelease);
 
   const reference = await githubJson<GitReference>(
     `/repos/${HOOK_REPOSITORY}/git/ref/tags/${EXPECTED_HOOK_TAG}`,
+    token,
   );
   invariant(
     reference.object?.type === "tag" &&
@@ -220,6 +265,7 @@ async function verifyUpstreamPin(): Promise<void> {
 
   const tag = await githubJson<GitTag>(
     `/repos/${HOOK_REPOSITORY}/git/tags/${EXPECTED_TAG_OBJECT}`,
+    token,
   );
   invariant(
     tag.object?.type === "commit" &&
@@ -229,6 +275,7 @@ async function verifyUpstreamPin(): Promise<void> {
 
   const content = await githubJson<GitHubContent>(
     `/repos/${HOOK_REPOSITORY}/contents/src/bundler/esbuild_bundler.ts?ref=${EXPECTED_HOOK_COMMIT}`,
+    token,
   );
   invariant(
     content.encoding === "base64" && typeof content.content === "string",
@@ -259,6 +306,10 @@ async function runAudit(): Promise<{ code: number; output: string }> {
 }
 
 async function main(): Promise<void> {
+  const configuration = readVerificationConfiguration({
+    GITHUB_EVENT_NAME: Deno.env.get("GITHUB_EVENT_NAME"),
+    GITHUB_TOKEN: Deno.env.get("GITHUB_TOKEN"),
+  });
   verifyExceptionWindow();
   const scriptDirectory = new URL(".", import.meta.url);
   const [hooksText, lockText] = await Promise.all([
@@ -266,12 +317,17 @@ async function main(): Promise<void> {
     Deno.readTextFile(new URL("../deno.lock", scriptDirectory)),
   ]);
   verifyLocalPins(hooksText, lockText);
-  await verifyUpstreamPin();
+  if (configuration.verifyUpstreamLive) {
+    await verifyUpstreamPin(configuration.token!);
+  }
 
   const audit = await runAudit();
   verifyAuditOutput(audit.output, audit.code);
+  const upstreamScope = configuration.verifyUpstreamLive
+    ? "live release, tag, commit, and source"
+    : "candidate-local pin, integrity, source hash, and exception window";
   console.log(
-    `Dependency audit passed with the sole temporary exception ${EXPECTED_ADVISORY}; all reviewed pins and non-reachability assumptions remain exact.`,
+    `Dependency audit passed with the sole temporary exception ${EXPECTED_ADVISORY}; ${upstreamScope} verification and all non-reachability assumptions remain exact.`,
   );
 }
 

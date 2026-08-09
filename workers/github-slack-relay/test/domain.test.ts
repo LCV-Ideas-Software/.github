@@ -286,4 +286,21 @@ describe("event normalization", () => {
     expect(sanitized.length).toBe(30);
     expect(sanitized.endsWith("…")).toBe(true);
   });
+
+  it("never splits an astral character at a truncation boundary", () => {
+    for (const [value, maximumLength] of [
+      [`${"x".repeat(28)}\ud800tail`, 30],
+      [`${"x".repeat(28)}😀tail`, 30],
+      [`${"x".repeat(98)}😀tail`, 100],
+      [`${"x".repeat(253)}😀tail`, 255],
+      [`${"x".repeat(298)}😀tail`, 300],
+      [`${"x".repeat(1_498)}😀tail`, 1_500],
+      [`${"x".repeat(2_046)}😀tail`, 2_048],
+    ] as const) {
+      const sanitized = sanitizeText(value, maximumLength);
+      expect(sanitized.length).toBeLessThanOrEqual(maximumLength);
+      expect(sanitized.endsWith("…")).toBe(true);
+      expect(sanitized.isWellFormed()).toBe(true);
+    }
+  });
 });

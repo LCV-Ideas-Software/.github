@@ -552,6 +552,7 @@ export async function runGhAutoMerge(
       "--repo",
       repository,
       "--auto",
+      "--squash",
       "--match-head-commit",
       headSha,
     ],
