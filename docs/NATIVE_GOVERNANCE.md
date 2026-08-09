@@ -163,6 +163,13 @@ their consumer migrations and the private plus public merge-group canaries:
 The `.github`, `astrologo-app`, `cross-review`, and `maestro-app` repository
 rulesets remain `disabled` until their own migration evidence is complete.
 
+Every promotion also begins with a live inventory of open pull requests. If a
+repository has an eligible pull request whose CodeQL run completed before the
+rulesets became active, the operator must re-run CodeQL for that exact head
+after activation and verify that the native armer places it in the queue. The
+current six-repository batch was declared only after that inventory returned
+zero open pull requests in every promoted repository.
+
 Before installing the consumer workflow, each repository must have a
 `dependabot-automation` environment restricted to `main` and containing
 `LCV_AUTOMATION_TOKEN`. The eleven existing public consumers already satisfy

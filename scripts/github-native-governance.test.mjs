@@ -352,7 +352,17 @@ test("repository status and queue rulesets are independent and canary-scoped", a
   const queuePayload = buildRepositoryQueueRuleset(policy, ".github");
 
   assert.notEqual(statusPayload.name, queuePayload.name);
-  const activeRepositories = new Set([
+  const activeStatusRepositories = new Set([
+    ".github-private",
+    "admin-app",
+    "calculadora-app",
+    "mainsite-app",
+    "mtasts-motor",
+    "oraculo-financeiro",
+    "sponsor-motor",
+    "ultrabrain-mcp",
+  ]);
+  const activeQueueRepositories = new Set([
     ".github-private",
     "admin-app",
     "calculadora-app",
@@ -366,9 +376,18 @@ test("repository status and queue rulesets are independent and canary-scoped", a
     name,
     { status_enforcement, queue_enforcement },
   ] of Object.entries(policy.repositories)) {
-    const expected = activeRepositories.has(name) ? "active" : "disabled";
-    assert.equal(status_enforcement, expected, `${name} status enforcement`);
-    assert.equal(queue_enforcement, expected, `${name} queue enforcement`);
+    const expectedStatus = activeStatusRepositories.has(name)
+      ? "active"
+      : "disabled";
+    const expectedQueue = activeQueueRepositories.has(name)
+      ? "active"
+      : "disabled";
+    assert.equal(
+      status_enforcement,
+      expectedStatus,
+      `${name} status enforcement`,
+    );
+    assert.equal(queue_enforcement, expectedQueue, `${name} queue enforcement`);
   }
   assert.equal(statusPayload.enforcement, "disabled");
   assert.equal(queuePayload.enforcement, "disabled");
