@@ -24,7 +24,7 @@ const ORGANIZATION_RULE_TYPES = [
 ];
 
 const REQUIRED_ORGANIZATION_CONDITIONS = {
-  repository_name: { include: ["~ALL"], exclude: [], protected: true },
+  repository_name: { include: ["~ALL"], exclude: [], protected: false },
   ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] },
 };
 

@@ -288,7 +288,7 @@ test("policy renders a native organization zero-tolerance ruleset without a merg
   assert.equal(payload.enforcement, "evaluate");
   assert.deepEqual(payload.bypass_actors, []);
   assert.deepEqual(payload.conditions, {
-    repository_name: { include: ["~ALL"], exclude: [], protected: true },
+    repository_name: { include: ["~ALL"], exclude: [], protected: false },
     ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] },
   });
   assert.deepEqual(
@@ -445,6 +445,13 @@ test("unsafe policy extensions, bypasses, and organization merge queues are reje
   policy.provenance = {};
   assert.throws(() => validatePolicy(policy), /unknown key.*provenance/i);
 
+  const protectedAllRepositories = structuredClone(await policyFixture());
+  protectedAllRepositories.organization_ruleset.conditions.repository_name.protected = true;
+  assert.throws(
+    () => validatePolicy(protectedAllRepositories),
+    /organization_ruleset\.conditions/i,
+  );
+
   const bypass = structuredClone(await policyFixture());
   bypass.organization_ruleset.bypass_actors.push({
     actor_id: 1,
@@ -557,6 +564,33 @@ test("the required governance check also protects both organization auditors", a
   assert.doesNotMatch(
     workflow,
     /gh pr merge|enqueuePullRequest|enablePullRequestAutoMerge|\/pulls\/.*\/merge/,
+  );
+});
+
+test("manual onboarding copies the automation token only into a policy repository with an exact protected environment", async () => {
+  const workflow = await readFile(
+    new URL("../.github/workflows/native-governance.yml", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workflow, /bootstrap_repository:/);
+  assert.match(
+    workflow,
+    /github\.event_name == 'workflow_dispatch'[\s\S]*inputs\.bootstrap_repository != ''/,
+  );
+  assert.match(workflow, /github\.actor_id == '268063598'/);
+  assert.match(workflow, /environment: github-administration/);
+  assert.match(workflow, /native-governance\/policy\.json/);
+  assert.match(workflow, /deployment-branch-policies/);
+  assert.match(
+    workflow,
+    /printf '%s' "\$AUTOMATION_TOKEN" \| gh secret set LCV_AUTOMATION_TOKEN/,
+  );
+  assert.match(workflow, /--env dependabot-automation/);
+  assert.doesNotMatch(workflow, /gh secret set[^\n]*--body/);
+  assert.match(
+    workflow,
+    /github\.event_name == 'schedule' \|\|[\s\S]*inputs\.bootstrap_repository == ''/,
   );
 });
 
