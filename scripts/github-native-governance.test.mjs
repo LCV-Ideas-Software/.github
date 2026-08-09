@@ -489,6 +489,16 @@ test("rollout documentation lists every active repository ruleset", async () => 
     /first merge-group canary[\s\S]*status-check ruleset[\s\S]*queue[\s\S]*disabled immediately/i,
     "the first queue canary must document its fail-closed bootstrap sequence",
   );
+  assert.match(
+    documentation,
+    /canary fails[\s\S]*LCV_NATIVE_RECONCILE_ENABLED[^\n]*false[\s\S]*live reread[\s\S]*queued[\s\S]*in.progress[\s\S]*waiting[\s\S]*pending[\s\S]*requested[\s\S]*no non-terminal[\s\S]*queue[\s\S]*policy rollback[\s\S]*LCV_NATIVE_RECONCILE_ENABLED[^\n]*true/i,
+    "a failed canary must suspend drift reconciliation until policy rollback is durable",
+  );
+  assert.match(
+    documentation,
+    /policy rollback pull request[\s\S]*gh pr merge[\s\S]*--auto[\s\S]*--squash[\s\S]*--match-head-commit[\s\S]*never[^.\n]*`--admin`[\s\S]*all other merges remain frozen/i,
+    "the queue-disabled rollback must define its sole exact-head merge exception",
+  );
   const section =
     /<!-- native-active-repositories:start -->([\s\S]*?)<!-- native-active-repositories:end -->/.exec(
       documentation,
@@ -637,6 +647,11 @@ test("the required governance check also protects both organization auditors", a
     assert.match(workflow, new RegExp(`scripts/${script}\\.test\\.mjs`));
   }
   assert.match(workflow, /environment: github-administration/);
+  assert.match(
+    workflow,
+    /vars\.LCV_NATIVE_RECONCILE_ENABLED == 'true'/,
+    "scheduled reconciliation must have an independent fail-closed kill switch",
+  );
   assert.doesNotMatch(
     workflow,
     /gh pr merge|enqueuePullRequest|enablePullRequestAutoMerge|\/pulls\/.*\/merge/,
