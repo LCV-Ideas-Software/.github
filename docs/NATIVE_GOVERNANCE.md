@@ -149,6 +149,7 @@ their consumer migrations and the private plus public merge-group canaries:
 
 <!-- native-active-repositories:start -->
 
+- `.github`
 - `.github-private`
 - `admin-app`
 - `calculadora-app`
@@ -160,8 +161,11 @@ their consumer migrations and the private plus public merge-group canaries:
 
 <!-- native-active-repositories:end -->
 
-The `.github`, `astrologo-app`, `cross-review`, and `maestro-app` repository
-rulesets remain `disabled` until their own migration evidence is complete.
+The `astrologo-app`, `cross-review`, and `maestro-app` repository rulesets
+remain `disabled` until their own migration evidence is complete. The `.github`
+promotion is followed immediately by an inert pull request that must prove all
+eleven declared checks on the synthetic merge-group revision; any missing or
+non-success context requires disabling its queue before further rollout.
 
 Every promotion also begins with a live inventory of open pull requests. If a
 repository has an eligible pull request whose CodeQL run completed before the
