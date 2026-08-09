@@ -49,3 +49,16 @@ day at 07h17. The code-level deadline is `2026-11-01T00:00:00Z`, which is
 31/10/2026 às 21:00:00 in the program's fixed UTC−03:00 timezone. The exception
 must be removed as soon as Slack publishes a hook release using esbuild 0.25.0
 or newer.
+
+From a POSIX shell, candidate mode is reproduced without a credential:
+
+```sh
+env -u GITHUB_TOKEN GITHUB_EVENT_NAME=merge_group deno task --frozen audit
+```
+
+Trusted mode requires `GITHUB_TOKEN` to be supplied by the trusted job and is
+reproduced without rendering that value:
+
+```sh
+GITHUB_EVENT_NAME=workflow_dispatch deno task --frozen audit
+```

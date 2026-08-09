@@ -38,6 +38,24 @@ const HOOKS = JSON.stringify({
   },
 });
 
+Deno.test("documents candidate and trusted audit invocations", async () => {
+  const readme = await Deno.readTextFile(
+    new URL("../README.md", import.meta.url),
+  );
+  for (
+    const required of [
+      "env -u GITHUB_TOKEN GITHUB_EVENT_NAME=merge_group deno task --frozen audit",
+      "GITHUB_EVENT_NAME=workflow_dispatch deno task --frozen audit",
+    ]
+  ) {
+    if (!readme.includes(required)) {
+      throw new Error(
+        `README is missing the exact audit invocation: ${required}`,
+      );
+    }
+  }
+});
+
 const LOCK = JSON.stringify({
   specifiers: { "npm:esbuild@0.24.2": "0.24.2" },
   npm: {

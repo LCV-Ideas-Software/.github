@@ -24,7 +24,7 @@
   "lock": true,
   "tasks": {
     "audit": "deno run --allow-env=GITHUB_EVENT_NAME,GITHUB_TOKEN --allow-net=api.github.com --allow-read=.slack/hooks.json,deno.lock --allow-run=deno scripts/verify_dependency_audit.ts",
-    "check": "deno fmt --check && deno lint && deno check manifest.ts functions/*.ts scripts/*.ts tests/*.ts triggers/*.ts workflows/*.ts && deno test"
+    "check": "deno fmt --check && deno lint && deno check manifest.ts functions/*.ts scripts/*.ts tests/*.ts triggers/*.ts workflows/*.ts && deno test --allow-read=README.md"
   },
   "imports": {
     "deno-slack-sdk/mod.ts": "jsr:@slack/sdk@2.15.2",

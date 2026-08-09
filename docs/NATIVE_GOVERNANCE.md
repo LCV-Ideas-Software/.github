@@ -191,6 +191,7 @@ their consumer migrations and the private plus public merge-group canaries:
 
 <!-- native-active-repositories:start -->
 
+- `.github`
 - `.github-private`
 - `admin-app`
 - `calculadora-app`
@@ -203,12 +204,12 @@ their consumer migrations and the private plus public merge-group canaries:
 <!-- native-active-repositories:end -->
 
 The `astrologo-app`, `cross-review`, and `maestro-app` repository rulesets
-remain `disabled` until their own migration evidence is complete. The `.github`
-status-check ruleset remains active, but its queue is disabled after the first
-inert canary proved two merge-group gaps: Scorecard rejected the synthetic ref,
-and the Slack workflow verifier called GitHub without a token. The queue can be
-promoted again only after both producers are fixed and a fresh inert canary
-proves all eleven declared contexts.
+remain `disabled` until their own migration evidence is complete. The first
+`.github` inert canary exposed two merge-group gaps: Scorecard rejected the
+synthetic ref, and the Slack workflow verifier called GitHub without a token.
+Both producers are now corrected and the queue is re-promoted solely for a
+fresh inert canary. All eleven declared contexts must succeed on its synthetic
+head; otherwise the documented fail-closed rollback disables the queue again.
 
 Every promotion also begins with a live inventory of open pull requests. If a
 repository has an eligible pull request whose CodeQL run completed before the
