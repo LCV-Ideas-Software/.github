@@ -73,7 +73,11 @@ to Dependabot.
 
 The action never checks out pull-request code or downloads its artifacts. It
 re-reads the pull request, binds the operation to its current head SHA and
-allowed immutable author identity, and invokes only:
+well-formed GitHub author identity. Author policy does not create a second
+allowlist: every user or bot can receive native auto-merge by default once the
+PR is open, non-draft, targets `main`, has the exact observed SHA, and its head
+branch belongs to the same repository. Forks and malformed API identities stay
+ineligible. The action then invokes only:
 
 ```text
 gh pr merge <number> --repo <owner/repository> --auto --squash --match-head-commit <sha>
@@ -88,6 +92,11 @@ ID declared for that repository must appear in the effective rules for `main`;
 additional effective checks may only harden the boundary. Before GraphQL, the
 action reads `GET /repos/{owner}/{repo}/rules/branches/main`; missing, disabled,
 incomplete or malformed enforcement stops without calling GraphQL or `gh`.
+It also inventories every required check run for the exact head and requires
+one successful GitHub Actions App result for every policy name/App-ID pair.
+Only after checks and review state remain unchanged and non-blocking for a
+120-second quiet window may the action continue. Polling is bounded to 12
+minutes and the trusted job has a 15-minute timeout.
 At the final boundary it repeats that effective-rules GET, then reads and
 validates the PR again immediately before `gh`. This narrows state and policy
 races; `--match-head-commit`
@@ -112,10 +121,37 @@ is not eligible for canary promotion.
 ## Bot feedback
 
 Copilot and the ChatGPT Codex connector are optional reviewers. No workflow
-waits for their presence, completion, file coverage, or a textual clean marker.
-Actual inline review conversations are governed by GitHub's native required
-conversation-resolution rule. The automation does not parse natural-language
-review bodies or issue comments.
+requires either bot to appear; absence is neutral. When they do produce
+feedback, the action binds only the bots' immutable GitHub database IDs and
+fails closed on truncated or malformed API collections. It blocks every
+unresolved bot-authored review thread, including outdated or collapsed threads,
+every exact-head Copilot `Suppressed comments (N)` section with `N > 0`, and a
+current-head Codex issue-comment review unless it matches the observed clean
+contract. A changed marker or unknown Codex response format is treated as
+format drift, not guessed from natural language.
+
+The 120-second quiet window and a final identical fingerprint reread protect the
+normal arming path. A separate `Native PR feedback signal` workflow listens for
+review, inline-comment, and pull-request issue-comment activity without checking
+out repository content or consuming secrets. Its completed run wakes the
+trusted default-branch controller, which re-reads the complete review state. A
+feedback wake-up can only call GraphQL to disable auto-merge or remove the pull
+request from the merge queue; it can never grant merge privilege. Each upstream
+workflow run has a unique controller concurrency key, so GitHub cannot replace a
+pending signal for one pull request with activity from another pull request.
+
+The controller also rereads the same checks-and-reviews fingerprint immediately
+after requesting auto-merge. If that post-arm state differs, fails, or becomes
+blocking, it removes the resulting native privilege and verifies that neither
+auto-merge nor a queue entry remains. Conversely, a blocking signal that races
+just ahead of armament briefly retries the native state before concluding that
+there is no privilege to remove.
+
+GitHub does not expose an atomic precondition that couples the review snapshot
+to the queue mutation. The quiet window, final reread, native conversation rule,
+and deprivileging signal minimize that platform-level race, but do not claim it
+is mathematically impossible for feedback to arrive after GitHub has already
+completed the merge.
 
 ## Configuration reconciliation
 
@@ -239,14 +275,16 @@ only the resulting secret metadata. It never creates a repository secret or
 prints the token. A dispatch with an empty bootstrap input performs ordinary
 configuration reconciliation instead.
 
-The legacy trusted gate, scheduled merge controller, Dependabot direct merger,
-polling, review parser, workflow-provenance mirror, and automatic rebase commands
-are retired rather than reused.
+The legacy trusted gate, scheduled direct-merge controller, Dependabot direct
+merger, workflow-provenance mirror, and automatic rebase commands are retired
+rather than reused.
 
 ## Official references
 
 - [Merging with a merge queue](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-a-pull-request-with-a-merge-queue)
 - [`workflow_run` event and security boundary](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
+- [Pull-request review and comment events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review)
+- [GraphQL pull-request mutations](https://docs.github.com/en/graphql/reference/mutations)
 - [Automating Dependabot with Actions](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions)
 - [Rules available in rulesets](https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 - [Code-scanning merge-protection limitations](https://docs.github.com/en/enterprise-cloud@latest/code-security/concepts/code-scanning/merge-protection)

@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - CodeQL
+      - Native PR feedback signal
     types:
       - completed
   pull_request:
@@ -14,7 +15,7 @@ on:
 permissions: write-all
 
 concurrency:
-  group: native-auto-merge-${{ github.repository }}-${{ github.event.workflow_run.head_sha || github.sha }}
+  group: native-auto-merge-${{ github.repository }}-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -32,15 +33,22 @@ jobs:
       - name: Check syntax
         run: node --check native-auto-merge/main.mjs
       - name: Run focused tests
-        run: node --test native-auto-merge/main.test.mjs
+        run: node --test native-auto-merge/main.test.mjs native-auto-merge/reconciliation.test.mjs
 
   enable:
     name: Enable native auto-merge
-    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' }}
+    if: >-
+      ${{
+        github.event_name == 'workflow_run' &&
+        (
+          github.event.workflow_run.event == 'pull_request' ||
+          github.event.workflow_run.name == 'Native PR feedback signal'
+        )
+      }}
     runs-on: ubuntu-latest
     permissions: write-all
     environment: dependabot-automation
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Checkout trusted action source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +61,8 @@ jobs:
           automation_token: ${{ secrets.LCV_AUTOMATION_TOKEN }}
           event_repository: ${{ github.event.repository.full_name }}
           workflow_name: ${{ github.event.workflow_run.name }}
+          workflow_path: ${{ github.event.workflow_run.path }}
+          workflow_display_title: ${{ github.event.workflow_run.display_title }}
           workflow_status: ${{ github.event.workflow_run.status }}
           workflow_event: ${{ github.event.workflow_run.event }}
           workflow_head_sha: ${{ github.event.workflow_run.head_sha }}

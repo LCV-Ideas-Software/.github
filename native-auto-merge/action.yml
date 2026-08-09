@@ -1,5 +1,5 @@
 name: LCV Native Auto-merge
-description: Enables native auto-merge at an exact head only after verifying effective zero-tolerance rules.
+description: Reconciles native auto-merge at an exact head against effective rules, required checks, and bot feedback.
 
 inputs:
   automation_token:
@@ -10,6 +10,12 @@ inputs:
     required: true
   workflow_name:
     description: Completed workflow name from the workflow_run context.
+    required: true
+  workflow_path:
+    description: Completed workflow path from the workflow_run context.
+    required: true
+  workflow_display_title:
+    description: Completed workflow display title from the workflow_run context.
     required: true
   workflow_status:
     description: Completed workflow status from the workflow_run context.

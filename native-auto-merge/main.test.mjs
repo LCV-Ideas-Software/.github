@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 
 import {
   extractCandidates,
+  githubDequeuePullRequest,
+  githubDisablePullRequestAutoMerge,
   githubGetEffectiveRules,
   githubGetNativeState,
   githubGetPull,
@@ -18,8 +20,10 @@ import {
 
 const REPOSITORY = "LCV-Ideas-Software/.github";
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
-const LCV_LEO = { login: "lcv-leo", id: 268063598 };
-const DEPENDABOT = { login: "dependabot[bot]", id: 49699333 };
+const LCV_LEO = { login: "lcv-leo", id: 268063598, type: "User" };
+const DEPENDABOT = { login: "dependabot[bot]", id: 49699333, type: "Bot" };
+const COPILOT_SWE = { login: "Copilot", id: 198982749, type: "Bot" };
+const CLEAR_FEEDBACK = { status: "clear", fingerprint: "feedback-v1" };
 const POLICY_REQUIRED_CHECKS = [
   { name: "Dependency Review", app_id: 15368 },
   { name: "Check index.html formatting", app_id: 15368 },
@@ -33,6 +37,14 @@ const POLICY_REQUIRED_CHECKS = [
   { name: "Test native governance", app_id: 15368 },
   { name: "Test native auto-merge", app_id: 15368 },
 ];
+
+function feedbackRuntime(overrides = {}) {
+  return {
+    waitForReviewReconciliation: async () => CLEAR_FEEDBACK,
+    readReviewReconciliationState: async () => CLEAR_FEEDBACK,
+    ...overrides,
+  };
+}
 
 function pull(overrides = {}) {
   return {
@@ -59,6 +71,8 @@ function workflowRunEvent(overrides = {}) {
     repository: { full_name: REPOSITORY },
     workflow_run: {
       name: "CodeQL",
+      path: ".github/workflows/codeql.yml",
+      display_title: "CodeQL",
       status: "completed",
       event: "pull_request",
       head_sha: HEAD_SHA,
@@ -80,6 +94,8 @@ function workflowRunInputEnv(event = workflowRunEvent()) {
     GITHUB_EVENT_NAME: "workflow_run",
     INPUT_EVENT_REPOSITORY: event.repository.full_name,
     INPUT_WORKFLOW_NAME: event.workflow_run.name,
+    INPUT_WORKFLOW_PATH: event.workflow_run.path,
+    INPUT_WORKFLOW_DISPLAY_TITLE: event.workflow_run.display_title,
     INPUT_WORKFLOW_STATUS: event.workflow_run.status,
     INPUT_WORKFLOW_EVENT: event.workflow_run.event,
     INPUT_WORKFLOW_HEAD_SHA: event.workflow_run.head_sha,
@@ -87,6 +103,20 @@ function workflowRunInputEnv(event = workflowRunEvent()) {
       event.workflow_run.pull_requests,
     ),
   };
+}
+
+function feedbackWorkflowInputEnv(overrides = {}) {
+  return workflowRunInputEnv(
+    workflowRunEvent({
+      name: "Native PR feedback signal",
+      path: ".github/workflows/native-pr-feedback-signal.yml",
+      display_title: "Native PR feedback PR #81 sender #175728472",
+      event: "pull_request_review",
+      head_sha: "f".repeat(40),
+      pull_requests: [],
+      ...overrides,
+    }),
+  );
 }
 
 function effectiveRules() {
@@ -151,6 +181,7 @@ test("workflow_run yields exact-head candidates only for completed CodeQL pull r
 
   for (const workflowRun of [
     { name: "CI" },
+    { path: ".github/workflows/not-codeql.yml" },
     { status: "in_progress" },
     { event: "push" },
     { head_sha: "f".repeat(40) },
@@ -194,6 +225,41 @@ test("workflow_run yields exact-head candidates only for completed CodeQL pull r
   );
 });
 
+test("trusted feedback workflow runs yield deprivileging-only PR candidates", () => {
+  const event = workflowRunEvent({
+    name: "Native PR feedback signal",
+    path: ".github/workflows/native-pr-feedback-signal.yml",
+    display_title: "Native PR feedback PR #81 sender #175728472",
+    event: "pull_request_review",
+    head_sha: "f".repeat(40),
+    pull_requests: [],
+  });
+  assert.deepEqual(extractCandidates("workflow_run", event, REPOSITORY), [
+    { number: 81, source: "feedback-workflow-run" },
+  ]);
+
+  for (const overrides of [
+    { name: "Native PR feedback signal spoof" },
+    { path: ".github/workflows/spoof.yml" },
+    { display_title: "Native PR feedback PR #81 sender #268063598" },
+    { display_title: "Native PR feedback PR #0 sender #175728472" },
+    { event: "push" },
+    { status: "in_progress" },
+  ]) {
+    assert.deepEqual(
+      extractCandidates(
+        "workflow_run",
+        {
+          ...event,
+          workflow_run: { ...event.workflow_run, ...overrides },
+        },
+        REPOSITORY,
+      ),
+      [],
+    );
+  }
+});
+
 test("explicit workflow inputs reconstruct only the candidate fields used by the controller", () => {
   assert.deepEqual(
     workflowRunEventFromInputs(workflowRunInputEnv()),
@@ -212,7 +278,7 @@ test("explicit workflow inputs reconstruct only the candidate fields used by the
   }
 });
 
-test("eligibility binds login plus immutable actor ID and the exact same-repository head", () => {
+test("eligibility accepts every well-formed GitHub actor on an exact same-repository head", () => {
   const candidate = {
     number: 81,
     headSha: HEAD_SHA,
@@ -223,14 +289,34 @@ test("eligibility binds login plus immutable actor ID and the exact same-reposit
     isEligiblePull(pull({ user: DEPENDABOT }), candidate, REPOSITORY),
     true,
   );
+  assert.equal(
+    isEligiblePull(pull({ user: COPILOT_SWE }), candidate, REPOSITORY),
+    true,
+  );
+  assert.equal(
+    isEligiblePull(
+      pull({
+        user: {
+          login: "future-trusted-automation[bot]",
+          id: 987654321,
+          type: "Bot",
+        },
+      }),
+      candidate,
+      REPOSITORY,
+    ),
+    true,
+  );
 
   const rejected = [
     pull({ state: "closed" }),
     pull({ draft: true }),
     pull({ number: 82 }),
-    pull({ user: { login: "lcv-leo", id: 1 } }),
-    pull({ user: { login: "lookalike", id: 268063598 } }),
-    pull({ user: { login: "dependabot[bot]", id: 1 } }),
+    pull({ user: null }),
+    pull({ user: { login: "", id: 1, type: "User" } }),
+    pull({ user: { login: "bot", id: 0, type: "Bot" } }),
+    pull({ user: { login: "bot", id: 1, type: "Organization" } }),
+    pull({ user: { login: "bot", id: 1 } }),
     pull({ head: { ...pull().head, sha: "f".repeat(40) } }),
     pull({ head: { ...pull().head, repo: { full_name: "attacker/fork" } } }),
     pull({ base: { ...pull().base, ref: "release" } }),
@@ -315,6 +401,7 @@ test("native idempotency state reads autoMergeRequest and mergeQueueEntry", asyn
           data: {
             repository: {
               pullRequest: {
+                id: "PR_test",
                 autoMergeRequest: null,
                 mergeQueueEntry: { id: "MQE_test" },
               },
@@ -327,6 +414,7 @@ test("native idempotency state reads autoMergeRequest and mergeQueueEntry", asyn
   });
 
   assert.deepEqual(state, {
+    id: "PR_test",
     autoMergeRequest: null,
     mergeQueueEntry: { id: "MQE_test" },
   });
@@ -340,6 +428,81 @@ test("native idempotency state reads autoMergeRequest and mergeQueueEntry", asyn
     repo: ".github",
     number: 81,
   });
+
+  await assert.rejects(
+    githubGetNativeState(REPOSITORY, 81, "pat-token", {
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  autoMergeRequest: null,
+                  mergeQueueEntry: null,
+                },
+              },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    }),
+    /did not return the pull request/i,
+  );
+});
+
+test("late-feedback mutations only remove existing native merge privileges", async () => {
+  const calls = [];
+  const fetch = async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(
+      JSON.stringify({
+        data: {
+          disablePullRequestAutoMerge: {
+            pullRequest: { id: "PR_test" },
+          },
+          dequeuePullRequest: {
+            mergeQueueEntry: { id: "MQE_test" },
+          },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+
+  await githubDisablePullRequestAutoMerge("PR_test", "pat-token", { fetch });
+  await githubDequeuePullRequest("PR_test", "MQE_test", "pat-token", { fetch });
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].query, /disablePullRequestAutoMerge/);
+  assert.deepEqual(calls[0].variables, { pullRequestId: "PR_test" });
+  assert.match(calls[1].query, /dequeuePullRequest/);
+  assert.deepEqual(calls[1].variables, { pullRequestId: "PR_test" });
+
+  await assert.rejects(
+    githubDisablePullRequestAutoMerge("PR_test", "pat-token", {
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              disablePullRequestAutoMerge: {
+                pullRequest: { id: "PR_spoof" },
+              },
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    }),
+    /did not confirm the native state mutation/i,
+  );
+  await assert.rejects(
+    githubDequeuePullRequest("PR_test", "MQE_test", "pat-token", {
+      fetch: async () =>
+        new Response(JSON.stringify({ errors: [{ message: "denied" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    }),
+    /GraphQL mutation failed: denied/i,
+  );
 });
 
 test("effective branch rules are read with the automation PAT", async () => {
@@ -795,6 +958,7 @@ test("controller refetches exact state and enables native auto-merge once", asyn
       GITHUB_TOKEN: "must-not-be-used",
     },
     {
+      ...feedbackRuntime(),
       listOpenPulls: async () => {
         trace.push("pull-list");
         return [pull({ user: DEPENDABOT })];
@@ -846,6 +1010,139 @@ test("controller refetches exact state and enables native auto-merge once", asyn
   assert.deepEqual(mutations, [[REPOSITORY, 81, HEAD_SHA, "pat-token"]]);
 });
 
+test("feedback appearing between the final read and arm is removed after the mutation", async () => {
+  const trace = [];
+  let finalFeedbackReads = 0;
+  let armed = false;
+  let disabled = false;
+  const result = await runNativeAutoMerge(
+    {
+      ...workflowRunInputEnv(),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      waitForReviewReconciliation: async () => CLEAR_FEEDBACK,
+      readReviewReconciliationState: async () => {
+        finalFeedbackReads += 1;
+        trace.push(`feedback:${finalFeedbackReads}`);
+        return finalFeedbackReads === 1
+          ? CLEAR_FEEDBACK
+          : { status: "blocked", fingerprint: "late-copilot-finding" };
+      },
+      listOpenPulls: async () => [pull()],
+      getPull: async () => pull(),
+      getEffectiveRules: async () => effectiveRules(),
+      getNativeState: async () => {
+        trace.push("state");
+        return {
+          id: "PR_test",
+          autoMergeRequest:
+            armed && !disabled ? { enabledAt: "2026-08-09T18:00:00Z" } : null,
+          mergeQueueEntry: null,
+        };
+      },
+      enableAutoMerge: async () => {
+        trace.push("enable");
+        armed = true;
+      },
+      disableAutoMerge: async (id, token) => {
+        trace.push("disable");
+        assert.equal(id, "PR_test");
+        assert.equal(token, "pat-token");
+        disabled = true;
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    action: "deprivileged",
+    pull: 81,
+    reason: "review-state-changed-after-arm",
+  });
+  assert.equal(armed, true);
+  assert.equal(disabled, true);
+  assert.deepEqual(trace, [
+    "state",
+    "feedback:1",
+    "enable",
+    "feedback:2",
+    "state",
+    "disable",
+    "state",
+  ]);
+});
+
+test("a signal that sees no privilege cannot be followed by an unchecked arm", async () => {
+  let armed = false;
+  let disabled = false;
+  let feedbackReads = 0;
+  let signalResult = null;
+  const nativeState = async () => ({
+    id: "PR_test",
+    autoMergeRequest:
+      armed && !disabled ? { enabledAt: "2026-08-09T18:00:00Z" } : null,
+    mergeQueueEntry: null,
+  });
+  const disableAutoMerge = async () => {
+    disabled = true;
+  };
+
+  const result = await runNativeAutoMerge(
+    {
+      ...workflowRunInputEnv(),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      waitForReviewReconciliation: async () => CLEAR_FEEDBACK,
+      readReviewReconciliationState: async () => {
+        feedbackReads += 1;
+        if (feedbackReads === 1) {
+          const capturedBeforeSignal = CLEAR_FEEDBACK;
+          signalResult = await runNativeAutoMerge(
+            {
+              ...feedbackWorkflowInputEnv(),
+              INPUT_AUTOMATION_TOKEN: "pat-token",
+            },
+            {
+              listOpenPulls: async () => [pull()],
+              readReviewFeedbackState: async () => ({
+                status: "blocked",
+                fingerprint: "late-finding",
+              }),
+              getNativeState: nativeState,
+              disableAutoMerge,
+              sleep: async () => {},
+              enableAutoMerge: async () => assert.fail("signal cannot arm"),
+            },
+          );
+          return capturedBeforeSignal;
+        }
+        return { status: "blocked", fingerprint: "late-finding" };
+      },
+      listOpenPulls: async () => [pull()],
+      getPull: async () => pull(),
+      getEffectiveRules: async () => effectiveRules(),
+      getNativeState: nativeState,
+      enableAutoMerge: async () => {
+        armed = true;
+      },
+      disableAutoMerge,
+    },
+  );
+
+  assert.deepEqual(signalResult, {
+    action: "none",
+    reason: "feedback-blocking-no-privilege",
+  });
+  assert.deepEqual(result, {
+    action: "deprivileged",
+    pull: 81,
+    reason: "review-state-changed-after-arm",
+  });
+  assert.equal(armed, true);
+  assert.equal(disabled, true);
+});
+
 test("controller binds workflow candidates to a fixed open-pull inventory before targeted requests", async () => {
   const trace = [];
   let pullReads = 0;
@@ -855,6 +1152,7 @@ test("controller binds workflow candidates to a fixed open-pull inventory before
       INPUT_AUTOMATION_TOKEN: "pat-token",
     },
     {
+      ...feedbackRuntime(),
       listOpenPulls: async () => {
         trace.push("pull-list");
         return [pull()];
@@ -914,6 +1212,7 @@ test("controller consumes explicit workflow inputs without reading GITHUB_EVENT_
       INPUT_AUTOMATION_TOKEN: "pat-token",
     },
     {
+      ...feedbackRuntime(),
       readFile: async () => {
         assert.fail("the workflow event file must not be read");
       },
@@ -956,6 +1255,7 @@ test("controller is idempotent for native auto-merge and merge queue state", asy
         INPUT_AUTOMATION_TOKEN: "pat-token",
       },
       {
+        ...feedbackRuntime(),
         listOpenPulls: async () => [pull()],
         getPull: async () => pull(),
         getEffectiveRules: async () => effectiveRules(),
@@ -969,6 +1269,215 @@ test("controller is idempotent for native auto-merge and merge queue state", asy
     assert.deepEqual(result, { action: expectedAction, pull: 81 });
     assert.equal(mutations, 0);
   }
+});
+
+test("trusted late-feedback runs can only remove existing native merge privilege", async () => {
+  for (const [initialState, expectedMutations] of [
+    [
+      {
+        id: "PR_test",
+        autoMergeRequest: { enabledAt: "2026-08-09T18:00:00Z" },
+        mergeQueueEntry: null,
+      },
+      ["disable:PR_test"],
+    ],
+    [
+      {
+        id: "PR_test",
+        autoMergeRequest: null,
+        mergeQueueEntry: { id: "MQE_test" },
+      },
+      ["dequeue:PR_test:MQE_test"],
+    ],
+    [
+      {
+        id: "PR_test",
+        autoMergeRequest: { enabledAt: "2026-08-09T18:00:00Z" },
+        mergeQueueEntry: { id: "MQE_test" },
+      },
+      ["dequeue:PR_test:MQE_test", "disable:PR_test"],
+    ],
+  ]) {
+    const trace = [];
+    let stateReads = 0;
+    const result = await runNativeAutoMerge(
+      {
+        ...feedbackWorkflowInputEnv(),
+        INPUT_AUTOMATION_TOKEN: "pat-token",
+      },
+      {
+        listOpenPulls: async () => {
+          trace.push("pull-list");
+          return [pull()];
+        },
+        readReviewFeedbackState: async () => {
+          trace.push("feedback");
+          return { status: "blocked", fingerprint: "late-finding" };
+        },
+        getNativeState: async () => {
+          trace.push("state");
+          stateReads += 1;
+          return stateReads === 1
+            ? initialState
+            : {
+                id: "PR_test",
+                autoMergeRequest: null,
+                mergeQueueEntry: null,
+              };
+        },
+        disableAutoMerge: async (id, token) => {
+          assert.equal(token, "pat-token");
+          trace.push(`disable:${id}`);
+        },
+        dequeuePull: async (pullId, entryId, token) => {
+          assert.equal(token, "pat-token");
+          trace.push(`dequeue:${pullId}:${entryId}`);
+        },
+        loadRequiredChecks: async () => assert.fail("feedback cannot arm"),
+        getEffectiveRules: async () => assert.fail("feedback cannot arm"),
+        waitForReviewReconciliation: async () =>
+          assert.fail("feedback cannot arm"),
+        enableAutoMerge: async () => assert.fail("feedback cannot arm"),
+      },
+    );
+
+    assert.deepEqual(result, { action: "deprivileged", pull: 81 });
+    assert.deepEqual(trace, [
+      "pull-list",
+      "feedback",
+      "state",
+      ...expectedMutations,
+      "state",
+    ]);
+  }
+});
+
+test("trusted late-feedback runs never grant privilege when feedback is clear", async () => {
+  let stateReads = 0;
+  let mutations = 0;
+  const result = await runNativeAutoMerge(
+    {
+      ...feedbackWorkflowInputEnv({
+        event: "issue_comment",
+        display_title: "Native PR feedback PR #81 sender #199175422",
+      }),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      listOpenPulls: async () => [pull()],
+      readReviewFeedbackState: async () => ({
+        status: "clear",
+        fingerprint: "clean-review",
+      }),
+      getNativeState: async () => {
+        stateReads += 1;
+      },
+      disableAutoMerge: async () => {
+        mutations += 1;
+      },
+      dequeuePull: async () => {
+        mutations += 1;
+      },
+      enableAutoMerge: async () => {
+        mutations += 1;
+      },
+    },
+  );
+
+  assert.deepEqual(result, { action: "none", reason: "feedback-clear" });
+  assert.equal(stateReads, 0);
+  assert.equal(mutations, 0);
+});
+
+test("late-feedback format or API uncertainty removes rather than grants privilege", async () => {
+  let stateReads = 0;
+  let disableCalls = 0;
+  const result = await runNativeAutoMerge(
+    {
+      ...feedbackWorkflowInputEnv(),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      listOpenPulls: async () => [pull()],
+      readReviewFeedbackState: async () => {
+        throw new Error("review parser drift");
+      },
+      getNativeState: async () => {
+        stateReads += 1;
+        return stateReads === 1
+          ? {
+              id: "PR_test",
+              autoMergeRequest: { enabledAt: "2026-08-09T18:00:00Z" },
+              mergeQueueEntry: null,
+            }
+          : {
+              id: "PR_test",
+              autoMergeRequest: null,
+              mergeQueueEntry: null,
+            };
+      },
+      disableAutoMerge: async (id, token) => {
+        disableCalls += 1;
+        assert.equal(id, "PR_test");
+        assert.equal(token, "pat-token");
+      },
+      enableAutoMerge: async () => assert.fail("feedback cannot arm"),
+    },
+  );
+
+  assert.deepEqual(result, { action: "deprivileged", pull: 81 });
+  assert.equal(disableCalls, 1);
+  assert.equal(stateReads, 2);
+});
+
+test("a blocking signal briefly retries when arm state is not visible yet", async () => {
+  let stateReads = 0;
+  let sleeps = 0;
+  let disabled = false;
+  const result = await runNativeAutoMerge(
+    {
+      ...feedbackWorkflowInputEnv(),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      listOpenPulls: async () => [pull()],
+      readReviewFeedbackState: async () => ({
+        status: "blocked",
+        fingerprint: "late-finding",
+      }),
+      sleep: async (milliseconds) => {
+        sleeps += 1;
+        assert.equal(milliseconds, 5_000);
+      },
+      getNativeState: async () => {
+        stateReads += 1;
+        if (stateReads < 3) {
+          return {
+            id: "PR_test",
+            autoMergeRequest: null,
+            mergeQueueEntry: null,
+          };
+        }
+        return {
+          id: "PR_test",
+          autoMergeRequest:
+            stateReads === 3 && !disabled
+              ? { enabledAt: "2026-08-09T18:00:00Z" }
+              : null,
+          mergeQueueEntry: null,
+        };
+      },
+      disableAutoMerge: async () => {
+        disabled = true;
+      },
+      enableAutoMerge: async () => assert.fail("feedback cannot arm"),
+    },
+  );
+
+  assert.deepEqual(result, { action: "deprivileged", pull: 81 });
+  assert.equal(sleeps, 2);
+  assert.equal(stateReads, 4);
+  assert.equal(disabled, true);
 });
 
 test("controller cannot arm auto-merge before all effective rules are active", async () => {
@@ -1108,6 +1617,7 @@ test("controller revalidates effective enforcement after GraphQL and before gh",
       INPUT_AUTOMATION_TOKEN: "pat-token",
     },
     {
+      ...feedbackRuntime(),
       listOpenPulls: async () => [pull()],
       getPull: async () => pull(),
       getEffectiveRules: async () => {
@@ -1156,6 +1666,7 @@ test("controller refetches and revalidates the PR immediately before gh", async 
         INPUT_AUTOMATION_TOKEN: "pat-token",
       },
       {
+        ...feedbackRuntime(),
         listOpenPulls: async () => [pull()],
         getPull: async () => {
           pullReads += 1;
@@ -1261,6 +1772,13 @@ test("action and consumer workflow keep the credential and execution boundary na
     new URL("../.github/workflows/native-auto-merge.yml", import.meta.url),
     "utf8",
   );
+  const signalWorkflow = await readFile(
+    new URL(
+      "../.github/workflows/native-pr-feedback-signal.yml",
+      import.meta.url,
+    ),
+    "utf8",
+  );
 
   assert.match(action, /automation_token:/);
   assert.doesNotMatch(action, /github_token:/);
@@ -1268,6 +1786,8 @@ test("action and consumer workflow keep the credential and execution boundary na
   for (const input of [
     "event_repository",
     "workflow_name",
+    "workflow_path",
+    "workflow_display_title",
     "workflow_status",
     "workflow_event",
     "workflow_head_sha",
@@ -1284,13 +1804,18 @@ test("action and consumer workflow keep the credential and execution boundary na
 
   assert.match(workflow, /workflow_run:/);
   assert.match(workflow, /- CodeQL/);
+  assert.match(workflow, /- Native PR feedback signal/);
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /merge_group:/);
   assert.doesNotMatch(workflow, /pull_request_target:/);
   assert.equal((workflow.match(/permissions:\s*write-all/g) ?? []).length, 3);
   assert.match(workflow, /name:\s*Test native auto-merge/);
   assert.match(workflow, /node --check native-auto-merge\/main\.mjs/);
-  assert.match(workflow, /node --test native-auto-merge\/main\.test\.mjs/);
+  assert.match(
+    workflow,
+    /node --test native-auto-merge\/main\.test\.mjs native-auto-merge\/reconciliation\.test\.mjs/,
+  );
+  assert.match(workflow, /timeout-minutes:\s*15/);
   assert.match(
     workflow,
     /github\.event_name == 'workflow_run'.*github\.event\.workflow_run\.event == 'pull_request'/s,
@@ -1298,7 +1823,7 @@ test("action and consumer workflow keep the credential and execution boundary na
   assert.match(workflow, /environment:\s*dependabot-automation/);
   assert.match(
     workflow,
-    /group:\s*native-auto-merge-\$\{\{ github\.repository \}\}-\$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/,
+    /group:\s*native-auto-merge-\$\{\{ github\.repository \}\}-\$\{\{ github\.event\.workflow_run\.id \|\| github\.run_id \}\}/,
   );
   assert.match(workflow, /cancel-in-progress:\s*false/);
   assert.match(
@@ -1308,4 +1833,20 @@ test("action and consumer workflow keep the credential and execution boundary na
   assert.match(workflow, /ref:\s*\$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(workflow, /github\.token|GITHUB_TOKEN/);
   assert.doesNotMatch(workflow, /download-artifact|pull_request\.head\.sha/);
+  assert.match(signalWorkflow, /pull_request_review:/);
+  assert.match(signalWorkflow, /pull_request_review_comment:/);
+  assert.match(signalWorkflow, /issue_comment:/);
+  assert.match(
+    signalWorkflow,
+    /Native PR feedback PR #\$\{\{.*\}\} sender #\$\{\{ github\.event\.sender\.id \}\}/s,
+  );
+  assert.doesNotMatch(
+    signalWorkflow,
+    /checkout|LCV_AUTOMATION_TOKEN|secrets\./,
+  );
+  assert.match(
+    signalWorkflow,
+    /group:\s*native-pr-feedback-signal-\$\{\{ github\.repository \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.event\.issue\.number \}\}/,
+  );
+  assert.match(signalWorkflow, /cancel-in-progress:\s*false/);
 });

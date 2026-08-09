@@ -1,0 +1,40 @@
+name: Native PR feedback signal
+run-name: Native PR feedback PR #${{ github.event.pull_request.number || github.event.issue.number }} sender #${{ github.event.sender.id }}
+
+on:
+  pull_request_review:
+    types:
+      - submitted
+      - edited
+      - dismissed
+  pull_request_review_comment:
+    types:
+      - created
+      - edited
+      - deleted
+  issue_comment:
+    types:
+      - created
+      - edited
+      - deleted
+
+permissions: write-all
+
+concurrency:
+  group: native-pr-feedback-signal-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  signal:
+    name: Emit trusted review signal
+    if: >-
+      ${{
+        (github.event.sender.id == 175728472 || github.event.sender.id == 199175422) &&
+        (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)
+      }}
+    runs-on: ubuntu-latest
+    permissions: write-all
+    timeout-minutes: 1
+    steps:
+      - name: Complete without consuming repository content or secrets
+        run: exit 0
