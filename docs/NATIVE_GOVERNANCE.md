@@ -143,6 +143,11 @@ Operators must keep manual merging frozen while a queue is disabled. A full
 demotion, when explicitly required, proceeds queue, status checks, then
 organization so protection is removed in the least permissive order.
 
+The current declared canary activates the organization baseline and only the
+`.github-private` status-check and merge-queue rulesets. Every other repository
+ruleset remains `disabled` until its own consumer PR and merge-group evidence
+are complete.
+
 Before installing the consumer workflow, each repository must have a
 `dependabot-automation` environment restricted to `main` and containing
 `LCV_AUTOMATION_TOKEN`. The eleven existing public consumers already satisfy

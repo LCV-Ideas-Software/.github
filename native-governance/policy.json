@@ -4,7 +4,7 @@
   "organization_ruleset": {
     "name": "LCV native zero tolerance",
     "target": "branch",
-    "enforcement": "evaluate",
+    "enforcement": "active",
     "bypass_actors": [],
     "conditions": {
       "repository_name": {
@@ -122,8 +122,8 @@
       ]
     },
     ".github-private": {
-      "status_enforcement": "disabled",
-      "queue_enforcement": "disabled",
+      "status_enforcement": "active",
+      "queue_enforcement": "active",
       "required_checks": [
         { "name": "Governance configuration", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
