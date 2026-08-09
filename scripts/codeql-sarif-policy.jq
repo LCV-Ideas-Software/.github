@@ -3,7 +3,6 @@ def valid_result:
 
 def has_no_external_results:
   (has("externalPropertyFileReferences") | not)
-  or .externalPropertyFileReferences == null
   or (
     (.externalPropertyFileReferences | type) == "object"
     and (.externalPropertyFileReferences | has("results") | not)

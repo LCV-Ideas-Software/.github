@@ -63,6 +63,7 @@ test("malformed or empty SARIF shapes fail closed", () => {
     { version: "2.1.0", runs: [{}] },
     sarif({ results: {} }),
     sarif({ results: [null] }),
+    sarif({ externalPropertyFileReferences: null }),
     sarif({ externalPropertyFileReferences: { results: [{}] } }),
     { ...sarif({ results: [] }), inlineExternalProperties: null },
     { ...sarif({ results: [] }), inlineExternalProperties: {} },
