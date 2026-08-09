@@ -43,6 +43,7 @@ def valid_run:
   and (.tool | type) == "object"
   and (.tool.driver | type) == "object"
   and .tool.driver.name == "CodeQL"
+  and (has("conversion") | not)
   and has("results")
   and (.results | type) == "array"
   and all(.results[]; valid_result)
