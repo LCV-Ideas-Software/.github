@@ -353,6 +353,7 @@ test("repository status and queue rulesets are independent and canary-scoped", a
 
   assert.notEqual(statusPayload.name, queuePayload.name);
   const activeStatusRepositories = new Set([
+    ".github",
     ".github-private",
     "admin-app",
     "calculadora-app",
@@ -363,6 +364,7 @@ test("repository status and queue rulesets are independent and canary-scoped", a
     "ultrabrain-mcp",
   ]);
   const activeQueueRepositories = new Set([
+    ".github",
     ".github-private",
     "admin-app",
     "calculadora-app",
@@ -389,8 +391,8 @@ test("repository status and queue rulesets are independent and canary-scoped", a
     );
     assert.equal(queue_enforcement, expectedQueue, `${name} queue enforcement`);
   }
-  assert.equal(statusPayload.enforcement, "disabled");
-  assert.equal(queuePayload.enforcement, "disabled");
+  assert.equal(statusPayload.enforcement, "active");
+  assert.equal(queuePayload.enforcement, "active");
   assert.deepEqual(statusPayload.bypass_actors, []);
   assert.deepEqual(queuePayload.bypass_actors, []);
   assert.deepEqual(statusPayload.conditions, {
@@ -471,17 +473,32 @@ test("repository status and queue rulesets are independent and canary-scoped", a
   );
   assert.equal(
     buildRepositoryStatusRuleset(stagedPolicy, ".github").enforcement,
-    "disabled",
+    "active",
   );
   assert.equal(
     buildRepositoryQueueRuleset(stagedPolicy, ".github").enforcement,
-    "disabled",
+    "active",
   );
 });
 
 test("rollout documentation lists every active repository ruleset", async () => {
   const policy = await policyFixture();
   const documentation = await readFile(DOCUMENTATION_URL, "utf8");
+  assert.match(
+    documentation,
+    /first merge-group canary[\s\S]*status-check ruleset[\s\S]*queue[\s\S]*disabled immediately/i,
+    "the first queue canary must document its fail-closed bootstrap sequence",
+  );
+  assert.match(
+    documentation,
+    /canary fails[\s\S]*LCV_NATIVE_RECONCILE_ENABLED[^\n]*false[\s\S]*live reread[\s\S]*queued[\s\S]*in.progress[\s\S]*waiting[\s\S]*pending[\s\S]*requested[\s\S]*no non-terminal[\s\S]*queue[\s\S]*policy rollback[\s\S]*LCV_NATIVE_RECONCILE_ENABLED[^\n]*true/i,
+    "a failed canary must suspend drift reconciliation until policy rollback is durable",
+  );
+  assert.match(
+    documentation,
+    /policy rollback pull request[\s\S]*gh pr merge[\s\S]*--auto[\s\S]*--squash[\s\S]*--match-head-commit[\s\S]*never[^.\n]*`--admin`[\s\S]*all other merges remain frozen/i,
+    "the queue-disabled rollback must define its sole exact-head merge exception",
+  );
   const section =
     /<!-- native-active-repositories:start -->([\s\S]*?)<!-- native-active-repositories:end -->/.exec(
       documentation,
@@ -630,6 +647,11 @@ test("the required governance check also protects both organization auditors", a
     assert.match(workflow, new RegExp(`scripts/${script}\\.test\\.mjs`));
   }
   assert.match(workflow, /environment: github-administration/);
+  assert.match(
+    workflow,
+    /vars\.LCV_NATIVE_RECONCILE_ENABLED == 'true'/,
+    "scheduled reconciliation must have an independent fail-closed kill switch",
+  );
   assert.doesNotMatch(
     workflow,
     /gh pr merge|enqueuePullRequest|enablePullRequestAutoMerge|\/pulls\/.*\/merge/,
@@ -736,20 +758,20 @@ test("reconciliation stages each repository independently and remains idempotent
     [
       `POST /orgs/${ORGANIZATION}/rulesets`,
       `POST /repos/${ORGANIZATION}/.github/rulesets`,
-      `POST /repos/${ORGANIZATION}/.github/rulesets`,
       `POST /repos/${ORGANIZATION}/.github-private/rulesets`,
+      `POST /repos/${ORGANIZATION}/.github/rulesets`,
       `POST /repos/${ORGANIZATION}/.github-private/rulesets`,
       `PATCH /repos/${ORGANIZATION}/.github`,
       `PATCH /repos/${ORGANIZATION}/.github-private`,
     ],
   );
   assert.equal(writes[0].body.enforcement, "active");
-  assert.equal(writes[1].body.enforcement, "disabled");
-  assert.equal(writes[1].body.rules[0].type, "merge_queue");
-  assert.equal(writes[2].body.enforcement, "disabled");
-  assert.equal(writes[3].body.enforcement, "active");
+  assert.equal(writes[1].body.enforcement, "active");
+  assert.equal(writes[1].body.rules[0].type, "required_status_checks");
+  assert.equal(writes[2].body.enforcement, "active");
   assert.equal(writes[2].body.rules[0].type, "required_status_checks");
-  assert.equal(writes[3].body.rules[0].type, "required_status_checks");
+  assert.equal(writes[3].body.enforcement, "active");
+  assert.equal(writes[3].body.rules[0].type, "merge_queue");
   assert.equal(writes[4].body.enforcement, "active");
   assert.equal(writes[4].body.rules[0].type, "merge_queue");
   assert.deepEqual(writes[5].body, {

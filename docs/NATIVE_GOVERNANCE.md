@@ -133,15 +133,46 @@ rebases, enqueues, merges, or deletes a pull request or branch.
 
 ## Rollout and rollback
 
-New or changed rulesets are first materialized without enforcement. Promotion to
-`active` happens only after the declared checks have been observed on both a
-pull-request head and a merge-group head, in the order organization, status
-checks, then queue. Normal rollback reverses only the queue state; the
-organization and status-check rulesets remain active, and the armer refuses to
-act without an active queue. There is no automated direct-merge fallback.
+New or changed rulesets are first materialized without enforcement. When a
+repository already has merge-group evidence, promotion to `active` follows the
+order organization, status checks, then queue only after the declared checks
+have been observed on both revisions. A repository's first merge-group canary
+is the explicit bootstrap exception: after every pull-request check succeeds,
+the status-check ruleset is activated first and the queue is activated solely
+for an inert canary. If any declared merge-group context is missing or does not
+succeed, the queue is disabled immediately while the organization and status
+checks remain active. A successful canary completes the promotion. Normal
+rollback likewise reverses only the queue state, and the armer refuses to act
+without an active queue. There is no automated direct-merge fallback.
 Operators must keep manual merging frozen while a queue is disabled. A full
 demotion, when explicitly required, proceeds queue, status checks, then
 organization so protection is removed in the least permissive order.
+
+The reconciliation mutation job has a separate repository-variable kill
+switch: `LCV_NATIVE_RECONCILE_ENABLED` must equal `true`; absence and every
+other value fail closed while the required test job continues to run. Before
+the first canary, the operator verifies that this variable is `true`. If the
+canary fails, the operator first sets `LCV_NATIVE_RECONCILE_ENABLED=false`,
+and a live reread must confirm the exact value `false`. The operator lists the
+workflow runs and cancels every non-terminal `queued`, `in-progress`, `waiting`,
+`pending`, or `requested` run, then rereads until no non-terminal run remains;
+only then may the repository queue be disabled. A signed policy rollback
+changes that repository's `queue_enforcement` to `disabled`.
+
+The policy rollback pull request is the sole queue-disabled merge exception.
+After its exact signed head has every declared check successful, zero open
+security alerts, and every review thread resolved, the operator may request the
+native squash with:
+
+```text
+gh pr merge <number> --repo <owner/repository> --auto --squash --match-head-commit <sha>
+```
+
+It never uses `--admin`; all other merges remain frozen. After the rollback is
+present on verified `main` and a live reread confirms the queue remains
+disabled, the operator restores `LCV_NATIVE_RECONCILE_ENABLED=true`. Disabling
+only the live queue is never a valid rollback because drift reconciliation
+would reactivate the policy-declared queue.
 
 The current declared rollout keeps the organization baseline active. The
 following repository status-check and merge-queue rulesets are active after
@@ -149,6 +180,7 @@ their consumer migrations and the private plus public merge-group canaries:
 
 <!-- native-active-repositories:start -->
 
+- `.github`
 - `.github-private`
 - `admin-app`
 - `calculadora-app`
@@ -160,8 +192,11 @@ their consumer migrations and the private plus public merge-group canaries:
 
 <!-- native-active-repositories:end -->
 
-The `.github`, `astrologo-app`, `cross-review`, and `maestro-app` repository
-rulesets remain `disabled` until their own migration evidence is complete.
+The `astrologo-app`, `cross-review`, and `maestro-app` repository rulesets
+remain `disabled` until their own migration evidence is complete. The `.github`
+promotion is followed immediately by an inert pull request that must prove all
+eleven declared checks on the synthetic merge-group revision; any missing or
+non-success context requires disabling its queue before further rollout.
 
 Every promotion also begins with a live inventory of open pull requests. If a
 repository has an eligible pull request whose CodeQL run completed before the
