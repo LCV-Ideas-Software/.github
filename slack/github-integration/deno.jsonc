@@ -23,7 +23,7 @@
   },
   "lock": true,
   "tasks": {
-    "audit": "deno run --allow-env=GITHUB_TOKEN --allow-net=api.github.com --allow-read=.slack/hooks.json,deno.lock --allow-run=deno scripts/verify_dependency_audit.ts",
+    "audit": "deno run --allow-env=GITHUB_EVENT_NAME,GITHUB_TOKEN --allow-net=api.github.com --allow-read=.slack/hooks.json,deno.lock --allow-run=deno scripts/verify_dependency_audit.ts",
     "check": "deno fmt --check && deno lint && deno check manifest.ts functions/*.ts scripts/*.ts tests/*.ts triggers/*.ts workflows/*.ts && deno test"
   },
   "imports": {
