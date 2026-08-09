@@ -414,6 +414,22 @@ test("effective branch rule pagination fails closed", async () => {
     /effective branch rules.*page 1 must be an array/i,
   );
 
+  await assert.rejects(
+    githubGetEffectiveRules(REPOSITORY, "pat-token", {
+      fetch: async () =>
+        new Response(
+          JSON.stringify(
+            Array.from({ length: 101 }, () => ({ type: "deletion" })),
+          ),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    }),
+    /effective branch rules.*page 1 exceeds the requested page size/i,
+  );
+
   let calls = 0;
   await assert.rejects(
     githubGetEffectiveRules(REPOSITORY, "pat-token", {
