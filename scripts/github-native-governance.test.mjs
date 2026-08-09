@@ -532,7 +532,7 @@ test("public engineering practices describe the enforced native PR governance", 
 
   assert.doesNotMatch(
     profile,
-    /Direct-to-`main` baseline|Direct signed, fast-forward pushes are allowed|PRs and auto-merge may be used, but are not mandatory/i,
+    /Direct-to-`main` baseline|Direct signed, fast-forward pushes are allowed|Direct signed pushes to `main` remain permitted|PRs (?:and auto-merge may be used, but are not mandatory|are optional)/i,
   );
   assert.match(profile, /pull request[^.\n]*required[^.\n]*default branch/i);
   assert.match(profile, /squash[^.\n]*only merge method/i);
