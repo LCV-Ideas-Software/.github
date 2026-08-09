@@ -1227,6 +1227,54 @@ test("managed ruleset drift is updated, while duplicate ownership fails closed",
     false,
   );
 
+  const canonicalizedSourceMetadata = fakeGitHub({
+    repositories: [active],
+    organizationRulesets: [
+      {
+        ...rulesetRecord(30, ORGANIZATION, desiredOrganization, "Organization"),
+        source: ORGANIZATION.toLowerCase(),
+      },
+      rulesetRecord(
+        31,
+        "lcv-ideas-software",
+        desiredOrganization,
+        "Enterprise",
+      ),
+    ],
+    rulesets: {
+      ".github": [
+        {
+          ...rulesetRecord(
+            32,
+            `${ORGANIZATION}/.github`,
+            desiredStatus,
+            "Repository",
+          ),
+          source: { full_name: `${ORGANIZATION.toLowerCase()}/.github` },
+        },
+        {
+          ...rulesetRecord(
+            33,
+            `${ORGANIZATION}/.github`,
+            desiredQueue,
+            "Repository",
+          ),
+          source: { name: `${ORGANIZATION}/.github` },
+        },
+      ],
+    },
+  });
+  const canonicalizedSourceResult = await reconcileNativeGovernance(
+    configuration(),
+    policy,
+    { fetchImpl: canonicalizedSourceMetadata.fetchImpl },
+  );
+  assert.equal(canonicalizedSourceResult.organizationRulesetOutcome, "unchanged");
+  assert.equal(
+    canonicalizedSourceMetadata.requests.some(({ method }) => method !== "GET"),
+    false,
+  );
+
   const duplicate = fakeGitHub({
     repositories: [active],
     organizationRulesets: [

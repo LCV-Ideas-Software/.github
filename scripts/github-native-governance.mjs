@@ -805,16 +805,41 @@ function payloadMatches(actual, desired) {
   );
 }
 
-function validateRulesetSummary(candidate, expectedSourceType, expectedSource) {
+function normalizeRulesetSource(source) {
+  if (typeof source === "string" && source.trim() !== "") {
+    return source.toLowerCase();
+  }
+  if (source !== null && typeof source === "object") {
+    for (const key of ["full_name", "name", "login"]) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim() !== "") {
+        return value.toLowerCase();
+      }
+    }
+  }
+  return null;
+}
+
+function rulesetSummaryMatchesSource(candidate, expectedSourceType, expectedSource) {
+  if (typeof candidate.source_type !== "string") return false;
+  if (candidate.source_type.toLowerCase() !== expectedSourceType.toLowerCase()) {
+    return false;
+  }
+  const normalizedSource = normalizeRulesetSource(candidate.source);
+  return (
+    normalizedSource !== null &&
+    normalizedSource === expectedSource.toLowerCase()
+  );
+}
+
+function validateRulesetSummary(candidate) {
   if (
     candidate === null ||
     typeof candidate !== "object" ||
     !Number.isSafeInteger(candidate.id) ||
     candidate.id <= 0 ||
     typeof candidate.name !== "string" ||
-    candidate.name === "" ||
-    candidate.source_type !== expectedSourceType ||
-    candidate.source !== expectedSource
+    candidate.name === ""
   ) {
     throw new Error("GitHub returned malformed managed ruleset metadata.");
   }
@@ -831,14 +856,16 @@ async function findOrganizationRuleset(configuration, name, fetchImpl) {
     label: "organization ruleset inventory",
   });
   const matches = candidates
-    .map((candidate) =>
-      validateRulesetSummary(
-        candidate,
-        "Organization",
-        configuration.organizationName,
-      ),
-    )
-    .filter((candidate) => candidate.name === name);
+    .map((candidate) => validateRulesetSummary(candidate))
+    .filter(
+      (candidate) =>
+        candidate.name === name &&
+        rulesetSummaryMatchesSource(
+          candidate,
+          "Organization",
+          configuration.organizationName,
+        ),
+    );
   if (matches.length > 1) {
     throw new Error(`Duplicate managed organization rulesets named ${name}.`);
   }
@@ -864,10 +891,12 @@ async function findRepositoryRuleset(
   });
   const expectedSource = `${configuration.organizationName}/${repositoryName}`;
   const matches = candidates
-    .map((candidate) =>
-      validateRulesetSummary(candidate, "Repository", expectedSource),
-    )
-    .filter((candidate) => candidate.name === name);
+    .map((candidate) => validateRulesetSummary(candidate))
+    .filter(
+      (candidate) =>
+        candidate.name === name &&
+        rulesetSummaryMatchesSource(candidate, "Repository", expectedSource),
+    );
   if (matches.length > 1) {
     throw new Error(
       `Duplicate managed repository rulesets named ${name} in ${repositoryName}.`,
