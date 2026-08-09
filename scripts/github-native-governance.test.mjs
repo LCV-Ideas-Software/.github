@@ -15,6 +15,10 @@ import {
 
 const ORGANIZATION = "LCV-Ideas-Software";
 const POLICY_URL = new URL("../native-governance/policy.json", import.meta.url);
+const DOCUMENTATION_URL = new URL(
+  "../docs/NATIVE_GOVERNANCE.md",
+  import.meta.url,
+);
 
 async function policyFixture() {
   return validatePolicy(JSON.parse(await readFile(POLICY_URL, "utf8")));
@@ -348,14 +352,42 @@ test("repository status and queue rulesets are independent and canary-scoped", a
   const queuePayload = buildRepositoryQueueRuleset(policy, ".github");
 
   assert.notEqual(statusPayload.name, queuePayload.name);
-  const activeRepositories = new Set([".github-private", "admin-app"]);
+  const activeStatusRepositories = new Set([
+    ".github-private",
+    "admin-app",
+    "calculadora-app",
+    "mainsite-app",
+    "mtasts-motor",
+    "oraculo-financeiro",
+    "sponsor-motor",
+    "ultrabrain-mcp",
+  ]);
+  const activeQueueRepositories = new Set([
+    ".github-private",
+    "admin-app",
+    "calculadora-app",
+    "mainsite-app",
+    "mtasts-motor",
+    "oraculo-financeiro",
+    "sponsor-motor",
+    "ultrabrain-mcp",
+  ]);
   for (const [
     name,
     { status_enforcement, queue_enforcement },
   ] of Object.entries(policy.repositories)) {
-    const expected = activeRepositories.has(name) ? "active" : "disabled";
-    assert.equal(status_enforcement, expected, `${name} status enforcement`);
-    assert.equal(queue_enforcement, expected, `${name} queue enforcement`);
+    const expectedStatus = activeStatusRepositories.has(name)
+      ? "active"
+      : "disabled";
+    const expectedQueue = activeQueueRepositories.has(name)
+      ? "active"
+      : "disabled";
+    assert.equal(
+      status_enforcement,
+      expectedStatus,
+      `${name} status enforcement`,
+    );
+    assert.equal(queue_enforcement, expectedQueue, `${name} queue enforcement`);
   }
   assert.equal(statusPayload.enforcement, "disabled");
   assert.equal(queuePayload.enforcement, "disabled");
@@ -445,6 +477,30 @@ test("repository status and queue rulesets are independent and canary-scoped", a
     buildRepositoryQueueRuleset(stagedPolicy, ".github").enforcement,
     "disabled",
   );
+});
+
+test("rollout documentation lists every active repository ruleset", async () => {
+  const policy = await policyFixture();
+  const documentation = await readFile(DOCUMENTATION_URL, "utf8");
+  const section =
+    /<!-- native-active-repositories:start -->([\s\S]*?)<!-- native-active-repositories:end -->/.exec(
+      documentation,
+    );
+  assert.ok(section, "active repository documentation section");
+
+  const documented = [...section[1].matchAll(/^- `([^`]+)`$/gm)]
+    .map(([, repositoryName]) => repositoryName)
+    .sort();
+  const declared = Object.entries(policy.repositories)
+    .filter(
+      ([, repositoryPolicy]) =>
+        repositoryPolicy.status_enforcement === "active" &&
+        repositoryPolicy.queue_enforcement === "active",
+    )
+    .map(([repositoryName]) => repositoryName)
+    .sort();
+
+  assert.deepEqual(documented, declared);
 });
 
 test("unsafe policy extensions, bypasses, and organization merge queues are rejected", async () => {

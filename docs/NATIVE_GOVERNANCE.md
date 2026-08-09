@@ -143,10 +143,32 @@ Operators must keep manual merging frozen while a queue is disabled. A full
 demotion, when explicitly required, proceeds queue, status checks, then
 organization so protection is removed in the least permissive order.
 
-The current declared rollout keeps the organization baseline and the proven
-`.github-private` status-check and merge-queue rulesets active. It adds only
-`admin-app` as the first public canary; every other repository ruleset remains
-`disabled` until its own consumer PR and merge-group evidence are complete.
+The current declared rollout keeps the organization baseline active. The
+following repository status-check and merge-queue rulesets are active after
+their consumer migrations and the private plus public merge-group canaries:
+
+<!-- native-active-repositories:start -->
+
+- `.github-private`
+- `admin-app`
+- `calculadora-app`
+- `mainsite-app`
+- `mtasts-motor`
+- `oraculo-financeiro`
+- `sponsor-motor`
+- `ultrabrain-mcp`
+
+<!-- native-active-repositories:end -->
+
+The `.github`, `astrologo-app`, `cross-review`, and `maestro-app` repository
+rulesets remain `disabled` until their own migration evidence is complete.
+
+Every promotion also begins with a live inventory of open pull requests. If a
+repository has an eligible pull request whose CodeQL run completed before the
+rulesets became active, the operator must re-run CodeQL for that exact head
+after activation and verify that the native armer places it in the queue. The
+current six-repository batch was declared only after that inventory returned
+zero open pull requests in every promoted repository.
 
 Before installing the consumer workflow, each repository must have a
 `dependabot-automation` environment restricted to `main` and containing
