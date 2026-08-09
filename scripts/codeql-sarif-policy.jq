@@ -1,28 +1,53 @@
 def valid_result:
   type == "object";
 
-def has_no_external_results:
+def has_no_external_properties:
   (has("externalPropertyFileReferences") | not)
   or (
     (.externalPropertyFileReferences | type) == "object"
-    and (.externalPropertyFileReferences | has("results") | not)
+    and (.externalPropertyFileReferences | length) == 0
+  );
+
+def valid_notification:
+  type == "object"
+  and (
+    (has("level") | not)
+    or .level == "none"
+    or .level == "note"
+    or .level == "warning"
+  );
+
+def valid_notifications($property):
+  (has($property) | not)
+  or (
+    (.[$property] | type) == "array"
+    and all(.[$property][]; valid_notification)
+  );
+
+def valid_invocation:
+  type == "object"
+  and .executionSuccessful == true
+  and (has("processStartFailureMessage") | not)
+  and valid_notifications("toolExecutionNotifications")
+  and valid_notifications("toolConfigurationNotifications");
+
+def valid_invocations:
+  (has("invocations") | not)
+  or (
+    (.invocations | type) == "array"
+    and all(.invocations[]; valid_invocation)
   );
 
 def valid_run:
   type == "object"
   and (.tool | type) == "object"
   and (.tool.driver | type) == "object"
-  and (.tool.driver.name | type) == "string"
-  and (.tool.driver.name | length) > 0
-  and (
-    (has("results") | not)
-    or .results == null
-    or (
-      (.results | type) == "array"
-      and all(.results[]; valid_result)
-    )
-  )
-  and has_no_external_results;
+  and .tool.driver.name == "CodeQL"
+  and has("results")
+  and (.results | type) == "array"
+  and all(.results[]; valid_result)
+  and has_no_external_properties
+  and valid_invocations;
 
 def has_no_inline_external_properties:
   (has("inlineExternalProperties") | not)
