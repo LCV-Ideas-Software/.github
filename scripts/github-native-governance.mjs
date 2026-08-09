@@ -821,13 +821,18 @@ function normalizeRulesetSource(source) {
 }
 
 function rulesetSummaryMatchesSource(candidate, expectedSourceType, expectedSource) {
-  if (typeof candidate.source_type !== "string") return false;
-  if (candidate.source_type.toLowerCase() !== expectedSourceType.toLowerCase()) {
-    return false;
+  if (
+    typeof candidate.source_type !== "string" ||
+    candidate.source_type.trim() === ""
+  ) {
+    throw new Error("GitHub returned malformed managed ruleset metadata.");
   }
   const normalizedSource = normalizeRulesetSource(candidate.source);
+  if (normalizedSource === null) {
+    throw new Error("GitHub returned malformed managed ruleset metadata.");
+  }
   return (
-    normalizedSource !== null &&
+    candidate.source_type.toLowerCase() === expectedSourceType.toLowerCase() &&
     normalizedSource === expectedSource.toLowerCase()
   );
 }
