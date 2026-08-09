@@ -560,6 +560,33 @@ test("the required governance check also protects both organization auditors", a
   );
 });
 
+test("manual onboarding copies the automation token only into a policy repository with an exact protected environment", async () => {
+  const workflow = await readFile(
+    new URL("../.github/workflows/native-governance.yml", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(workflow, /bootstrap_repository:/);
+  assert.match(
+    workflow,
+    /github\.event_name == 'workflow_dispatch'[\s\S]*inputs\.bootstrap_repository != ''/,
+  );
+  assert.match(workflow, /github\.actor_id == '268063598'/);
+  assert.match(workflow, /environment: github-administration/);
+  assert.match(workflow, /native-governance\/policy\.json/);
+  assert.match(workflow, /deployment-branch-policies/);
+  assert.match(
+    workflow,
+    /printf '%s' "\$AUTOMATION_TOKEN" \| gh secret set LCV_AUTOMATION_TOKEN/,
+  );
+  assert.match(workflow, /--env dependabot-automation/);
+  assert.doesNotMatch(workflow, /gh secret set[^\n]*--body/);
+  assert.match(
+    workflow,
+    /github\.event_name == 'schedule' \|\|[\s\S]*inputs\.bootstrap_repository == ''/,
+  );
+});
+
 test("an unknown active repository fails closed before any mutation", async () => {
   const policy = await policyFixture();
   const api = fakeGitHub({ repositories: [repository("not-in-policy")] });

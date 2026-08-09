@@ -141,6 +141,16 @@ bootstrap before its canary. A newly discovered active repository that is not
 declared in policy aborts reconciliation before any mutation, while the
 organization baseline continues to target current and future repositories.
 
+For that explicit bootstrap, an authorized operator dispatches `Native
+Governance` from signed `main` with `bootstrap_repository` set to the declared
+repository name. The protected `github-administration` job accepts only the
+fixed operator identity, verifies the repository against `policy.json`, checks
+that the target `dependabot-automation` environment has exactly the `main`
+branch policy, streams the central token through standard input, and verifies
+only the resulting secret metadata. It never creates a repository secret or
+prints the token. A dispatch with an empty bootstrap input performs ordinary
+configuration reconciliation instead.
+
 The legacy trusted gate, scheduled merge controller, Dependabot direct merger,
 polling, review parser, workflow-provenance mirror, and automatic rebase commands
 are retired rather than reused.
