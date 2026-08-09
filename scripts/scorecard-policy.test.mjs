@@ -151,7 +151,7 @@ test("only the exact durable write-all and Wrangler signatures pass", () => {
     uri: ".github/workflows/codeql.yml",
   });
   const localToken = result("TokenPermissionsID", {
-    message: tokenMessage("pages.yml", { local: true, score: 17 }),
+    message: tokenMessage("pages.yml", { local: true, score: 2 }),
     snippet: "write-all",
     uri: ".github/workflows/pages.yml",
   });
@@ -161,6 +161,20 @@ test("only the exact durable write-all and Wrangler signatures pass", () => {
     uri: ".github/workflows/cloudflare-pages.yml",
   });
   assertAccepted(sarif([token, localToken, pinned]));
+  assertAccepted(
+    sarif([
+      result("TokenPermissionsID", {
+        message: tokenMessage("pages.yml", { local: true, score: 0 }),
+        snippet: "write-all",
+        uri: ".github/workflows/pages.yml",
+      }),
+      result("TokenPermissionsID", {
+        message: tokenMessage("pages.yml", { local: true, score: 10 }),
+        snippet: "write-all",
+        uri: ".github/workflows/pages.yml",
+      }),
+    ]),
+  );
 
   for (const rejected of [
     { ...token, ruleId: "OtherID" },
@@ -188,6 +202,16 @@ test("only the exact durable write-all and Wrangler signatures pass", () => {
       message: tokenMessage("pages.yml"),
       snippet: "write-all",
       uri: ".github/workflows/codeql.yml",
+    }),
+    result("TokenPermissionsID", {
+      message: tokenMessage("pages.yml", { local: true, score: 17 }),
+      snippet: "write-all",
+      uri: ".github/workflows/pages.yml",
+    }),
+    result("TokenPermissionsID", {
+      message: tokenMessage("pages.yml", { local: true, score: 11 }),
+      snippet: "write-all",
+      uri: ".github/workflows/pages.yml",
     }),
     result("PinnedDependenciesID", {
       message: PINNED_MESSAGE,

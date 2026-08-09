@@ -171,6 +171,7 @@ export function sanitizeText(value: unknown, maximumLength: number): string {
   }
 
   const normalized = value
+    .toWellFormed()
     .normalize("NFKC")
     .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
     .replace(/\s+/gu, " ")
@@ -183,7 +184,13 @@ export function sanitizeText(value: unknown, maximumLength: number): string {
     return normalized;
   }
 
-  return `${normalized.slice(0, Math.max(0, maximumLength - 1))}…`;
+  const truncated = normalized.slice(0, Math.max(0, maximumLength - 1));
+  const lastCodeUnit = truncated.charCodeAt(truncated.length - 1);
+  const codePointSafe =
+    lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff
+      ? truncated.slice(0, -1)
+      : truncated;
+  return `${codePointSafe}…`;
 }
 
 function normalizedSeverity(value: string, fallback = "high"): string {

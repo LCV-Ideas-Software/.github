@@ -60,8 +60,8 @@ organization does not participate in the external badge program. Candidate
 runs cannot use those trusted-event signatures. The tokenless local candidate
 scan has one exact bootstrap `BranchProtectionID` signature because upstream
 v2.4.4 cannot inspect live rules in that mode. Any additional warning, changed
-message, unexpected path, nonzero review numerator, new rule, or code finding
-fails the job.
+message body, score outside Scorecard's official 0–10 domain, unexpected path,
+nonzero review numerator, new rule, or code finding fails the job.
 
 ## Native auto-merge arming
 

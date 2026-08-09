@@ -60,10 +60,10 @@ def accepted_policy_finding:
   | if .ruleId == "TokenPermissionsID" then
       ($uri | test("^\\.github/workflows/[^/]+\\.ya?ml$"))
       and $snippet == "write-all"
-      and ($message | test("^score is [0-9]+: [\\s\\S]+$"))
+      and ($message | test("^score is (10|[0-9]): [\\s\\S]+$"))
       and (
         ($uri | sub("^\\.github/workflows/"; "")) as $filename
-        | ($message | sub("^score is [0-9]+: "; "")) as $body
+        | ($message | sub("^score is (10|[0-9]): "; "")) as $body
         | ([
           token_permission_body("https://app.stepsecurity.io/secureworkflow/file://./\($filename)/unknown?enable=permissions"),
           token_permission_body("https://app.stepsecurity.io/secureworkflow/github.com/LCV-Ideas-Software/.github/\($filename)/main?enable=permissions")

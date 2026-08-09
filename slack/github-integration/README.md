@@ -36,12 +36,16 @@ Slack's latest `deno_slack_hooks@1.5.0` build hook transitively pins
 affects esbuild's development server; the reviewed hook source invokes only
 `build()` and `stop()` and does not make that server reachable.
 
-`deno task --frozen audit` is fail-closed. It permits only that one reviewed
-moderate advisory and verifies the exact hook tag, annotated-tag object, commit,
-remote source hash, package integrity, reviewed esbuild call set, and latest
-stable GitHub release. Any additional low-or-higher advisory, a newer stable
-hook release, or any changed assumption fails the check. The workflow repeats
-this verification every day at 07h17. The code-level deadline is
-`2026-11-01T00:00:00Z`, which is 31/10/2026 às 21:00:00 in the program's fixed
-UTC−03:00 timezone. The exception must be removed as soon as Slack publishes a
-hook release using esbuild 0.25.0 or newer.
+`deno task --frozen audit` is fail-closed in both execution modes. Candidate
+events (`pull_request` and `merge_group`) must receive no GitHub token and
+verify the checked-in hook pin, package integrity, reviewed source hash, esbuild
+call set, advisory output, and exception window locally. Trusted events (`push`,
+`schedule`, and `workflow_dispatch`) require a GitHub token and additionally
+verify the live release, annotated tag, commit, remote source, and latest stable
+release. A token in candidate mode, a missing token in trusted mode, any
+additional low-or-higher advisory, a newer stable hook release, or any changed
+assumption fails the check. The workflow repeats the trusted verification every
+day at 07h17. The code-level deadline is `2026-11-01T00:00:00Z`, which is
+31/10/2026 às 21:00:00 in the program's fixed UTC−03:00 timezone. The exception
+must be removed as soon as Slack publishes a hook release using esbuild 0.25.0
+or newer.

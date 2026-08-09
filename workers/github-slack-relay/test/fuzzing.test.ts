@@ -104,11 +104,11 @@ describe("property-based GitHub webhook security", () => {
       fc.asyncProperty(
         fc.uuid(),
         fc.record({
-          actor: fc.string({ maxLength: 600 }),
-          branch: fc.string({ maxLength: 800 }),
-          occurredAt: fc.string({ maxLength: 200 }),
-          url: fc.string({ maxLength: 3_000 }),
-          workflow: fc.string({ maxLength: 1_000 }),
+          actor: fc.string({ maxLength: 600, unit: "binary" }),
+          branch: fc.string({ maxLength: 800, unit: "binary" }),
+          occurredAt: fc.string({ maxLength: 200, unit: "binary" }),
+          url: fc.string({ maxLength: 3_000, unit: "binary" }),
+          workflow: fc.string({ maxLength: 1_000, unit: "binary" }),
         }),
         async (deliveryId, generated) => {
           const queue = new FakeQueue();
