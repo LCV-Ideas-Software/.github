@@ -194,6 +194,7 @@ their consumer migrations and the private plus public merge-group canaries:
 - `.github`
 - `.github-private`
 - `admin-app`
+- `astrologo-app`
 - `calculadora-app`
 - `cross-review`
 - `mainsite-app`
@@ -204,8 +205,8 @@ their consumer migrations and the private plus public merge-group canaries:
 
 <!-- native-active-repositories:end -->
 
-The `astrologo-app` and `maestro-app` repository rulesets remain `disabled`
-until their own migration evidence is complete. The first
+The `maestro-app` repository rulesets remain `disabled` until its migration
+evidence is complete. The first
 `.github` inert canary exposed two merge-group gaps: Scorecard rejected the
 synthetic ref, and the Slack workflow verifier called GitHub without a token.
 Both producers are now corrected and the queue is re-promoted solely for a
