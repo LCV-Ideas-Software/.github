@@ -19,6 +19,7 @@ const DOCUMENTATION_URL = new URL(
   "../docs/NATIVE_GOVERNANCE.md",
   import.meta.url,
 );
+const PROFILE_README_URL = new URL("../profile/README.md", import.meta.url);
 
 async function policyFixture() {
   return validatePolicy(JSON.parse(await readFile(POLICY_URL, "utf8")));
@@ -524,6 +525,22 @@ test("rollout documentation lists every active repository ruleset", async () => 
     .sort();
 
   assert.deepEqual(documented, declared);
+});
+
+test("public engineering practices describe the enforced native PR governance", async () => {
+  const profile = await readFile(PROFILE_README_URL, "utf8");
+
+  assert.doesNotMatch(
+    profile,
+    /Direct-to-`main` baseline|Direct signed, fast-forward pushes are allowed|PRs and auto-merge may be used, but are not mandatory/i,
+  );
+  assert.match(profile, /pull request[^.\n]*required[^.\n]*default branch/i);
+  assert.match(profile, /squash[^.\n]*only merge method/i);
+  assert.match(profile, /native auto-merge[^.\n]*merge queue/i);
+  assert.match(
+    profile,
+    /CodeQL[^.\n]*required[^.\n]*pull request[^.\n]*merge_group/i,
+  );
 });
 
 test("unsafe policy extensions, bypasses, and organization merge queues are rejected", async () => {
