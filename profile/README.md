@@ -139,7 +139,7 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 
 ## Conventions
 
-- **Security**: Secret Scanning, push protection, and Dependabot security updates are enabled across every active repository. CodeQL Advanced Setup runs in all public repositories containing code; the empty internal `.github-private` configuration repository has no analyzable source. Vulnerability disclosures follow each public repository's `SECURITY.md`.
+- **Security**: Secret Scanning, push protection, and Dependabot security updates are enabled across every active repository. CodeQL Advanced Setup runs in every active repository; the internal `.github-private` enterprise governance repository analyzes its GitHub Actions source with the same zero-finding SARIF gate. Vulnerability disclosures follow each public repository's `SECURITY.md`.
 - **Contributing**: Every public repository carries its own `CONTRIBUTING.md`. Every change to the default branch must arrive through a PR and pass the repository-specific checks; direct pushes to `main` are not permitted. Eligible PRs are squash-merged through native auto-merge and the merge queue.
 - **Code of Conduct**: Every public repository follows Contributor Covenant 3.0 through its own `CODE_OF_CONDUCT.md`.
 
