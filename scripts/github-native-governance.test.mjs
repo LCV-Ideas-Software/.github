@@ -285,7 +285,7 @@ test("policy renders a native organization zero-tolerance ruleset without a merg
   const policy = await policyFixture();
   const payload = buildOrganizationRuleset(policy);
 
-  assert.equal(payload.enforcement, "evaluate");
+  assert.equal(payload.enforcement, "active");
   assert.deepEqual(payload.bypass_actors, []);
   assert.deepEqual(payload.conditions, {
     repository_name: { include: ["~ALL"], exclude: [], protected: false },
@@ -342,17 +342,30 @@ test("policy renders a native organization zero-tolerance ruleset without a merg
   });
 });
 
-test("repository status and queue rulesets are independent and disabled initially", async () => {
+test("repository status and queue rulesets are independent and canary-scoped", async () => {
   const policy = await policyFixture();
   const statusPayload = buildRepositoryStatusRuleset(policy, ".github");
   const queuePayload = buildRepositoryQueueRuleset(policy, ".github");
 
   assert.notEqual(statusPayload.name, queuePayload.name);
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(policy.repositories).map(
+        ([name, { status_enforcement, queue_enforcement }]) => [
+          name,
+          { status_enforcement, queue_enforcement },
+        ],
+      ),
+    )[".github-private"],
+    { status_enforcement: "active", queue_enforcement: "active" },
+  );
   assert.ok(
-    Object.values(policy.repositories).every(
-      ({ status_enforcement, queue_enforcement }) =>
-        status_enforcement === "disabled" && queue_enforcement === "disabled",
-    ),
+    Object.entries(policy.repositories)
+      .filter(([name]) => name !== ".github-private")
+      .every(
+        ([, { status_enforcement, queue_enforcement }]) =>
+          status_enforcement === "disabled" && queue_enforcement === "disabled",
+      ),
   );
   assert.equal(statusPayload.enforcement, "disabled");
   assert.equal(queuePayload.enforcement, "disabled");
@@ -507,6 +520,8 @@ test("unsafe policy extensions, bypasses, and organization merge queues are reje
   );
 
   const unsafePromotion = structuredClone(await policyFixture());
+  unsafePromotion.repositories[".github-private"].status_enforcement =
+    "disabled";
   unsafePromotion.repositories[".github-private"].queue_enforcement = "active";
   assert.throws(
     () => validatePolicy(unsafePromotion),
@@ -516,6 +531,10 @@ test("unsafe policy extensions, bypasses, and organization merge queues are reje
   const activeStatusWithoutOrganization = structuredClone(
     await policyFixture(),
   );
+  activeStatusWithoutOrganization.organization_ruleset.enforcement = "evaluate";
+  activeStatusWithoutOrganization.repositories[
+    ".github-private"
+  ].queue_enforcement = "disabled";
   activeStatusWithoutOrganization.repositories[
     ".github-private"
   ].status_enforcement = "active";
@@ -799,6 +818,8 @@ test("queue rollback preserves an active status ruleset", async () => {
 test("repository demotion disables its queue before its status checks", async () => {
   const candidate = structuredClone(await policyFixture());
   candidate.organization_ruleset.enforcement = "active";
+  candidate.repositories[".github-private"].status_enforcement = "disabled";
+  candidate.repositories[".github-private"].queue_enforcement = "disabled";
   const policy = validatePolicy(candidate);
   const desiredOrganization = buildOrganizationRuleset(policy);
   const desiredStatus = buildRepositoryStatusRuleset(policy, ".github-private");
@@ -856,7 +877,13 @@ test("repository demotion disables its queue before its status checks", async ()
 });
 
 test("organization demotion disables queues, then statuses, then the organization", async () => {
-  const policy = await policyFixture();
+  const candidate = structuredClone(await policyFixture());
+  candidate.organization_ruleset.enforcement = "evaluate";
+  for (const repositoryPolicy of Object.values(candidate.repositories)) {
+    repositoryPolicy.status_enforcement = "disabled";
+    repositoryPolicy.queue_enforcement = "disabled";
+  }
+  const policy = validatePolicy(candidate);
   const desiredOrganization = buildOrganizationRuleset(policy);
   const desiredStatus = buildRepositoryStatusRuleset(policy, ".github");
   const desiredQueue = buildRepositoryQueueRuleset(policy, ".github");
