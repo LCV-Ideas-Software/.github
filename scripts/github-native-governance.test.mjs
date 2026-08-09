@@ -970,6 +970,90 @@ test("managed ruleset drift is updated, while duplicate ownership fails closed",
   assert.equal(result.repositories[0].queueRuleset, "updated");
   assert.equal(api.requests.filter(({ method }) => method === "PUT").length, 3);
 
+  const enabledDismissalRestriction = structuredClone(desiredOrganization);
+  enabledDismissalRestriction.rules.find(
+    ({ type }) => type === "pull_request",
+  ).parameters.dismissal_restriction = {
+    allowed_actors: [{ actor_id: 1, actor_type: "Team" }],
+    enabled: true,
+  };
+  const unexpectedRestriction = fakeGitHub({
+    repositories: [active],
+    organizationRulesets: [
+      rulesetRecord(
+        4,
+        ORGANIZATION,
+        enabledDismissalRestriction,
+        "Organization",
+      ),
+    ],
+    rulesets: {
+      ".github": [
+        rulesetRecord(
+          5,
+          `${ORGANIZATION}/.github`,
+          desiredStatus,
+          "Repository",
+        ),
+        rulesetRecord(6, `${ORGANIZATION}/.github`, desiredQueue, "Repository"),
+      ],
+    },
+  });
+  const restrictionResult = await reconcileNativeGovernance(
+    configuration(),
+    policy,
+    { fetchImpl: unexpectedRestriction.fetchImpl },
+  );
+  assert.equal(restrictionResult.organizationRulesetOutcome, "updated");
+  assert.deepEqual(
+    unexpectedRestriction.requests
+      .filter(({ method }) => method === "PUT")
+      .map(({ pathname }) => pathname),
+    [`/orgs/${ORGANIZATION}/rulesets/4`],
+  );
+
+  const disabledDismissalRestriction = structuredClone(desiredOrganization);
+  disabledDismissalRestriction.rules.find(
+    ({ type }) => type === "pull_request",
+  ).parameters.dismissal_restriction = {
+    allowed_actors: [],
+    enabled: false,
+  };
+  const equivalentDisabledRestriction = fakeGitHub({
+    repositories: [active],
+    organizationRulesets: [
+      rulesetRecord(
+        7,
+        ORGANIZATION,
+        disabledDismissalRestriction,
+        "Organization",
+      ),
+    ],
+    rulesets: {
+      ".github": [
+        rulesetRecord(
+          8,
+          `${ORGANIZATION}/.github`,
+          desiredStatus,
+          "Repository",
+        ),
+        rulesetRecord(9, `${ORGANIZATION}/.github`, desiredQueue, "Repository"),
+      ],
+    },
+  });
+  const equivalentResult = await reconcileNativeGovernance(
+    configuration(),
+    policy,
+    { fetchImpl: equivalentDisabledRestriction.fetchImpl },
+  );
+  assert.equal(equivalentResult.organizationRulesetOutcome, "unchanged");
+  assert.equal(
+    equivalentDisabledRestriction.requests.some(
+      ({ method }) => method !== "GET",
+    ),
+    false,
+  );
+
   const duplicate = fakeGitHub({
     repositories: [active],
     organizationRulesets: [

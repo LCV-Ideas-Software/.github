@@ -772,7 +772,32 @@ function projectShape(actual, desired, key = "") {
   return actual;
 }
 
+function dismissalRestrictionMatches(actual, desired) {
+  if (!Array.isArray(desired?.rules)) return true;
+  const desiredPullRequest = desired.rules.find(
+    ({ type }) => type === "pull_request",
+  );
+  if (
+    !desiredPullRequest ||
+    Object.hasOwn(desiredPullRequest.parameters ?? {}, "dismissal_restriction")
+  ) {
+    return true;
+  }
+  const actualPullRequest = Array.isArray(actual?.rules)
+    ? actual.rules.find(({ type }) => type === "pull_request")
+    : undefined;
+  const restriction = actualPullRequest?.parameters?.dismissal_restriction;
+  if (restriction === undefined) return true;
+  return (
+    JSON.stringify(normalizeForComparison(restriction)) ===
+    JSON.stringify(
+      normalizeForComparison({ allowed_actors: [], enabled: false }),
+    )
+  );
+}
+
 function payloadMatches(actual, desired) {
+  if (!dismissalRestrictionMatches(actual, desired)) return false;
   const projected = projectShape(actual, desired);
   return (
     JSON.stringify(normalizeForComparison(projected)) ===

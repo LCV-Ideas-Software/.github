@@ -124,6 +124,9 @@ protection disabled because GitHub rejects rename protection combined with the
 remain unchanged and apply to every current and future repository.
 The pull-request rule also omits the disabled `dismissal_restriction` object
 because the organization rules API normalizes that no-op field away.
+Reread verification accepts only an absent restriction or the exact disabled,
+empty-actor form; an enabled or otherwise changed restriction is treated as
+drift and reconciled.
 
 Its scheduled run is only a drift-repair mechanism. It never opens, approves,
 rebases, enqueues, merges, or deletes a pull request or branch.
