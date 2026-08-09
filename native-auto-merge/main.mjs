@@ -12,6 +12,8 @@ const GH_TIMEOUT_MILLISECONDS = 60_000;
 const GITHUB_ACTIONS_APP_ID = 15368;
 const OPEN_PULLS_PER_PAGE = 100;
 const MAX_OPEN_PULL_PAGES = 100;
+const EFFECTIVE_RULES_PER_PAGE = 100;
+const MAX_EFFECTIVE_RULE_PAGES = 100;
 const POLICY_URL = new URL("../native-governance/policy.json", import.meta.url);
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const ALLOWED_ACTORS = new Map([
@@ -469,15 +471,25 @@ export async function githubListOpenPulls(repository, token, runtime = {}) {
 export async function githubGetEffectiveRules(repository, token, runtime = {}) {
   parseRepository(repository);
   nonEmpty(token, "automation_token input");
-  const payload = await githubRequest(
-    `/repos/${repository}/rules/branches/main`,
-    { method: "GET", token },
-    runtime,
-  );
-  if (!Array.isArray(payload)) {
-    malformedEffectiveRules("GitHub API root must be an array");
+  const rules = [];
+  for (let page = 1; page <= MAX_EFFECTIVE_RULE_PAGES; page += 1) {
+    const payload = await githubRequest(
+      `/repos/${repository}/rules/branches/main?per_page=${EFFECTIVE_RULES_PER_PAGE}&page=${page}`,
+      { method: "GET", token },
+      runtime,
+    );
+    if (!Array.isArray(payload)) {
+      malformedEffectiveRules(`page ${page} must be an array`);
+    }
+    if (payload.length > EFFECTIVE_RULES_PER_PAGE) {
+      malformedEffectiveRules(`page ${page} exceeds the requested page size`);
+    }
+    rules.push(...payload);
+    if (payload.length < EFFECTIVE_RULES_PER_PAGE) {
+      return rules;
+    }
   }
-  return payload;
+  malformedEffectiveRules("pagination exceeded the safety limit");
 }
 
 export async function githubGetNativeState(
