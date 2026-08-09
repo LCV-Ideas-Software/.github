@@ -167,8 +167,8 @@
       ]
     },
     "cross-review": {
-      "status_enforcement": "disabled",
-      "queue_enforcement": "disabled",
+      "status_enforcement": "active",
+      "queue_enforcement": "active",
       "required_checks": [
         { "name": "Dependency Review", "app_id": 15368 },
         { "name": "Analyze actions", "app_id": 15368 },
