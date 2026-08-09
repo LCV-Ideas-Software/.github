@@ -484,6 +484,11 @@ test("repository status and queue rulesets are independent and canary-scoped", a
 test("rollout documentation lists every active repository ruleset", async () => {
   const policy = await policyFixture();
   const documentation = await readFile(DOCUMENTATION_URL, "utf8");
+  assert.match(
+    documentation,
+    /first merge-group canary[\s\S]*status-check ruleset[\s\S]*queue[\s\S]*disabled immediately/i,
+    "the first queue canary must document its fail-closed bootstrap sequence",
+  );
   const section =
     /<!-- native-active-repositories:start -->([\s\S]*?)<!-- native-active-repositories:end -->/.exec(
       documentation,

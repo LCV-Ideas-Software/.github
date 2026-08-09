@@ -133,12 +133,17 @@ rebases, enqueues, merges, or deletes a pull request or branch.
 
 ## Rollout and rollback
 
-New or changed rulesets are first materialized without enforcement. Promotion to
-`active` happens only after the declared checks have been observed on both a
-pull-request head and a merge-group head, in the order organization, status
-checks, then queue. Normal rollback reverses only the queue state; the
-organization and status-check rulesets remain active, and the armer refuses to
-act without an active queue. There is no automated direct-merge fallback.
+New or changed rulesets are first materialized without enforcement. When a
+repository already has merge-group evidence, promotion to `active` follows the
+order organization, status checks, then queue only after the declared checks
+have been observed on both revisions. A repository's first merge-group canary
+is the explicit bootstrap exception: after every pull-request check succeeds,
+the status-check ruleset is activated first and the queue is activated solely
+for an inert canary. If any declared merge-group context is missing or does not
+succeed, the queue is disabled immediately while the organization and status
+checks remain active. A successful canary completes the promotion. Normal
+rollback likewise reverses only the queue state, and the armer refuses to act
+without an active queue. There is no automated direct-merge fallback.
 Operators must keep manual merging frozen while a queue is disabled. A full
 demotion, when explicitly required, proceeds queue, status checks, then
 organization so protection is removed in the least permissive order.
