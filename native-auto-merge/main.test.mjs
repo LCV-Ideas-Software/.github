@@ -357,10 +357,98 @@ test("effective branch rules are read with the automation PAT", async () => {
   assert.equal(rules.length, 8);
   assert.equal(
     calls[0].url,
-    "https://api.github.com/repos/LCV-Ideas-Software/.github/rules/branches/main",
+    "https://api.github.com/repos/LCV-Ideas-Software/.github/rules/branches/main?per_page=100&page=1",
   );
   assert.equal(calls[0].options.headers.authorization, "Bearer pat-token");
   assert.equal(calls[0].options.headers["x-github-api-version"], "2026-03-10");
+});
+
+test("effective branch rules are fully paginated before enforcement checks", async () => {
+  const calls = [];
+  const statusRule = effectiveRules().find(
+    ({ type }) => type === "required_status_checks",
+  );
+  const firstPage = [
+    ...effectiveRules().filter(({ type }) => type !== "required_status_checks"),
+    ...Array.from({ length: 93 }, () => ({ type: "deletion" })),
+  ];
+  assert.equal(firstPage.length, 100);
+
+  const rules = await githubGetEffectiveRules(REPOSITORY, "pat-token", {
+    fetch: async (url, options) => {
+      calls.push({ url, options });
+      const page = new URL(url).searchParams.get("page");
+      return new Response(
+        JSON.stringify(page === "1" ? firstPage : [statusRule]),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    },
+  });
+
+  assert.equal(rules.length, 101);
+  assert.equal(
+    hasRequiredNativeEnforcement(rules, POLICY_REQUIRED_CHECKS),
+    true,
+  );
+  assert.deepEqual(
+    calls.map(({ url }) => url),
+    [
+      "https://api.github.com/repos/LCV-Ideas-Software/.github/rules/branches/main?per_page=100&page=1",
+      "https://api.github.com/repos/LCV-Ideas-Software/.github/rules/branches/main?per_page=100&page=2",
+    ],
+  );
+});
+
+test("effective branch rule pagination fails closed", async () => {
+  await assert.rejects(
+    githubGetEffectiveRules(REPOSITORY, "pat-token", {
+      fetch: async () =>
+        new Response(JSON.stringify({ rules: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    }),
+    /effective branch rules.*page 1 must be an array/i,
+  );
+
+  await assert.rejects(
+    githubGetEffectiveRules(REPOSITORY, "pat-token", {
+      fetch: async () =>
+        new Response(
+          JSON.stringify(
+            Array.from({ length: 101 }, () => ({ type: "deletion" })),
+          ),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    }),
+    /effective branch rules.*page 1 exceeds the requested page size/i,
+  );
+
+  let calls = 0;
+  await assert.rejects(
+    githubGetEffectiveRules(REPOSITORY, "pat-token", {
+      fetch: async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify(
+            Array.from({ length: 100 }, () => ({ type: "deletion" })),
+          ),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      },
+    }),
+    /effective branch rules.*pagination exceeded the safety limit/i,
+  );
+  assert.equal(calls, 100);
 });
 
 test("required checks are loaded from the policy pinned beside the action", async () => {
