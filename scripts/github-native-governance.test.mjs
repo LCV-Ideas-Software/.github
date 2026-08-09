@@ -364,6 +364,7 @@ test("repository status and queue rulesets are independent and canary-scoped", a
     "ultrabrain-mcp",
   ]);
   const activeQueueRepositories = new Set([
+    ".github",
     ".github-private",
     "admin-app",
     "calculadora-app",
@@ -391,7 +392,7 @@ test("repository status and queue rulesets are independent and canary-scoped", a
     assert.equal(queue_enforcement, expectedQueue, `${name} queue enforcement`);
   }
   assert.equal(statusPayload.enforcement, "active");
-  assert.equal(queuePayload.enforcement, "disabled");
+  assert.equal(queuePayload.enforcement, "active");
   assert.deepEqual(statusPayload.bypass_actors, []);
   assert.deepEqual(queuePayload.bypass_actors, []);
   assert.deepEqual(statusPayload.conditions, {
@@ -476,7 +477,7 @@ test("repository status and queue rulesets are independent and canary-scoped", a
   );
   assert.equal(
     buildRepositoryQueueRuleset(stagedPolicy, ".github").enforcement,
-    "disabled",
+    "active",
   );
 });
 
@@ -757,20 +758,20 @@ test("reconciliation stages each repository independently and remains idempotent
     [
       `POST /orgs/${ORGANIZATION}/rulesets`,
       `POST /repos/${ORGANIZATION}/.github/rulesets`,
-      `POST /repos/${ORGANIZATION}/.github/rulesets`,
       `POST /repos/${ORGANIZATION}/.github-private/rulesets`,
+      `POST /repos/${ORGANIZATION}/.github/rulesets`,
       `POST /repos/${ORGANIZATION}/.github-private/rulesets`,
       `PATCH /repos/${ORGANIZATION}/.github`,
       `PATCH /repos/${ORGANIZATION}/.github-private`,
     ],
   );
   assert.equal(writes[0].body.enforcement, "active");
-  assert.equal(writes[1].body.enforcement, "disabled");
-  assert.equal(writes[1].body.rules[0].type, "merge_queue");
+  assert.equal(writes[1].body.enforcement, "active");
+  assert.equal(writes[1].body.rules[0].type, "required_status_checks");
   assert.equal(writes[2].body.enforcement, "active");
   assert.equal(writes[2].body.rules[0].type, "required_status_checks");
   assert.equal(writes[3].body.enforcement, "active");
-  assert.equal(writes[3].body.rules[0].type, "required_status_checks");
+  assert.equal(writes[3].body.rules[0].type, "merge_queue");
   assert.equal(writes[4].body.enforcement, "active");
   assert.equal(writes[4].body.rules[0].type, "merge_queue");
   assert.deepEqual(writes[5].body, {
