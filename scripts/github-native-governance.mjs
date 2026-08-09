@@ -31,7 +31,6 @@ const REQUIRED_ORGANIZATION_CONDITIONS = {
 const REQUIRED_PULL_REQUEST_PARAMETERS = {
   allowed_merge_methods: ["squash"],
   dismiss_stale_reviews_on_push: false,
-  dismissal_restriction: { allowed_actors: [], enabled: false },
   require_code_owner_review: false,
   require_last_push_approval: false,
   required_approving_review_count: 0,

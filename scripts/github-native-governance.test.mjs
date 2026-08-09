@@ -310,6 +310,10 @@ test("policy renders a native organization zero-tolerance ruleset without a merg
 
   const pullRequest = payload.rules.find(({ type }) => type === "pull_request");
   assert.deepEqual(pullRequest.parameters.allowed_merge_methods, ["squash"]);
+  assert.equal(
+    Object.hasOwn(pullRequest.parameters, "dismissal_restriction"),
+    false,
+  );
   assert.equal(pullRequest.parameters.required_approving_review_count, 0);
   assert.equal(pullRequest.parameters.required_review_thread_resolution, true);
 

@@ -122,6 +122,8 @@ The organization ruleset targets `~ALL` repositories with repository-rename
 protection disabled because GitHub rejects rename protection combined with the
 `~ALL` selector. Branch, pull-request, signature, scanning, and review rules
 remain unchanged and apply to every current and future repository.
+The pull-request rule also omits the disabled `dismissal_restriction` object
+because the organization rules API normalizes that no-op field away.
 
 Its scheduled run is only a drift-repair mechanism. It never opens, approves,
 rebases, enqueues, merges, or deletes a pull request or branch.
