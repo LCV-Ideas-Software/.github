@@ -42,9 +42,21 @@ function assertRejected(...documents) {
 
 test("valid CodeQL SARIF with no inline results is accepted", () => {
   assertAccepted([sarif({ results: [] })]);
-  assertAccepted([sarif()]);
-  assertAccepted([sarif({ results: null })]);
   assertAccepted([{ ...sarif({ results: [] }), inlineExternalProperties: [] }]);
+  assertAccepted([sarif({ results: [], externalPropertyFileReferences: {} })]);
+  assertAccepted([sarif({ results: [], invocations: [] })]);
+  assertAccepted([
+    sarif({
+      results: [],
+      invocations: [
+        {
+          executionSuccessful: true,
+          toolExecutionNotifications: [{ level: "warning" }],
+          toolConfigurationNotifications: [{ level: "note" }],
+        },
+      ],
+    }),
+  ]);
 });
 
 test("malformed or empty SARIF shapes fail closed", () => {
@@ -61,10 +73,78 @@ test("malformed or empty SARIF shapes fail closed", () => {
     { version: "2.2.0", runs: [] },
     { version: "2.1.0", runs: [null] },
     { version: "2.1.0", runs: [{}] },
+    sarif(),
+    sarif({ results: null }),
     sarif({ results: {} }),
     sarif({ results: [null] }),
+    sarif({
+      results: [],
+      tool: { driver: { name: "Another analyzer" } },
+    }),
+    sarif({ results: [], invocations: null }),
+    sarif({ results: [], invocations: [null] }),
+    sarif({ results: [], invocations: [{}] }),
+    sarif({ results: [], invocations: [{ executionSuccessful: false }] }),
+    sarif({
+      results: [],
+      invocations: [
+        {
+          executionSuccessful: true,
+          processStartFailureMessage: "CodeQL did not start",
+        },
+      ],
+    }),
+    sarif({
+      results: [],
+      invocations: [
+        { executionSuccessful: true, toolExecutionNotifications: null },
+      ],
+    }),
+    sarif({
+      results: [],
+      invocations: [
+        { executionSuccessful: true, toolExecutionNotifications: [null] },
+      ],
+    }),
+    sarif({
+      results: [],
+      invocations: [
+        {
+          executionSuccessful: true,
+          toolExecutionNotifications: [{ level: "fatal" }],
+        },
+      ],
+    }),
+    sarif({
+      results: [],
+      invocations: [
+        {
+          executionSuccessful: true,
+          toolExecutionNotifications: [{ level: "error" }],
+        },
+      ],
+    }),
+    sarif({
+      results: [],
+      invocations: [
+        { executionSuccessful: true, toolConfigurationNotifications: null },
+      ],
+    }),
+    sarif({
+      results: [],
+      invocations: [
+        {
+          executionSuccessful: true,
+          toolConfigurationNotifications: [{ level: "error" }],
+        },
+      ],
+    }),
     sarif({ externalPropertyFileReferences: null }),
     sarif({ externalPropertyFileReferences: { results: [{}] } }),
+    sarif({
+      results: [],
+      externalPropertyFileReferences: { invocations: [{}] },
+    }),
     { ...sarif({ results: [] }), inlineExternalProperties: null },
     { ...sarif({ results: [] }), inlineExternalProperties: {} },
     {
