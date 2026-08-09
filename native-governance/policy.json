@@ -10,7 +10,7 @@
       "repository_name": {
         "include": ["~ALL"],
         "exclude": [],
-        "protected": true
+        "protected": false
       },
       "ref_name": {
         "include": ["~DEFAULT_BRANCH"],

@@ -118,6 +118,11 @@ the protected `github-administration` environment it:
 4. reconciles the organization zero-tolerance ruleset; and
 5. reconciles separate repository status-check and merge-queue rulesets.
 
+The organization ruleset targets `~ALL` repositories with repository-rename
+protection disabled because GitHub rejects rename protection combined with the
+`~ALL` selector. Branch, pull-request, signature, scanning, and review rules
+remain unchanged and apply to every current and future repository.
+
 Its scheduled run is only a drift-repair mechanism. It never opens, approves,
 rebases, enqueues, merges, or deletes a pull request or branch.
 

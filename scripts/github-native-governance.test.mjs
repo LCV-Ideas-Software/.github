@@ -288,7 +288,7 @@ test("policy renders a native organization zero-tolerance ruleset without a merg
   assert.equal(payload.enforcement, "evaluate");
   assert.deepEqual(payload.bypass_actors, []);
   assert.deepEqual(payload.conditions, {
-    repository_name: { include: ["~ALL"], exclude: [], protected: true },
+    repository_name: { include: ["~ALL"], exclude: [], protected: false },
     ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] },
   });
   assert.deepEqual(
@@ -444,6 +444,13 @@ test("unsafe policy extensions, bypasses, and organization merge queues are reje
   const policy = structuredClone(await policyFixture());
   policy.provenance = {};
   assert.throws(() => validatePolicy(policy), /unknown key.*provenance/i);
+
+  const protectedAllRepositories = structuredClone(await policyFixture());
+  protectedAllRepositories.organization_ruleset.conditions.repository_name.protected = true;
+  assert.throws(
+    () => validatePolicy(protectedAllRepositories),
+    /organization_ruleset\.conditions/i,
+  );
 
   const bypass = structuredClone(await policyFixture());
   bypass.organization_ruleset.bypass_actors.push({
