@@ -197,6 +197,7 @@ their consumer migrations and the private plus public merge-group canaries:
 - `astrologo-app`
 - `calculadora-app`
 - `cross-review`
+- `maestro-app`
 - `mainsite-app`
 - `mtasts-motor`
 - `oraculo-financeiro`
@@ -205,15 +206,13 @@ their consumer migrations and the private plus public merge-group canaries:
 
 <!-- native-active-repositories:end -->
 
-The `maestro-app` repository rulesets remain `disabled` until its migration
-evidence is complete. The first
-`.github` inert canary exposed two merge-group gaps: Scorecard rejected the
-synthetic ref, and the Slack workflow verifier called GitHub without a token.
-Both producers are now corrected and the queue is re-promoted solely for a
-fresh inert canary. All eleven declared contexts must succeed on its synthetic
-head; otherwise the documented fail-closed rollback disables the queue again.
-The re-promotion canary is deliberately documentation-only, so its
-`merge_group` evidence isolates GitHub Actions behavior from runtime changes.
+Every policy repository listed above declares both its status-check ruleset and
+merge queue active. The final `maestro-app` promotion is applied only after its
+reusable CodeQL gate migration is merged and green on `main`. Reconciliation is
+then followed by a documentation-only inert canary: all nine declared contexts
+must succeed on the synthetic `merge_group` head, or the documented fail-closed
+rollback disables that repository's queue again. Keeping the canary inert
+isolates GitHub Actions behavior from application runtime changes.
 
 Every promotion also begins with a live inventory of open pull requests. If a
 repository has an eligible pull request whose CodeQL run completed before the
