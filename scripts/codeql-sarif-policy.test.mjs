@@ -57,11 +57,16 @@ function assertRejected(...documents) {
   assert.notEqual(result.status, 0, "Malformed SARIF was accepted.");
 }
 
-function executeGate({ inputDirectory = "", environmentDirectory = "" }) {
+function executeGate({
+  inputDirectory = "",
+  environmentDirectory = "",
+  additionalEnvironment = {},
+}) {
   return spawnSync("bash", [bashPath(fileURLToPath(SHELL_URL))], {
     encoding: "utf8",
     env: {
       ...process.env,
+      ...additionalEnvironment,
       CODEQL_RESULTS: bashPath(environmentDirectory),
       GITHUB_ACTION_PATH: bashPath(fileURLToPath(ACTION_DIRECTORY_URL)),
       SARIF_DIRECTORY_INPUT: bashPath(inputDirectory),
@@ -110,14 +115,18 @@ test("gate shell is strict, path-safe, and delegates every file to the reviewed 
     shell,
     /find "\$sarif_directory" -type f -name '\*\.sarif' -print0/,
   );
-  assert.match(shell, /for sarif_file in "\$\{sarif_files\[@\]\}"; do/);
+  assert.match(shell, /if ! find .+ >"\$sarif_list"; then/);
+  assert.match(shell, /while IFS= read -r -d '' sarif_file; do/);
   assert.match(
     shell,
     /jq -ce -s -f "\$GITHUB_ACTION_PATH\/policy\.jq" "\$sarif_file"/,
   );
   assert.match(shell, /CodeQL produced no SARIF file to enforce/);
   assert.match(shell, /Inventory: \$finding_inventory/);
-  assert.doesNotMatch(shell, /\beval\b|\bsource\b|bash\s+-c/);
+  assert.doesNotMatch(
+    shell,
+    /\beval\b|\bsource\b|bash\s+-c|\bmapfile\b|<\s*<\(/,
+  );
 });
 
 test("valid CodeQL SARIF with no inline results is accepted", () => {
@@ -393,6 +402,33 @@ test("gate fails closed for missing, malformed, or externally materialized SARIF
   ]) {
     assert.notEqual(result.status, 0, "Invalid SARIF input was accepted.");
   }
+});
+
+test("gate fails closed when SARIF discovery emits a partial list and then fails", async (t) => {
+  const directory = await createSarifDirectory(t, {
+    "clean.sarif": [sarif()],
+  });
+  const environmentDirectory = await mkdtemp(
+    join(tmpdir(), "codeql-sarif-find-failure-"),
+  );
+  t.after(() => rm(environmentDirectory, { force: true, recursive: true }));
+  const bashEnvironment = join(environmentDirectory, "bash-env.sh");
+  await writeFile(
+    bashEnvironment,
+    `find() { printf '%s\\0' "$FAKE_FIND_FILE"; return 1; }\n`,
+    "utf8",
+  );
+
+  const result = executeGate({
+    inputDirectory: directory,
+    additionalEnvironment: {
+      BASH_ENV: bashPath(bashEnvironment),
+      FAKE_FIND_FILE: bashPath(join(directory, "clean.sarif")),
+    },
+  });
+
+  assert.notEqual(result.status, 0, "Partial SARIF discovery was accepted.");
+  assert.match(result.stderr, /Could not enumerate every SARIF file/);
 });
 
 test("gate reports every finding with a normalized inventory", async (t) => {
