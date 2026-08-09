@@ -81,6 +81,22 @@ test("malformed or empty SARIF shapes fail closed", () => {
       results: [],
       tool: { driver: { name: "Another analyzer" } },
     }),
+    sarif({
+      results: [],
+      conversion: {
+        tool: { driver: { name: "SARIF converter" } },
+        invocation: {
+          executionSuccessful: false,
+          toolExecutionNotifications: [{ level: "error" }],
+        },
+      },
+    }),
+    sarif({
+      results: [],
+      conversion: {
+        tool: { driver: { name: "GitHub Code Scanning" } },
+      },
+    }),
     sarif({ results: [], invocations: null }),
     sarif({ results: [], invocations: [null] }),
     sarif({ results: [], invocations: [{}] }),
