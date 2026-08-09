@@ -539,6 +539,14 @@ test("public engineering practices describe the enforced native PR governance", 
 
   assert.doesNotMatch(
     profile,
+    /empty internal `.github-private`[^.]*no analyzable source/i,
+  );
+  assert.match(
+    profile,
+    /`.github-private`[^.]*enterprise governance[^.]*GitHub Actions[^.]*zero-finding SARIF gate/i,
+  );
+  assert.doesNotMatch(
+    profile,
     /Direct-to-`main` baseline|Direct signed, fast-forward pushes are allowed|Direct signed pushes to `main` remain permitted|PRs (?:and auto-merge may be used, but are not mandatory|are optional)/i,
   );
   assert.match(profile, /pull request[^.\n]*required[^.\n]*default branch/i);
