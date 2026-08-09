@@ -826,7 +826,7 @@ async function findOrganizationRuleset(configuration, name, fetchImpl) {
   const candidates = await listPaginated({
     configuration,
     pathname,
-    searchParams: { targets: "branch" },
+    searchParams: { includes_parents: false, targets: "branch" },
     fetchImpl,
     label: "organization ruleset inventory",
   });
