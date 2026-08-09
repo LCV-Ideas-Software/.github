@@ -210,6 +210,8 @@ synthetic ref, and the Slack workflow verifier called GitHub without a token.
 Both producers are now corrected and the queue is re-promoted solely for a
 fresh inert canary. All eleven declared contexts must succeed on its synthetic
 head; otherwise the documented fail-closed rollback disables the queue again.
+The re-promotion canary is deliberately documentation-only, so its
+`merge_group` evidence isolates GitHub Actions behavior from runtime changes.
 
 Every promotion also begins with a live inventory of open pull requests. If a
 repository has an eligible pull request whose CodeQL run completed before the
