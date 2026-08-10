@@ -1148,6 +1148,103 @@ test("the exact Copilot quota outcome is unavailable without becoming a review",
     "2026-08-09T18:00:06Z",
   );
 
+  const detachedRunFromClosedPull = {
+    ...failedCopilotRun,
+    id: 31336525000,
+    created_at: "2026-08-09T17:59:00Z",
+    run_started_at: "2026-08-09T17:59:00Z",
+    updated_at: "2026-08-09T17:59:01Z",
+    pull_requests: [],
+  };
+  const runFromAnotherPullAtTheSameHead = {
+    ...detachedRunFromClosedPull,
+    id: 31336525001,
+    pull_requests: [
+      {
+        number: 100,
+        head: { sha: HEAD_SHA },
+        base: { ref: "main" },
+      },
+    ],
+  };
+  const detachedIdentityDriftRun = {
+    ...detachedRunFromClosedPull,
+    id: 31336525002,
+    actor: { id: 268063598, login: "lcv-leo", type: "User" },
+  };
+  const otherPullIdentityDriftRun = {
+    ...runFromAnotherPullAtTheSameHead,
+    id: 31336525003,
+    actor: { id: 268063598, login: "lcv-leo", type: "User" },
+  };
+  const sharedHeadAcrossClosedAndCurrentPulls =
+    await readReviewReconciliationState(request, {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        detachedRunFromClosedPull,
+        runFromAnotherPullAtTheSameHead,
+        detachedIdentityDriftRun,
+        otherPullIdentityDriftRun,
+        failedCopilotRun,
+      ],
+      getReviewSnapshot: async () => quotaSnapshot,
+    });
+  assert.equal(sharedHeadAcrossClosedAndCurrentPulls.status, "clear");
+  assert.equal(
+    sharedHeadAcrossClosedAndCurrentPulls.latestExactHeadCopilotState,
+    "unavailable",
+  );
+
+  const detachedRunCannotAuthorizeQuota = await readReviewReconciliationState(
+    request,
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        detachedRunFromClosedPull,
+        runFromAnotherPullAtTheSameHead,
+        detachedIdentityDriftRun,
+        otherPullIdentityDriftRun,
+      ],
+      getReviewSnapshot: async () => quotaSnapshot,
+    },
+  );
+  assert.equal(detachedRunCannotAuthorizeQuota.status, "pending");
+
+  await assert.rejects(
+    readReviewReconciliationState(request, {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        {
+          ...failedCopilotRun,
+          pull_requests: [
+            {
+              number: 99,
+              head: { sha: "f".repeat(40) },
+              base: { ref: "main" },
+            },
+          ],
+        },
+      ],
+      getReviewSnapshot: async () =>
+        assert.fail("a current pull association mismatch must fail first"),
+    }),
+    /lost its exact pull request/i,
+  );
+  await assert.rejects(
+    readReviewReconciliationState(request, {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        {
+          ...failedCopilotRun,
+          actor: { id: 268063598, login: "lcv-leo", type: "User" },
+        },
+      ],
+      getReviewSnapshot: async () =>
+        assert.fail("a current pull identity drift must fail first"),
+    }),
+    /identity drifted/i,
+  );
+
   const failedRunAwaitingOutcome = await readReviewReconciliationState(
     request,
     {

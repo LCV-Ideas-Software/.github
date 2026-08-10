@@ -2508,6 +2508,32 @@ export function assessCopilotReviewRuns(
       run.path === COPILOT_REVIEW_WORKFLOW_PATH;
     const knownActor = run.actor.id === COPILOT_REVIEW_BOT_DATABASE_ID;
     if (!knownIdentity && !knownActor) continue;
+    for (const pull of run.pull_requests) {
+      if (
+        !isObject(pull) ||
+        !positivePullNumber(pull.number) ||
+        !isObject(pull.head) ||
+        !SHA_PATTERN.test(pull.head.sha ?? "") ||
+        !isObject(pull.base) ||
+        typeof pull.base.ref !== "string" ||
+        pull.base.ref === ""
+      ) {
+        throw new Error("Malformed Copilot review pull request association");
+      }
+    }
+    const pullAssociations = run.pull_requests.filter(
+      (pull) => pull.number === number,
+    );
+    if (pullAssociations.length === 0) {
+      continue;
+    }
+    if (
+      pullAssociations.length !== 1 ||
+      pullAssociations[0].head.sha !== headSha ||
+      pullAssociations[0].base.ref !== "main"
+    ) {
+      throw new Error("Copilot review workflow lost its exact pull request");
+    }
     if (
       !knownIdentity ||
       !knownActor ||
@@ -2516,15 +2542,6 @@ export function assessCopilotReviewRuns(
       run.head_sha !== headSha
     ) {
       throw new Error("Copilot review workflow identity drifted");
-    }
-    const associatedPull = run.pull_requests.some(
-      (pull) =>
-        pull?.number === number &&
-        pull?.head?.sha === headSha &&
-        pull?.base?.ref === "main",
-    );
-    if (!associatedPull) {
-      throw new Error("Copilot review workflow lost its exact pull request");
     }
     const createdAt = validTimestamp(
       run.created_at,

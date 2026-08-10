@@ -874,6 +874,50 @@ test("merge-group feedback state is read-only and keeps bot absence neutral", as
     null,
   );
 
+  const detachedRunFromClosedPull = copilotRun({
+    id: 31336525000,
+    created_at: "2026-08-09T17:59:00Z",
+    run_started_at: "2026-08-09T17:59:00Z",
+    updated_at: "2026-08-09T17:59:01Z",
+    pull_requests: [],
+  });
+  const sharedHeadAcrossClosedAndCurrentPulls =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [
+          detachedRunFromClosedPull,
+          copilotRun(),
+        ],
+        getReviewSnapshot: async () =>
+          copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+      },
+    );
+  assert.equal(sharedHeadAcrossClosedAndCurrentPulls.status, "clear");
+
+  const detachedRunCannotAuthorizeMergeGroupQuota =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [detachedRunFromClosedPull],
+        getReviewSnapshot: async () =>
+          copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+      },
+    );
+  assert.equal(detachedRunCannotAuthorizeMergeGroupQuota.status, "failure");
+
   const unassociatedQuotaUnavailableOutcome = await readMergeGroupFeedbackState(
     {
       repository: REPOSITORY,

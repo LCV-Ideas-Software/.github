@@ -158,6 +158,13 @@ run by its GitHub bot database ID, event, workflow name, internal path, and pull
 request association. If that run exists, reconciliation remains pending until
 it completes; a failed ordinary review run fails closed. If it does not exist,
 bot absence stays neutral after the quiet window.
+Because the REST inventory is filtered by repository and head SHA, the same
+commit can legitimately expose runs from another pull request or a detached run
+whose pull request was already closed. Well-formed runs that are not associated
+with the pull request currently being reconciled are excluded; a run that names
+the current pull request but disagrees on its exact head or `main` base still
+fails closed. A quota-unavailable review can never use an excluded run as its
+required failed-run fence.
 Only after checks and review state remain unchanged and non-blocking for a
 120-second quiet window may the action continue. Polling is bounded to 12
 minutes and the trusted job has a 30-minute timeout. Idempotent REST GET and
