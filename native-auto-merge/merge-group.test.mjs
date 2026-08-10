@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  COPILOT_NO_REVIEWABLE_FILES_PREFIX,
   githubGetMergeQueueSnapshot,
   githubGetRequestedReviewers,
   mergeGroupEventFromInputs,
@@ -1188,5 +1189,64 @@ test("merge-group gate fails closed on association or feedback drift", async () 
       }),
       /association changed|identity changed|queue ref.*disagree/i,
     );
+  }
+});
+
+test("a successful Copilot run with no reviewable files clears the merge-group gate", async () => {
+  // Regression for LCV-Ideas-Software/.github#134. When the whole diff is made of files
+  // Copilot skips, its review run SUCCEEDS and it renders a plain sentence. Classifying
+  // that as "unavailable" would make unavailableOutcomeFollowsFailedRun false and the gate
+  // return failure, so the pull request would keep being dequeued. It is a completed
+  // review with nothing to report.
+  const snapshotWith = (body) => ({
+    id: "PR_test",
+    headRefOid: HEAD_SHA,
+    comments: { nodes: [], pageInfo: { hasNextPage: false } },
+    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+    reviews: {
+      nodes: [
+        {
+          id: "PRR_no_reviewable_files",
+          author: { __typename: "Bot", databaseId: 175728472, login: "copilot-pull-request-reviewer" },
+          body,
+          state: "COMMENTED",
+          commit: { oid: HEAD_SHA },
+          createdAt: "2026-08-09T18:00:05Z",
+          submittedAt: "2026-08-09T18:00:05Z",
+          updatedAt: "2026-08-09T18:00:05Z",
+          isMinimized: false,
+          minimizedReason: null,
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  });
+
+  const footer =
+    '<a href="/LCV-Ideas-Software/.github/new/main?filename=.github/skills/code-review/SKILL.md">add instructions</a>';
+
+  for (const body of [
+    COPILOT_NO_REVIEWABLE_FILES_PREFIX,
+    COPILOT_NO_REVIEWABLE_FILES_PREFIX + "\n\n\n\n\n",
+    [COPILOT_NO_REVIEWABLE_FILES_PREFIX, "", "---", "", footer].join("\n"),
+  ]) {
+    const state = await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [
+          copilotRun({ conclusion: "success" }),
+        ],
+        getReviewSnapshot: async () => snapshotWith(body),
+      },
+    );
+
+    assert.equal(state.status, "clear");
+    assert.match(state.fingerprint, /^[0-9a-f]{64}$/);
   }
 });

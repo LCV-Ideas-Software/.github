@@ -64,6 +64,15 @@ const COPILOT_REVIEW_WORKFLOW_PATH =
   "dynamic/agents/copilot-pull-request-reviewer";
 const COPILOT_QUOTA_UNAVAILABLE_BODY =
   "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
+// Copilot skips files it cannot review (generated output, unsupported types). When the
+// whole diff is skippable its review run still SUCCEEDS and it renders this verdict
+// instead of the usual overview. That is a completed review with nothing to report, not
+// an unavailable one: the "unavailable" state is reserved for outcomes that follow a
+// FAILED run (exhausted quota), and readMergeGroupFeedbackState rejects an unavailable
+// outcome that is not associated with a failure. Two shapes were observed on the same
+// pull request, so this is matched by prefix after trimStart.
+export const COPILOT_NO_REVIEWABLE_FILES_PREFIX =
+  "Copilot wasn't able to review any files in this pull request.";
 const CODEX_CLEAN_REVIEW_HEADLINES = new Set([
   "Codex Review: Didn't find any major issues. :+1:",
   "Codex Review: Didn't find any major issues. :rocket:",
@@ -724,6 +733,15 @@ function parseCopilotReviewBody(body) {
   if (body === COPILOT_QUOTA_UNAVAILABLE_BODY) {
     return {
       state: "unavailable",
+      suppressedCommentCount: 0,
+    };
+  }
+  if (
+    typeof body === "string" &&
+    body.trimStart().startsWith(COPILOT_NO_REVIEWABLE_FILES_PREFIX)
+  ) {
+    return {
+      state: "reviewed",
       suppressedCommentCount: 0,
     };
   }

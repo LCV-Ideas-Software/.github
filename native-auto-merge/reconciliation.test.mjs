@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   assessRequiredCheckRuns,
   assessReviewSnapshot,
+  COPILOT_NO_REVIEWABLE_FILES_PREFIX,
   readReviewReconciliationState as readReviewReconciliationStateProduction,
   ReviewSnapshotChangedError,
   waitForReviewReconciliation,
@@ -1995,4 +1996,45 @@ test("quiet-window reconciliation is bounded, resets on drift, and keeps bot abs
     ),
     /timed out/i,
   );
+});
+
+test("Copilot's no-reviewable-files verdict counts as a completed review", () => {
+  // Regression for #134. The run succeeds and Copilot renders a verdict, so this is a
+  // review with nothing to report - NOT the "unavailable" state, which is reserved for
+  // outcomes following a failed run (exhausted quota).
+  const footer =
+    '<a href="/LCV-Ideas-Software/.github/new/main?filename=.github/skills/code-review/SKILL.md">add instructions</a>';
+
+  for (const body of [
+    COPILOT_NO_REVIEWABLE_FILES_PREFIX,
+    COPILOT_NO_REVIEWABLE_FILES_PREFIX + "\n\n\n\n\n",
+    [COPILOT_NO_REVIEWABLE_FILES_PREFIX, "", "---", "", footer].join("\n"),
+  ]) {
+    const assessed = assessReviewSnapshot(
+      snapshot({
+        reviews: {
+          nodes: [
+            review({
+              id: "PRR_no_reviewable_files",
+              body,
+              createdAt: "2026-08-10T22:02:42Z",
+              submittedAt: "2026-08-10T22:02:42Z",
+              updatedAt: "2026-08-10T22:02:42Z",
+            }),
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      }),
+      HEAD_SHA,
+    );
+
+    assert.equal(assessed.status, "clear");
+    assert.equal(assessed.latestExactHeadCopilotState, "reviewed");
+    assert.equal(
+      assessed.latestExactHeadCopilotReviewAt,
+      "2026-08-10T22:02:42Z",
+    );
+    assert.equal(assessed.latestExactHeadCopilotUnavailableAt, null);
+    assert.deepEqual(assessed.copilotUnavailableReviewIds, []);
+  }
 });
