@@ -21,6 +21,18 @@ const EFFECTIVE_RULES_PER_PAGE = 100;
 const MAX_EFFECTIVE_RULE_PAGES = 100;
 const CHECK_RUNS_PER_PAGE = 100;
 const MAX_CHECK_RUN_PAGES = 100;
+const ACTIVE_CHECK_RUN_STATUSES = new Set([
+  "queued",
+  "in_progress",
+  "waiting",
+  "requested",
+  "pending",
+]);
+const ACCEPTED_CHECK_RUN_CONCLUSIONS = new Set([
+  "success",
+  "skipped",
+  "neutral",
+]);
 const WORKFLOW_RUNS_PER_PAGE = 100;
 const MAX_DYNAMIC_WORKFLOW_RUN_PAGES = 10;
 const PULLS_FOR_COMMIT_PER_PAGE = 100;
@@ -711,12 +723,20 @@ function parseCodexPullRequestReviewBody(body) {
 export function assessRequiredCheckRuns(
   requiredChecksCandidate,
   checkRuns,
-  headSha,
+  contextCandidate,
 ) {
   const requiredChecks = validateRequiredChecks(requiredChecksCandidate);
-  if (!SHA_PATTERN.test(headSha ?? "")) {
-    throw new Error("head SHA must be a full hexadecimal SHA-1");
+  if (!isObject(contextCandidate)) {
+    throw new Error("Required check pull request context is malformed");
   }
+  const { repository } = parseRepository(contextCandidate.repository);
+  const number = contextCandidate.number;
+  const headSha = contextCandidate.headSha;
+  if (!positivePullNumber(number) || !SHA_PATTERN.test(headSha ?? "")) {
+    throw new Error("Required check pull request context is malformed");
+  }
+  const repositoryUrl = `${API_ROOT}/repos/${repository}`.toLowerCase();
+  const pullUrl = `${repositoryUrl}/pulls/${number}`;
   if (!Array.isArray(checkRuns)) {
     throw new Error("Malformed check-run inventory payload");
   }
@@ -724,16 +744,57 @@ export function assessRequiredCheckRuns(
   const canonical = [];
   let status = "success";
   for (const required of requiredChecks) {
-    const matches = checkRuns.filter(
+    const candidates = checkRuns.filter(
       (run) =>
         isObject(run) &&
         run.name === required.name &&
         run.app?.id === required.app_id &&
         run.head_sha === headSha,
     );
-    if (matches.length > 1) {
-      throw new Error(`Duplicate required check run ${required.name}`);
-    }
+    const matches = candidates.filter((run) => {
+      if (!Array.isArray(run.pull_requests)) {
+        throw new Error(
+          `Malformed required check run association ${required.name}`,
+        );
+      }
+      const associations = run.pull_requests.map((pull) => {
+        if (
+          !isObject(pull) ||
+          !positivePullNumber(pull.number) ||
+          typeof pull.url !== "string" ||
+          pull.url.trim() === "" ||
+          !isObject(pull.head) ||
+          typeof pull.head.ref !== "string" ||
+          pull.head.ref.trim() === "" ||
+          !SHA_PATTERN.test(pull.head.sha ?? "") ||
+          !isObject(pull.head.repo) ||
+          typeof pull.head.repo.url !== "string" ||
+          pull.head.repo.url.trim() === "" ||
+          !isObject(pull.base) ||
+          typeof pull.base.ref !== "string" ||
+          pull.base.ref.trim() === "" ||
+          !SHA_PATTERN.test(pull.base.sha ?? "") ||
+          !isObject(pull.base.repo) ||
+          typeof pull.base.repo.url !== "string" ||
+          pull.base.repo.url.trim() === ""
+        ) {
+          throw new Error(
+            `Malformed required check run association ${required.name}`,
+          );
+        }
+        return pull;
+      });
+      return associations.some((pull) => {
+        return (
+          pull.number === number &&
+          pull.url.toLowerCase() === pullUrl &&
+          pull.head.sha === headSha &&
+          pull.head.repo.url.toLowerCase() === repositoryUrl &&
+          pull.base.ref === "main" &&
+          pull.base.repo.url.toLowerCase() === repositoryUrl
+        );
+      });
+    });
     if (matches.length === 0) {
       status = status === "failure" ? status : "pending";
       canonical.push({
@@ -743,37 +804,69 @@ export function assessRequiredCheckRuns(
       });
       continue;
     }
-    const run = matches[0];
-    if (
-      !Number.isSafeInteger(run.id) ||
-      run.id <= 0 ||
-      typeof run.status !== "string" ||
-      !isObject(run.app)
-    ) {
-      throw new Error(`Malformed required check run ${required.name}`);
-    }
-    if (run.status !== "completed") {
+    const seenIds = new Set();
+    const runs = matches.map((run) => {
+      if (
+        !Number.isSafeInteger(run.id) ||
+        run.id <= 0 ||
+        seenIds.has(run.id) ||
+        typeof run.status !== "string" ||
+        !isObject(run.app)
+      ) {
+        throw new Error(`Malformed required check run ${required.name}`);
+      }
+      seenIds.add(run.id);
+      if (run.status === "completed") {
+        const completedAt = validTimestamp(
+          run.completed_at,
+          `${required.name} completed_at`,
+        );
+        if (typeof run.conclusion !== "string" || run.conclusion === "") {
+          throw new Error(`Malformed required check run ${required.name}`);
+        }
+        return {
+          id: run.id,
+          state: "completed",
+          conclusion: run.conclusion,
+          completedAt,
+        };
+      }
+      if (!ACTIVE_CHECK_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Malformed required check run ${required.name}`);
+      }
+      return {
+        id: run.id,
+        state: run.status,
+        conclusion: null,
+        completedAt: null,
+      };
+    });
+    runs.sort((left, right) => left.id - right.id);
+
+    const active = runs.filter((run) => run.state !== "completed");
+    if (active.length > 0) {
       status = status === "failure" ? status : "pending";
       canonical.push({
-        id: run.id,
         name: required.name,
         appId: required.app_id,
-        state: run.status,
+        state: "pending",
+        runs,
       });
       continue;
     }
-    const completedAt = validTimestamp(
-      run.completed_at,
-      `${required.name} completed_at`,
+
+    const hasSuccess = runs.some((run) => run.conclusion === "success");
+    const allAccepted = runs.every((run) =>
+      ACCEPTED_CHECK_RUN_CONCLUSIONS.has(run.conclusion),
     );
-    if (run.conclusion !== "success") status = "failure";
+    const succeeded = hasSuccess && allAccepted;
+    if (!succeeded) status = "failure";
     canonical.push({
-      id: run.id,
       name: required.name,
       appId: required.app_id,
       state: "completed",
-      conclusion: run.conclusion,
-      completedAt,
+      conclusion: succeeded ? "success" : "failure",
+      runs,
     });
   }
 
@@ -2306,7 +2399,11 @@ export async function readReviewReconciliationState(
   const getReviewSnapshot =
     runtime.getReviewSnapshot ?? githubGetReviewSnapshot;
   const checkRuns = await listCheckRuns(repository, headSha, token, runtime);
-  const checks = assessRequiredCheckRuns(requiredChecks, checkRuns, headSha);
+  const checks = assessRequiredCheckRuns(requiredChecks, checkRuns, {
+    repository,
+    number,
+    headSha,
+  });
   if (checks.status !== "success") {
     return {
       status: checks.status,

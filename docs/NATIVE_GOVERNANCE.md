@@ -135,8 +135,24 @@ effective Copilot rule must keep `review_on_push` enabled. This prevents a more
 restrictive overlapping ruleset from silently reintroducing human approval or
 removing the automatic review request while another correctly shaped rule
 still exists.
-It also inventories every required check run for the exact head and requires
-one successful GitHub Actions App result for every policy name/App-ID pair.
+It also inventories every required check run for the exact head and requires a
+successful GitHub Actions App result for every policy name/App-ID pair. GitHub's
+`filter=latest` check-run inventory can still return one latest run from each
+check suite. The controller first limits that inventory to runs associated by
+GitHub with the exact pull-request number, head SHA, `main` base, and same
+repository. This excludes the temporary `workflow_dispatch` pre-scan while an
+opened draft and a later `ready_for_review` run can legitimately repeat a pair
+on the same commit. `filter=latest` already collapses attempts within one check
+suite. Across distinct associated suites, any active run keeps reconciliation
+pending and any terminal conclusion outside GitHub's accepted
+`success`/`skipped`/`neutral` set fails closed; at least one associated run must
+be exactly `success`. A later independent suite therefore cannot hide an older
+failure merely by completing later. Malformed entries, repeated IDs, stale or
+foreign associations, and missing pairs cannot produce a successful gate:
+malformed or repeated relevant entries throw, while absent exact associations
+remain pending. This is a deliberately stricter controller boundary; GitHub
+does not document a global `completed_at` winner across independent suites with
+the same name.
 The same bounded REST inventory observes the exact-head dynamic Copilot review
 run by its GitHub bot database ID, event, workflow name, internal path, and pull
 request association. If that run exists, reconciliation remains pending until
@@ -418,6 +434,7 @@ rather than reused.
 - [Pull requests associated with a commit](https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit)
 - [`workflow_run` event and security boundary](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
 - [REST workflow-run attempts and timestamps](https://docs.github.com/en/rest/actions/workflow-runs?apiVersion=2026-03-10)
+- [REST check-run inventory and `filter=latest`](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
 - [Pull-request review and comment events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review)
 - [GraphQL cursor pagination](https://docs.github.com/en/enterprise-cloud@latest/graphql/guides/using-pagination-in-the-graphql-api)
 - [Workflow approval for outside contributors](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#controlling-changes-from-forks-to-workflows-in-public-repositories)
