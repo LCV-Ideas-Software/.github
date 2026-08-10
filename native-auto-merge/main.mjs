@@ -28,6 +28,13 @@ const ACTIVE_CHECK_RUN_STATUSES = new Set([
   "requested",
   "pending",
 ]);
+const ACTIVE_WORKFLOW_RUN_STATUSES = new Set([
+  "queued",
+  "in_progress",
+  "waiting",
+  "requested",
+  "pending",
+]);
 const ACCEPTED_CHECK_RUN_CONCLUSIONS = new Set([
   "success",
   "skipped",
@@ -2370,18 +2377,32 @@ export async function githubGetMergeQueueSnapshot(
 }
 
 function trustedCopilotReviewRequestTime(run, repository, runId, headSha) {
-  if (
-    !isObject(run) ||
-    run.id !== runId ||
-    run.path !== NATIVE_AUTO_MERGE_WORKFLOW_PATH ||
-    run.event !== "pull_request_target" ||
-    typeof run.head_branch !== "string" ||
-    run.head_branch === "" ||
-    run.head_sha !== headSha ||
-    run.status !== "in_progress" ||
-    run.repository?.full_name !== repository
-  ) {
-    throw new Error("Copilot review-request workflow identity drifted");
+  if (!isObject(run)) {
+    throw new Error(
+      "Copilot review-request workflow identity drifted (fields: payload)",
+    );
+  }
+  const driftedFields = [];
+  if (run.id !== runId) driftedFields.push("id");
+  if (run.path !== NATIVE_AUTO_MERGE_WORKFLOW_PATH) {
+    driftedFields.push("path");
+  }
+  if (run.event !== "pull_request_target") driftedFields.push("event");
+  if (typeof run.head_branch !== "string" || run.head_branch === "") {
+    driftedFields.push("head_branch");
+  }
+  if (run.head_sha !== headSha) driftedFields.push("head_sha");
+  if (!ACTIVE_WORKFLOW_RUN_STATUSES.has(run.status)) {
+    driftedFields.push("status");
+  }
+  if (run.conclusion !== null) driftedFields.push("conclusion");
+  if (run.repository?.full_name !== repository) {
+    driftedFields.push("repository");
+  }
+  if (driftedFields.length > 0) {
+    throw new Error(
+      `Copilot review-request workflow identity drifted (fields: ${driftedFields.join(", ")})`,
+    );
   }
   const createdAt = validTimestamp(
     run.created_at,
