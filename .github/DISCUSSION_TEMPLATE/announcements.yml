@@ -1,0 +1,29 @@
+title: "[Release] "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "vXX.YY.ZZ"
+    validations:
+      required: true
+  - type: textarea
+    id: highlights
+    attributes:
+      label: Highlights
+    validations:
+      required: true
+  - type: textarea
+    id: breaking
+    attributes:
+      label: Breaking changes
+      description: Write "none" if there are none.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: Which gates passed and how production was checked.
+    validations:
+      required: true
