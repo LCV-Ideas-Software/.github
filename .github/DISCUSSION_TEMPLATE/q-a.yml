@@ -1,0 +1,20 @@
+title: "[Q] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Technical questions about this repository. Answers get marked, so this becomes the
+        durable record for whoever hits the same wall later.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What you already tried
+      description: Commands, files read, hypotheses ruled out. Redact real identifiers.
+    validations:
+      required: true
