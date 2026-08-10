@@ -1,0 +1,38 @@
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas for new apps, features or directions. This is public — use placeholders instead of
+        real infrastructure identifiers.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is painful today? Describe the situation, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+      description: What you propose.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else could solve this, and why this option instead.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - New application
+        - New feature in an existing app
+        - Change to existing behaviour
+        - Tooling or infrastructure
+    validations:
+      required: true

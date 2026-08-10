@@ -1,0 +1,146 @@
+name: Add to project
+
+# Coloca toda issue e todo pull request nos quadros do repositorio e do portfolio.
+# Inerte enquanto a variavel LCV_PROJECTS_APP_CLIENT_ID nao estiver definida na organizacao.
+#
+# Pre-requisito (acao do operador): GitHub App da organizacao instalado neste repositorio,
+# com as TRES permissoes exigidas pelo actions/add-to-project:
+#   - Organization permissions -> Projects: Read and write  (a de repositorio NAO basta)
+#   - Repository permissions   -> Issues: Read-only
+#   - Repository permissions   -> Pull requests: Read-only
+# e com:
+#   - variavel de organizacao LCV_PROJECTS_APP_CLIENT_ID
+#   - secret LCV_PROJECTS_APP_PRIVATE_KEY no environment 'projects-automation' deste repo
+# GITHUB_TOKEN nao acessa Projects v2, por isso o App e obrigatorio.
+#
+# Backfill: os gatilhos abaixo so reagem a eventos novos. Itens abertos ANTES de o App
+# existir nunca entrariam nos quadros. Rode o job backfill via workflow_dispatch uma vez
+# depois de configurar o App, para varrer todos os itens abertos.
+
+on:
+  issues:
+    types: [opened, reopened, transferred]
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  workflow_dispatch:
+
+# Este job NUNCA usa GITHUB_TOKEN: os dois passos de projeto recebem o token do App.
+# Portanto o token automatico nao precisa de permissao nenhuma. Bloco presente em escopo
+# de workflow porque a regra TokenPermissions do OpenSSF Scorecard o exige; vazio porque
+# 'write-all' daria escrita ampla desnecessaria (Scorecard pontua 2 nesse caso).
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+concurrency:
+  group: add-to-project-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  add:
+    name: Add item to projects
+    # So executa quando o segredo esta REALMENTE disponivel. Em PR de fork e em PR do
+    # Dependabot o GitHub retem os secrets de repositorio/environment, entao o passo de
+    # cunhagem do token receberia uma chave vazia e falharia. Aqui o job e pulado, sem
+    # check vermelho. Cobertura desses PRs fica a cargo do auto-add nativo do projeto.
+    if: >-
+      ${{ vars.LCV_PROJECTS_APP_CLIENT_ID != ''
+      && (github.event_name == 'issues'
+      || (github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]')) }}
+    runs-on: ubuntu-latest
+    # Confina a chave privada do App a este job (zizmor secrets-outside-env).
+    # Mesmo padrao ja usado pela organizacao para credenciais de automacao.
+    environment: projects-automation
+    steps:
+      - name: Mint installation token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        env:
+          # zizmor secrets-outside-env: segredo so pode ser referenciado via env
+          APP_PRIVATE_KEY: ${{ secrets.LCV_PROJECTS_APP_PRIVATE_KEY }}
+        with:
+          client-id: ${{ vars.LCV_PROJECTS_APP_CLIENT_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          # zizmor github-app: token restrito a este repositorio e as permissoes minimas
+          repositories: ${{ github.event.repository.name }}
+          permission-organization-projects: write
+          permission-issues: read
+          permission-pull-requests: read
+
+      - name: Add to repository project
+        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
+        with:
+          project-url: https://github.com/orgs/LCV-Ideas-Software/projects/15
+          github-token: ${{ steps.token.outputs.token }}
+
+      - name: Add to portfolio project
+        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
+        with:
+          project-url: https://github.com/orgs/LCV-Ideas-Software/projects/17
+          github-token: ${{ steps.token.outputs.token }}
+
+  backfill:
+    name: Backfill open items into projects
+    # Manual, idempotente: addProjectV2ItemById devolve o item existente se ja estiver la.
+    if: ${{ github.event_name == 'workflow_dispatch' && vars.LCV_PROJECTS_APP_CLIENT_ID != '' }}
+    runs-on: ubuntu-latest
+    environment: projects-automation
+    steps:
+      - name: Mint installation token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        env:
+          APP_PRIVATE_KEY: ${{ secrets.LCV_PROJECTS_APP_PRIVATE_KEY }}
+        with:
+          client-id: ${{ vars.LCV_PROJECTS_APP_CLIENT_ID }}
+          private-key: ${{ env.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-organization-projects: write
+          permission-issues: read
+          permission-pull-requests: read
+
+      - name: Add every open issue and pull request
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for project in 15 17; do
+            project_id="$(gh api graphql -f query='
+              query($org:String!, $num:Int!){ organization(login:$org){ projectV2(number:$num){ id } } }
+            ' -f org="LCV-Ideas-Software" -F num="$project" --jq '.data.organization.projectV2.id')"
+
+            gh api graphql --paginate -f query='
+              query($owner:String!, $name:String!, $cursor:String){
+                repository(owner:$owner, name:$name){
+                  issues(first:100, states:OPEN, after:$cursor){
+                    pageInfo{ hasNextPage endCursor }
+                    nodes{ id }
+                  }
+                }
+              }' -f owner="${REPO%%/*}" -f name="${REPO##*/}" --jq '.data.repository.issues.nodes[].id' \
+            | while read -r node; do
+                gh api graphql -f query='
+                  mutation($p:ID!, $c:ID!){ addProjectV2ItemById(input:{projectId:$p, contentId:$c}){ item { id } } }
+                ' -f p="$project_id" -f c="$node" --silent
+              done
+
+            gh api graphql --paginate -f query='
+              query($owner:String!, $name:String!, $cursor:String){
+                repository(owner:$owner, name:$name){
+                  pullRequests(first:100, states:OPEN, after:$cursor){
+                    pageInfo{ hasNextPage endCursor }
+                    nodes{ id }
+                  }
+                }
+              }' -f owner="${REPO%%/*}" -f name="${REPO##*/}" --jq '.data.repository.pullRequests.nodes[].id' \
+            | while read -r node; do
+                gh api graphql -f query='
+                  mutation($p:ID!, $c:ID!){ addProjectV2ItemById(input:{projectId:$p, contentId:$c}){ item { id } } }
+                ' -f p="$project_id" -f c="$node" --silent
+              done
+          done
