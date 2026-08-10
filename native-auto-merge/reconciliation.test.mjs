@@ -283,6 +283,24 @@ test("required checks aggregate exact-PR GitHub Actions suites without masking f
     assessRequiredCheckRuns(
       REQUIRED_CHECKS,
       [
+        checkRun({ id: 4, conclusion: "failure" }),
+        checkRun({
+          id: 6,
+          status: "in_progress",
+          conclusion: null,
+          completed_at: null,
+        }),
+        successful[1],
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "failure",
+    "a terminal failure must not be delayed by an active sibling suite",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
         ...successful,
         checkRun({
           id: 7,

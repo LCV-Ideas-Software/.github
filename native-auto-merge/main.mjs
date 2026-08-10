@@ -924,6 +924,23 @@ export function assessRequiredCheckRuns(
     });
     runs.sort((left, right) => left.id - right.id);
 
+    const hasAdverseTerminal = runs.some(
+      (run) =>
+        run.state === "completed" &&
+        !ACCEPTED_CHECK_RUN_CONCLUSIONS.has(run.conclusion),
+    );
+    if (hasAdverseTerminal) {
+      status = "failure";
+      canonical.push({
+        name: required.name,
+        appId: required.app_id,
+        state: "completed",
+        conclusion: "failure",
+        runs,
+      });
+      continue;
+    }
+
     const active = runs.filter((run) => run.state !== "completed");
     if (active.length > 0) {
       status = status === "failure" ? status : "pending";
