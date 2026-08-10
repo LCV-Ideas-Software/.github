@@ -3,3 +3,9 @@ node_modules/
 .dev.vars
 .wrangler/
 coverage/
+
+# Local AI agent instructions (kept out of version control by organization convention)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.github/copilot-instructions.md
