@@ -58,7 +58,7 @@ jobs:
         run: echo "Candidate tests passed."
       - name: Enforce merge-group feedback gate
         if: ${{ github.event_name == 'merge_group' && needs.candidate_tests.result == 'success' }}
-        uses: LCV-Ideas-Software/.github/native-auto-merge@faa9f91026f33adacc6b01643aad46bf3d841344 # native-auto-merge/v2.1.1
+        uses: LCV-Ideas-Software/.github/native-auto-merge@8e2684bc1f38b395b2bb2f5ceee6cd658709d216 # native-auto-merge/v2.1.3
         with:
           operation: merge-group-feedback-gate
           github_token: ${{ github.token }}
