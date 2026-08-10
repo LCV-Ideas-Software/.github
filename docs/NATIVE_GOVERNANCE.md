@@ -266,14 +266,16 @@ queue/ref association, exact PR identity, and feedback fingerprint must remain
 identical on the final reread or the required merge-group context fails.
 
 Activation is deliberately split across two signed pull requests around one
-signed component release. The first bootstrap publishes this corrected
-component and keeps the existing required
-`Test native auto-merge` context limited to candidate tests; it does **not**
-invoke the broken `native-auto-merge/v2.1.0` queue gate. After that bootstrap is
-squash-merged and a new annotated, signed, immutable component release exists,
-a separate minimal pull request will activate the new SHA and serve as the
-first real GraphQL gate canary. No candidate/local Action is invoked with an
-explicitly mapped token to approve its own merge-group revision.
+signed component release. Bootstrap PR #110 published the corrected component
+while keeping the existing required `Test native auto-merge` context limited
+to candidate tests; it did **not** invoke the broken
+`native-auto-merge/v2.1.0` queue gate. Its verified squash was released as the
+annotated, signed, immutable `native-auto-merge/v2.1.1`. This separate minimal
+activation pins that release's exact commit and serves as the first real
+GraphQL gate canary. The checkpoint is considered active only if this pull
+request passes that merge-group canary and squash-merges through the normal
+queue. No candidate/local Action is invoked with an explicitly mapped token to
+approve its own merge-group revision.
 
 That activation keeps candidate tests and the checkpoint on separate
 GitHub-hosted runners. The candidate job checks out the proposed revision with
@@ -310,9 +312,8 @@ feedback rereads remain unchanged.
 GitHub does not expose an atomic precondition that couples the review snapshot
 to the queue mutation. The quiet windows, final rereads, native conversation
 rule, and pre-review hold minimize that platform-level race; the merge-group
-checkpoint narrows it further after the separately released component is
-activated. The bootstrap itself makes no claim that the final checkpoint is
-already active.
+checkpoint narrows it further only after this SHA-pinned activation passes its
+own merge-group canary and lands on `main`.
 Neither stage claims it is mathematically impossible for feedback to arrive
 after the last required check turns green and before GitHub completes the
 merge.
