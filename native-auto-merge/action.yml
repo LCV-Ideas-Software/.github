@@ -1,28 +1,74 @@
 name: LCV Native Auto-merge
-description: Enables native auto-merge at an exact head only after verifying effective zero-tolerance rules.
+description: Reconciles native auto-merge or enforces a read-only merge-group bot-feedback gate at exact heads.
 
 inputs:
+  operation:
+    description: auto-merge or merge-group-feedback-gate.
+    required: false
+    default: auto-merge
   automation_token:
     description: Protected PAT used for live enforcement and pull-request reads plus the native auto-merge request.
-    required: true
+    required: false
+  github_token:
+    description: Ephemeral GITHUB_TOKEN used only by the read-only merge-group feedback gate.
+    required: false
   event_repository:
-    description: Repository full name from the trusted workflow_run context.
+    description: Repository full name from the trusted triggering context.
     required: true
   workflow_name:
     description: Completed workflow name from the workflow_run context.
-    required: true
+    required: false
+  workflow_path:
+    description: Completed workflow path from the workflow_run context.
+    required: false
+  workflow_display_title:
+    description: Completed workflow display title from the workflow_run context.
+    required: false
   workflow_status:
     description: Completed workflow status from the workflow_run context.
-    required: true
+    required: false
   workflow_event:
     description: Triggering event name from the workflow_run context.
-    required: true
+    required: false
   workflow_head_sha:
     description: Exact head SHA from the workflow_run context.
-    required: true
+    required: false
+  workflow_actor_id:
+    description: Immutable actor database ID from the workflow_run context.
+    required: false
   workflow_pull_requests:
     description: JSON pull-request associations from the workflow_run context.
-    required: true
+    required: false
+  event_action:
+    description: pull_request_target action for a trusted review request wake-up.
+    required: false
+  pull_number:
+    description: Pull request number from the pull_request_target context.
+    required: false
+  pull_head_sha:
+    description: Exact pull request head SHA from the pull_request_target context.
+    required: false
+  pull_head_repository:
+    description: Exact pull request head repository from the pull_request_target context.
+    required: false
+  pull_base_ref:
+    description: Pull request base branch from the pull_request_target context.
+    required: false
+  requested_reviewer_id:
+    description: Immutable requested reviewer database ID from the pull_request_target context.
+    required: false
+  trigger_run_id:
+    description: Trusted pull_request_target workflow run ID used as the requested-review freshness fence.
+    required: false
+  merge_group_head_sha:
+    description: Exact synthetic merge-group SHA.
+    required: false
+  merge_group_base_ref:
+    description: Exact merge-group base ref.
+    required: false
+  merge_group_head_ref:
+    description: Exact merge-group queue ref.
+    required: false
 
 runs:
   using: node24

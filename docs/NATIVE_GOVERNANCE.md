@@ -6,8 +6,13 @@ but it cannot decide that a pull request is safe and it never bypasses a rule.
 
 ## Enforcement model
 
-The organization ruleset targets every repository's default branch without a
-bypass actor. It requires:
+The live Enterprise policy has two active branch layers, both without a bypass
+actor. `Enterprise All Branch Ruleset` targets `~ALL` branches and requires
+verified signatures, CodeQL and zizmor at zero-tolerance thresholds, Code
+Quality at `all`, license compliance, automatic Copilot review on new pushes
+and drafts, and the declared branch-name pattern. `Enterprise Default Branch
+Ruleset` targets `~DEFAULT_BRANCH`; organization and repository rulesets add
+their default-branch controls. Their effective union on `main` requires:
 
 - a pull request with squash as the only merge method and zero mandatory human
   approvals;
@@ -63,17 +68,52 @@ v2.4.4 cannot inspect live rules in that mode. Any additional warning, changed
 message body, score outside Scorecard's official 0–10 domain, unexpected path,
 nonzero review numerator, new rule, or code finding fails the job.
 
+### Feature-branch pre-scan
+
+GitHub's rules API defines the all-branch Code Scanning rule in terms of CodeQL
+and zizmor results for the commit and the reference being updated. The workflows
+intentionally scan `main`, pull requests to `main`, merge groups, and explicit
+`workflow_dispatch`; a normal feature-branch push cannot create its own result
+before the ref update is accepted. GitHub does not document a universal
+code-scanning creation exemption. Under the current live Enterprise ruleset,
+however, the rule suite for an allowed ephemeral ref with `before_sha` equal to
+all zeroes passes before analysis, while an existing-ref update without both
+tools fails. Contributors therefore use this measured no-bypass protocol for
+every subsequent feature-branch commit:
+
+1. Create an ephemeral scan branch whose allowed name points directly to the
+   final signed commit, for example
+   `git push origin HEAD:refs/heads/fix/native-scan-<short-sha>`.
+2. Use the existing `workflow_dispatch` entry points to dispatch both
+   `codeql.yml` and `zizmor.yml` on that ref with
+   `gh workflow run ... --ref <scan-branch>`.
+3. Wait for both workflow runs to succeed and query the repository's
+   code-scanning analyses. The inventory must contain the exact SHA from both
+   tools, `CodeQL` and `zizmor`; a workflow conclusion alone is insufficient.
+4. Push that unchanged commit to the real feature branch. Any new commit starts
+   the protocol again because results are SHA-bound.
+5. Re-read the real ref, then delete the ephemeral scan branch. Never retain a
+   scan ref, reuse an older analysis, bypass a ruleset, or push a different SHA.
+
+This is the same path for people and local coding agents. It does not require a
+fork and does not widen any workflow trigger beyond the explicit trusted
+dispatch that already exists.
+
 ## Native auto-merge arming
 
-The `native-auto-merge` action runs only after a `CodeQL` `workflow_run` that
-originated from a pull request. A `workflow_run` executes trusted default-branch
-code and can use the existing `LCV_AUTOMATION_TOKEN` from the protected
-`dependabot-automation` environment even when the upstream pull request belongs
-to Dependabot.
+The `native-auto-merge` action normally runs after a pull-request `CodeQL`
+`workflow_run`. A `workflow_run` executes trusted default-branch code and can
+use the existing
+`LCV_AUTOMATION_TOKEN` from the protected `dependabot-automation` environment
+even when the upstream pull request belongs to Dependabot.
 
 The action never checks out pull-request code or downloads its artifacts. It
 re-reads the pull request, binds the operation to its current head SHA and
-allowed immutable author identity, and invokes only:
+well-formed GitHub author identity. Author policy does not create a second
+allowlist: every user or bot can receive native auto-merge by default once the
+PR is open, non-draft, targets `main`, has the exact observed SHA, and its head
+branch belongs to the same repository. Forks and malformed API identities stay
+ineligible. The action then invokes only:
 
 ```text
 gh pr merge <number> --repo <owner/repository> --auto --squash --match-head-commit <sha>
@@ -88,6 +128,28 @@ ID declared for that repository must appear in the effective rules for `main`;
 additional effective checks may only harden the boundary. Before GraphQL, the
 action reads `GET /repos/{owner}/{repo}/rules/branches/main`; missing, disabled,
 incomplete or malformed enforcement stops without calling GraphQL or `gh`.
+Every applicable pull-request rule must independently preserve squash-only
+merges, zero general approvals, no code-owner or last-push approval, no
+nonempty team-reviewer requirement, and conversation resolution. A separate
+effective Copilot rule must keep `review_on_push` enabled. This prevents a more
+restrictive overlapping ruleset from silently reintroducing human approval or
+removing the automatic review request while another correctly shaped rule
+still exists.
+It also inventories every required check run for the exact head and requires
+one successful GitHub Actions App result for every policy name/App-ID pair.
+The same bounded REST inventory observes the exact-head dynamic Copilot review
+run by its GitHub bot database ID, event, workflow name, internal path, and pull
+request association. If that run exists, reconciliation remains pending until
+it completes; a failed ordinary review run fails closed. If it does not exist,
+bot absence stays neutral after the quiet window.
+Only after checks and review state remain unchanged and non-blocking for a
+120-second quiet window may the action continue. Polling is bounded to 12
+minutes and the trusted job has a 30-minute timeout. Idempotent REST GET and
+GraphQL query reads retry only bounded transient failures, including GitHub's
+documented HTTP-200 GraphQL rate-limit response, with a fresh timeout per
+attempt. GraphQL mutations and the `gh` request are never blindly retried;
+an ambiguous response is reconciled from exact native state and any privilege
+is removed before the error escapes.
 At the final boundary it repeats that effective-rules GET, then reads and
 validates the PR again immediately before `gh`. This narrows state and policy
 races; `--match-head-commit`
@@ -111,11 +173,111 @@ is not eligible for canary promotion.
 
 ## Bot feedback
 
-Copilot and the ChatGPT Codex connector are optional reviewers. No workflow
-waits for their presence, completion, file coverage, or a textual clean marker.
-Actual inline review conversations are governed by GitHub's native required
-conversation-resolution rule. The automation does not parse natural-language
-review bodies or issue comments.
+Copilot and the ChatGPT Codex connector are optional reviewers. In ordinary
+CodeQL-triggered arming, no workflow requires either bot to appear and absence
+is neutral. When they do produce feedback, the action binds only the bots'
+immutable GitHub database IDs and
+fully traverses the GitHub GraphQL cursor connections for issue comments,
+reviews, review threads, and each thread's comments. It validates stable counts,
+IDs, cursors, pull-request identity, head, timestamps, and thread ownership.
+Concurrent legitimate changes restart the bounded snapshot and quiet window;
+malformed, truncated, over-limit, or inconsistent API data still fails closed.
+An exact-head bot review is canonical only in GitHub's `COMMENTED` state:
+`PENDING` keeps reconciliation pending, while approval, change-request,
+dismissal, or unknown state blocks as format/policy drift. It blocks every
+unresolved bot-authored review thread, including outdated or collapsed threads,
+every exact-head Copilot `Suppressed comments (N)` section with `N > 0`, and a
+current-head Codex issue-comment review unless it matches the observed clean
+headline and structural contract. The clean-headline allowlist contains only
+exact variants observed from the canonical bot; arbitrary suffixes, changed
+markers, and unknown response formats remain blocking instead of being guessed
+from natural language.
+
+The 120-second quiet window and a final identical fingerprint reread protect the
+normal arming path. An outstanding requested-reviewer entry for the immutable
+Copilot bot keeps both ordinary arming and the queue checkpoint pending until
+GitHub records the corresponding review outcome. GitHub's
+`all_external_contributors` approval policy applies
+before a job-level sender filter, so direct Copilot or Codex review/comment
+listeners would create `action_required` workflow runs and are intentionally
+absent. Instead, a trusted `pull_request_target: review_requested` wake-up runs
+default-branch code without checking out the candidate head. It accepts only
+the immutable Copilot reviewer ID, an exact same-repository PR head, `main` as
+base, and its own live workflow-run identity. It immediately removes any queue
+or auto-merge privilege and repeats that hold before every reconciliation read.
+The explicit request is complete only after a fresh `COMMENTED` Copilot review
+is submitted on the exact head strictly after that trusted run began; an equal
+second-resolution timestamp remains pending. A fresh active
+dynamic review run keeps the hold pending; a dynamic run alone never substitutes
+for the submitted review. GitHub may emit the canonical review without a
+dynamic Actions run, so a fresh, structurally valid, finding-free review remains
+the authoritative result in that fallback. When the auxiliary dynamic run
+fails, ordinary arming and the queue checkpoint accept that canonical review
+only if it was submitted strictly after the latest failed run attempt began;
+the controller validates `run_attempt` and uses `run_started_at`, so a rerun
+cannot inherit the original attempt's older `created_at` fence. An older or
+equal-timestamp review cannot mask a later failure. The explicit request also
+uses the current attempt start to decide whether a run is active after its
+trusted request-run fence. Without the corresponding later review, the failed
+dynamic run continues to fail closed.
+
+The Action also exposes a `merge-group-feedback-gate` operation for the final
+read-only checkpoint. This bootstrap change deliberately does not invoke that
+operation from the candidate checkout: candidate-controlled code must never
+receive even the ephemeral `github.token`. After this component is merged and
+published at an immutable signed SHA, a separate rollout splits candidate tests
+and the isolated checkpoint across two runners. The candidate job executes the
+checked-out revision without a token. A clean dependent job retains the already
+required display name `Test native auto-merge`, fails explicitly unless the
+candidate job succeeded, and then invokes the component by that exact SHA; it
+never inherits the candidate workspace, environment files, Action cache, or
+runner process. The component source is immutable and trusted when that job
+actually invokes it. Under the current status-check rules, however, the
+required workflow definition and its name remain candidate-defined: candidate
+YAML could omit or replace the pinned invocation while emitting the same
+GitHub-Actions-owned context. The rollout is therefore defense in depth, not
+proof of required-workflow provenance. Strong provenance would require a
+ruleset-required workflow or an independent App/check producer and is outside
+this no-ruleset-change rollout.
+
+The gate maps the synthetic queue SHA through GitHub's
+commit-to-pull-request API, requires the single open same-repository PR permitted
+by the current one-entry queue policy, and revalidates its real head through the
+pull-request API. Its declared synthetic SHA and queue ref must exactly match
+the runner's immutable `GITHUB_SHA` and `GITHUB_REF`, so a check cannot evaluate
+a different merge group from the revision to which GitHub attaches it. An
+outstanding requested-reviewer entry for the immutable
+Copilot bot ID keeps the checkpoint pending even before a dynamic run or review
+node exists. It then repeats the dynamic-Copilot and complete GraphQL feedback
+inventory plus the 120-second quiet window. It does not read required checks or
+native auto-merge state, so it cannot deadlock on its own context, and it has no
+PAT or mutation path. The synthetic association, exact PR identity, and
+feedback fingerprint must remain identical on the final reread or the required
+merge-group context fails.
+
+The controller also rereads the same checks-and-reviews fingerprint immediately
+after requesting auto-merge. If that post-arm state differs, fails, or becomes
+blocking, it removes the resulting native privilege and verifies that neither
+auto-merge nor a queue entry remains. Removal handles queue and auto-merge state
+independently, attempts both even after an ambiguous mutation response, and
+retries a mutation only when a fresh exact-state read still proves the privilege
+exists.
+
+After the ordinary CodeQL-triggered candidate passes repository-policy and
+effective-rules validation, the controller removes any prior merge privilege
+before its first feedback read and repeats that hold before every reconciliation
+read. Blocking, unsuccessful, and throwing reconciliation paths verify that the
+privilege remains absent instead of relying on the failing run alone to revoke
+it. A clear snapshot is rearmed only after the final rules, PR identity, and
+feedback rereads remain unchanged.
+
+GitHub does not expose an atomic precondition that couples the review snapshot
+to the queue mutation. The quiet windows, final rereads, native conversation
+rule, and pre-review hold minimize that platform-level race during bootstrap;
+the separately activated required merge-group checkpoint narrows it further.
+Neither stage claims it is mathematically impossible for feedback to arrive
+after the last required check turns green and before GitHub completes the
+merge.
 
 ## Configuration reconciliation
 
@@ -239,14 +401,21 @@ only the resulting secret metadata. It never creates a repository secret or
 prints the token. A dispatch with an empty bootstrap input performs ordinary
 configuration reconciliation instead.
 
-The legacy trusted gate, scheduled merge controller, Dependabot direct merger,
-polling, review parser, workflow-provenance mirror, and automatic rebase commands
-are retired rather than reused.
+The legacy trusted gate, scheduled direct-merge controller, Dependabot direct
+merger, workflow-provenance mirror, and automatic rebase commands are retired
+rather than reused.
 
 ## Official references
 
 - [Merging with a merge queue](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/merging-a-pull-request-with-a-merge-queue)
+- [`merge_group` event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group)
+- [Pull requests associated with a commit](https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit)
 - [`workflow_run` event and security boundary](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
+- [REST workflow-run attempts and timestamps](https://docs.github.com/en/rest/actions/workflow-runs?apiVersion=2026-03-10)
+- [Pull-request review and comment events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review)
+- [GraphQL cursor pagination](https://docs.github.com/en/enterprise-cloud@latest/graphql/guides/using-pagination-in-the-graphql-api)
+- [Workflow approval for outside contributors](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#controlling-changes-from-forks-to-workflows-in-public-repositories)
+- [GraphQL pull-request mutations](https://docs.github.com/en/graphql/reference/mutations)
 - [Automating Dependabot with Actions](https://docs.github.com/en/code-security/tutorials/secure-your-dependencies/automate-dependabot-with-actions)
 - [Rules available in rulesets](https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
 - [Code-scanning merge-protection limitations](https://docs.github.com/en/enterprise-cloud@latest/code-security/concepts/code-scanning/merge-protection)
