@@ -3166,7 +3166,7 @@ test("action and consumer workflow keep the credential and execution boundary na
   assert.match(workflow, /ref:\s*\$\{\{ github\.workflow_sha \}\}/);
   assert.equal(
     (workflow.match(/github_token:\s*\$\{\{ github\.token \}\}/g) ?? []).length,
-    0,
+    1,
   );
   for (const input of [
     "merge_group_head_sha",
@@ -3201,19 +3201,32 @@ test("action and consumer workflow keep the credential and execution boundary na
     requiredContextJob,
     /needs\.candidate_tests\.result != 'success'[\s\S]*run:\s*exit 1/,
   );
-  assert.match(
-    requiredContextJob,
-    /Preserve the bootstrap merge-group required context/,
+  assert.match(requiredContextJob, /Enforce merge-group feedback gate/);
+  assert.equal(
+    (
+      workflow.match(
+        /LCV-Ideas-Software\/\.github\/native-auto-merge@faa9f91026f33adacc6b01643aad46bf3d841344 # native-auto-merge\/v2\.1\.1/g,
+      ) ?? []
+    ).length,
+    1,
   );
-  assert.match(
-    requiredContextJob,
-    /signed gate activation follows the component release/,
-  );
-  assert.doesNotMatch(
-    requiredContextJob,
-    /merge-group-feedback-gate|github_token:|LCV-Ideas-Software\/\.github\/native-auto-merge@/,
-    "the corrected queue gate must remain dormant until its signed release exists",
-  );
+  assert.match(requiredContextJob, /operation:\s*merge-group-feedback-gate/);
+  assert.match(requiredContextJob, /github_token:\s*\$\{\{ github\.token \}\}/);
+  for (const [input, expression] of [
+    ["event_repository", "github.event.repository.full_name"],
+    ["event_action", "github.event.action"],
+    ["merge_group_head_sha", "github.event.merge_group.head_sha"],
+    ["merge_group_base_sha", "github.event.merge_group.base_sha"],
+    ["merge_group_base_ref", "github.event.merge_group.base_ref"],
+    ["merge_group_head_ref", "github.event.merge_group.head_ref"],
+  ]) {
+    assert.match(
+      requiredContextJob,
+      new RegExp(
+        `${input}:\\s*\\$\\{\\{ ${expression.replaceAll(".", "\\.")} \\}\\}`,
+      ),
+    );
+  }
   assert.match(
     requiredContextJob,
     /github\.event_name == 'pull_request' && needs\.candidate_tests\.result == 'success'/,
@@ -3224,7 +3237,7 @@ test("action and consumer workflow keep the credential and execution boundary na
   );
   assert.doesNotMatch(
     requiredContextJob,
-    /actions\/checkout|download-artifact|actions\/cache|node --test|node --check|automation_token|secrets\./,
+    /actions\/checkout|download-artifact|actions\/cache|node --test|node --check|automation_token|secrets\.|uses:\s*\.\//,
     "the clean required-context runner must never inherit or execute candidate content",
   );
   assert.doesNotMatch(

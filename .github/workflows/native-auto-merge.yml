@@ -56,9 +56,18 @@ jobs:
       - name: Preserve the pull request required context
         if: ${{ github.event_name == 'pull_request' && needs.candidate_tests.result == 'success' }}
         run: echo "Candidate tests passed."
-      - name: Preserve the bootstrap merge-group required context
+      - name: Enforce merge-group feedback gate
         if: ${{ github.event_name == 'merge_group' && needs.candidate_tests.result == 'success' }}
-        run: echo "Candidate tests passed; signed gate activation follows the component release."
+        uses: LCV-Ideas-Software/.github/native-auto-merge@faa9f91026f33adacc6b01643aad46bf3d841344 # native-auto-merge/v2.1.1
+        with:
+          operation: merge-group-feedback-gate
+          github_token: ${{ github.token }}
+          event_repository: ${{ github.event.repository.full_name }}
+          event_action: ${{ github.event.action }}
+          merge_group_head_sha: ${{ github.event.merge_group.head_sha }}
+          merge_group_base_sha: ${{ github.event.merge_group.base_sha }}
+          merge_group_base_ref: ${{ github.event.merge_group.base_ref }}
+          merge_group_head_ref: ${{ github.event.merge_group.head_ref }}
 
   enable:
     name: Enable native auto-merge
