@@ -237,45 +237,53 @@ uses the current attempt start to decide whether a run is active after its
 trusted request-run fence. Without the corresponding later review, the failed
 dynamic run continues to fail closed.
 
-The Action exposes a `merge-group-feedback-gate` operation for the final
-read-only checkpoint. The workflow keeps candidate tests and that checkpoint on
-two separate GitHub-hosted runners. The candidate job checks out the proposed
-revision with persisted credentials disabled. It receives no PAT or repository
-secret, and its test steps do not explicitly map `github.token` or
-`GITHUB_TOKEN`. It is not token-free: the organization policy deliberately
-requires `permissions: write-all`, so the candidate-defined workflow retains
-the runner's ephemeral `GITHUB_TOKEN` and OIDC surface. A clean dependent job
-retains the already required display name `Test native auto-merge`, fails
-explicitly unless the candidate job succeeded, and invokes the component at the
-signed immutable release SHA
-`84d2119d36e88869181cd80eeaea22ceee456fe6`
-(`native-auto-merge/v2.1.0`). It never checks out candidate content or inherits
-the candidate workspace, environment files, Action cache, or runner process.
-Only this isolated job explicitly passes its ephemeral `github.token` to the
-read-only gate. No PAT, repository secret, workspace, environment file, Action
-cache, artifact, or candidate runner process crosses that job boundary. The
-component source is immutable and trusted when that job actually invokes it.
-Under the current status-check rules, however, the required workflow definition
-and its name remain candidate-defined: candidate YAML could omit or replace the
-pinned invocation while emitting the same GitHub-Actions-owned context. This
-checkpoint is therefore defense in depth, not proof of required-workflow
+The Action exposes a `merge-group-feedback-gate` operation for a final read-only
+checkpoint. Its first live canary proved that GitHub's commit-to-pull-request
+REST endpoint returns no association while a synthetic commit is still in the
+queue; the endpoint only became useful after a successful squash had made that
+commit the final pull-request commit. The corrected component therefore uses
+the official GraphQL merge-queue model. It paginates
+`Repository.mergeQueue(branch: "main").entries`, requires the live
+`Repository.ref` to point at the event's exact synthetic SHA, and requires
+exactly one entry whose `headCommit` and `baseCommit` match the required
+`head_sha` and `base_sha` webhook fields. The entry and its cross-linked pull
+request must remain open, non-draft, same-repository, based on `main`, at queue
+position 1, and waiting for checks. The live queue configuration must remain
+`ALLGREEN`, `SQUASH`, and one-entry for both build and merge groups.
+
+The gate then revalidates the real pull-request head through the REST API,
+inventories requested reviewers, dynamic Copilot runs, and the complete
+paginated review/thread/Suppressed state, and waits through the 120-second quiet
+window. It does not read required checks or native auto-merge state, so it
+cannot deadlock on its own context, and it has no PAT or mutation path. The
+queue/ref association, exact PR identity, and feedback fingerprint must remain
+identical on the final reread or the required merge-group context fails.
+
+Activation is deliberately split across two signed pull requests around one
+signed component release. The first bootstrap publishes this corrected
+component and keeps the existing required
+`Test native auto-merge` context limited to candidate tests; it does **not**
+invoke the broken `native-auto-merge/v2.1.0` queue gate. After that bootstrap is
+squash-merged and a new annotated, signed, immutable component release exists,
+a separate minimal pull request will activate the new SHA and serve as the
+first real GraphQL gate canary. No candidate/local Action is invoked with an
+explicitly mapped token to approve its own merge-group revision.
+
+That activation keeps candidate tests and the checkpoint on separate
+GitHub-hosted runners. The candidate job checks out the proposed revision with
+persisted credentials disabled. It receives no PAT or repository secret, and
+its test steps do not explicitly map `github.token` or `GITHUB_TOKEN`. It is not
+token-free: the organization policy deliberately requires
+`permissions: write-all`, so the candidate-defined workflow retains the
+runner's ephemeral `GITHUB_TOKEN` and OIDC surface. A clean dependent job keeps
+the required display name, fails unless candidate tests succeeded, checks out no
+candidate content, and passes its ephemeral `github.token` only to the signed
+read-only component. No PAT, repository secret, workspace, environment file,
+Action cache, artifact, or candidate runner process crosses that job boundary.
+The required workflow definition and context remain candidate-defined under the
+current rules, so this is defense in depth rather than required-workflow
 provenance. Strong provenance would require a ruleset-required workflow or an
 independent App/check producer and is outside this no-ruleset-change rollout.
-
-The gate maps the synthetic queue SHA through GitHub's
-commit-to-pull-request API, requires the single open same-repository PR permitted
-by the current one-entry queue policy, and revalidates its real head through the
-pull-request API. Its declared synthetic SHA and queue ref must exactly match
-the runner's immutable `GITHUB_SHA` and `GITHUB_REF`, so a check cannot evaluate
-a different merge group from the revision to which GitHub attaches it. An
-outstanding requested-reviewer entry for the immutable
-Copilot bot ID keeps the checkpoint pending even before a dynamic run or review
-node exists. It then repeats the dynamic-Copilot and complete GraphQL feedback
-inventory plus the 120-second quiet window. It does not read required checks or
-native auto-merge state, so it cannot deadlock on its own context, and it has no
-PAT or mutation path. The synthetic association, exact PR identity, and
-feedback fingerprint must remain identical on the final reread or the required
-merge-group context fails.
 
 The controller also rereads the same checks-and-reviews fingerprint immediately
 after requesting auto-merge. If that post-arm state differs, fails, or becomes
@@ -295,8 +303,10 @@ feedback rereads remain unchanged.
 
 GitHub does not expose an atomic precondition that couples the review snapshot
 to the queue mutation. The quiet windows, final rereads, native conversation
-rule, and pre-review hold minimize that platform-level race; the required
-merge-group checkpoint narrows it further.
+rule, and pre-review hold minimize that platform-level race; the merge-group
+checkpoint narrows it further after the separately released component is
+activated. The bootstrap itself makes no claim that the final checkpoint is
+already active.
 Neither stage claims it is mathematically impossible for feedback to arrive
 after the last required check turns green and before GitHub completes the
 merge.

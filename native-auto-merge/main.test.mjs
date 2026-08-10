@@ -3166,20 +3166,15 @@ test("action and consumer workflow keep the credential and execution boundary na
   assert.match(workflow, /ref:\s*\$\{\{ github\.workflow_sha \}\}/);
   assert.equal(
     (workflow.match(/github_token:\s*\$\{\{ github\.token \}\}/g) ?? []).length,
-    1,
-  );
-  assert.match(
-    workflow,
-    /uses:\s*LCV-Ideas-Software\/\.github\/native-auto-merge@84d2119d36e88869181cd80eeaea22ceee456fe6/,
-    "the queue gate must execute only the signed immutable component release",
+    0,
   );
   for (const input of [
     "merge_group_head_sha",
+    "merge_group_base_sha",
     "merge_group_base_ref",
     "merge_group_head_ref",
   ]) {
     assert.match(action, new RegExp(`\\n  ${input}:`));
-    assert.match(workflow, new RegExp(`\\n          ${input}:`));
   }
   const candidateJob = workflow.match(
     /\n  candidate_tests:\s*\n(?<body>[\s\S]*?)(?=\n  test:\s*\n)/,
@@ -3206,44 +3201,19 @@ test("action and consumer workflow keep the credential and execution boundary na
     requiredContextJob,
     /needs\.candidate_tests\.result != 'success'[\s\S]*run:\s*exit 1/,
   );
-  assert.match(requiredContextJob, /operation:\s*merge-group-feedback-gate/);
   assert.match(
     requiredContextJob,
-    /uses:\s*LCV-Ideas-Software\/\.github\/native-auto-merge@84d2119d36e88869181cd80eeaea22ceee456fe6/,
-  );
-  assert.equal(
-    (
-      requiredContextJob.match(
-        /LCV-Ideas-Software\/\.github\/native-auto-merge@84d2119d36e88869181cd80eeaea22ceee456fe6/g,
-      ) ?? []
-    ).length,
-    1,
+    /Preserve the bootstrap merge-group required context/,
   );
   assert.match(
     requiredContextJob,
-    /84d2119d36e88869181cd80eeaea22ceee456fe6 # native-auto-merge\/v2\.1\.0/,
+    /signed gate activation follows the component release/,
   );
-  assert.match(requiredContextJob, /github_token:\s*\$\{\{ github\.token \}\}/);
-  assert.match(
+  assert.doesNotMatch(
     requiredContextJob,
-    /event_repository:\s*\$\{\{ github\.repository \}\}/,
+    /merge-group-feedback-gate|github_token:|LCV-Ideas-Software\/\.github\/native-auto-merge@/,
+    "the corrected queue gate must remain dormant until its signed release exists",
   );
-  assert.match(
-    requiredContextJob,
-    /event_action:\s*\$\{\{ github\.event\.action \}\}/,
-  );
-  for (const [input, field] of [
-    ["merge_group_head_sha", "head_sha"],
-    ["merge_group_base_ref", "base_ref"],
-    ["merge_group_head_ref", "head_ref"],
-  ]) {
-    assert.match(
-      requiredContextJob,
-      new RegExp(
-        `${input}:\\s*\\$\\{\\{ github\\.event\\.merge_group\\.${field} \\}\\}`,
-      ),
-    );
-  }
   assert.match(
     requiredContextJob,
     /github\.event_name == 'pull_request' && needs\.candidate_tests\.result == 'success'/,
@@ -3261,7 +3231,7 @@ test("action and consumer workflow keep the credential and execution boundary na
     workflow,
     /download-artifact|ref:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha/,
   );
-  assert.match(governance, /It is not token-free:/);
+  assert.match(governance, /It is not\s+token-free:/);
   assert.match(governance, /ephemeral `GITHUB_TOKEN` and OIDC surface/);
   assert.match(governance, /No PAT, repository secret/);
   assert.match(
