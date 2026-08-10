@@ -55,6 +55,7 @@ function pull(overrides = {}) {
 function mergeQueueSnapshot(overrides = {}) {
   return {
     identity: "queue-snapshot-v1",
+    repositoryId: "R_test",
     queueId: "MQ_test",
     refId: "REF_test",
     configuration: {
@@ -71,13 +72,21 @@ function mergeQueueSnapshot(overrides = {}) {
         id: "MQE_test",
         state: "AWAITING_CHECKS",
         position: 1,
+        mergeQueueId: "MQ_test",
         baseSha: BASE_SHA,
         syntheticHeadSha: SYNTHETIC_SHA,
         pull: {
           id: "PR_test",
           number: 108,
+          state: "OPEN",
+          isDraft: false,
+          isInMergeQueue: true,
           headSha: HEAD_SHA,
           headRef: "agent/enterprise-governance-v2",
+          baseRef: "main",
+          headRepository: { id: "R_test", nameWithOwner: REPOSITORY },
+          baseRepository: { id: "R_test", nameWithOwner: REPOSITORY },
+          mergeQueueEntryId: "MQE_test",
         },
       },
     ],
@@ -93,6 +102,7 @@ function mergeQueueSnapshotForPull(pullShape) {
       {
         ...snapshot.entries[0],
         pull: {
+          ...snapshot.entries[0].pull,
           id: `PR_${pullShape.number}`,
           number: pullShape.number,
           headSha: pullShape.head.sha,
@@ -323,29 +333,96 @@ test("merge-queue association paginates the official GraphQL connection", async 
   assert.doesNotMatch(calls[0].body.query, /mutation/i);
 });
 
-test("merge-queue association rejects ref, policy, and entry identity drift", async () => {
+test("merge-queue association preserves nullable metadata on unrelated entries", async () => {
+  const nullableSibling = rawMergeQueueEntry({
+    id: "MQE_null",
+    state: "QUEUED",
+    position: 2,
+    baseCommit: null,
+    headCommit: null,
+    mergeQueue: null,
+    pullRequest: null,
+  });
+  const partialSibling = rawMergeQueueEntry({
+    id: "MQE_partial",
+    state: "QUEUED",
+    position: 3,
+    baseCommit: { oid: "d".repeat(40) },
+    headCommit: null,
+    mergeQueue: null,
+    pullRequest: {
+      ...rawMergeQueueEntry().pullRequest,
+      id: "PR_partial",
+      number: 109,
+      headRefOid: "e".repeat(40),
+      headRefName: "agent/partial",
+      headRepository: null,
+      baseRepository: null,
+      mergeQueueEntry: null,
+    },
+  });
+  const snapshot = await snapshotFromPages([
+    mergeQueuePage([nullableSibling, partialSibling], {
+      totalCount: 3,
+      hasNextPage: true,
+      endCursor: "nullable-cursor",
+    }),
+    mergeQueuePage([rawMergeQueueEntry()], { totalCount: 3 }),
+  ]);
+
+  assert.equal(snapshot.entries.length, 3);
+  assert.deepEqual(snapshot.entries[0], {
+    id: "MQE_null",
+    state: "QUEUED",
+    position: 2,
+    mergeQueueId: null,
+    baseSha: null,
+    syntheticHeadSha: null,
+    pull: null,
+  });
+  assert.equal(snapshot.entries[1].baseSha, "d".repeat(40));
+  assert.equal(snapshot.entries[1].syntheticHeadSha, null);
+  assert.equal(snapshot.entries[1].pull.headRepository, null);
+  assert.equal(snapshot.entries[1].pull.baseRepository, null);
+  assert.equal(snapshot.entries[1].pull.mergeQueueEntryId, null);
+  assert.equal(snapshot.entries[2].syntheticHeadSha, SYNTHETIC_SHA);
+});
+
+test("merge-queue association rejects ref, policy, and malformed entries", async () => {
   const wrongRef = mergeQueuePage([rawMergeQueueEntry()]);
   wrongRef.data.repository.ref.target.oid = "d".repeat(40);
 
   const wrongPolicy = mergeQueuePage([rawMergeQueueEntry()]);
   wrongPolicy.data.repository.mergeQueue.configuration.maximumEntriesToMerge = 2;
 
-  const wrongCrossLink = mergeQueuePage([
+  const malformedRepository = mergeQueuePage([
     rawMergeQueueEntry({
       pullRequest: {
         ...rawMergeQueueEntry().pullRequest,
-        headRepository: { id: "R_other", nameWithOwner: REPOSITORY },
-        mergeQueueEntry: { id: "MQE_other" },
+        headRepository: { id: "", nameWithOwner: REPOSITORY },
       },
     }),
   ]);
 
+  const malformedEntries = [
+    null,
+    rawMergeQueueEntry({ baseCommit: undefined }),
+    rawMergeQueueEntry({ headCommit: { oid: "not-a-sha" } }),
+    rawMergeQueueEntry({ pullRequest: undefined }),
+  ];
+
   for (const [payload, expected] of [
     [wrongRef, /malformed merge queue association/i],
     [wrongPolicy, /one-entry policy/i],
-    [wrongCrossLink, /malformed merge queue entry/i],
+    [malformedRepository, /malformed merge queue entry/i],
   ]) {
     await assert.rejects(snapshotFromPages([payload]), expected);
+  }
+  for (const entry of malformedEntries) {
+    await assert.rejects(
+      snapshotFromPages([mergeQueuePage([entry])]),
+      /malformed merge queue entry/i,
+    );
   }
 });
 
@@ -438,7 +515,13 @@ test("merge-group mapping requires one exact awaiting synthetic entry", async ()
       entries: [{ ...exactEntry, baseSha: "d".repeat(40) }],
     }),
     mergeQueueSnapshot({
+      entries: [{ ...exactEntry, baseSha: null }],
+    }),
+    mergeQueueSnapshot({
       entries: [{ ...exactEntry, syntheticHeadSha: "d".repeat(40) }],
+    }),
+    mergeQueueSnapshot({
+      entries: [{ ...exactEntry, syntheticHeadSha: null }],
     }),
     mergeQueueSnapshot({
       entries: [{ ...exactEntry, state: "QUEUED" }],
@@ -454,7 +537,7 @@ test("merge-group mapping requires one exact awaiting synthetic entry", async ()
         getMergeQueueSnapshot: async () => snapshot,
         getPull: async () => pull(),
       }),
-      /exactly one matching|awaiting checks/i,
+      /exactly one matching|base sha|awaiting checks/i,
     );
   }
 
@@ -472,6 +555,100 @@ test("merge-group mapping requires one exact awaiting synthetic entry", async ()
     ),
     /queue ref and entry pull request disagree/i,
   );
+});
+
+test("merge-group mapping ignores nullable siblings but never a matching head", async () => {
+  const exactEntry = mergeQueueSnapshot().entries[0];
+  const nullableSibling = {
+    id: "MQE_null",
+    state: "QUEUED",
+    position: 2,
+    mergeQueueId: null,
+    baseSha: null,
+    syntheticHeadSha: null,
+    pull: null,
+  };
+  const result = await runMergeGroupFeedbackGate(mergeGroupEnv(), {
+    getMergeQueueSnapshot: async () =>
+      mergeQueueSnapshot({ entries: [exactEntry, nullableSibling] }),
+    getPull: async () => pull(),
+    waitForReviewReconciliation: async () => ({
+      status: "clear",
+      fingerprint: "feedback-v1",
+    }),
+    readMergeGroupFeedbackState: async () => ({
+      status: "clear",
+      fingerprint: "feedback-v1",
+    }),
+  });
+  assert.equal(result.action, "merge-group-feedback-clear");
+
+  await assert.rejects(
+    runMergeGroupFeedbackGate(mergeGroupEnv(), {
+      getMergeQueueSnapshot: async () =>
+        mergeQueueSnapshot({
+          entries: [
+            exactEntry,
+            {
+              ...nullableSibling,
+              syntheticHeadSha: SYNTHETIC_SHA,
+            },
+          ],
+        }),
+      getPull: async () => pull(),
+    }),
+    /matching head|base sha/i,
+  );
+
+  await assert.rejects(
+    runMergeGroupFeedbackGate(mergeGroupEnv(), {
+      getMergeQueueSnapshot: async () =>
+        mergeQueueSnapshot({ entries: [{ ...exactEntry, pull: null }] }),
+      getPull: async () => pull(),
+    }),
+    /matching.*identity|pull request/i,
+  );
+
+  for (const changedEntry of [
+    { ...exactEntry, mergeQueueId: null },
+    {
+      ...exactEntry,
+      pull: { ...exactEntry.pull, state: "CLOSED" },
+    },
+    {
+      ...exactEntry,
+      pull: { ...exactEntry.pull, isDraft: true },
+    },
+    {
+      ...exactEntry,
+      pull: { ...exactEntry.pull, isInMergeQueue: false },
+    },
+    {
+      ...exactEntry,
+      pull: { ...exactEntry.pull, baseRef: "release" },
+    },
+    {
+      ...exactEntry,
+      pull: { ...exactEntry.pull, headRepository: null },
+    },
+    {
+      ...exactEntry,
+      pull: { ...exactEntry.pull, baseRepository: null },
+    },
+    {
+      ...exactEntry,
+      pull: { ...exactEntry.pull, mergeQueueEntryId: null },
+    },
+  ]) {
+    await assert.rejects(
+      runMergeGroupFeedbackGate(mergeGroupEnv(), {
+        getMergeQueueSnapshot: async () =>
+          mergeQueueSnapshot({ entries: [changedEntry] }),
+        getPull: async () => pull(),
+      }),
+      /matching.*identity/i,
+    );
+  }
 });
 
 test("the live merge-group shape maps through the queue without commit association", async () => {

@@ -250,6 +250,12 @@ exactly one entry whose `headCommit` and `baseCommit` match the required
 request must remain open, non-draft, same-repository, based on `main`, at queue
 position 1, and waiting for checks. The live queue configuration must remain
 `ALLGREEN`, `SQUASH`, and one-entry for both build and merge groups.
+Because the GraphQL schema makes entry commits and association links nullable,
+the inventory preserves explicit null metadata on unrelated queued entries
+instead of rejecting or dropping those nodes. It still requires exactly one
+entry with the event's synthetic head SHA, then requires that entry's exact
+base SHA, queue link, complete pull request identity, and backlinks. Missing,
+partial, malformed, or duplicated event-entry identity therefore fails closed.
 
 The gate then revalidates the real pull-request head through the REST API,
 inventories requested reviewers, dynamic Copilot runs, and the complete
