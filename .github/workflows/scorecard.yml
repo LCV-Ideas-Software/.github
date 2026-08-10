@@ -20,12 +20,16 @@ on:
 concurrency:
   group: scorecard-${{ github.ref }}
   cancel-in-progress: true
-permissions: write-all
+permissions: {} # least privilege; every job declares exactly what it needs
 
 jobs:
   scorecard:
     name: OpenSSF Scorecard
-    permissions: write-all
+    permissions:
+      id-token: write # OIDC token the action exchanges to publish results to the OpenSSF API
+      security-events: write # upload the Scorecard SARIF to code scanning
+      contents: read # checkout this repository
+      actions: read # read workflow definitions during the analysis
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -47,9 +51,9 @@ jobs:
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
-          # OpenSSF's publication API rejects workflows with organization-mandated write-all.
-          # SARIF and artifacts remain enabled below.
-          publish_results: false
+          # Publication is always enabled by operator directive. It requires dropping
+          # write-all, which OpenSSF's publication API rejects.
+          publish_results: true
       - name: Run Scorecard on merge group
         if: github.event_name == 'merge_group'
         shell: bash

@@ -64,6 +64,13 @@ const COPILOT_REVIEW_WORKFLOW_PATH =
   "dynamic/agents/copilot-pull-request-reviewer";
 const COPILOT_QUOTA_UNAVAILABLE_BODY =
   "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
+// Copilot skips files it cannot review (generated output, unsupported types). When the
+// whole diff is skippable it answers with this sentence instead of a review. Two shapes
+// were observed on the same pull request: the bare sentence followed by blank lines, and
+// the sentence followed by the standard "---" footer. Matched by prefix after trimStart
+// so neither trailing newlines nor the footer break the comparison.
+export const COPILOT_NO_REVIEWABLE_FILES_PREFIX =
+  "Copilot wasn't able to review any files in this pull request.";
 const CODEX_CLEAN_REVIEW_HEADLINES = new Set([
   "Codex Review: Didn't find any major issues. :+1:",
   "Codex Review: Didn't find any major issues. :rocket:",
@@ -722,6 +729,17 @@ function parseSuppressedCommentCount(body) {
 
 function parseCopilotReviewBody(body) {
   if (body === COPILOT_QUOTA_UNAVAILABLE_BODY) {
+    return {
+      state: "unavailable",
+      suppressedCommentCount: 0,
+    };
+  }
+  if (
+    typeof body === "string" &&
+    body.trimStart().startsWith(COPILOT_NO_REVIEWABLE_FILES_PREFIX)
+  ) {
+    // Same practical consequence as an exhausted quota: Copilot produced no opinion,
+    // so there is no feedback to reconcile and nothing to block the merge on.
     return {
       state: "unavailable",
       suppressedCommentCount: 0,
