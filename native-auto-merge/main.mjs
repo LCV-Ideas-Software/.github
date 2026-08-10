@@ -2570,11 +2570,11 @@ export async function waitForReviewReconciliation(request, runtime = {}) {
   let stableSince = null;
   let latestState = null;
   for (;;) {
-    const observedAt = now();
+    const readStartedAt = now();
     if (
-      !Number.isSafeInteger(observedAt) ||
-      observedAt < startedAt ||
-      observedAt - startedAt > timeoutMilliseconds
+      !Number.isSafeInteger(readStartedAt) ||
+      readStartedAt < startedAt ||
+      readStartedAt - startedAt > timeoutMilliseconds
     ) {
       throw new Error("Review reconciliation timed out");
     }
@@ -2593,6 +2593,14 @@ export async function waitForReviewReconciliation(request, runtime = {}) {
       }
       await sleep(Math.min(pollMilliseconds, remainingAfterDrift));
       continue;
+    }
+    const observedAt = now();
+    if (
+      !Number.isSafeInteger(observedAt) ||
+      observedAt < readStartedAt ||
+      observedAt - startedAt > timeoutMilliseconds
+    ) {
+      throw new Error("Review reconciliation timed out");
     }
     if (!isObject(state) || typeof state.status !== "string") {
       throw new Error("Malformed review reconciliation state");
@@ -3077,6 +3085,9 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
       source: "github",
     };
 
+    candidateMergePrivilegeHoldStarted = true;
+    await removeCandidateMergePrivilege();
+
     let copilotReviewRequestedAt = null;
     if (isCopilotReviewRequest) {
       await holdCopilotMergePrivilege();
@@ -3115,9 +3126,6 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
         reason: "native-enforcement-inactive",
       };
     }
-
-    candidateMergePrivilegeHoldStarted = true;
-    await removeCandidateMergePrivilege();
 
     const reconciliationRequest = {
       repository,

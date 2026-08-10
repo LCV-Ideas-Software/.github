@@ -1239,6 +1239,41 @@ test("a finding arriving inside the quiet window prevents a clear result", async
   assert.equal(reads, 4);
 });
 
+test("a slow reconciliation read does not count toward the quiet window", async () => {
+  let now = 0;
+  let reads = 0;
+  const result = await waitForReviewReconciliation(
+    {
+      repository: "LCV-Ideas-Software/.github",
+      number: 99,
+      headSha: HEAD_SHA,
+      requiredChecks: REQUIRED_CHECKS,
+      token: "pat-token",
+    },
+    {
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds;
+      },
+      pollMilliseconds: 10,
+      quietMilliseconds: 30,
+      timeoutMilliseconds: 100,
+      readState: async () => {
+        reads += 1;
+        if (reads === 1) now += 30;
+        return { status: "clear", fingerprint: "stable-after-read" };
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    status: "clear",
+    fingerprint: "stable-after-read",
+  });
+  assert.equal(reads, 4);
+  assert.equal(now, 60);
+});
+
 test("a concurrently changing review snapshot restarts the bounded quiet window", async () => {
   let now = 0;
   let reads = 0;

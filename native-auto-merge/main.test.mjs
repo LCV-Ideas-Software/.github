@@ -1845,9 +1845,9 @@ test("controller refetches exact state and enables native auto-merge once", asyn
   assert.equal(policyReads, 1);
   assert.deepEqual(trace, [
     "pull-list",
+    "state",
     "policy",
     "rules",
-    "state",
     "state",
     "rules",
     "state",
@@ -2024,9 +2024,9 @@ test("controller binds workflow candidates to a fixed open-pull inventory before
   assert.equal(pullReads, 1);
   assert.deepEqual(trace, [
     "pull-list",
+    "state",
     "policy",
     "rules",
-    "state",
     "state",
     "rules",
     "state",
@@ -2232,6 +2232,108 @@ test("ordinary reconciliation removes existing merge privilege when feedback fai
       },
     ),
     /review snapshot read failed/i,
+  );
+
+  assert.equal(armed, false);
+  assert.equal(disables, 1);
+});
+
+test("ordinary reconciliation begins its hold before policy and enforcement validation", async () => {
+  for (const validation of ["policy", "rules"]) {
+    let armed = true;
+    let disables = 0;
+    const result = await runNativeAutoMerge(
+      {
+        ...workflowRunInputEnv(),
+        INPUT_AUTOMATION_TOKEN: "pat-token",
+      },
+      {
+        listOpenPulls: async () => [pull()],
+        loadRequiredChecks: async () => {
+          assert.equal(
+            armed,
+            false,
+            `native privilege remained during ${validation} policy validation`,
+          );
+          return validation === "policy" ? null : POLICY_REQUIRED_CHECKS;
+        },
+        getEffectiveRules: async () => {
+          assert.equal(
+            armed,
+            false,
+            "native privilege remained during effective-rule validation",
+          );
+          return effectiveRules().filter(({ type }) => type !== "merge_queue");
+        },
+        getNativeState: async () => ({
+          id: "PR_test",
+          autoMergeRequest: armed
+            ? { enabledAt: "2026-08-09T18:20:00Z" }
+            : null,
+          mergeQueueEntry: null,
+        }),
+        disableAutoMerge: async () => {
+          disables += 1;
+          armed = false;
+        },
+        dequeuePull: async () =>
+          assert.fail("the validation case was auto-merge enabled, not queued"),
+        enableAutoMerge: async () =>
+          assert.fail("failed policy validation must never arm auto-merge"),
+        sleep: async () => {},
+      },
+    );
+
+    assert.deepEqual(result, {
+      action: "skipped",
+      reason:
+        validation === "policy"
+          ? "repository-not-in-policy"
+          : "native-enforcement-inactive",
+    });
+    assert.equal(armed, false, validation);
+    assert.equal(disables, 1, validation);
+  }
+});
+
+test("ordinary reconciliation preserves its hold when effective-rule loading fails", async () => {
+  let armed = true;
+  let disables = 0;
+  await assert.rejects(
+    runNativeAutoMerge(
+      {
+        ...workflowRunInputEnv(),
+        INPUT_AUTOMATION_TOKEN: "pat-token",
+      },
+      {
+        listOpenPulls: async () => [pull()],
+        loadRequiredChecks: async () => {
+          assert.equal(armed, false);
+          return POLICY_REQUIRED_CHECKS;
+        },
+        getEffectiveRules: async () => {
+          assert.equal(armed, false);
+          throw new Error("effective-rule inventory failed");
+        },
+        getNativeState: async () => ({
+          id: "PR_test",
+          autoMergeRequest: armed
+            ? { enabledAt: "2026-08-09T18:20:00Z" }
+            : null,
+          mergeQueueEntry: null,
+        }),
+        disableAutoMerge: async () => {
+          disables += 1;
+          armed = false;
+        },
+        dequeuePull: async () =>
+          assert.fail("the validation case was auto-merge enabled, not queued"),
+        enableAutoMerge: async () =>
+          assert.fail("failed rule loading must never arm auto-merge"),
+        sleep: async () => {},
+      },
+    ),
+    /effective-rule inventory failed/i,
   );
 
   assert.equal(armed, false);
@@ -2692,6 +2794,7 @@ test("controller cannot arm auto-merge before all effective rules are active", a
         nativeStateReads += 1;
         return { autoMergeRequest: null, mergeQueueEntry: null };
       },
+      sleep: async () => {},
       enableAutoMerge: async () => {
         mutations += 1;
       },
@@ -2702,7 +2805,7 @@ test("controller cannot arm auto-merge before all effective rules are active", a
     action: "skipped",
     reason: "native-enforcement-inactive",
   });
-  assert.equal(nativeStateReads, 0);
+  assert.ok(nativeStateReads >= 1);
   assert.equal(mutations, 0);
 });
 
@@ -2722,6 +2825,7 @@ test("controller skips an unknown policy repository before GraphQL and gh", asyn
         nativeStateReads += 1;
         return { autoMergeRequest: null, mergeQueueEntry: null };
       },
+      sleep: async () => {},
       enableAutoMerge: async () => {
         mutations += 1;
       },
@@ -2732,7 +2836,7 @@ test("controller skips an unknown policy repository before GraphQL and gh", asyn
     action: "skipped",
     reason: "repository-not-in-policy",
   });
-  assert.equal(nativeStateReads, 0);
+  assert.ok(nativeStateReads >= 1);
   assert.equal(mutations, 0);
 });
 
@@ -2788,6 +2892,7 @@ test("policy check absence or identity drift blocks before GraphQL and gh", asyn
           nativeStateReads += 1;
           return { autoMergeRequest: null, mergeQueueEntry: null };
         },
+        sleep: async () => {},
         enableAutoMerge: async () => {
           mutations += 1;
         },
@@ -2798,7 +2903,7 @@ test("policy check absence or identity drift blocks before GraphQL and gh", asyn
       action: "skipped",
       reason: "native-enforcement-inactive",
     });
-    assert.equal(nativeStateReads, 0);
+    assert.ok(nativeStateReads >= 1);
     assert.equal(mutations, 0);
   }
 });
@@ -2905,6 +3010,7 @@ test("controller fails before GraphQL and gh on malformed effective rules", asyn
           nativeStateReads += 1;
           return { autoMergeRequest: null, mergeQueueEntry: null };
         },
+        sleep: async () => {},
         enableAutoMerge: async () => {
           mutations += 1;
         },
@@ -2912,7 +3018,7 @@ test("controller fails before GraphQL and gh on malformed effective rules", asyn
     ),
     /malformed effective branch rules payload/i,
   );
-  assert.equal(nativeStateReads, 0);
+  assert.ok(nativeStateReads >= 1);
   assert.equal(mutations, 0);
 });
 
