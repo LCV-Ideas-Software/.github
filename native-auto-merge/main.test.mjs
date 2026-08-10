@@ -136,6 +136,7 @@ function pullRequestTargetWorkflowRun(overrides = {}) {
     head_branch: "agent/native-governance-redesign",
     head_sha: HEAD_SHA,
     status: "in_progress",
+    conclusion: null,
     created_at: "2026-08-09T18:19:08Z",
     updated_at: "2026-08-09T18:19:15Z",
     repository: { full_name: REPOSITORY },
@@ -2540,14 +2541,51 @@ test("a Copilot review request removes existing merge privilege before waiting",
   assert.equal(sequence.includes("retry-sleep"), true);
 });
 
+test("a Copilot review request accepts every active workflow status while REST converges", async () => {
+  for (const status of [
+    "queued",
+    "requested",
+    "waiting",
+    "pending",
+    "in_progress",
+  ]) {
+    let reconciliationCalls = 0;
+    const result = await runNativeAutoMerge(pullRequestTargetInputEnv(), {
+      listOpenPulls: async () => [pull()],
+      getWorkflowRun: async () => pullRequestTargetWorkflowRun({ status }),
+      getNativeState: async () => ({
+        id: "PR_test",
+        autoMergeRequest: null,
+        mergeQueueEntry: null,
+      }),
+      loadRequiredChecks: async () => POLICY_REQUIRED_CHECKS,
+      getEffectiveRules: async () => effectiveRules(),
+      waitForReviewReconciliation: async () => {
+        reconciliationCalls += 1;
+        return { status: "blocked", fingerprint: `blocked-${status}` };
+      },
+      sleep: async () => {},
+      enableAutoMerge: async () => assert.fail("blocking review cannot arm"),
+    });
+
+    assert.deepEqual(result, {
+      action: "skipped",
+      reason: "review-feedback-blocking",
+    });
+    assert.equal(reconciliationCalls, 1, status);
+  }
+});
+
 test("a Copilot review request binds to its exact trusted workflow run", async () => {
-  for (const override of [
-    { id: 31336700001 },
-    { path: ".github/workflows/spoof.yml" },
-    { event: "pull_request" },
-    { head_sha: "f".repeat(40) },
-    { status: "completed" },
-    { repository: { full_name: "attacker/fork" } },
+  for (const [field, override] of [
+    ["id", { id: 31336700001 }],
+    ["path", { path: ".github/workflows/spoof.yml" }],
+    ["event", { event: "pull_request" }],
+    ["head_branch", { head_branch: "" }],
+    ["head_sha", { head_sha: "f".repeat(40) }],
+    ["status", { status: "completed" }],
+    ["conclusion", { conclusion: "failure" }],
+    ["repository", { repository: { full_name: "attacker/fork" } }],
   ]) {
     await assert.rejects(
       runNativeAutoMerge(pullRequestTargetInputEnv(), {
@@ -2557,12 +2595,65 @@ test("a Copilot review request binds to its exact trusted workflow run", async (
           autoMergeRequest: null,
           mergeQueueEntry: null,
         }),
-        getWorkflowRun: async () => pullRequestTargetWorkflowRun(override),
+        getWorkflowRun: async () =>
+          pullRequestTargetWorkflowRun({
+            ...override,
+            automation_token: "pat-token",
+          }),
         loadRequiredChecks: async () =>
           assert.fail("untrusted trigger cannot read policy"),
         sleep: async () => {},
       }),
-      /review-request workflow identity drifted/i,
+      (error) => {
+        assert.match(
+          error.message,
+          /review-request workflow identity drifted/i,
+        );
+        assert.match(error.message, new RegExp(`\\b${field}\\b`));
+        assert.doesNotMatch(error.message, /pat-token|automation_token/i);
+        return true;
+      },
+    );
+  }
+});
+
+test("a Copilot review request rejects every terminal, unknown, or malformed workflow status", async () => {
+  for (const status of [
+    "completed",
+    "action_required",
+    "cancelled",
+    "failure",
+    "neutral",
+    "skipped",
+    "stale",
+    "success",
+    "timed_out",
+    "unknown",
+    null,
+    42,
+  ]) {
+    await assert.rejects(
+      runNativeAutoMerge(pullRequestTargetInputEnv(), {
+        listOpenPulls: async () => [pull()],
+        getNativeState: async () => ({
+          id: "PR_test",
+          autoMergeRequest: null,
+          mergeQueueEntry: null,
+        }),
+        getWorkflowRun: async () => pullRequestTargetWorkflowRun({ status }),
+        loadRequiredChecks: async () =>
+          assert.fail("untrusted trigger cannot read policy"),
+        sleep: async () => {},
+      }),
+      (error) => {
+        assert.match(
+          error.message,
+          /review-request workflow identity drifted/i,
+        );
+        assert.match(error.message, /\bstatus\b/);
+        return true;
+      },
+      String(status),
     );
   }
 });
