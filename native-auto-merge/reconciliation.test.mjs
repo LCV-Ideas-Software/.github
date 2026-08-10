@@ -1148,6 +1148,16 @@ test("the exact Copilot quota outcome is unavailable without becoming a review",
     "2026-08-09T18:00:06Z",
   );
 
+  const failedRunAwaitingOutcome = await readReviewReconciliationState(
+    request,
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [failedCopilotRun],
+      getReviewSnapshot: async () => snapshot(),
+    },
+  );
+  assert.equal(failedRunAwaitingOutcome.status, "pending");
+
   const staleUnavailable = await readReviewReconciliationState(request, {
     listCheckRuns: async () => successfulChecks,
     listCopilotReviewRuns: async () => [
@@ -1161,6 +1171,34 @@ test("the exact Copilot quota outcome is unavailable without becoming a review",
     getReviewSnapshot: async () => quotaSnapshot,
   });
   assert.equal(staleUnavailable.status, "failure");
+
+  const unavailableWithoutAssociatedRun = await readReviewReconciliationState(
+    request,
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [],
+      getReviewSnapshot: async () => quotaSnapshot,
+    },
+  );
+  assert.equal(unavailableWithoutAssociatedRun.status, "pending");
+
+  const unavailableBeforeSuccessfulRerun = await readReviewReconciliationState(
+    request,
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        {
+          ...failedCopilotRun,
+          run_attempt: 2,
+          run_started_at: "2026-08-09T18:10:00Z",
+          updated_at: "2026-08-09T18:10:01Z",
+          conclusion: "success",
+        },
+      ],
+      getReviewSnapshot: async () => quotaSnapshot,
+    },
+  );
+  assert.equal(unavailableBeforeSuccessfulRerun.status, "pending");
 });
 
 test("the Copilot quota exception is exact, head-bound, and cumulative", () => {

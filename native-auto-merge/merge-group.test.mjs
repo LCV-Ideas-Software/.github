@@ -874,6 +874,78 @@ test("merge-group feedback state is read-only and keeps bot absence neutral", as
     null,
   );
 
+  const unassociatedQuotaUnavailableOutcome = await readMergeGroupFeedbackState(
+    {
+      repository: REPOSITORY,
+      number: 108,
+      headSha: HEAD_SHA,
+      token: "github-token",
+    },
+    {
+      getRequestedReviewers: async () => ({ users: [], teams: [] }),
+      listCopilotReviewRuns: async () => [],
+      getReviewSnapshot: async () =>
+        copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+    },
+  );
+  assert.equal(unassociatedQuotaUnavailableOutcome.status, "failure");
+
+  const canonicalReviewAfterQuotaUnavailableOutcome =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [],
+        getReviewSnapshot: async () => {
+          const quota = copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z");
+          return {
+            ...quota,
+            reviews: {
+              nodes: [
+                ...quota.reviews.nodes,
+                copilotReviewSnapshot("2026-08-09T18:00:03Z").reviews.nodes[0],
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          };
+        },
+      },
+    );
+  assert.equal(canonicalReviewAfterQuotaUnavailableOutcome.status, "clear");
+  assert.equal(
+    canonicalReviewAfterQuotaUnavailableOutcome.latestExactHeadCopilotState,
+    "reviewed",
+  );
+
+  const quotaUnavailableBeforeSuccessfulRerun =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [
+          copilotRun({
+            run_attempt: 2,
+            run_started_at: "2026-08-09T18:10:00Z",
+            updated_at: "2026-08-09T18:10:01Z",
+            conclusion: "success",
+          }),
+        ],
+        getReviewSnapshot: async () =>
+          copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+      },
+    );
+  assert.equal(quotaUnavailableBeforeSuccessfulRerun.status, "failure");
+
   const quotaUnavailableDoesNotEraseFindings =
     await readMergeGroupFeedbackState(
       {

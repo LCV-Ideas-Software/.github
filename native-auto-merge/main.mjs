@@ -2893,6 +2893,15 @@ export async function readReviewReconciliationState(
     reviews.latestExactHeadCopilotUnavailableAt !== null &&
     Date.parse(reviews.latestExactHeadCopilotUnavailableAt) >
       Date.parse(copilotReviewRequestedAt);
+  const unavailableOutcomeFollowsFailedRun =
+    copilot.status === "failure" &&
+    copilot.latestFailureStartedAt !== null &&
+    reviews.latestExactHeadCopilotUnavailableAt !== null &&
+    Date.parse(reviews.latestExactHeadCopilotUnavailableAt) >
+      Date.parse(copilot.latestFailureStartedAt);
+  const hasValidExactHeadCopilotUnavailableOutcome =
+    hasFreshExactHeadCopilotUnavailableOutcome &&
+    unavailableOutcomeFollowsFailedRun;
   if (
     freshReviewMustCompleteRequest &&
     !hasFreshExactHeadCopilotReview &&
@@ -2915,12 +2924,6 @@ export async function readReviewReconciliationState(
     reviews.latestExactHeadCopilotReviewAt !== null &&
     Date.parse(reviews.latestExactHeadCopilotReviewAt) >
       Date.parse(copilot.latestFailureStartedAt);
-  const unavailableOutcomeFollowsFailedRun =
-    copilot.status === "failure" &&
-    copilot.latestFailureStartedAt !== null &&
-    reviews.latestExactHeadCopilotUnavailableAt !== null &&
-    Date.parse(reviews.latestExactHeadCopilotUnavailableAt) >
-      Date.parse(copilot.latestFailureStartedAt);
   if (
     copilot.status === "failure" &&
     !canonicalReviewFollowsFailedRun &&
@@ -2933,6 +2936,22 @@ export async function readReviewReconciliationState(
           checks: checks.fingerprint,
           requestedReviewers,
           copilot: copilot.fingerprint,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
+  if (
+    freshReviewMustCompleteRequest &&
+    !hasFreshExactHeadCopilotReview &&
+    !hasValidExactHeadCopilotUnavailableOutcome
+  ) {
+    return {
+      status: "pending",
+      fingerprint: sha256(
+        JSON.stringify({
+          copilot: copilot.fingerprint,
+          requestedReviewers,
           reviews: reviews.fingerprint,
         }),
       ),
@@ -3042,11 +3061,15 @@ export async function readMergeGroupFeedbackState(
     reviews.latestExactHeadCopilotUnavailableAt !== null &&
     Date.parse(reviews.latestExactHeadCopilotUnavailableAt) >
       Date.parse(copilot.latestFailureStartedAt);
+  const unassociatedQuotaUnavailableOutcome =
+    reviews.latestExactHeadCopilotState === "unavailable" &&
+    !unavailableOutcomeFollowsFailedRun;
   if (
-    copilot.status === "failure" &&
     reviews.status === "clear" &&
-    !canonicalReviewFollowsFailedRun &&
-    !unavailableOutcomeFollowsFailedRun
+    ((copilot.status === "failure" &&
+      !canonicalReviewFollowsFailedRun &&
+      !unavailableOutcomeFollowsFailedRun) ||
+      unassociatedQuotaUnavailableOutcome)
   ) {
     return {
       status: "failure",
