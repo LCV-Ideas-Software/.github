@@ -3073,6 +3073,10 @@ test("action and consumer workflow keep the credential and execution boundary na
     new URL("../.github/workflows/native-auto-merge.yml", import.meta.url),
     "utf8",
   );
+  const governance = await readFile(
+    new URL("../docs/NATIVE_GOVERNANCE.md", import.meta.url),
+    "utf8",
+  );
   const zizmorConfig = await readFile(
     new URL("../.github/zizmor.yml", import.meta.url),
     "utf8",
@@ -3135,7 +3139,9 @@ test("action and consumer workflow keep the credential and execution boundary na
     workflow,
     /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
   );
-  assert.equal((workflow.match(/permissions:\s*write-all/g) ?? []).length, 3);
+  assert.equal((workflow.match(/permissions:\s*write-all/g) ?? []).length, 4);
+  assert.match(workflow, /\n  candidate_tests:\s*\n/);
+  assert.match(workflow, /name:\s*Test native auto-merge candidate/);
   assert.match(workflow, /name:\s*Test native auto-merge/);
   assert.match(workflow, /node --check native-auto-merge\/main\.mjs/);
   assert.match(
@@ -3161,25 +3167,73 @@ test("action and consumer workflow keep the credential and execution boundary na
   assert.equal(
     (workflow.match(/github_token:\s*\$\{\{ github\.token \}\}/g) ?? []).length,
     0,
-    "the bootstrap PR must not execute candidate-controlled gate code with a token",
-  );
-  assert.doesNotMatch(
-    workflow,
-    /uses:\s*\.\/native-auto-merge[\s\S]*operation:\s*merge-group-feedback-gate/,
-    "merge-group activation must consume the published component by immutable SHA in a follow-up",
   );
   for (const input of [
     "merge_group_head_sha",
+    "merge_group_base_sha",
     "merge_group_base_ref",
     "merge_group_head_ref",
   ]) {
     assert.match(action, new RegExp(`\\n  ${input}:`));
-    assert.doesNotMatch(workflow, new RegExp(`\\n          ${input}:`));
   }
+  const candidateJob = workflow.match(
+    /\n  candidate_tests:\s*\n(?<body>[\s\S]*?)(?=\n  test:\s*\n)/,
+  )?.groups?.body;
+  const requiredContextJob = workflow.match(
+    /\n  test:\s*\n(?<body>[\s\S]*?)(?=\n  enable:\s*\n)/,
+  )?.groups?.body;
+  assert.ok(candidateJob, "candidate test job must be structurally isolated");
+  assert.ok(requiredContextJob, "required context job must be present");
+  assert.match(requiredContextJob, /^\s+name:\s*Test native auto-merge\s*$/m);
+  assert.equal(
+    (workflow.match(/^\s+name:\s*Test native auto-merge\s*$/gm) ?? []).length,
+    1,
+  );
+  assert.match(candidateJob, /Checkout candidate/);
+  assert.match(candidateJob, /persist-credentials:\s*false/);
+  assert.doesNotMatch(
+    candidateJob,
+    /github\.token|GITHUB_TOKEN|GH_TOKEN|github_token:|automation_token|secrets\.|environment:|uses:\s*\.\/|merge-group-feedback-gate/,
+  );
+  assert.match(requiredContextJob, /needs:\s*\n\s+- candidate_tests/);
+  assert.match(requiredContextJob, /always\(\)/);
+  assert.match(
+    requiredContextJob,
+    /needs\.candidate_tests\.result != 'success'[\s\S]*run:\s*exit 1/,
+  );
+  assert.match(
+    requiredContextJob,
+    /Preserve the bootstrap merge-group required context/,
+  );
+  assert.match(
+    requiredContextJob,
+    /signed gate activation follows the component release/,
+  );
+  assert.doesNotMatch(
+    requiredContextJob,
+    /merge-group-feedback-gate|github_token:|LCV-Ideas-Software\/\.github\/native-auto-merge@/,
+    "the corrected queue gate must remain dormant until its signed release exists",
+  );
+  assert.match(
+    requiredContextJob,
+    /github\.event_name == 'pull_request' && needs\.candidate_tests\.result == 'success'/,
+  );
+  assert.match(
+    requiredContextJob,
+    /github\.event_name == 'merge_group' && needs\.candidate_tests\.result == 'success'/,
+  );
+  assert.doesNotMatch(
+    requiredContextJob,
+    /actions\/checkout|download-artifact|actions\/cache|node --test|node --check|automation_token|secrets\./,
+    "the clean required-context runner must never inherit or execute candidate content",
+  );
   assert.doesNotMatch(
     workflow,
     /download-artifact|ref:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha/,
   );
+  assert.match(governance, /It is not\s+token-free:/);
+  assert.match(governance, /ephemeral `GITHUB_TOKEN` and OIDC surface/);
+  assert.match(governance, /No PAT, repository secret/);
   assert.match(
     zizmorConfig,
     /workflow_run and pull_request_target jobs consume only the trusted/,

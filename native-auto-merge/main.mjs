@@ -21,9 +21,22 @@ const EFFECTIVE_RULES_PER_PAGE = 100;
 const MAX_EFFECTIVE_RULE_PAGES = 100;
 const CHECK_RUNS_PER_PAGE = 100;
 const MAX_CHECK_RUN_PAGES = 100;
+const ACTIVE_CHECK_RUN_STATUSES = new Set([
+  "queued",
+  "in_progress",
+  "waiting",
+  "requested",
+  "pending",
+]);
+const ACCEPTED_CHECK_RUN_CONCLUSIONS = new Set([
+  "success",
+  "skipped",
+  "neutral",
+]);
 const WORKFLOW_RUNS_PER_PAGE = 100;
 const MAX_DYNAMIC_WORKFLOW_RUN_PAGES = 10;
-const PULLS_FOR_COMMIT_PER_PAGE = 100;
+const MERGE_QUEUE_ENTRIES_PER_PAGE = 100;
+const MAX_MERGE_QUEUE_ENTRY_PAGES = 100;
 const REVIEW_CONNECTION_LIMIT = 100;
 const MAX_REVIEW_CONNECTION_PAGES = 100;
 const MAX_REVIEW_THREAD_COMMENT_PAGES = 100;
@@ -116,6 +129,86 @@ const NATIVE_STATE_QUERY = `
         }
         mergeQueueEntry {
           id
+        }
+      }
+    }
+  }
+`;
+
+const MERGE_QUEUE_ASSOCIATION_QUERY = `
+  query NativeAutoMergeQueueAssociation(
+    $owner: String!
+    $repo: String!
+    $branch: String!
+    $headRef: String!
+    $after: String
+  ) {
+    repository(owner: $owner, name: $repo) {
+      id
+      nameWithOwner
+      ref(qualifiedName: $headRef) {
+        id
+        name
+        prefix
+        target {
+          __typename
+          ... on Commit {
+            oid
+          }
+        }
+      }
+      mergeQueue(branch: $branch) {
+        id
+        configuration {
+          checkResponseTimeout
+          maximumEntriesToBuild
+          maximumEntriesToMerge
+          mergeMethod
+          mergingStrategy
+          minimumEntriesToMerge
+          minimumEntriesToMergeWaitTime
+        }
+        entries(first: ${MERGE_QUEUE_ENTRIES_PER_PAGE}, after: $after) {
+          totalCount
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            id
+            state
+            position
+            baseCommit {
+              oid
+            }
+            headCommit {
+              oid
+            }
+            mergeQueue {
+              id
+            }
+            pullRequest {
+              id
+              number
+              state
+              isDraft
+              isInMergeQueue
+              headRefOid
+              headRefName
+              baseRefName
+              headRepository {
+                id
+                nameWithOwner
+              }
+              baseRepository {
+                id
+                nameWithOwner
+              }
+              mergeQueueEntry {
+                id
+              }
+            }
+          }
         }
       }
     }
@@ -711,12 +804,20 @@ function parseCodexPullRequestReviewBody(body) {
 export function assessRequiredCheckRuns(
   requiredChecksCandidate,
   checkRuns,
-  headSha,
+  contextCandidate,
 ) {
   const requiredChecks = validateRequiredChecks(requiredChecksCandidate);
-  if (!SHA_PATTERN.test(headSha ?? "")) {
-    throw new Error("head SHA must be a full hexadecimal SHA-1");
+  if (!isObject(contextCandidate)) {
+    throw new Error("Required check pull request context is malformed");
   }
+  const { repository } = parseRepository(contextCandidate.repository);
+  const number = contextCandidate.number;
+  const headSha = contextCandidate.headSha;
+  if (!positivePullNumber(number) || !SHA_PATTERN.test(headSha ?? "")) {
+    throw new Error("Required check pull request context is malformed");
+  }
+  const repositoryUrl = `${API_ROOT}/repos/${repository}`.toLowerCase();
+  const pullUrl = `${repositoryUrl}/pulls/${number}`;
   if (!Array.isArray(checkRuns)) {
     throw new Error("Malformed check-run inventory payload");
   }
@@ -724,16 +825,57 @@ export function assessRequiredCheckRuns(
   const canonical = [];
   let status = "success";
   for (const required of requiredChecks) {
-    const matches = checkRuns.filter(
+    const candidates = checkRuns.filter(
       (run) =>
         isObject(run) &&
         run.name === required.name &&
         run.app?.id === required.app_id &&
         run.head_sha === headSha,
     );
-    if (matches.length > 1) {
-      throw new Error(`Duplicate required check run ${required.name}`);
-    }
+    const matches = candidates.filter((run) => {
+      if (!Array.isArray(run.pull_requests)) {
+        throw new Error(
+          `Malformed required check run association ${required.name}`,
+        );
+      }
+      const associations = run.pull_requests.map((pull) => {
+        if (
+          !isObject(pull) ||
+          !positivePullNumber(pull.number) ||
+          typeof pull.url !== "string" ||
+          pull.url.trim() === "" ||
+          !isObject(pull.head) ||
+          typeof pull.head.ref !== "string" ||
+          pull.head.ref.trim() === "" ||
+          !SHA_PATTERN.test(pull.head.sha ?? "") ||
+          !isObject(pull.head.repo) ||
+          typeof pull.head.repo.url !== "string" ||
+          pull.head.repo.url.trim() === "" ||
+          !isObject(pull.base) ||
+          typeof pull.base.ref !== "string" ||
+          pull.base.ref.trim() === "" ||
+          !SHA_PATTERN.test(pull.base.sha ?? "") ||
+          !isObject(pull.base.repo) ||
+          typeof pull.base.repo.url !== "string" ||
+          pull.base.repo.url.trim() === ""
+        ) {
+          throw new Error(
+            `Malformed required check run association ${required.name}`,
+          );
+        }
+        return pull;
+      });
+      return associations.some((pull) => {
+        return (
+          pull.number === number &&
+          pull.url.toLowerCase() === pullUrl &&
+          pull.head.sha === headSha &&
+          pull.head.repo.url.toLowerCase() === repositoryUrl &&
+          pull.base.ref === "main" &&
+          pull.base.repo.url.toLowerCase() === repositoryUrl
+        );
+      });
+    });
     if (matches.length === 0) {
       status = status === "failure" ? status : "pending";
       canonical.push({
@@ -743,37 +885,86 @@ export function assessRequiredCheckRuns(
       });
       continue;
     }
-    const run = matches[0];
-    if (
-      !Number.isSafeInteger(run.id) ||
-      run.id <= 0 ||
-      typeof run.status !== "string" ||
-      !isObject(run.app)
-    ) {
-      throw new Error(`Malformed required check run ${required.name}`);
-    }
-    if (run.status !== "completed") {
-      status = status === "failure" ? status : "pending";
-      canonical.push({
+    const seenIds = new Set();
+    const runs = matches.map((run) => {
+      if (
+        !Number.isSafeInteger(run.id) ||
+        run.id <= 0 ||
+        seenIds.has(run.id) ||
+        typeof run.status !== "string" ||
+        !isObject(run.app)
+      ) {
+        throw new Error(`Malformed required check run ${required.name}`);
+      }
+      seenIds.add(run.id);
+      if (run.status === "completed") {
+        const completedAt = validTimestamp(
+          run.completed_at,
+          `${required.name} completed_at`,
+        );
+        if (typeof run.conclusion !== "string" || run.conclusion === "") {
+          throw new Error(`Malformed required check run ${required.name}`);
+        }
+        return {
+          id: run.id,
+          state: "completed",
+          conclusion: run.conclusion,
+          completedAt,
+        };
+      }
+      if (!ACTIVE_CHECK_RUN_STATUSES.has(run.status)) {
+        throw new Error(`Malformed required check run ${required.name}`);
+      }
+      return {
         id: run.id,
+        state: run.status,
+        conclusion: null,
+        completedAt: null,
+      };
+    });
+    runs.sort((left, right) => left.id - right.id);
+
+    const hasAdverseTerminal = runs.some(
+      (run) =>
+        run.state === "completed" &&
+        !ACCEPTED_CHECK_RUN_CONCLUSIONS.has(run.conclusion),
+    );
+    if (hasAdverseTerminal) {
+      status = "failure";
+      canonical.push({
         name: required.name,
         appId: required.app_id,
-        state: run.status,
+        state: "completed",
+        conclusion: "failure",
+        runs,
       });
       continue;
     }
-    const completedAt = validTimestamp(
-      run.completed_at,
-      `${required.name} completed_at`,
+
+    const active = runs.filter((run) => run.state !== "completed");
+    if (active.length > 0) {
+      status = status === "failure" ? status : "pending";
+      canonical.push({
+        name: required.name,
+        appId: required.app_id,
+        state: "pending",
+        runs,
+      });
+      continue;
+    }
+
+    const hasSuccess = runs.some((run) => run.conclusion === "success");
+    const allAccepted = runs.every((run) =>
+      ACCEPTED_CHECK_RUN_CONCLUSIONS.has(run.conclusion),
     );
-    if (run.conclusion !== "success") status = "failure";
+    const succeeded = hasSuccess && allAccepted;
+    if (!succeeded) status = "failure";
     canonical.push({
-      id: run.id,
       name: required.name,
       appId: required.app_id,
       state: "completed",
-      conclusion: run.conclusion,
-      completedAt,
+      conclusion: succeeded ? "success" : "failure",
+      runs,
     });
   }
 
@@ -1445,6 +1636,10 @@ export function mergeGroupEventFromInputs(env) {
     env.INPUT_MERGE_GROUP_BASE_REF,
     "merge_group_base_ref input",
   );
+  const baseSha = nonEmpty(
+    env.INPUT_MERGE_GROUP_BASE_SHA,
+    "merge_group_base_sha input",
+  );
   const headRef = nonEmpty(
     env.INPUT_MERGE_GROUP_HEAD_REF,
     "merge_group_head_ref input",
@@ -1454,6 +1649,8 @@ export function mergeGroupEventFromInputs(env) {
   if (
     action !== "checks_requested" ||
     !SHA_PATTERN.test(headSha) ||
+    !SHA_PATTERN.test(baseSha) ||
+    headSha === baseSha ||
     baseRef !== "refs/heads/main" ||
     !headRef.startsWith("refs/heads/gh-readonly-queue/main/") ||
     headSha !== runnerSha ||
@@ -1461,7 +1658,7 @@ export function mergeGroupEventFromInputs(env) {
   ) {
     throw new Error("Malformed merge-group event inputs");
   }
-  return { repository, action, headSha, baseRef, headRef };
+  return { repository, action, headSha, baseSha, baseRef, headRef };
 }
 
 export function isEligiblePull(pull, candidate, repository) {
@@ -1907,31 +2104,269 @@ export async function githubGetWorkflowRun(
   );
 }
 
-export async function githubListPullsForCommit(
+function mergeQueueConfiguration(config) {
+  const expected = {
+    checkResponseTimeout: 3600,
+    maximumEntriesToBuild: 1,
+    maximumEntriesToMerge: 1,
+    mergeMethod: "SQUASH",
+    mergingStrategy: "ALLGREEN",
+    minimumEntriesToMerge: 1,
+    minimumEntriesToMergeWaitTime: 0,
+  };
+  if (
+    !isObject(config) ||
+    Object.entries(expected).some(([key, value]) => config[key] !== value)
+  ) {
+    throw new Error("Merge queue configuration is not the one-entry policy");
+  }
+  return expected;
+}
+
+function nullableMergeQueueCommit(entry, field) {
+  if (!Object.hasOwn(entry, field)) {
+    throw new Error("Malformed merge queue entry");
+  }
+  const commit = entry[field];
+  if (commit === null) return null;
+  if (!isObject(commit) || !SHA_PATTERN.test(commit.oid ?? "")) {
+    throw new Error("Malformed merge queue entry");
+  }
+  return commit.oid;
+}
+
+function nullableMergeQueueId(value) {
+  if (value === null) return null;
+  if (!isObject(value) || typeof value.id !== "string" || value.id === "") {
+    throw new Error("Malformed merge queue entry");
+  }
+  return value.id;
+}
+
+function nullableMergeQueueRepository(value) {
+  if (value === null) return null;
+  if (
+    !isObject(value) ||
+    typeof value.id !== "string" ||
+    value.id === "" ||
+    typeof value.nameWithOwner !== "string" ||
+    value.nameWithOwner === ""
+  ) {
+    throw new Error("Malformed merge queue entry");
+  }
+  return { id: value.id, nameWithOwner: value.nameWithOwner };
+}
+
+function normalizeMergeQueuePull(pull) {
+  if (pull === null) return null;
+  if (
+    !isObject(pull) ||
+    typeof pull.id !== "string" ||
+    pull.id === "" ||
+    !positivePullNumber(pull.number) ||
+    !["OPEN", "CLOSED", "MERGED"].includes(pull.state) ||
+    typeof pull.isDraft !== "boolean" ||
+    typeof pull.isInMergeQueue !== "boolean" ||
+    !SHA_PATTERN.test(pull.headRefOid ?? "") ||
+    typeof pull.headRefName !== "string" ||
+    pull.headRefName === "" ||
+    typeof pull.baseRefName !== "string" ||
+    pull.baseRefName === "" ||
+    !Object.hasOwn(pull, "headRepository") ||
+    !Object.hasOwn(pull, "baseRepository") ||
+    !Object.hasOwn(pull, "mergeQueueEntry")
+  ) {
+    throw new Error("Malformed merge queue entry");
+  }
+  return {
+    id: pull.id,
+    number: pull.number,
+    state: pull.state,
+    isDraft: pull.isDraft,
+    isInMergeQueue: pull.isInMergeQueue,
+    headSha: pull.headRefOid,
+    headRef: pull.headRefName,
+    baseRef: pull.baseRefName,
+    headRepository: nullableMergeQueueRepository(pull.headRepository),
+    baseRepository: nullableMergeQueueRepository(pull.baseRepository),
+    mergeQueueEntryId: nullableMergeQueueId(pull.mergeQueueEntry),
+  };
+}
+
+function normalizeMergeQueueEntry(entry) {
+  if (
+    !isObject(entry) ||
+    typeof entry.id !== "string" ||
+    entry.id === "" ||
+    ![
+      "AWAITING_CHECKS",
+      "LOCKED",
+      "MERGEABLE",
+      "QUEUED",
+      "UNMERGEABLE",
+    ].includes(entry.state) ||
+    !Number.isSafeInteger(entry.position) ||
+    entry.position < 0 ||
+    !Object.hasOwn(entry, "mergeQueue") ||
+    !Object.hasOwn(entry, "pullRequest")
+  ) {
+    throw new Error("Malformed merge queue entry");
+  }
+  return {
+    id: entry.id,
+    state: entry.state,
+    position: entry.position,
+    mergeQueueId: nullableMergeQueueId(entry.mergeQueue),
+    baseSha: nullableMergeQueueCommit(entry, "baseCommit"),
+    syntheticHeadSha: nullableMergeQueueCommit(entry, "headCommit"),
+    pull: normalizeMergeQueuePull(entry.pullRequest),
+  };
+}
+
+export async function githubGetMergeQueueSnapshot(
   repository,
-  commitSha,
+  { headSha, headRef },
   token,
   runtime = {},
 ) {
-  parseRepository(repository);
-  if (!SHA_PATTERN.test(commitSha ?? "")) {
+  const { owner, repo } = parseRepository(repository);
+  if (!SHA_PATTERN.test(headSha ?? "")) {
     throw new Error("merge-group head SHA must be a full hexadecimal SHA-1");
   }
+  if (
+    typeof headRef !== "string" ||
+    !headRef.startsWith("refs/heads/gh-readonly-queue/main/")
+  ) {
+    throw new Error("merge-group head ref is malformed");
+  }
   nonEmpty(token, "github_token input");
-  const payload = await githubRestGet(
-    `/repos/${repository}/commits/${commitSha}/pulls?per_page=${PULLS_FOR_COMMIT_PER_PAGE}&page=1`,
-    token,
-    runtime,
-  );
-  if (!Array.isArray(payload)) {
-    throw new Error("Malformed pull requests for commit payload");
-  }
-  if (payload.length !== 1) {
-    throw new Error(
-      "Merge-group synthetic commit must map to exactly one pull request",
+
+  const entries = [];
+  const entryIds = new Set();
+  const entryPositions = new Set();
+  const pullIds = new Set();
+  const pullNumbers = new Set();
+  const cursors = new Set();
+  let cursor = null;
+  let totalCount = null;
+  let identity = null;
+
+  for (let page = 1; page <= MAX_MERGE_QUEUE_ENTRY_PAGES; page += 1) {
+    const payload = await githubGraphqlQuery(
+      {
+        query: MERGE_QUEUE_ASSOCIATION_QUERY,
+        variables: { owner, repo, branch: "main", headRef, after: cursor },
+      },
+      token,
+      runtime,
     );
+    graphQlPayloadHasNoErrors(payload, "merge queue association");
+    const repositoryPayload = payload?.data?.repository;
+    const reference = repositoryPayload?.ref;
+    const queue = repositoryPayload?.mergeQueue;
+    const connection = queue?.entries;
+    if (
+      !isObject(repositoryPayload) ||
+      typeof repositoryPayload.id !== "string" ||
+      repositoryPayload.id === "" ||
+      repositoryPayload.nameWithOwner !== repository ||
+      !isObject(reference) ||
+      typeof reference.id !== "string" ||
+      reference.id === "" ||
+      typeof reference.name !== "string" ||
+      reference.name === "" ||
+      reference.prefix !== "refs/heads/" ||
+      `${reference.prefix}${reference.name}` !== headRef ||
+      reference.target?.__typename !== "Commit" ||
+      reference.target.oid !== headSha ||
+      !isObject(queue) ||
+      typeof queue.id !== "string" ||
+      queue.id === "" ||
+      !isObject(connection) ||
+      !Array.isArray(connection.nodes) ||
+      connection.nodes.length > MERGE_QUEUE_ENTRIES_PER_PAGE ||
+      !Number.isSafeInteger(connection.totalCount) ||
+      connection.totalCount < 0 ||
+      connection.totalCount >
+        MERGE_QUEUE_ENTRIES_PER_PAGE * MAX_MERGE_QUEUE_ENTRY_PAGES ||
+      !isObject(connection.pageInfo) ||
+      typeof connection.pageInfo.hasNextPage !== "boolean" ||
+      !(
+        connection.pageInfo.endCursor === null ||
+        (typeof connection.pageInfo.endCursor === "string" &&
+          connection.pageInfo.endCursor !== "")
+      )
+    ) {
+      throw new Error("Malformed merge queue association payload");
+    }
+    const configuration = mergeQueueConfiguration(queue.configuration);
+    const pageIdentity = JSON.stringify({
+      repository: repositoryPayload.nameWithOwner,
+      repositoryId: repositoryPayload.id,
+      refId: reference.id,
+      headRef,
+      headSha,
+      queueId: queue.id,
+      configuration,
+    });
+    if (identity === null) identity = pageIdentity;
+    else if (identity !== pageIdentity) {
+      throw new Error("Merge queue identity changed during pagination");
+    }
+    if (totalCount === null) totalCount = connection.totalCount;
+    else if (totalCount !== connection.totalCount) {
+      throw new Error("Merge queue total count changed during pagination");
+    }
+
+    for (const node of connection.nodes) {
+      const normalized = normalizeMergeQueueEntry(node);
+      if (
+        entryIds.has(normalized.id) ||
+        entryPositions.has(normalized.position) ||
+        (normalized.pull !== null &&
+          (pullIds.has(normalized.pull.id) ||
+            pullNumbers.has(normalized.pull.number)))
+      ) {
+        throw new Error("Duplicate merge queue entry identity");
+      }
+      entryIds.add(normalized.id);
+      entryPositions.add(normalized.position);
+      if (normalized.pull !== null) {
+        pullIds.add(normalized.pull.id);
+        pullNumbers.add(normalized.pull.number);
+      }
+      entries.push(normalized);
+    }
+    if (entries.length > totalCount) {
+      throw new Error("Merge queue exceeded its declared total count");
+    }
+
+    if (!connection.pageInfo.hasNextPage) {
+      if (entries.length !== totalCount) {
+        throw new Error("Merge queue ended before its declared total count");
+      }
+      return {
+        identity,
+        repositoryId: repositoryPayload.id,
+        queueId: queue.id,
+        refId: reference.id,
+        configuration,
+        entries,
+      };
+    }
+    const nextCursor = connection.pageInfo.endCursor;
+    if (
+      typeof nextCursor !== "string" ||
+      nextCursor === "" ||
+      cursors.has(nextCursor) ||
+      entries.length >= totalCount
+    ) {
+      throw new Error("Malformed merge queue pagination cursor");
+    }
+    cursors.add(nextCursor);
+    cursor = nextCursor;
   }
-  return payload;
+  throw new Error("Merge queue pagination exceeded the safety limit");
 }
 
 function trustedCopilotReviewRequestTime(run, repository, runId, headSha) {
@@ -2306,7 +2741,11 @@ export async function readReviewReconciliationState(
   const getReviewSnapshot =
     runtime.getReviewSnapshot ?? githubGetReviewSnapshot;
   const checkRuns = await listCheckRuns(repository, headSha, token, runtime);
-  const checks = assessRequiredCheckRuns(requiredChecks, checkRuns, headSha);
+  const checks = assessRequiredCheckRuns(requiredChecks, checkRuns, {
+    repository,
+    number,
+    headSha,
+  });
   if (checks.status !== "success") {
     return {
       status: checks.status,
@@ -2900,25 +3339,166 @@ function validateMergeGroupPull(pull, repository) {
   };
 }
 
+function validNormalizedMergeQueueRepository(repository) {
+  return Boolean(
+    repository === null ||
+    (isObject(repository) &&
+      typeof repository.id === "string" &&
+      repository.id !== "" &&
+      typeof repository.nameWithOwner === "string" &&
+      repository.nameWithOwner !== ""),
+  );
+}
+
+function validNormalizedMergeQueuePull(pull) {
+  return Boolean(
+    pull === null ||
+    (isObject(pull) &&
+      typeof pull.id === "string" &&
+      pull.id !== "" &&
+      positivePullNumber(pull.number) &&
+      ["OPEN", "CLOSED", "MERGED"].includes(pull.state) &&
+      typeof pull.isDraft === "boolean" &&
+      typeof pull.isInMergeQueue === "boolean" &&
+      SHA_PATTERN.test(pull.headSha ?? "") &&
+      typeof pull.headRef === "string" &&
+      pull.headRef !== "" &&
+      typeof pull.baseRef === "string" &&
+      pull.baseRef !== "" &&
+      validNormalizedMergeQueueRepository(pull.headRepository) &&
+      validNormalizedMergeQueueRepository(pull.baseRepository) &&
+      (pull.mergeQueueEntryId === null ||
+        (typeof pull.mergeQueueEntryId === "string" &&
+          pull.mergeQueueEntryId !== ""))),
+  );
+}
+
+function validateNormalizedMergeQueueSnapshot(snapshot) {
+  if (
+    !isObject(snapshot) ||
+    typeof snapshot.identity !== "string" ||
+    snapshot.identity === "" ||
+    typeof snapshot.repositoryId !== "string" ||
+    snapshot.repositoryId === "" ||
+    typeof snapshot.queueId !== "string" ||
+    snapshot.queueId === "" ||
+    typeof snapshot.refId !== "string" ||
+    snapshot.refId === "" ||
+    !Array.isArray(snapshot.entries)
+  ) {
+    throw new Error("Malformed normalized merge queue snapshot");
+  }
+  mergeQueueConfiguration(snapshot.configuration);
+  const entryIds = new Set();
+  const positions = new Set();
+  const pullIds = new Set();
+  const pullNumbers = new Set();
+  for (const entry of snapshot.entries) {
+    const pull = entry?.pull;
+    if (
+      !isObject(entry) ||
+      typeof entry.id !== "string" ||
+      entry.id === "" ||
+      ![
+        "AWAITING_CHECKS",
+        "LOCKED",
+        "MERGEABLE",
+        "QUEUED",
+        "UNMERGEABLE",
+      ].includes(entry.state) ||
+      !Number.isSafeInteger(entry.position) ||
+      entry.position < 0 ||
+      !(
+        entry.mergeQueueId === null ||
+        (typeof entry.mergeQueueId === "string" && entry.mergeQueueId !== "")
+      ) ||
+      !(entry.baseSha === null || SHA_PATTERN.test(entry.baseSha ?? "")) ||
+      !(
+        entry.syntheticHeadSha === null ||
+        SHA_PATTERN.test(entry.syntheticHeadSha ?? "")
+      ) ||
+      !validNormalizedMergeQueuePull(pull) ||
+      entryIds.has(entry.id) ||
+      positions.has(entry.position) ||
+      (pull !== null && (pullIds.has(pull.id) || pullNumbers.has(pull.number)))
+    ) {
+      throw new Error("Malformed normalized merge queue entry");
+    }
+    entryIds.add(entry.id);
+    positions.add(entry.position);
+    if (pull !== null) {
+      pullIds.add(pull.id);
+      pullNumbers.add(pull.number);
+    }
+  }
+  return snapshot;
+}
+
+function mergeGroupTerminalPullNumber(headRef) {
+  const match = /^refs\/heads\/gh-readonly-queue\/main\/pr-(\d+)(?:-|$)/.exec(
+    headRef,
+  );
+  const number = match ? Number(match[1]) : null;
+  if (!positivePullNumber(number)) {
+    throw new Error("Merge-group queue ref has no valid terminal pull number");
+  }
+  return number;
+}
+
 async function readMergeGroupAssociation(
-  { repository, headSha, token },
+  { repository, headSha, baseSha, headRef, token },
   runtime = {},
 ) {
-  const listPullsForCommit =
-    runtime.listPullsForCommit ?? githubListPullsForCommit;
+  const getMergeQueueSnapshot =
+    runtime.getMergeQueueSnapshot ?? githubGetMergeQueueSnapshot;
   const getPull = runtime.getPull ?? githubGetPull;
-  const associated = await listPullsForCommit(
-    repository,
-    headSha,
-    token,
-    runtime,
+  const snapshot = validateNormalizedMergeQueueSnapshot(
+    await getMergeQueueSnapshot(
+      repository,
+      { headSha, headRef },
+      token,
+      runtime,
+    ),
   );
-  if (!Array.isArray(associated) || associated.length !== 1) {
+  const headMatches = snapshot.entries.filter(
+    (entry) => entry.syntheticHeadSha === headSha,
+  );
+  if (headMatches.length !== 1) {
     throw new Error(
-      "Merge-group synthetic commit must map to exactly one pull request",
+      "Merge-group queue must contain exactly one matching head entry",
     );
   }
-  const candidate = validateMergeGroupPull(associated[0], repository);
+  const [entry] = headMatches;
+  if (entry.baseSha !== baseSha) {
+    throw new Error(
+      "Merge-group queue entry base SHA disagrees with the event",
+    );
+  }
+  if (entry.state !== "AWAITING_CHECKS" || entry.position !== 1) {
+    throw new Error(
+      "Merge-group queue entry is not awaiting checks at position 1",
+    );
+  }
+  const pull = entry.pull;
+  if (
+    entry.mergeQueueId !== snapshot.queueId ||
+    !isObject(pull) ||
+    pull.state !== "OPEN" ||
+    pull.isDraft !== false ||
+    pull.isInMergeQueue !== true ||
+    pull.baseRef !== "main" ||
+    pull.headRepository?.id !== snapshot.repositoryId ||
+    pull.headRepository.nameWithOwner !== repository ||
+    pull.baseRepository?.id !== snapshot.repositoryId ||
+    pull.baseRepository.nameWithOwner !== repository ||
+    pull.mergeQueueEntryId !== entry.id
+  ) {
+    throw new Error("Merge-group matching pull request identity is malformed");
+  }
+  if (pull.number !== mergeGroupTerminalPullNumber(headRef)) {
+    throw new Error("Merge-group queue ref and entry pull request disagree");
+  }
+  const candidate = pull;
   const current = validateMergeGroupPull(
     await getPull(repository, candidate.number, token, runtime),
     repository,
@@ -2930,7 +3510,15 @@ async function readMergeGroupAssociation(
   ) {
     throw new Error("Merge-group pull request identity changed after mapping");
   }
-  return current;
+  return {
+    ...current,
+    associationFingerprint: sha256(
+      JSON.stringify({
+        queue: snapshot.identity,
+        entry,
+      }),
+    ),
+  };
 }
 
 export async function runMergeGroupFeedbackGate(
@@ -2950,6 +3538,8 @@ export async function runMergeGroupFeedbackGate(
   const associationRequest = {
     repository,
     headSha: event.headSha,
+    baseSha: event.baseSha,
+    headRef: event.headRef,
     token,
   };
   const initial = await readMergeGroupAssociation(associationRequest, runtime);
@@ -2978,7 +3568,8 @@ export async function runMergeGroupFeedbackGate(
   if (
     final.number !== initial.number ||
     final.headSha !== initial.headSha ||
-    final.headRef !== initial.headRef
+    final.headRef !== initial.headRef ||
+    final.associationFingerprint !== initial.associationFingerprint
   ) {
     throw new Error("Merge-group association changed during reconciliation");
   }

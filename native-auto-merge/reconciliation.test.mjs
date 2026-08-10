@@ -16,6 +16,33 @@ const REQUIRED_CHECKS = [
   { name: "Analyze actions", app_id: 15368 },
   { name: "Run zizmor", app_id: 15368 },
 ];
+const CHECK_CONTEXT = {
+  repository: "LCV-Ideas-Software/.github",
+  number: 99,
+  headSha: HEAD_SHA,
+};
+
+function pullAssociation(overrides = {}) {
+  return {
+    number: CHECK_CONTEXT.number,
+    url: `https://api.github.com/repos/${CHECK_CONTEXT.repository}/pulls/${CHECK_CONTEXT.number}`,
+    head: {
+      ref: "feature/test",
+      sha: HEAD_SHA,
+      repo: {
+        url: `https://api.github.com/repos/${CHECK_CONTEXT.repository}`,
+      },
+    },
+    base: {
+      ref: "main",
+      sha: "f".repeat(40),
+      repo: {
+        url: `https://api.github.com/repos/${CHECK_CONTEXT.repository}`,
+      },
+    },
+    ...overrides,
+  };
+}
 
 function checkRun(overrides = {}) {
   return {
@@ -26,6 +53,7 @@ function checkRun(overrides = {}) {
     conclusion: "success",
     completed_at: "2026-08-09T18:00:00Z",
     app: { id: 15368 },
+    pull_requests: [pullAssociation()],
     ...overrides,
   };
 }
@@ -161,10 +189,10 @@ function readReviewReconciliationState(request, runtime = {}) {
   });
 }
 
-test("required checks demand one exact successful GitHub Actions run per policy pair", () => {
+test("required checks aggregate exact-PR GitHub Actions suites without masking failures", () => {
   const successful = [checkRun(), checkRun({ id: 2, name: "Run zizmor" })];
   assert.deepEqual(
-    assessRequiredCheckRuns(REQUIRED_CHECKS, successful, HEAD_SHA).status,
+    assessRequiredCheckRuns(REQUIRED_CHECKS, successful, CHECK_CONTEXT).status,
     "success",
   );
 
@@ -186,19 +214,274 @@ test("required checks demand one exact successful GitHub Actions run per policy 
     ],
   ]) {
     assert.equal(
-      assessRequiredCheckRuns(REQUIRED_CHECKS, runs, HEAD_SHA).status,
+      assessRequiredCheckRuns(REQUIRED_CHECKS, runs, CHECK_CONTEXT).status,
       expected,
     );
   }
 
+  const repeatedAcrossLegitimateSuites = [
+    checkRun({
+      id: 3,
+      pull_requests: [],
+      completed_at: "2026-08-09T17:58:00Z",
+    }),
+    checkRun({ id: 4, completed_at: "2026-08-09T18:01:00Z" }),
+    checkRun({ id: 5, completed_at: "2026-08-09T18:02:00Z" }),
+    successful[1],
+  ];
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      repeatedAcrossLegitimateSuites,
+      CHECK_CONTEXT,
+    ).status,
+    "success",
+    "an exact-SHA dispatch without a PR association must not duplicate a PR gate",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      repeatedAcrossLegitimateSuites,
+      CHECK_CONTEXT,
+    ).fingerprint,
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [...repeatedAcrossLegitimateSuites].reverse(),
+      CHECK_CONTEXT,
+    ).fingerprint,
+    "check pagination order must not change the canonical fingerprint",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      repeatedAcrossLegitimateSuites.map((run) =>
+        run.id === 4 ? { ...run, conclusion: "failure" } : run,
+      ),
+      CHECK_CONTEXT,
+    ).status,
+    "failure",
+    "a failed independent PR suite must not be hidden by a later success",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
+        ...repeatedAcrossLegitimateSuites,
+        checkRun({
+          id: 6,
+          status: "in_progress",
+          conclusion: null,
+          completed_at: null,
+        }),
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "pending",
+    "an active duplicate must prevent an older success from arming the PR",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
+        checkRun({ id: 4, conclusion: "failure" }),
+        checkRun({
+          id: 6,
+          status: "in_progress",
+          conclusion: null,
+          completed_at: null,
+        }),
+        successful[1],
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "failure",
+    "a terminal failure must not be delayed by an active sibling suite",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
+        ...successful,
+        checkRun({
+          id: 7,
+          conclusion: "skipped",
+        }),
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "success",
+    "a skipped sibling suite is accepted only when another exact suite succeeds",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
+        checkRun({ conclusion: "neutral" }),
+        checkRun({ id: 7, conclusion: "skipped" }),
+        successful[1],
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "failure",
+    "every required pair still needs at least one exact success",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
+        checkRun({ pull_requests: [] }),
+        checkRun({
+          id: 7,
+          pull_requests: [pullAssociation({ number: 100 })],
+        }),
+        successful[1],
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "pending",
+    "unassociated and other-PR suites cannot satisfy the current PR",
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
+        checkRun({
+          status: "in_progress",
+          conclusion: null,
+          completed_at: null,
+          pull_requests: [],
+        }),
+        checkRun({ id: 7 }),
+        successful[1],
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "success",
+    "an active unassociated pre-scan is outside the pull-request gate",
+  );
+  const otherRepositoryUrl =
+    "https://api.github.com/repos/LCV-Ideas-Software/other";
+  for (const association of [
+    pullAssociation({
+      url: `https://api.github.com/repos/${CHECK_CONTEXT.repository}/pulls/100`,
+    }),
+    pullAssociation({
+      base: {
+        ref: "release",
+        sha: "f".repeat(40),
+        repo: {
+          url: `https://api.github.com/repos/${CHECK_CONTEXT.repository}`,
+        },
+      },
+    }),
+    pullAssociation({
+      head: {
+        ref: "feature/test",
+        sha: HEAD_SHA,
+        repo: { url: otherRepositoryUrl },
+      },
+    }),
+    pullAssociation({
+      base: {
+        ref: "main",
+        sha: "f".repeat(40),
+        repo: { url: otherRepositoryUrl },
+      },
+    }),
+  ]) {
+    assert.equal(
+      assessRequiredCheckRuns(
+        REQUIRED_CHECKS,
+        [checkRun({ pull_requests: [association] }), successful[1]],
+        CHECK_CONTEXT,
+      ).status,
+      "pending",
+      "foreign pull-request identity cannot satisfy the current PR",
+    );
+  }
   assert.throws(
     () =>
       assessRequiredCheckRuns(
         REQUIRED_CHECKS,
-        [...successful, { ...successful[0], id: 3 }],
-        HEAD_SHA,
+        [...successful, { ...successful[0] }],
+        CHECK_CONTEXT,
       ),
-    /duplicate required check run/i,
+    /malformed required check run/i,
+  );
+  assert.throws(
+    () =>
+      assessRequiredCheckRuns(
+        REQUIRED_CHECKS,
+        [
+          { ...successful[0], status: "unknown", conclusion: null },
+          successful[1],
+        ],
+        CHECK_CONTEXT,
+      ),
+    /malformed required check run/i,
+  );
+  assert.equal(
+    assessRequiredCheckRuns(
+      REQUIRED_CHECKS,
+      [
+        checkRun({
+          pull_requests: [
+            pullAssociation({
+              head: {
+                ref: "feature/test",
+                sha: "e".repeat(40),
+                repo: {
+                  url: `https://api.github.com/repos/${CHECK_CONTEXT.repository}`,
+                },
+              },
+            }),
+          ],
+        }),
+        successful[1],
+      ],
+      CHECK_CONTEXT,
+    ).status,
+    "pending",
+    "a stale association cannot satisfy the exact pull request",
+  );
+  assert.throws(
+    () =>
+      assessRequiredCheckRuns(
+        REQUIRED_CHECKS,
+        [checkRun({ pull_requests: [{ number: 99 }] }), successful[1]],
+        CHECK_CONTEXT,
+      ),
+    /malformed required check run association/i,
+  );
+  assert.throws(
+    () =>
+      assessRequiredCheckRuns(
+        REQUIRED_CHECKS,
+        [
+          checkRun({
+            pull_requests: [pullAssociation(), { number: 99 }],
+          }),
+          successful[1],
+        ],
+        CHECK_CONTEXT,
+      ),
+    /malformed required check run association/i,
+    "a valid first association cannot hide a later malformed entry",
+  );
+  assert.throws(
+    () =>
+      assessRequiredCheckRuns(
+        REQUIRED_CHECKS,
+        [
+          checkRun({
+            pull_requests: [pullAssociation(), pullAssociation({ url: "" })],
+          }),
+          successful[1],
+        ],
+        CHECK_CONTEXT,
+      ),
+    /malformed required check run association/i,
+    "empty association identity fields are malformed",
   );
 });
 

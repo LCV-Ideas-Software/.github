@@ -66,6 +66,9 @@ inputs:
   merge_group_base_ref:
     description: Exact merge-group base ref.
     required: false
+  merge_group_base_sha:
+    description: Exact merge-group parent SHA.
+    required: false
   merge_group_head_ref:
     description: Exact merge-group queue ref.
     required: false

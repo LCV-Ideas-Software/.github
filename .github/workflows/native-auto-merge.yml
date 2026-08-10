@@ -21,8 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    name: Test native auto-merge
+  candidate_tests:
+    name: Test native auto-merge candidate
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     permissions: write-all
@@ -36,6 +36,29 @@ jobs:
         run: node --check native-auto-merge/main.mjs
       - name: Run focused tests
         run: node --test native-auto-merge/main.test.mjs native-auto-merge/reconciliation.test.mjs native-auto-merge/merge-group.test.mjs
+
+  test:
+    name: Test native auto-merge
+    if: >-
+      ${{
+        always() &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+      }}
+    needs:
+      - candidate_tests
+    runs-on: ubuntu-latest
+    permissions: write-all
+    timeout-minutes: 30
+    steps:
+      - name: Reject unsuccessful candidate tests
+        if: ${{ needs.candidate_tests.result != 'success' }}
+        run: exit 1
+      - name: Preserve the pull request required context
+        if: ${{ github.event_name == 'pull_request' && needs.candidate_tests.result == 'success' }}
+        run: echo "Candidate tests passed."
+      - name: Preserve the bootstrap merge-group required context
+        if: ${{ github.event_name == 'merge_group' && needs.candidate_tests.result == 'success' }}
+        run: echo "Candidate tests passed; signed gate activation follows the component release."
 
   enable:
     name: Enable native auto-merge
