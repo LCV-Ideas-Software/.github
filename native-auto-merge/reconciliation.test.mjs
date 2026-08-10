@@ -1210,6 +1210,29 @@ test("the exact Copilot quota outcome is unavailable without becoming a review",
   );
   assert.equal(detachedRunCannotAuthorizeQuota.status, "pending");
 
+  const ordinaryWakeCannotTreatDetachedRunAsQuotaFence =
+    await readReviewReconciliationState(
+      {
+        ...request,
+        requireCopilotReviewRun: false,
+        copilotReviewRequestedAt: null,
+      },
+      {
+        listCheckRuns: async () => successfulChecks,
+        listCopilotReviewRuns: async () => [
+          detachedRunFromClosedPull,
+          runFromAnotherPullAtTheSameHead,
+          detachedIdentityDriftRun,
+          otherPullIdentityDriftRun,
+        ],
+        getReviewSnapshot: async () => quotaSnapshot,
+      },
+    );
+  assert.equal(
+    ordinaryWakeCannotTreatDetachedRunAsQuotaFence.status,
+    "pending",
+  );
+
   await assert.rejects(
     readReviewReconciliationState(request, {
       listCheckRuns: async () => successfulChecks,

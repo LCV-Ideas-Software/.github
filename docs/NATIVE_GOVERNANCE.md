@@ -164,7 +164,9 @@ whose pull request was already closed. Well-formed runs that are not associated
 with the pull request currently being reconciled are excluded; a run that names
 the current pull request but disagrees on its exact head or `main` base still
 fails closed. A quota-unavailable review can never use an excluded run as its
-required failed-run fence.
+required failed-run fence. An ordinary wake that sees `unavailable` without a
+current associated failed run remains pending until the association converges
+or reconciliation times out; the merge-group checkpoint fails closed.
 Only after checks and review state remain unchanged and non-blocking for a
 120-second quiet window may the action continue. Polling is bounded to 12
 minutes and the trusted job has a 30-minute timeout. Idempotent REST GET and

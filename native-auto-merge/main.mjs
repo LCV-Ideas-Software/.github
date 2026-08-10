@@ -2919,6 +2919,9 @@ export async function readReviewReconciliationState(
   const hasValidExactHeadCopilotUnavailableOutcome =
     hasFreshExactHeadCopilotUnavailableOutcome &&
     unavailableOutcomeFollowsFailedRun;
+  const unassociatedQuotaUnavailableOutcome =
+    reviews.latestExactHeadCopilotState === "unavailable" &&
+    !unavailableOutcomeFollowsFailedRun;
   if (
     freshReviewMustCompleteRequest &&
     !hasFreshExactHeadCopilotReview &&
@@ -2948,6 +2951,19 @@ export async function readReviewReconciliationState(
   ) {
     return {
       status: "failure",
+      fingerprint: sha256(
+        JSON.stringify({
+          checks: checks.fingerprint,
+          requestedReviewers,
+          copilot: copilot.fingerprint,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
+  if (unassociatedQuotaUnavailableOutcome) {
+    return {
+      status: "pending",
       fingerprint: sha256(
         JSON.stringify({
           checks: checks.fingerprint,
