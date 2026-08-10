@@ -221,24 +221,30 @@ uses the current attempt start to decide whether a run is active after its
 trusted request-run fence. Without the corresponding later review, the failed
 dynamic run continues to fail closed.
 
-The Action also exposes a `merge-group-feedback-gate` operation for the final
-read-only checkpoint. This bootstrap change deliberately does not invoke that
-operation from the candidate checkout: candidate-controlled code must never
-receive even the ephemeral `github.token`. After this component is merged and
-published at an immutable signed SHA, a separate rollout splits candidate tests
-and the isolated checkpoint across two runners. The candidate job executes the
-checked-out revision without a token. A clean dependent job retains the already
-required display name `Test native auto-merge`, fails explicitly unless the
-candidate job succeeded, and then invokes the component by that exact SHA; it
-never inherits the candidate workspace, environment files, Action cache, or
-runner process. The component source is immutable and trusted when that job
-actually invokes it. Under the current status-check rules, however, the
-required workflow definition and its name remain candidate-defined: candidate
-YAML could omit or replace the pinned invocation while emitting the same
-GitHub-Actions-owned context. The rollout is therefore defense in depth, not
-proof of required-workflow provenance. Strong provenance would require a
-ruleset-required workflow or an independent App/check producer and is outside
-this no-ruleset-change rollout.
+The Action exposes a `merge-group-feedback-gate` operation for the final
+read-only checkpoint. The workflow keeps candidate tests and that checkpoint on
+two separate GitHub-hosted runners. The candidate job checks out the proposed
+revision with persisted credentials disabled. It receives no PAT or repository
+secret, and its test steps do not explicitly map `github.token` or
+`GITHUB_TOKEN`. It is not token-free: the organization policy deliberately
+requires `permissions: write-all`, so the candidate-defined workflow retains
+the runner's ephemeral `GITHUB_TOKEN` and OIDC surface. A clean dependent job
+retains the already required display name `Test native auto-merge`, fails
+explicitly unless the candidate job succeeded, and invokes the component at the
+signed immutable release SHA
+`84d2119d36e88869181cd80eeaea22ceee456fe6`
+(`native-auto-merge/v2.1.0`). It never checks out candidate content or inherits
+the candidate workspace, environment files, Action cache, or runner process.
+Only this isolated job explicitly passes its ephemeral `github.token` to the
+read-only gate. No PAT, repository secret, workspace, environment file, Action
+cache, artifact, or candidate runner process crosses that job boundary. The
+component source is immutable and trusted when that job actually invokes it.
+Under the current status-check rules, however, the required workflow definition
+and its name remain candidate-defined: candidate YAML could omit or replace the
+pinned invocation while emitting the same GitHub-Actions-owned context. This
+checkpoint is therefore defense in depth, not proof of required-workflow
+provenance. Strong provenance would require a ruleset-required workflow or an
+independent App/check producer and is outside this no-ruleset-change rollout.
 
 The gate maps the synthetic queue SHA through GitHub's
 commit-to-pull-request API, requires the single open same-repository PR permitted
@@ -273,8 +279,8 @@ feedback rereads remain unchanged.
 
 GitHub does not expose an atomic precondition that couples the review snapshot
 to the queue mutation. The quiet windows, final rereads, native conversation
-rule, and pre-review hold minimize that platform-level race during bootstrap;
-the separately activated required merge-group checkpoint narrows it further.
+rule, and pre-review hold minimize that platform-level race; the required
+merge-group checkpoint narrows it further.
 Neither stage claims it is mathematically impossible for feedback to arrive
 after the last required check turns green and before GitHub completes the
 merge.

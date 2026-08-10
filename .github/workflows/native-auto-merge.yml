@@ -21,8 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    name: Test native auto-merge
+  candidate_tests:
+    name: Test native auto-merge candidate
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
     runs-on: ubuntu-latest
     permissions: write-all
@@ -36,6 +36,37 @@ jobs:
         run: node --check native-auto-merge/main.mjs
       - name: Run focused tests
         run: node --test native-auto-merge/main.test.mjs native-auto-merge/reconciliation.test.mjs native-auto-merge/merge-group.test.mjs
+
+  test:
+    name: Test native auto-merge
+    if: >-
+      ${{
+        always() &&
+        (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+      }}
+    needs:
+      - candidate_tests
+    runs-on: ubuntu-latest
+    permissions: write-all
+    timeout-minutes: 30
+    steps:
+      - name: Reject unsuccessful candidate tests
+        if: ${{ needs.candidate_tests.result != 'success' }}
+        run: exit 1
+      - name: Preserve the pull request required context
+        if: ${{ github.event_name == 'pull_request' && needs.candidate_tests.result == 'success' }}
+        run: echo "Candidate tests passed."
+      - name: Enforce merge-group bot feedback
+        if: ${{ github.event_name == 'merge_group' && needs.candidate_tests.result == 'success' }}
+        uses: LCV-Ideas-Software/.github/native-auto-merge@84d2119d36e88869181cd80eeaea22ceee456fe6 # native-auto-merge/v2.1.0
+        with:
+          operation: merge-group-feedback-gate
+          github_token: ${{ github.token }}
+          event_repository: ${{ github.repository }}
+          event_action: ${{ github.event.action }}
+          merge_group_head_sha: ${{ github.event.merge_group.head_sha }}
+          merge_group_base_ref: ${{ github.event.merge_group.base_ref }}
+          merge_group_head_ref: ${{ github.event.merge_group.head_ref }}
 
   enable:
     name: Enable native auto-merge
