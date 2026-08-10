@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   assessRequiredCheckRuns,
   assessReviewSnapshot,
+  COPILOT_NO_REVIEWABLE_FILES_PREFIX,
   readReviewReconciliationState as readReviewReconciliationStateProduction,
   ReviewSnapshotChangedError,
   waitForReviewReconciliation,
@@ -1995,4 +1996,47 @@ test("quiet-window reconciliation is bounded, resets on drift, and keeps bot abs
     ),
     /timed out/i,
   );
+});
+
+test("Copilot's no-reviewable-files answer is treated as unavailable", () => {
+  // Observed live on LCV-Ideas-Software/.github#133: a pull request whose whole diff was a
+  // generated file. Copilot answered with this sentence instead of a review, in two shapes.
+  const footer =
+    '<a href="/LCV-Ideas-Software/.github/new/main?filename=.github/skills/code-review/SKILL.md">add instructions</a>';
+  const bodies = [
+    COPILOT_NO_REVIEWABLE_FILES_PREFIX,
+    COPILOT_NO_REVIEWABLE_FILES_PREFIX + "\n\n\n\n\n",
+    [COPILOT_NO_REVIEWABLE_FILES_PREFIX, "", "---", "", footer].join("\n"),
+  ];
+
+  for (const body of bodies) {
+    const assessed = assessReviewSnapshot(
+      snapshot({
+        reviews: {
+          nodes: [
+            review({
+              id: "PRR_no_reviewable_files",
+              body,
+              createdAt: "2026-08-10T22:02:42Z",
+              submittedAt: "2026-08-10T22:02:42Z",
+              updatedAt: "2026-08-10T22:02:42Z",
+            }),
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      }),
+      HEAD_SHA,
+    );
+
+    assert.equal(assessed.status, "clear");
+    assert.equal(assessed.latestExactHeadCopilotState, "unavailable");
+    assert.equal(assessed.latestExactHeadCopilotReviewAt, null);
+    assert.equal(
+      assessed.latestExactHeadCopilotUnavailableAt,
+      "2026-08-10T22:02:42Z",
+    );
+    assert.deepEqual(assessed.copilotUnavailableReviewIds, [
+      "PRR_no_reviewable_files",
+    ]);
+  }
 });

@@ -20,12 +20,23 @@ on:
 concurrency:
   group: scorecard-${{ github.ref }}
   cancel-in-progress: true
-permissions: write-all
+# Least privilege. 'write-all' was dropped by operator directive: OpenSSF's publication
+# API rejects organization-mandated write-all, which kept publish_results disabled.
+permissions: {}
 
 jobs:
   scorecard:
     name: OpenSSF Scorecard
-    permissions: write-all
+    permissions:
+      # Required by ossf/scorecard-action:
+      #   id-token       -> OIDC token used to publish results to the OpenSSF API
+      #   security-events -> upload the SARIF to code scanning
+      #   contents        -> checkout
+      #   actions         -> read workflow definitions during analysis
+      id-token: write
+      security-events: write
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -47,9 +58,10 @@ jobs:
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
-          # OpenSSF's publication API rejects workflows with organization-mandated write-all.
-          # SARIF and artifacts remain enabled below.
-          publish_results: false
+          # Operator directive: publication is always enabled. A previous revision disabled
+          # it claiming OpenSSF's publication API rejects organization-mandated write-all;
+          # that claim is now under test in CI rather than assumed.
+          publish_results: true
       - name: Run Scorecard on merge group
         if: github.event_name == 'merge_group'
         shell: bash
