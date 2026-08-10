@@ -12,6 +12,8 @@ rules:
     disable: true
   dangerous-triggers:
     ignore:
-      # The workflow_run job consumes only default-branch code, re-reads live API
-      # state, and never checks out or downloads content from the triggering PR.
+      # The workflow_run and pull_request_target jobs consume only the trusted
+      # github.workflow_sha, re-read exact same-repository PR/API state, hold
+      # native merge privilege during requested review, and never check out or
+      # download candidate-head content, artifacts, or caches.
       - native-auto-merge.yml

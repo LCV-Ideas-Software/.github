@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   assessRequiredCheckRuns,
   assessReviewSnapshot,
+  readReviewReconciliationState as readReviewReconciliationStateProduction,
+  ReviewSnapshotChangedError,
   waitForReviewReconciliation,
 } from "./main.mjs";
 
@@ -64,6 +66,30 @@ function review(overrides = {}) {
   };
 }
 
+function codexReviewBody(reviewedCommit = HEAD_SHA.slice(0, 10)) {
+  return [
+    "### 💡 Codex Review",
+    "",
+    "Here are some automated review suggestions for this pull request.",
+    "",
+    `**Reviewed commit:** \`${reviewedCommit}\``,
+    "",
+    "<details> <summary>ℹ️ About Codex in GitHub</summary>",
+    "<br/>",
+    "",
+    "[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you",
+    "- Open a pull request for review",
+    "- Mark a draft as ready",
+    '- Comment "@codex review".',
+    "",
+    "If Codex has suggestions, it will comment; otherwise it will react with 👍.",
+    "",
+    'Codex can also answer questions or update the PR. Try commenting "@codex address that feedback".',
+    "",
+    "</details>",
+  ].join("\n");
+}
+
 function issueComment(overrides = {}) {
   return {
     id: "IC_test",
@@ -94,6 +120,7 @@ function thread(overrides = {}) {
         {
           id: "PRRC_test",
           author: actor(CODEX_ID),
+          pullRequestReview: { id: "PRR_codex" },
           originalCommit: { oid: HEAD_SHA },
           createdAt: "2026-08-09T18:00:02Z",
           updatedAt: "2026-08-09T18:00:02Z",
@@ -125,6 +152,13 @@ function snapshot(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+function readReviewReconciliationState(request, runtime = {}) {
+  return readReviewReconciliationStateProduction(request, {
+    getRequestedReviewers: async () => ({ users: [], teams: [] }),
+    ...runtime,
+  });
 }
 
 test("required checks demand one exact successful GitHub Actions run per policy pair", () => {
@@ -168,6 +202,420 @@ test("required checks demand one exact successful GitHub Actions run per policy 
   );
 });
 
+test("Copilot dynamic review completion is part of reconciliation readiness", async () => {
+  const successfulChecks = [
+    checkRun(),
+    checkRun({ id: 2, name: "Run zizmor" }),
+  ];
+  const copilotRun = (overrides = {}) => ({
+    id: 31336525189,
+    name: "Running Copilot Code Review",
+    path: "dynamic/agents/copilot-pull-request-reviewer",
+    event: "dynamic",
+    head_sha: HEAD_SHA,
+    status: "in_progress",
+    conclusion: null,
+    created_at: "2026-08-09T18:00:00Z",
+    updated_at: "2026-08-09T18:00:01Z",
+    actor: { id: COPILOT_ID, login: "Copilot", type: "Bot" },
+    pull_requests: [
+      {
+        number: 99,
+        head: { sha: HEAD_SHA },
+        base: { ref: "main" },
+      },
+    ],
+    ...overrides,
+  });
+  let reviewReads = 0;
+  const request = {
+    repository: "LCV-Ideas-Software/.github",
+    number: 99,
+    headSha: HEAD_SHA,
+    requiredChecks: REQUIRED_CHECKS,
+    token: "pat-token",
+  };
+
+  const outstandingRequestedReviewer = await readReviewReconciliationState(
+    request,
+    {
+      listCheckRuns: async () => successfulChecks,
+      getRequestedReviewers: async () => ({
+        users: [
+          {
+            id: COPILOT_ID,
+            login: "copilot-pull-request-reviewer[bot]",
+            type: "Bot",
+          },
+        ],
+        teams: [],
+      }),
+      listCopilotReviewRuns: async () => [],
+      getReviewSnapshot: async () =>
+        assert.fail("an outstanding request must block before review reads"),
+    },
+  );
+  assert.equal(outstandingRequestedReviewer.status, "pending");
+
+  const requestedButAbsent = await readReviewReconciliationState(
+    { ...request, requireCopilotReviewRun: true },
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [],
+      getReviewSnapshot: async () => {
+        reviewReads += 1;
+        return snapshot();
+      },
+    },
+  );
+  assert.equal(requestedButAbsent.status, "pending");
+  assert.equal(reviewReads, 0);
+
+  const freshReviewWithoutRun = await readReviewReconciliationState(
+    {
+      ...request,
+      requireCopilotReviewRun: true,
+      copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+    },
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [],
+      getReviewSnapshot: async () =>
+        snapshot({
+          reviews: {
+            nodes: [
+              review({
+                createdAt: "2026-08-09T18:00:06Z",
+                submittedAt: "2026-08-09T18:00:06Z",
+                updatedAt: "2026-08-09T18:00:06Z",
+              }),
+            ],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+    },
+  );
+  assert.equal(freshReviewWithoutRun.status, "clear");
+
+  const sameSecondReviewDoesNotCompleteRequest =
+    await readReviewReconciliationState(
+      {
+        ...request,
+        requireCopilotReviewRun: true,
+        copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+      },
+      {
+        listCheckRuns: async () => successfulChecks,
+        listCopilotReviewRuns: async () => [],
+        getReviewSnapshot: async () =>
+          snapshot({
+            reviews: {
+              nodes: [
+                review({
+                  createdAt: "2026-08-09T18:00:04Z",
+                  submittedAt: "2026-08-09T18:00:05Z",
+                  updatedAt: "2026-08-09T18:00:05Z",
+                }),
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          }),
+      },
+    );
+  assert.equal(sameSecondReviewDoesNotCompleteRequest.status, "pending");
+
+  const pendingReviewDoesNotCompleteRequest =
+    await readReviewReconciliationState(
+      {
+        ...request,
+        requireCopilotReviewRun: true,
+        copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+      },
+      {
+        listCheckRuns: async () => successfulChecks,
+        listCopilotReviewRuns: async () => [],
+        getReviewSnapshot: async () =>
+          snapshot({
+            reviews: {
+              nodes: [
+                review({
+                  state: "PENDING",
+                  createdAt: "2026-08-09T18:00:06Z",
+                  submittedAt: null,
+                  updatedAt: "2026-08-09T18:00:06Z",
+                }),
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          }),
+      },
+    );
+  assert.equal(pendingReviewDoesNotCompleteRequest.status, "pending");
+
+  const freshReviewIsCanonicalWhenTheDynamicRunFails =
+    await readReviewReconciliationState(
+      {
+        ...request,
+        requireCopilotReviewRun: true,
+        copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+      },
+      {
+        listCheckRuns: async () => successfulChecks,
+        listCopilotReviewRuns: async () => [
+          copilotRun({
+            status: "completed",
+            conclusion: "failure",
+            created_at: "2026-08-09T18:00:05Z",
+            updated_at: "2026-08-09T18:00:06Z",
+          }),
+        ],
+        getReviewSnapshot: async () =>
+          snapshot({
+            reviews: {
+              nodes: [
+                review({
+                  createdAt: "2026-08-09T18:00:06Z",
+                  submittedAt: "2026-08-09T18:00:06Z",
+                  updatedAt: "2026-08-09T18:00:06Z",
+                }),
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          }),
+      },
+    );
+  assert.equal(freshReviewIsCanonicalWhenTheDynamicRunFails.status, "clear");
+
+  const staleActiveRunDoesNotBlockFreshReview =
+    await readReviewReconciliationState(
+      {
+        ...request,
+        requireCopilotReviewRun: true,
+        copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+      },
+      {
+        listCheckRuns: async () => successfulChecks,
+        listCopilotReviewRuns: async () => [copilotRun()],
+        getReviewSnapshot: async () =>
+          snapshot({
+            reviews: {
+              nodes: [
+                review({
+                  createdAt: "2026-08-09T18:00:06Z",
+                  submittedAt: "2026-08-09T18:00:06Z",
+                  updatedAt: "2026-08-09T18:00:06Z",
+                }),
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          }),
+      },
+    );
+  assert.equal(staleActiveRunDoesNotBlockFreshReview.status, "clear");
+
+  const staleReviewWithoutRun = await readReviewReconciliationState(
+    {
+      ...request,
+      requireCopilotReviewRun: true,
+      copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+    },
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [],
+      getReviewSnapshot: async () =>
+        snapshot({
+          reviews: {
+            nodes: [review()],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+    },
+  );
+  assert.equal(staleReviewWithoutRun.status, "pending");
+
+  const requestedAfterOldSuccess = await readReviewReconciliationState(
+    {
+      ...request,
+      requireCopilotReviewRun: true,
+      copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+    },
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({ status: "completed", conclusion: "success" }),
+      ],
+      getReviewSnapshot: async () => {
+        reviewReads += 1;
+        return snapshot();
+      },
+    },
+  );
+  assert.equal(requestedAfterOldSuccess.status, "pending");
+  assert.equal(reviewReads, 1);
+
+  const requestedWithNewRun = await readReviewReconciliationState(
+    {
+      ...request,
+      requireCopilotReviewRun: true,
+      copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+    },
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({ status: "completed", conclusion: "success" }),
+        copilotRun({
+          id: 31336525190,
+          created_at: "2026-08-09T18:00:05Z",
+          updated_at: "2026-08-09T18:00:06Z",
+        }),
+      ],
+      getReviewSnapshot: async () => {
+        reviewReads += 1;
+        return snapshot();
+      },
+    },
+  );
+  assert.equal(requestedWithNewRun.status, "pending");
+  assert.equal(reviewReads, 1);
+
+  const requestedWithNewSuccess = await readReviewReconciliationState(
+    {
+      ...request,
+      requireCopilotReviewRun: true,
+      copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+    },
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({ status: "completed", conclusion: "success" }),
+        copilotRun({
+          id: 31336525190,
+          status: "completed",
+          conclusion: "success",
+          created_at: "2026-08-09T18:00:05Z",
+          updated_at: "2026-08-09T18:00:06Z",
+        }),
+      ],
+      getReviewSnapshot: async () => {
+        reviewReads += 1;
+        return snapshot();
+      },
+    },
+  );
+  assert.equal(requestedWithNewSuccess.status, "pending");
+  assert.equal(reviewReads, 2);
+  reviewReads = 0;
+
+  const pending = await readReviewReconciliationState(request, {
+    listCheckRuns: async () => successfulChecks,
+    listCopilotReviewRuns: async () => [copilotRun()],
+    getReviewSnapshot: async () => {
+      reviewReads += 1;
+      return snapshot();
+    },
+  });
+  assert.equal(pending.status, "pending");
+  assert.equal(reviewReads, 0);
+
+  const outOfOrder = await readReviewReconciliationState(request, {
+    listCheckRuns: async () => successfulChecks,
+    listCopilotReviewRuns: async () => [
+      copilotRun(),
+      copilotRun({
+        id: 31336525190,
+        status: "completed",
+        conclusion: "success",
+        updated_at: "2026-08-09T18:00:02Z",
+      }),
+    ],
+    getReviewSnapshot: async () => {
+      reviewReads += 1;
+      return snapshot();
+    },
+  });
+  assert.equal(outOfOrder.status, "pending");
+  assert.equal(reviewReads, 0);
+
+  const chronologicalOutcome = await readReviewReconciliationState(request, {
+    listCheckRuns: async () => successfulChecks,
+    listCopilotReviewRuns: async () => [
+      copilotRun({
+        id: 31336525200,
+        status: "completed",
+        conclusion: "failure",
+        created_at: "2026-08-09T18:00:00Z",
+        updated_at: "2026-08-09T18:00:01Z",
+      }),
+      copilotRun({
+        id: 31336525100,
+        status: "completed",
+        conclusion: "success",
+        created_at: "2026-08-09T18:00:02Z",
+        updated_at: "2026-08-09T18:00:03Z",
+      }),
+    ],
+    getReviewSnapshot: async () => snapshot(),
+  });
+  assert.equal(chronologicalOutcome.status, "clear");
+
+  const ambiguousLatestTimestamp = await readReviewReconciliationState(
+    request,
+    {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({
+          id: 31336525100,
+          status: "completed",
+          conclusion: "success",
+          updated_at: "2026-08-09T18:00:01Z",
+        }),
+        copilotRun({
+          id: 31336525200,
+          status: "completed",
+          conclusion: "failure",
+          updated_at: "2026-08-09T18:00:01Z",
+        }),
+      ],
+      getReviewSnapshot: async () => snapshot(),
+    },
+  );
+  assert.equal(ambiguousLatestTimestamp.status, "failure");
+
+  const clear = await readReviewReconciliationState(request, {
+    listCheckRuns: async () => successfulChecks,
+    listCopilotReviewRuns: async () => [
+      copilotRun({
+        status: "completed",
+        conclusion: "success",
+        updated_at: "2026-08-09T18:00:02Z",
+      }),
+    ],
+    getReviewSnapshot: async () => {
+      reviewReads += 1;
+      return snapshot();
+    },
+  });
+  assert.equal(clear.status, "clear");
+  assert.equal(reviewReads, 1);
+
+  const failed = await readReviewReconciliationState(request, {
+    listCheckRuns: async () => successfulChecks,
+    listCopilotReviewRuns: async () => [
+      copilotRun({
+        status: "completed",
+        conclusion: "failure",
+        updated_at: "2026-08-09T18:00:02Z",
+      }),
+    ],
+    getReviewSnapshot: async () => {
+      reviewReads += 1;
+      return snapshot();
+    },
+  });
+  assert.equal(failed.status, "failure");
+  assert.equal(reviewReads, 1);
+});
+
 test("current-head Codex issue comments are clean only under the exact known contract", () => {
   const clean = assessReviewSnapshot(
     snapshot({
@@ -179,6 +627,25 @@ test("current-head Codex issue comments are clean only under the exact known con
     HEAD_SHA,
   );
   assert.equal(clean.status, "clear");
+
+  const knownCleanVariant = assessReviewSnapshot(
+    snapshot({
+      comments: {
+        nodes: [
+          issueComment({
+            body: [
+              "Codex Review: Didn't find any major issues. Nice work!",
+              "",
+              `**Reviewed commit:** \`${HEAD_SHA.slice(0, 10)}\``,
+            ].join("\n"),
+          }),
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(knownCleanVariant.status, "clear");
 
   const finding = issueComment({
     body: [
@@ -199,6 +666,26 @@ test("current-head Codex issue comments are clean only under the exact known con
   assert.equal(blocked.status, "blocked");
   assert.deepEqual(blocked.blockingCodexCommentIds, ["IC_test"]);
 
+  const ambiguousCleanSuffix = assessReviewSnapshot(
+    snapshot({
+      comments: {
+        nodes: [
+          issueComment({
+            body: [
+              "Codex Review: Didn't find any major issues. Hidden blocker remains.",
+              "",
+              `**Reviewed commit:** \`${HEAD_SHA.slice(0, 10)}\``,
+            ].join("\n"),
+          }),
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(ambiguousCleanSuffix.status, "blocked");
+  assert.deepEqual(ambiguousCleanSuffix.blockingCodexCommentIds, ["IC_test"]);
+
   assert.throws(
     () =>
       assessReviewSnapshot(
@@ -212,6 +699,68 @@ test("current-head Codex issue comments are clean only under the exact known con
       ),
     /Codex.*malformed/i,
   );
+});
+
+test("current-head Codex reviews require the known body and an associated inline comment", () => {
+  const codexReview = review({
+    id: "PRR_codex",
+    author: actor(CODEX_ID),
+    body: codexReviewBody(),
+  });
+  const resolvedThread = thread({ isResolved: true });
+  const clear = assessReviewSnapshot(
+    snapshot({
+      reviews: {
+        nodes: [codexReview],
+        pageInfo: { hasNextPage: false },
+      },
+      reviewThreads: {
+        nodes: [resolvedThread],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(clear.status, "clear");
+  assert.deepEqual(clear.blockingCodexReviewIds, []);
+
+  for (const body of [
+    codexReviewBody(),
+    "### 💡 Codex Review\n\nA standalone P1 blocking finding.",
+  ]) {
+    const blocked = assessReviewSnapshot(
+      snapshot({
+        reviews: {
+          nodes: [review({ ...codexReview, body })],
+          pageInfo: { hasNextPage: false },
+        },
+      }),
+      HEAD_SHA,
+    );
+    assert.equal(blocked.status, "blocked");
+    assert.deepEqual(blocked.blockingCodexReviewIds, ["PRR_codex"]);
+  }
+
+  const mismatchedCommit = assessReviewSnapshot(
+    snapshot({
+      reviews: {
+        nodes: [
+          review({
+            ...codexReview,
+            body: codexReviewBody("f".repeat(10)),
+          }),
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+      reviewThreads: {
+        nodes: [resolvedThread],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(mismatchedCommit.status, "blocked");
+  assert.deepEqual(mismatchedCommit.blockingCodexReviewIds, ["PRR_codex"]);
 });
 
 test("current-head Copilot Suppressed comments block and malformed markers fail closed", () => {
@@ -340,6 +889,64 @@ test("current-head Copilot Suppressed comments block and malformed markers fail 
   assert.equal(overviewOnly.status, "clear");
 });
 
+test("exact-head bot reviews are never clear unless their state is COMMENTED", () => {
+  for (const state of [
+    "PENDING",
+    "APPROVED",
+    "CHANGES_REQUESTED",
+    "DISMISSED",
+    "UNKNOWN",
+  ]) {
+    const assessed = assessReviewSnapshot(
+      snapshot({
+        reviews: {
+          nodes: [
+            review({
+              state,
+              body: state === "PENDING" ? "" : review().body,
+              submittedAt: state === "PENDING" ? null : "2026-08-09T18:00:01Z",
+            }),
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      }),
+      HEAD_SHA,
+    );
+    if (state === "PENDING") {
+      assert.equal(assessed.status, "pending", state);
+      assert.deepEqual(assessed.pendingBotReviewStateIds, ["PRR_test"], state);
+      assert.deepEqual(assessed.blockingBotReviewStateIds, [], state);
+    } else {
+      assert.equal(assessed.status, "blocked", state);
+      assert.deepEqual(assessed.blockingBotReviewStateIds, ["PRR_test"], state);
+      assert.deepEqual(assessed.pendingBotReviewStateIds, [], state);
+    }
+  }
+
+  const pendingCodex = assessReviewSnapshot(
+    snapshot({
+      reviews: {
+        nodes: [
+          review({
+            id: "PRR_codex_pending",
+            author: actor(CODEX_ID),
+            body: "",
+            state: "PENDING",
+            submittedAt: null,
+          }),
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(pendingCodex.status, "pending");
+  assert.deepEqual(pendingCodex.pendingBotReviewStateIds, [
+    "PRR_codex_pending",
+  ]);
+  assert.deepEqual(pendingCodex.blockingCodexReviewIds, []);
+});
+
 test("unresolved bot threads block regardless of outdated or collapsed state", () => {
   for (const candidate of [
     thread(),
@@ -457,6 +1064,45 @@ test("a finding arriving inside the quiet window prevents a clear result", async
   assert.equal(result.status, "blocked");
   assert.equal(now, 45);
   assert.equal(reads, 4);
+});
+
+test("a concurrently changing review snapshot restarts the bounded quiet window", async () => {
+  let now = 0;
+  let reads = 0;
+  const result = await waitForReviewReconciliation(
+    {
+      repository: "LCV-Ideas-Software/.github",
+      number: 99,
+      headSha: HEAD_SHA,
+      requiredChecks: REQUIRED_CHECKS,
+      token: "pat-token",
+    },
+    {
+      now: () => now,
+      sleep: async (milliseconds) => {
+        now += milliseconds;
+      },
+      pollMilliseconds: 15,
+      quietMilliseconds: 30,
+      timeoutMilliseconds: 100,
+      readState: async () => {
+        reads += 1;
+        if (reads === 1) {
+          throw new ReviewSnapshotChangedError(
+            "review changed during pagination",
+          );
+        }
+        return { status: "clear", fingerprint: "stable-after-retry" };
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    status: "clear",
+    fingerprint: "stable-after-retry",
+  });
+  assert.equal(reads, 4);
+  assert.equal(now, 45);
 });
 
 test("quiet-window reconciliation is bounded, resets on drift, and keeps bot absence neutral", async () => {

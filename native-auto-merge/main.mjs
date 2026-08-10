@@ -9,6 +9,10 @@ import { pathToFileURL } from "node:url";
 const API_ROOT = "https://api.github.com";
 const API_VERSION = "2026-03-10";
 const API_TIMEOUT_MILLISECONDS = 15_000;
+const READ_RETRY_ATTEMPTS = 3;
+const READ_RETRY_BACKOFF_MILLISECONDS = [250, 1_000];
+const MAX_READ_RETRY_DELAY_MILLISECONDS = 120_000;
+const MAX_READ_RETRY_TOTAL_DELAY_MILLISECONDS = 180_000;
 const GH_TIMEOUT_MILLISECONDS = 60_000;
 const GITHUB_ACTIONS_APP_ID = 15368;
 const OPEN_PULLS_PER_PAGE = 100;
@@ -17,7 +21,14 @@ const EFFECTIVE_RULES_PER_PAGE = 100;
 const MAX_EFFECTIVE_RULE_PAGES = 100;
 const CHECK_RUNS_PER_PAGE = 100;
 const MAX_CHECK_RUN_PAGES = 100;
+const WORKFLOW_RUNS_PER_PAGE = 100;
+const MAX_DYNAMIC_WORKFLOW_RUN_PAGES = 10;
+const PULLS_FOR_COMMIT_PER_PAGE = 100;
 const REVIEW_CONNECTION_LIMIT = 100;
+const MAX_REVIEW_CONNECTION_PAGES = 100;
+const MAX_REVIEW_THREAD_COMMENT_PAGES = 100;
+const MAX_REVIEW_THREAD_CONTINUATIONS = 100;
+const MAX_REVIEW_SNAPSHOT_NODES = 100_000;
 const REVIEW_POLL_MILLISECONDS = 15_000;
 const REVIEW_QUIET_MILLISECONDS = 120_000;
 const REVIEW_TIMEOUT_MILLISECONDS = 720_000;
@@ -28,16 +39,54 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REVIEW_BOT_DATABASE_IDS = new Set([175728472, 199175422]);
 const COPILOT_REVIEW_BOT_DATABASE_ID = 175728472;
 const CODEX_REVIEW_BOT_DATABASE_ID = 199175422;
+const COPILOT_REVIEW_WORKFLOW_NAME = "Running Copilot Code Review";
+const COPILOT_REVIEW_WORKFLOW_PATH =
+  "dynamic/agents/copilot-pull-request-reviewer";
+const CODEX_CLEAN_REVIEW_HEADLINES = new Set([
+  "Codex Review: Didn't find any major issues. :+1:",
+  "Codex Review: Didn't find any major issues. :rocket:",
+  "Codex Review: Didn't find any major issues. :tada:",
+  "Codex Review: Didn't find any major issues. Already looking forward to the next diff.",
+  "Codex Review: Didn't find any major issues. Another round soon, please!",
+  "Codex Review: Didn't find any major issues. Bravo.",
+  "Codex Review: Didn't find any major issues. Breezy!",
+  "Codex Review: Didn't find any major issues. Can't wait for the next one!",
+  "Codex Review: Didn't find any major issues. Chef's kiss.",
+  "Codex Review: Didn't find any major issues. Delightful!",
+  "Codex Review: Didn't find any major issues. Hooray!",
+  "Codex Review: Didn't find any major issues. Keep it up!",
+  "Codex Review: Didn't find any major issues. Keep them coming!",
+  "Codex Review: Didn't find any major issues. More of your lovely PRs please.",
+  "Codex Review: Didn't find any major issues. Nice work!",
+  "Codex Review: Didn't find any major issues. Swish!",
+  "Codex Review: Didn't find any major issues. What shall we delve into next?",
+  "Codex Review: Didn't find any major issues. You're on a roll.",
+]);
+const CODEX_PULL_REQUEST_REVIEW_TEMPLATE = [
+  "### 💡 Codex Review",
+  "",
+  "Here are some automated review suggestions for this pull request.",
+  "",
+  "**Reviewed commit:** `<reviewed-commit>`",
+  "",
+  "<details> <summary>ℹ️ About Codex in GitHub</summary>",
+  "<br/>",
+  "",
+  "[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you",
+  "- Open a pull request for review",
+  "- Mark a draft as ready",
+  '- Comment "@codex review".',
+  "",
+  "If Codex has suggestions, it will comment; otherwise it will react with 👍.",
+  "",
+  'Codex can also answer questions or update the PR. Try commenting "@codex address that feedback".',
+  "",
+  "</details>",
+].join("\n");
 const CODEQL_WORKFLOW_NAME = "CodeQL";
 const CODEQL_WORKFLOW_PATH = ".github/workflows/codeql.yml";
-const FEEDBACK_WORKFLOW_NAME = "Native PR feedback signal";
-const FEEDBACK_WORKFLOW_PATH =
-  ".github/workflows/native-pr-feedback-signal.yml";
-const FEEDBACK_WORKFLOW_EVENTS = new Set([
-  "issue_comment",
-  "pull_request_review",
-  "pull_request_review_comment",
-]);
+const NATIVE_AUTO_MERGE_WORKFLOW_PATH =
+  ".github/workflows/native-auto-merge.yml";
 const REQUIRED_SIMPLE_RULES = [
   "deletion",
   "non_fast_forward",
@@ -45,6 +94,13 @@ const REQUIRED_SIMPLE_RULES = [
   "required_linear_history",
 ];
 const execFileAsync = promisify(nodeExecFile);
+
+export class ReviewSnapshotChangedError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ReviewSnapshotChangedError";
+  }
+}
 
 const NATIVE_STATE_QUERY = `
   query NativeAutoMergeState(
@@ -92,12 +148,20 @@ const REVIEW_RECONCILIATION_QUERY = `
     $repo: String!
     $number: Int!
     $limit: Int!
+    $commentsAfter: String
+    $reviewsAfter: String
+    $threadsAfter: String
+    $includeComments: Boolean!
+    $includeReviews: Boolean!
+    $includeThreads: Boolean!
   ) {
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $number) {
         id
         headRefOid
-        comments(first: $limit) {
+        updatedAt
+        comments(first: $limit, after: $commentsAfter) @include(if: $includeComments) {
+          totalCount
           nodes {
             id
             author {
@@ -118,9 +182,11 @@ const REVIEW_RECONCILIATION_QUERY = `
           }
           pageInfo {
             hasNextPage
+            endCursor
           }
         }
-        reviews(first: $limit) {
+        reviews(first: $limit, after: $reviewsAfter) @include(if: $includeReviews) {
+          totalCount
           nodes {
             id
             author {
@@ -146,15 +212,18 @@ const REVIEW_RECONCILIATION_QUERY = `
           }
           pageInfo {
             hasNextPage
+            endCursor
           }
         }
-        reviewThreads(first: $limit) {
+        reviewThreads(first: $limit, after: $threadsAfter) @include(if: $includeThreads) {
+          totalCount
           nodes {
             id
             isResolved
             isOutdated
             isCollapsed
             comments(first: $limit) {
+              totalCount
               nodes {
                 id
                 author {
@@ -167,6 +236,9 @@ const REVIEW_RECONCILIATION_QUERY = `
                     databaseId
                   }
                 }
+                pullRequestReview {
+                  id
+                }
                 originalCommit {
                   oid
                 }
@@ -177,11 +249,66 @@ const REVIEW_RECONCILIATION_QUERY = `
               }
               pageInfo {
                 hasNextPage
+                endCursor
               }
             }
           }
           pageInfo {
             hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  }
+`;
+
+const REVIEW_THREAD_COMMENTS_QUERY = `
+  query NativeAutoMergeReviewThreadComments(
+    $threadId: ID!
+    $limit: Int!
+    $after: String
+  ) {
+    node(id: $threadId) {
+      __typename
+      ... on PullRequestReviewThread {
+        id
+        isResolved
+        isOutdated
+        isCollapsed
+        pullRequest {
+          id
+          headRefOid
+          updatedAt
+        }
+        comments(first: $limit, after: $after) {
+          totalCount
+          nodes {
+            id
+            author {
+              __typename
+              login
+              ... on Bot {
+                databaseId
+              }
+              ... on User {
+                databaseId
+              }
+            }
+            pullRequestReview {
+              id
+            }
+            originalCommit {
+              oid
+            }
+            createdAt
+            updatedAt
+            isMinimized
+            minimizedReason
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
           }
         }
       }
@@ -289,6 +416,160 @@ function graphQlPageIsComplete(connection, label) {
   return connection.nodes;
 }
 
+function graphQlPayloadHasNoErrors(payload, label) {
+  if (!isObject(payload)) {
+    throw new Error(`Malformed ${label} GraphQL payload`);
+  }
+  if (Object.hasOwn(payload, "errors")) {
+    if (!Array.isArray(payload.errors)) {
+      throw new Error(`Malformed ${label} GraphQL errors`);
+    }
+    if (payload.errors.length > 0) {
+      throw new Error(
+        `GitHub GraphQL query failed: ${payload.errors
+          .map((error) => error?.message ?? "unknown error")
+          .join("; ")}`,
+      );
+    }
+  }
+}
+
+function newReviewConnectionState(label) {
+  return {
+    label,
+    nodes: [],
+    nodeIds: new Set(),
+    cursors: new Set(),
+    cursor: null,
+    totalCount: null,
+    pages: 0,
+    done: false,
+    endCursor: null,
+  };
+}
+
+function addReviewSnapshotNodes(budget, nodes) {
+  budget.nodes += nodes.length;
+  if (budget.nodes > MAX_REVIEW_SNAPSHOT_NODES) {
+    throw new Error("Review reconciliation exceeded the node safety limit");
+  }
+}
+
+function appendReviewConnectionPage(state, connection, budget) {
+  if (
+    !isObject(connection) ||
+    !Array.isArray(connection.nodes) ||
+    connection.nodes.length > REVIEW_CONNECTION_LIMIT ||
+    !Number.isSafeInteger(connection.totalCount) ||
+    connection.totalCount < 0 ||
+    connection.totalCount > MAX_REVIEW_SNAPSHOT_NODES ||
+    !isObject(connection.pageInfo) ||
+    typeof connection.pageInfo.hasNextPage !== "boolean" ||
+    !(
+      connection.pageInfo.endCursor === null ||
+      (typeof connection.pageInfo.endCursor === "string" &&
+        connection.pageInfo.endCursor !== "")
+    )
+  ) {
+    throw new Error(`Malformed ${state.label} connection page`);
+  }
+  if (state.done) {
+    throw new Error(`${state.label} connection continued after completion`);
+  }
+  if (state.pages >= MAX_REVIEW_CONNECTION_PAGES) {
+    throw new Error(`${state.label} pagination exceeded the safety limit`);
+  }
+  if (state.totalCount === null) {
+    state.totalCount = connection.totalCount;
+  } else if (state.totalCount !== connection.totalCount) {
+    throw new ReviewSnapshotChangedError(
+      `${state.label} total count changed during pagination`,
+    );
+  }
+
+  for (const node of connection.nodes) {
+    if (!isObject(node) || typeof node.id !== "string" || node.id === "") {
+      throw new Error(`Malformed ${state.label} node`);
+    }
+    if (state.nodeIds.has(node.id)) {
+      throw new Error(`Duplicate ${state.label} node ${node.id}`);
+    }
+    state.nodeIds.add(node.id);
+  }
+  addReviewSnapshotNodes(budget, connection.nodes);
+  state.nodes.push(...connection.nodes);
+  state.pages += 1;
+  state.endCursor = connection.pageInfo.endCursor;
+
+  if (state.nodes.length > state.totalCount) {
+    throw new Error(`${state.label} exceeded its declared total count`);
+  }
+  if (connection.pageInfo.hasNextPage) {
+    const cursor = connection.pageInfo.endCursor;
+    if (typeof cursor !== "string" || cursor === "") {
+      throw new Error(`${state.label} next page cursor is missing`);
+    }
+    if (state.cursors.has(cursor)) {
+      throw new Error(`${state.label} next page cursor repeated`);
+    }
+    if (state.nodes.length >= state.totalCount) {
+      throw new Error(`${state.label} has a next page beyond its total count`);
+    }
+    state.cursors.add(cursor);
+    state.cursor = cursor;
+    return;
+  }
+
+  if (state.nodes.length !== state.totalCount) {
+    throw new Error(`${state.label} ended before its declared total count`);
+  }
+  if (typeof connection.pageInfo.endCursor === "string") {
+    state.cursor = connection.pageInfo.endCursor;
+  }
+  state.done = true;
+}
+
+function completedReviewConnection(state) {
+  if (!state.done || state.nodes.length !== state.totalCount) {
+    throw new Error(`Incomplete ${state.label} connection`);
+  }
+  return {
+    totalCount: state.totalCount,
+    nodes: state.nodes,
+    pageInfo: { hasNextPage: false, endCursor: state.endCursor },
+  };
+}
+
+function reviewSnapshotIdentity(pullRequest, expected = null) {
+  if (
+    !isObject(pullRequest) ||
+    typeof pullRequest.id !== "string" ||
+    pullRequest.id === "" ||
+    !SHA_PATTERN.test(pullRequest.headRefOid ?? "")
+  ) {
+    throw new Error("Malformed review reconciliation pull request identity");
+  }
+  const identity = {
+    id: pullRequest.id,
+    headRefOid: pullRequest.headRefOid,
+    updatedAt: validTimestamp(
+      pullRequest.updatedAt,
+      "review reconciliation pull request updatedAt",
+    ),
+  };
+  if (
+    expected &&
+    (identity.id !== expected.id ||
+      identity.headRefOid !== expected.headRefOid ||
+      identity.updatedAt !== expected.updatedAt)
+  ) {
+    throw new ReviewSnapshotChangedError(
+      "Review reconciliation pull request changed during pagination",
+    );
+  }
+  return identity;
+}
+
 function normalizedActor(author, label) {
   if (author === null) return null;
   if (
@@ -381,11 +662,11 @@ function parseCodexReviewComment(body) {
   if (typeof body !== "string" || body === "") {
     throw new Error("Codex review comment is malformed");
   }
-  const match = body.match(
-    /^Codex Review: Didn't find any major issues\.[^\r\n]*\r?\n\r?\n\*\*Reviewed commit:\*\* `([0-9a-f]{7,40})`(?:\r?\n\r?\n<details>[\s\S]*<\/details>)?\s*$/i,
+  const knownClean = body.match(
+    /^([^\r\n]+)\r?\n\r?\n\*\*Reviewed commit:\*\* `([0-9a-f]{7,40})`(?:\r?\n\r?\n<details>[\s\S]*<\/details>)?\s*$/,
   );
-  if (match) {
-    return { clean: true, reviewedCommit: match[1].toLowerCase() };
+  if (knownClean && CODEX_CLEAN_REVIEW_HEADLINES.has(knownClean[1])) {
+    return { clean: true, reviewedCommit: knownClean[2].toLowerCase() };
   }
   const reviewedCommit = body.match(
     /\*\*Reviewed commit:\*\* `([0-9a-f]{7,40})`/i,
@@ -394,6 +675,37 @@ function parseCodexReviewComment(body) {
     throw new Error("Codex review comment is malformed");
   }
   return { clean: false, reviewedCommit: reviewedCommit[1].toLowerCase() };
+}
+
+function parseCodexPullRequestReviewBody(body) {
+  if (typeof body !== "string") {
+    throw new Error("Codex pull request review body is malformed");
+  }
+  const normalized = body
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim()
+    .replace(/\n{3,}/g, "\n\n");
+  if (normalized === "") {
+    return { known: true, reviewedCommit: null };
+  }
+  const matches = [
+    ...normalized.matchAll(/\*\*Reviewed commit:\*\* `([0-9a-f]{7,40})`/gi),
+  ];
+  if (matches.length !== 1) {
+    return { known: false, reviewedCommit: null };
+  }
+  const reviewedCommit = matches[0][1].toLowerCase();
+  const canonical = normalized.replace(
+    matches[0][0],
+    "**Reviewed commit:** `<reviewed-commit>`",
+  );
+  return {
+    known: canonical === CODEX_PULL_REQUEST_REVIEW_TEMPLATE,
+    reviewedCommit,
+  };
 }
 
 export function assessRequiredCheckRuns(
@@ -613,6 +925,10 @@ export function assessReviewSnapshot(snapshot, headSha) {
           comment.originalCommit === null
             ? null
             : nonEmpty(comment.originalCommit?.oid, "original review commit"),
+        reviewId: nonEmpty(
+          comment.pullRequestReview?.id,
+          "pull request review comment review ID",
+        ),
         createdAt: validTimestamp(
           comment.createdAt,
           "review comment createdAt",
@@ -648,14 +964,68 @@ export function assessReviewSnapshot(snapshot, headSha) {
       candidate.author.databaseId === COPILOT_REVIEW_BOT_DATABASE_ID &&
       candidate.commit === headSha,
   );
+  const pendingBotReviewStateIds = botReviews
+    .filter(
+      (candidate) =>
+        candidate.commit === headSha && candidate.state === "PENDING",
+    )
+    .map((candidate) => candidate.id)
+    .sort();
+  const blockingBotReviewStateIds = botReviews
+    .filter(
+      (candidate) =>
+        candidate.commit === headSha &&
+        candidate.state !== "COMMENTED" &&
+        candidate.state !== "PENDING",
+    )
+    .map((candidate) => candidate.id)
+    .sort();
   let suppressedCommentCount = 0;
   for (const copilotReview of exactHeadCopilotReviews) {
+    if (copilotReview.state !== "COMMENTED") continue;
     const parsed = parseCopilotReviewBody(copilotReview.body);
     suppressedCommentCount += parsed.suppressedCommentCount;
     if (!Number.isSafeInteger(suppressedCommentCount)) {
       throw new Error("Copilot Suppressed comments count is malformed");
     }
   }
+  const latestExactHeadCopilotReviewAt =
+    exactHeadCopilotReviews
+      .filter(
+        (review) => review.state === "COMMENTED" && review.submittedAt !== null,
+      )
+      .map((review) => review.submittedAt)
+      .sort((left, right) => Date.parse(left) - Date.parse(right))
+      .at(-1) ?? null;
+
+  const codexReviewCommentIds = new Set(
+    botThreads.flatMap((thread) =>
+      thread.comments
+        .filter(
+          (comment) =>
+            comment.author?.databaseId === CODEX_REVIEW_BOT_DATABASE_ID,
+        )
+        .map((comment) => comment.reviewId),
+    ),
+  );
+  const blockingCodexReviewIds = [];
+  for (const codexReview of botReviews.filter(
+    (candidate) =>
+      candidate.author.databaseId === CODEX_REVIEW_BOT_DATABASE_ID &&
+      candidate.commit === headSha &&
+      candidate.state === "COMMENTED",
+  )) {
+    const parsed = parseCodexPullRequestReviewBody(codexReview.body);
+    if (
+      !parsed.known ||
+      (parsed.reviewedCommit !== null &&
+        !codexReview.commit.toLowerCase().startsWith(parsed.reviewedCommit)) ||
+      !codexReviewCommentIds.has(codexReview.id)
+    ) {
+      blockingCodexReviewIds.push(codexReview.id);
+    }
+  }
+  blockingCodexReviewIds.sort();
 
   const canonical = {
     headRefOid: snapshot.headRefOid,
@@ -667,12 +1037,20 @@ export function assessReviewSnapshot(snapshot, headSha) {
     status:
       suppressedCommentCount > 0 ||
       unresolvedBotThreadIds.length > 0 ||
-      blockingCodexCommentIds.length > 0
+      blockingCodexCommentIds.length > 0 ||
+      blockingCodexReviewIds.length > 0 ||
+      blockingBotReviewStateIds.length > 0
         ? "blocked"
-        : "clear",
+        : pendingBotReviewStateIds.length > 0
+          ? "pending"
+          : "clear",
     suppressedCommentCount,
     blockingCodexCommentIds,
+    blockingCodexReviewIds,
+    blockingBotReviewStateIds,
+    pendingBotReviewStateIds,
     unresolvedBotThreadIds,
+    latestExactHeadCopilotReviewAt,
     fingerprint: sha256(JSON.stringify(canonical)),
   };
 }
@@ -699,10 +1077,57 @@ function parseResponsePayload(response, text) {
   }
 }
 
-async function githubRequest(path, options, runtime = {}) {
+class GitHubHttpError extends Error {
+  constructor(status, detail, headers, payload) {
+    super(`GitHub API request failed (${status}): ${detail}`);
+    this.name = "GitHubHttpError";
+    this.status = status;
+    this.headers = headers;
+    this.payload = payload;
+  }
+}
+
+function graphQlRateLimitDetail(payload) {
+  if (
+    !isObject(payload) ||
+    !Array.isArray(payload.errors) ||
+    payload.errors.length === 0 ||
+    (Object.hasOwn(payload, "data") && payload.data !== null)
+  ) {
+    return null;
+  }
+  const messages = [];
+  for (const error of payload.errors) {
+    if (!isObject(error) || typeof error.message !== "string") return null;
+    const classifications = [
+      error.type,
+      error.extensions?.type,
+      error.extensions?.code,
+      error.extensions?.classification,
+    ];
+    const classified = classifications.some(
+      (value) => typeof value === "string" && value === "RATE_LIMITED",
+    );
+    const described = /(?:secondary\s+)?rate limit(?:ed| exceeded)?/i.test(
+      error.message,
+    );
+    if (!classified && !described) return null;
+    messages.push(error.message);
+  }
+  return messages.join("; ");
+}
+
+async function githubRequestOnce(path, options, runtime = {}) {
   const fetchImpl = runtime.fetch ?? globalThis.fetch;
   const timeoutSignal =
-    runtime.timeoutSignal ?? AbortSignal.timeout(API_TIMEOUT_MILLISECONDS);
+    runtime.timeoutSignal ??
+    (
+      runtime.timeoutSignalFactory ??
+      (() => AbortSignal.timeout(API_TIMEOUT_MILLISECONDS))
+    )();
+  const signal = runtime.signal
+    ? AbortSignal.any([runtime.signal, timeoutSignal])
+    : timeoutSignal;
   const response = await fetchImpl(`${API_ROOT}${path}`, {
     method: options.method,
     headers: {
@@ -714,26 +1139,166 @@ async function githubRequest(path, options, runtime = {}) {
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     redirect: "error",
-    signal: timeoutSignal,
+    signal,
   });
   const text = await response.text();
-  const payload = parseResponsePayload(response, text);
   if (!response.ok) {
+    let payload = null;
+    try {
+      payload = parseResponsePayload(response, text);
+    } catch {
+      // Error responses are classified by status even when a proxy returns HTML.
+    }
     const detail = payload?.message ?? `HTTP ${response.status}`;
-    throw new Error(
-      `GitHub API request failed (${response.status}): ${detail}`,
+    throw new GitHubHttpError(
+      response.status,
+      detail,
+      response.headers,
+      payload,
     );
+  }
+  const payload = parseResponsePayload(response, text);
+  if (options.retryGraphqlRateLimit === true) {
+    const rateLimitDetail = graphQlRateLimitDetail(payload);
+    if (rateLimitDetail !== null) {
+      throw new GitHubHttpError(
+        429,
+        rateLimitDetail,
+        response.headers,
+        payload,
+      );
+    }
   }
   return payload;
 }
 
-export function extractCandidates(eventName, event, repository) {
+function retryAfterMilliseconds(error, attempt, now) {
+  if (error instanceof GitHubHttpError) {
+    const transientStatuses = new Set([408, 500, 502, 503, 504]);
+    if (transientStatuses.has(error.status)) {
+      return READ_RETRY_BACKOFF_MILLISECONDS[attempt] ?? null;
+    }
+    const message = String(error.payload?.message ?? "").toLowerCase();
+    const rateLimited403 =
+      error.status === 403 &&
+      (error.headers.get("x-ratelimit-remaining") === "0" ||
+        message.includes("secondary rate limit") ||
+        message.includes("rate limit exceeded"));
+    if (error.status !== 429 && !rateLimited403) return null;
+
+    const retryAfter = error.headers.get("retry-after");
+    if (retryAfter !== null) {
+      const seconds = Number(retryAfter);
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        return Math.ceil(seconds * 1_000);
+      }
+      const date = Date.parse(retryAfter);
+      if (Number.isFinite(date)) return Math.max(0, date - now());
+      return null;
+    }
+    if (error.headers.get("x-ratelimit-remaining") === "0") {
+      const resetSeconds = Number(error.headers.get("x-ratelimit-reset"));
+      if (Number.isFinite(resetSeconds) && resetSeconds >= 0) {
+        return Math.max(0, Math.ceil(resetSeconds * 1_000 - now()));
+      }
+    }
+    return 60_000;
+  }
   if (
-    eventName !== "workflow_run" ||
-    event?.repository?.full_name !== repository
+    error instanceof TypeError ||
+    error?.name === "TimeoutError" ||
+    error?.name === "AbortError"
   ) {
+    return READ_RETRY_BACKOFF_MILLISECONDS[attempt] ?? null;
+  }
+  return null;
+}
+
+function defaultRetrySleep(milliseconds, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    function onAbort() {
+      clearTimeout(timeout);
+      reject(signal.reason);
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function githubReadRequest(path, options, runtime = {}) {
+  const now = runtime.now ?? Date.now;
+  const retrySleep = runtime.retrySleep ?? defaultRetrySleep;
+  let totalDelay = 0;
+  for (let attempt = 0; attempt < READ_RETRY_ATTEMPTS; attempt += 1) {
+    if (runtime.signal?.aborted) throw runtime.signal.reason;
+    try {
+      return await githubRequestOnce(path, options, runtime);
+    } catch (error) {
+      if (runtime.signal?.aborted || attempt + 1 >= READ_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      const delay = retryAfterMilliseconds(error, attempt, now);
+      if (
+        !Number.isSafeInteger(delay) ||
+        delay < 0 ||
+        delay > MAX_READ_RETRY_DELAY_MILLISECONDS ||
+        totalDelay + delay > MAX_READ_RETRY_TOTAL_DELAY_MILLISECONDS
+      ) {
+        throw error;
+      }
+      totalDelay += delay;
+      await retrySleep(delay, runtime.signal);
+    }
+  }
+  throw new Error("GitHub read retry loop exhausted unexpectedly");
+}
+
+function githubRestGet(path, token, runtime) {
+  return githubReadRequest(path, { method: "GET", token }, runtime);
+}
+
+function githubGraphqlQuery(body, token, runtime) {
+  return githubReadRequest(
+    "/graphql",
+    { method: "POST", token, body, retryGraphqlRateLimit: true },
+    runtime,
+  );
+}
+
+export function extractCandidates(eventName, event, repository) {
+  if (event?.repository?.full_name !== repository) {
     return [];
   }
+
+  if (eventName === "pull_request_target") {
+    const pull = event.pull_request;
+    if (
+      event.action !== "review_requested" ||
+      event.requested_reviewer?.id !== COPILOT_REVIEW_BOT_DATABASE_ID ||
+      !Number.isSafeInteger(event.trigger_run_id) ||
+      event.trigger_run_id <= 0 ||
+      !positivePullNumber(pull?.number) ||
+      !SHA_PATTERN.test(pull?.head?.sha ?? "") ||
+      pull.head.repo?.full_name !== repository ||
+      pull.base?.ref !== "main"
+    ) {
+      return [];
+    }
+    return [
+      {
+        number: pull.number,
+        headSha: pull.head.sha,
+        source: "copilot-review-requested",
+        triggerRunId: event.trigger_run_id,
+      },
+    ];
+  }
+
+  if (eventName !== "workflow_run") return [];
 
   const run = event.workflow_run;
   if (!isObject(run) || run.status !== "completed") {
@@ -741,30 +1306,13 @@ export function extractCandidates(eventName, event, repository) {
   }
 
   if (
-    run.name === FEEDBACK_WORKFLOW_NAME &&
-    run.path === FEEDBACK_WORKFLOW_PATH &&
-    FEEDBACK_WORKFLOW_EVENTS.has(run.event)
-  ) {
-    const match = run.display_title?.match(
-      /^Native PR feedback PR #([1-9][0-9]*) sender #([1-9][0-9]*)$/,
-    );
-    if (!match) return [];
-    const number = Number(match[1]);
-    const senderId = Number(match[2]);
-    if (
-      !positivePullNumber(number) ||
-      !Number.isSafeInteger(senderId) ||
-      !REVIEW_BOT_DATABASE_IDS.has(senderId)
-    ) {
-      return [];
-    }
-    return [{ number, source: "feedback-workflow-run" }];
-  }
-
-  if (
     run.name !== CODEQL_WORKFLOW_NAME ||
     run.path !== CODEQL_WORKFLOW_PATH ||
-    run.event !== "pull_request" ||
+    run.event !== "pull_request"
+  ) {
+    return [];
+  }
+  if (
     !SHA_PATTERN.test(run.head_sha ?? "") ||
     !Array.isArray(run.pull_requests) ||
     run.pull_requests.length !== 1
@@ -807,6 +1355,10 @@ export function workflowRunEventFromInputs(env) {
   if (!Array.isArray(pullRequests)) {
     throw new Error("workflow_pull_requests input must contain a JSON array");
   }
+  const actorId = Number(env.INPUT_WORKFLOW_ACTOR_ID);
+  if (!Number.isSafeInteger(actorId) || actorId <= 0) {
+    throw new Error("workflow_actor_id input must be a positive safe integer");
+  }
   return {
     repository: {
       full_name: nonEmpty(env.INPUT_EVENT_REPOSITORY, "event_repository input"),
@@ -824,9 +1376,92 @@ export function workflowRunEventFromInputs(env) {
         env.INPUT_WORKFLOW_HEAD_SHA,
         "workflow_head_sha input",
       ),
+      actor: { id: actorId },
       pull_requests: pullRequests,
     },
   };
+}
+
+export function pullRequestTargetEventFromInputs(env) {
+  const number = Number(env.INPUT_PULL_NUMBER);
+  const requestedReviewerId = Number(env.INPUT_REQUESTED_REVIEWER_ID);
+  const triggerRunId = Number(env.INPUT_TRIGGER_RUN_ID);
+  if (!positivePullNumber(number)) {
+    throw new Error("pull_number input must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(requestedReviewerId) || requestedReviewerId <= 0) {
+    throw new Error(
+      "requested_reviewer_id input must be a positive safe integer",
+    );
+  }
+  if (!Number.isSafeInteger(triggerRunId) || triggerRunId <= 0) {
+    throw new Error("trigger_run_id input must be a positive safe integer");
+  }
+  return {
+    repository: {
+      full_name: nonEmpty(env.INPUT_EVENT_REPOSITORY, "event_repository input"),
+    },
+    action: nonEmpty(env.INPUT_EVENT_ACTION, "event_action input"),
+    trigger_run_id: triggerRunId,
+    requested_reviewer: { id: requestedReviewerId },
+    pull_request: {
+      number,
+      head: {
+        sha: nonEmpty(env.INPUT_PULL_HEAD_SHA, "pull_head_sha input"),
+        repo: {
+          full_name: nonEmpty(
+            env.INPUT_PULL_HEAD_REPOSITORY,
+            "pull_head_repository input",
+          ),
+        },
+      },
+      base: {
+        ref: nonEmpty(env.INPUT_PULL_BASE_REF, "pull_base_ref input"),
+      },
+    },
+  };
+}
+
+export function mergeGroupEventFromInputs(env) {
+  if (
+    typeof env.INPUT_AUTOMATION_TOKEN === "string" &&
+    env.INPUT_AUTOMATION_TOKEN.trim() !== ""
+  ) {
+    throw new Error("automation_token is forbidden in the merge-group gate");
+  }
+  const repository = nonEmpty(
+    env.INPUT_EVENT_REPOSITORY,
+    "event_repository input",
+  );
+  if (repository !== nonEmpty(env.GITHUB_REPOSITORY, "GITHUB_REPOSITORY")) {
+    throw new Error("merge-group event repository does not match the runner");
+  }
+  const action = nonEmpty(env.INPUT_EVENT_ACTION, "event_action input");
+  const headSha = nonEmpty(
+    env.INPUT_MERGE_GROUP_HEAD_SHA,
+    "merge_group_head_sha input",
+  );
+  const baseRef = nonEmpty(
+    env.INPUT_MERGE_GROUP_BASE_REF,
+    "merge_group_base_ref input",
+  );
+  const headRef = nonEmpty(
+    env.INPUT_MERGE_GROUP_HEAD_REF,
+    "merge_group_head_ref input",
+  );
+  const runnerSha = nonEmpty(env.GITHUB_SHA, "GITHUB_SHA");
+  const runnerRef = nonEmpty(env.GITHUB_REF, "GITHUB_REF");
+  if (
+    action !== "checks_requested" ||
+    !SHA_PATTERN.test(headSha) ||
+    baseRef !== "refs/heads/main" ||
+    !headRef.startsWith("refs/heads/gh-readonly-queue/main/") ||
+    headSha !== runnerSha ||
+    headRef !== runnerRef
+  ) {
+    throw new Error("Malformed merge-group event inputs");
+  }
+  return { repository, action, headSha, baseRef, headRef };
 }
 
 export function isEligiblePull(pull, candidate, repository) {
@@ -855,14 +1490,6 @@ export function isEligiblePull(pull, candidate, repository) {
   );
 }
 
-function candidateForOpenPull(candidate, pull) {
-  if (candidate?.source !== "feedback-workflow-run") return candidate;
-  return {
-    ...candidate,
-    headSha: pull?.head?.sha,
-  };
-}
-
 export function hasRequiredNativeEnforcement(rules, requiredChecks) {
   if (!Array.isArray(rules)) {
     malformedEffectiveRules("root must be an array");
@@ -880,9 +1507,25 @@ export function hasRequiredNativeEnforcement(rules, requiredChecks) {
       parameters.allowed_merge_methods.some(
         (method) => typeof method !== "string",
       ) ||
-      typeof parameters.required_review_thread_resolution !== "boolean"
+      typeof parameters.require_code_owner_review !== "boolean" ||
+      typeof parameters.require_last_push_approval !== "boolean" ||
+      !Number.isSafeInteger(parameters.required_approving_review_count) ||
+      parameters.required_approving_review_count < 0 ||
+      typeof parameters.required_review_thread_resolution !== "boolean" ||
+      (parameters.required_reviewers !== undefined &&
+        !Array.isArray(parameters.required_reviewers))
     ) {
       malformedEffectiveRules("pull_request parameters are invalid");
+    }
+  }
+
+  const copilotReviewRules = parameterObjects(rules, "copilot_code_review");
+  for (const parameters of copilotReviewRules) {
+    if (
+      typeof parameters.review_draft_pull_requests !== "boolean" ||
+      typeof parameters.review_on_push !== "boolean"
+    ) {
+      malformedEffectiveRules("copilot_code_review parameters are invalid");
     }
   }
 
@@ -942,11 +1585,21 @@ export function hasRequiredNativeEnforcement(rules, requiredChecks) {
 
   const types = new Set(rules.map((rule) => rule.type));
   const hasSimpleRules = REQUIRED_SIMPLE_RULES.every((type) => types.has(type));
-  const hasPullRequestRule = pullRules.some(
-    (parameters) =>
-      parameters.allowed_merge_methods.length === 1 &&
-      parameters.allowed_merge_methods[0] === "squash" &&
-      parameters.required_review_thread_resolution === true,
+  const hasPullRequestRule =
+    pullRules.length > 0 &&
+    pullRules.every(
+      (parameters) =>
+        parameters.allowed_merge_methods.length === 1 &&
+        parameters.allowed_merge_methods[0] === "squash" &&
+        parameters.require_code_owner_review === false &&
+        parameters.require_last_push_approval === false &&
+        parameters.required_approving_review_count === 0 &&
+        parameters.required_review_thread_resolution === true &&
+        (parameters.required_reviewers === undefined ||
+          parameters.required_reviewers.length === 0),
+    );
+  const hasCopilotReviewOnPush = copilotReviewRules.some(
+    (parameters) => parameters.review_on_push === true,
   );
   const hasCodeScanningTool = (name) =>
     codeScanningTools.some(
@@ -1001,6 +1654,7 @@ export function hasRequiredNativeEnforcement(rules, requiredChecks) {
   return Boolean(
     hasSimpleRules &&
     hasPullRequestRule &&
+    hasCopilotReviewOnPush &&
     hasCodeScanningTool("CodeQL") &&
     hasCodeScanningTool("zizmor") &&
     hasMergeQueueRule &&
@@ -1046,10 +1700,70 @@ export async function githubGetPull(repository, number, token, runtime = {}) {
     throw new Error("pull request number must be a positive safe integer");
   }
   nonEmpty(token, "automation_token input");
-  return githubRequest(
-    `/repos/${repository}/pulls/${number}`,
-    { method: "GET", token },
-    runtime,
+  return githubRestGet(`/repos/${repository}/pulls/${number}`, token, runtime);
+}
+
+function normalizeRequestedReviewers(payload) {
+  if (
+    !isObject(payload) ||
+    !Array.isArray(payload.users) ||
+    !Array.isArray(payload.teams)
+  ) {
+    throw new Error("Malformed requested-reviewer inventory payload");
+  }
+  const userIds = new Set();
+  const users = payload.users.map((user) => {
+    if (
+      !isObject(user) ||
+      !Number.isSafeInteger(user.id) ||
+      user.id <= 0 ||
+      typeof user.login !== "string" ||
+      user.login === "" ||
+      !["Bot", "User"].includes(user.type) ||
+      userIds.has(user.id)
+    ) {
+      throw new Error("Malformed requested reviewer");
+    }
+    userIds.add(user.id);
+    return { id: user.id, login: user.login, type: user.type };
+  });
+  const teamIds = new Set();
+  const teams = payload.teams.map((team) => {
+    if (
+      !isObject(team) ||
+      !Number.isSafeInteger(team.id) ||
+      team.id <= 0 ||
+      typeof team.slug !== "string" ||
+      team.slug === "" ||
+      teamIds.has(team.id)
+    ) {
+      throw new Error("Malformed requested reviewer team");
+    }
+    teamIds.add(team.id);
+    return { id: team.id, slug: team.slug };
+  });
+  users.sort((left, right) => left.id - right.id);
+  teams.sort((left, right) => left.id - right.id);
+  return { users, teams };
+}
+
+export async function githubGetRequestedReviewers(
+  repository,
+  number,
+  token,
+  runtime = {},
+) {
+  parseRepository(repository);
+  if (!positivePullNumber(number)) {
+    throw new Error("pull request number must be a positive safe integer");
+  }
+  nonEmpty(token, "github_token input");
+  return normalizeRequestedReviewers(
+    await githubRestGet(
+      `/repos/${repository}/pulls/${number}/requested_reviewers`,
+      token,
+      runtime,
+    ),
   );
 }
 
@@ -1058,9 +1772,9 @@ export async function githubListOpenPulls(repository, token, runtime = {}) {
   nonEmpty(token, "automation_token input");
   const pulls = [];
   for (let page = 1; page <= MAX_OPEN_PULL_PAGES; page += 1) {
-    const payload = await githubRequest(
+    const payload = await githubRestGet(
       `/repos/${repository}/pulls?state=open&base=main&per_page=${OPEN_PULLS_PER_PAGE}&page=${page}`,
-      { method: "GET", token },
+      token,
       runtime,
     );
     if (!Array.isArray(payload)) {
@@ -1088,9 +1802,9 @@ export async function githubListCheckRuns(
   const checkRuns = [];
   let expectedTotal = null;
   for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page += 1) {
-    const payload = await githubRequest(
+    const payload = await githubRestGet(
       `/repos/${repository}/commits/${headSha}/check-runs?filter=latest&per_page=${CHECK_RUNS_PER_PAGE}&page=${page}`,
-      { method: "GET", token },
+      token,
       runtime,
     );
     if (
@@ -1119,6 +1833,270 @@ export async function githubListCheckRuns(
   throw new Error("Check-run inventory exceeded the pagination limit");
 }
 
+export async function githubListDynamicWorkflowRuns(
+  repository,
+  headSha,
+  token,
+  runtime = {},
+) {
+  parseRepository(repository);
+  if (!SHA_PATTERN.test(headSha ?? "")) {
+    throw new Error("head SHA must be a full hexadecimal SHA-1");
+  }
+  nonEmpty(token, "automation_token input");
+  const runs = [];
+  let expectedTotal = null;
+  for (let page = 1; page <= MAX_DYNAMIC_WORKFLOW_RUN_PAGES; page += 1) {
+    const payload = await githubRestGet(
+      `/repos/${repository}/actions/runs?head_sha=${headSha}&event=dynamic&per_page=${WORKFLOW_RUNS_PER_PAGE}&page=${page}`,
+      token,
+      runtime,
+    );
+    if (
+      !isObject(payload) ||
+      !Number.isSafeInteger(payload.total_count) ||
+      payload.total_count < 0 ||
+      payload.total_count >
+        WORKFLOW_RUNS_PER_PAGE * MAX_DYNAMIC_WORKFLOW_RUN_PAGES ||
+      !Array.isArray(payload.workflow_runs) ||
+      payload.workflow_runs.length > WORKFLOW_RUNS_PER_PAGE
+    ) {
+      throw new Error("Malformed dynamic workflow-run inventory payload");
+    }
+    if (expectedTotal === null) expectedTotal = payload.total_count;
+    if (payload.total_count !== expectedTotal) {
+      throw new Error(
+        "Dynamic workflow-run inventory changed during pagination",
+      );
+    }
+    runs.push(...payload.workflow_runs);
+    if (runs.length >= expectedTotal) {
+      if (runs.length !== expectedTotal) {
+        throw new Error(
+          "Dynamic workflow-run inventory exceeded its declared total",
+        );
+      }
+      return runs;
+    }
+    if (payload.workflow_runs.length < WORKFLOW_RUNS_PER_PAGE) {
+      throw new Error(
+        "Dynamic workflow-run inventory ended before its declared total",
+      );
+    }
+  }
+  throw new Error(
+    "Dynamic workflow-run inventory exceeded the pagination limit",
+  );
+}
+
+export async function githubGetWorkflowRun(
+  repository,
+  runId,
+  token,
+  runtime = {},
+) {
+  parseRepository(repository);
+  if (!Number.isSafeInteger(runId) || runId <= 0) {
+    throw new Error("workflow run id must be a positive safe integer");
+  }
+  nonEmpty(token, "automation_token input");
+  return githubRestGet(
+    `/repos/${repository}/actions/runs/${runId}`,
+    token,
+    runtime,
+  );
+}
+
+export async function githubListPullsForCommit(
+  repository,
+  commitSha,
+  token,
+  runtime = {},
+) {
+  parseRepository(repository);
+  if (!SHA_PATTERN.test(commitSha ?? "")) {
+    throw new Error("merge-group head SHA must be a full hexadecimal SHA-1");
+  }
+  nonEmpty(token, "github_token input");
+  const payload = await githubRestGet(
+    `/repos/${repository}/commits/${commitSha}/pulls?per_page=${PULLS_FOR_COMMIT_PER_PAGE}&page=1`,
+    token,
+    runtime,
+  );
+  if (!Array.isArray(payload)) {
+    throw new Error("Malformed pull requests for commit payload");
+  }
+  if (payload.length !== 1) {
+    throw new Error(
+      "Merge-group synthetic commit must map to exactly one pull request",
+    );
+  }
+  return payload;
+}
+
+function trustedCopilotReviewRequestTime(run, repository, runId, headSha) {
+  if (
+    !isObject(run) ||
+    run.id !== runId ||
+    run.path !== NATIVE_AUTO_MERGE_WORKFLOW_PATH ||
+    run.event !== "pull_request_target" ||
+    typeof run.head_branch !== "string" ||
+    run.head_branch === "" ||
+    run.head_sha !== headSha ||
+    run.status !== "in_progress" ||
+    run.repository?.full_name !== repository
+  ) {
+    throw new Error("Copilot review-request workflow identity drifted");
+  }
+  const createdAt = validTimestamp(
+    run.created_at,
+    "Copilot review-request workflow created_at",
+  );
+  const updatedAt = validTimestamp(
+    run.updated_at,
+    "Copilot review-request workflow updated_at",
+  );
+  if (Date.parse(updatedAt) < Date.parse(createdAt)) {
+    throw new Error(
+      "Copilot review-request workflow timestamps are inconsistent",
+    );
+  }
+  return createdAt;
+}
+
+export function assessCopilotReviewRuns(
+  runs,
+  headSha,
+  number,
+  { required = false, requestedAt = null } = {},
+) {
+  if (
+    !Array.isArray(runs) ||
+    !SHA_PATTERN.test(headSha ?? "") ||
+    !positivePullNumber(number) ||
+    typeof required !== "boolean" ||
+    !(requestedAt === null || typeof requestedAt === "string")
+  ) {
+    throw new Error("Malformed Copilot review-run assessment input");
+  }
+  const requestedAtMilliseconds =
+    requestedAt === null
+      ? null
+      : Date.parse(validTimestamp(requestedAt, "Copilot review request time"));
+  const matching = [];
+  const runIds = new Set();
+  for (const run of runs) {
+    if (
+      !isObject(run) ||
+      !Number.isSafeInteger(run.id) ||
+      run.id <= 0 ||
+      typeof run.name !== "string" ||
+      typeof run.path !== "string" ||
+      typeof run.event !== "string" ||
+      !SHA_PATTERN.test(run.head_sha ?? "") ||
+      typeof run.status !== "string" ||
+      !(run.conclusion === null || typeof run.conclusion === "string") ||
+      !isObject(run.actor) ||
+      !Number.isSafeInteger(run.actor.id) ||
+      !Array.isArray(run.pull_requests)
+    ) {
+      throw new Error("Malformed dynamic workflow run");
+    }
+    if (runIds.has(run.id)) {
+      throw new Error(`Duplicate dynamic workflow run ${run.id}`);
+    }
+    runIds.add(run.id);
+    const knownIdentity =
+      run.name === COPILOT_REVIEW_WORKFLOW_NAME &&
+      run.path === COPILOT_REVIEW_WORKFLOW_PATH;
+    const knownActor = run.actor.id === COPILOT_REVIEW_BOT_DATABASE_ID;
+    if (!knownIdentity && !knownActor) continue;
+    if (
+      !knownIdentity ||
+      !knownActor ||
+      run.actor.type !== "Bot" ||
+      run.event !== "dynamic" ||
+      run.head_sha !== headSha
+    ) {
+      throw new Error("Copilot review workflow identity drifted");
+    }
+    const associatedPull = run.pull_requests.some(
+      (pull) =>
+        pull?.number === number &&
+        pull?.head?.sha === headSha &&
+        pull?.base?.ref === "main",
+    );
+    if (!associatedPull) {
+      throw new Error("Copilot review workflow lost its exact pull request");
+    }
+    const createdAt = validTimestamp(
+      run.created_at,
+      "Copilot review run created_at",
+    );
+    const updatedAt = validTimestamp(
+      run.updated_at,
+      "Copilot review run updated_at",
+    );
+    if (Date.parse(updatedAt) < Date.parse(createdAt)) {
+      throw new Error("Copilot review workflow timestamps are inconsistent");
+    }
+    matching.push({ ...run, created_at: createdAt, updated_at: updatedAt });
+  }
+
+  if (matching.length === 0) {
+    return {
+      status: required ? "pending" : "clear",
+      fingerprint: sha256(`copilot-review:none:required=${required}`),
+      activeRunCount: 0,
+    };
+  }
+  matching.sort((left, right) => {
+    const createdAtDifference =
+      Date.parse(left.created_at) - Date.parse(right.created_at);
+    return createdAtDifference === 0 ? left.id - right.id : createdAtDifference;
+  });
+  const canonical = matching.map((run) => ({
+    id: run.id,
+    status: run.status,
+    conclusion: run.conclusion,
+    headSha: run.head_sha,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+  }));
+  const fingerprint = sha256(JSON.stringify(canonical));
+  const eligible =
+    requestedAtMilliseconds === null
+      ? matching
+      : matching.filter(
+          (run) => Date.parse(run.created_at) >= requestedAtMilliseconds,
+        );
+  const active = eligible.filter((run) => run.status !== "completed");
+  if (active.length > 0) {
+    if (active.some((run) => run.conclusion !== null)) {
+      throw new Error("Incomplete Copilot review run has a conclusion");
+    }
+    return { status: "pending", fingerprint, activeRunCount: active.length };
+  }
+  if (required && eligible.length === 0) {
+    return { status: "pending", fingerprint, activeRunCount: 0 };
+  }
+  const latestCreatedAt = (eligible.at(-1) ?? matching.at(-1)).created_at;
+  const latest = (eligible.length > 0 ? eligible : matching).filter(
+    (run) => run.created_at === latestCreatedAt,
+  );
+  if (latest.every((run) => run.conclusion === "success")) {
+    return { status: "clear", fingerprint, activeRunCount: 0 };
+  }
+  if (
+    latest.some(
+      (run) => typeof run.conclusion !== "string" || run.conclusion === "",
+    )
+  ) {
+    throw new Error("Completed Copilot review run has no conclusion");
+  }
+  return { status: "failure", fingerprint, activeRunCount: 0 };
+}
+
 export async function githubGetReviewSnapshot(
   repository,
   number,
@@ -1130,42 +2108,163 @@ export async function githubGetReviewSnapshot(
     throw new Error("pull request number must be a positive safe integer");
   }
   nonEmpty(token, "automation_token input");
-  const payload = await githubRequest(
-    "/graphql",
-    {
-      method: "POST",
-      token,
-      body: {
+  const budget = { nodes: 0, threadContinuations: 0 };
+  const states = {
+    comments: newReviewConnectionState("issue comment"),
+    reviews: newReviewConnectionState("review"),
+    reviewThreads: newReviewConnectionState("review thread"),
+  };
+  const threadCommentStates = new Map();
+  let identity = null;
+
+  for (let round = 1; round <= MAX_REVIEW_CONNECTION_PAGES; round += 1) {
+    const includeComments = !states.comments.done;
+    const includeReviews = !states.reviews.done;
+    const includeThreads = !states.reviewThreads.done;
+    if (!includeComments && !includeReviews && !includeThreads) break;
+
+    const payload = await githubGraphqlQuery(
+      {
         query: REVIEW_RECONCILIATION_QUERY,
         variables: {
           owner,
           repo,
           number,
           limit: REVIEW_CONNECTION_LIMIT,
+          commentsAfter: states.comments.cursor,
+          reviewsAfter: states.reviews.cursor,
+          threadsAfter: states.reviewThreads.cursor,
+          includeComments,
+          includeReviews,
+          includeThreads,
         },
       },
-    },
-    runtime,
-  );
-  if (Array.isArray(payload?.errors) && payload.errors.length > 0) {
+      token,
+      runtime,
+    );
+    graphQlPayloadHasNoErrors(payload, "review reconciliation");
+    const pullRequest = payload?.data?.repository?.pullRequest;
+    const pageIdentity = reviewSnapshotIdentity(pullRequest, identity);
+    identity ??= pageIdentity;
+
+    if (includeComments) {
+      appendReviewConnectionPage(states.comments, pullRequest.comments, budget);
+    }
+    if (includeReviews) {
+      appendReviewConnectionPage(states.reviews, pullRequest.reviews, budget);
+    }
+    if (includeThreads) {
+      const previousCount = states.reviewThreads.nodes.length;
+      appendReviewConnectionPage(
+        states.reviewThreads,
+        pullRequest.reviewThreads,
+        budget,
+      );
+      for (const thread of states.reviewThreads.nodes.slice(previousCount)) {
+        if (
+          typeof thread.isResolved !== "boolean" ||
+          typeof thread.isOutdated !== "boolean" ||
+          typeof thread.isCollapsed !== "boolean"
+        ) {
+          throw new Error("Malformed review thread state");
+        }
+        const commentState = newReviewConnectionState(
+          `review thread ${thread.id} comment`,
+        );
+        appendReviewConnectionPage(commentState, thread.comments, budget);
+        threadCommentStates.set(thread.id, {
+          thread,
+          state: commentState,
+          rootState: {
+            isResolved: thread.isResolved,
+            isOutdated: thread.isOutdated,
+            isCollapsed: thread.isCollapsed,
+          },
+        });
+      }
+    }
+  }
+
+  if (
+    !states.comments.done ||
+    !states.reviews.done ||
+    !states.reviewThreads.done
+  ) {
     throw new Error(
-      `GitHub GraphQL query failed: ${payload.errors
-        .map((error) => error?.message ?? "unknown error")
-        .join("; ")}`,
+      "Review reconciliation pagination exceeded the safety limit",
     );
   }
-  const snapshot = payload?.data?.repository?.pullRequest;
-  if (!snapshot) {
-    throw new Error("GitHub GraphQL did not return the pull request reviews");
+
+  for (const { thread, state, rootState } of threadCommentStates.values()) {
+    while (!state.done) {
+      if (state.pages >= MAX_REVIEW_THREAD_COMMENT_PAGES) {
+        throw new Error(
+          `Review thread ${thread.id} comment pagination exceeded the safety limit`,
+        );
+      }
+      budget.threadContinuations += 1;
+      if (budget.threadContinuations > MAX_REVIEW_THREAD_CONTINUATIONS) {
+        throw new Error(
+          "Review thread comment pagination exceeded the global continuation limit",
+        );
+      }
+      const payload = await githubGraphqlQuery(
+        {
+          query: REVIEW_THREAD_COMMENTS_QUERY,
+          variables: {
+            threadId: thread.id,
+            limit: REVIEW_CONNECTION_LIMIT,
+            after: state.cursor,
+          },
+        },
+        token,
+        runtime,
+      );
+      graphQlPayloadHasNoErrors(payload, "review thread comments");
+      const node = payload?.data?.node;
+      if (
+        !isObject(node) ||
+        node.__typename !== "PullRequestReviewThread" ||
+        node.id !== thread.id ||
+        node.isResolved !== rootState.isResolved ||
+        node.isOutdated !== rootState.isOutdated ||
+        node.isCollapsed !== rootState.isCollapsed
+      ) {
+        throw new ReviewSnapshotChangedError(
+          "Review thread changed during comment pagination",
+        );
+      }
+      reviewSnapshotIdentity(node.pullRequest, identity);
+      appendReviewConnectionPage(state, node.comments, budget);
+    }
+    thread.comments = completedReviewConnection(state);
   }
-  return snapshot;
+
+  return {
+    ...identity,
+    comments: completedReviewConnection(states.comments),
+    reviews: completedReviewConnection(states.reviews),
+    reviewThreads: completedReviewConnection(states.reviewThreads),
+  };
 }
 
 export async function readReviewReconciliationState(
-  { repository, number, headSha, requiredChecks, token },
+  {
+    repository,
+    number,
+    headSha,
+    requiredChecks,
+    token,
+    requireCopilotReviewRun = false,
+    copilotReviewRequestedAt = null,
+  },
   runtime = {},
 ) {
   const listCheckRuns = runtime.listCheckRuns ?? githubListCheckRuns;
+  const listCopilotReviewRuns =
+    runtime.listCopilotReviewRuns ?? githubListDynamicWorkflowRuns;
+  const getRequestedReviewers =
+    runtime.getRequestedReviewers ?? githubGetRequestedReviewers;
   const getReviewSnapshot =
     runtime.getReviewSnapshot ?? githubGetReviewSnapshot;
   const checkRuns = await listCheckRuns(repository, headSha, token, runtime);
@@ -1176,21 +2275,99 @@ export async function readReviewReconciliationState(
       fingerprint: sha256(`checks:${checks.fingerprint}`),
     };
   }
+  const requestedReviewers = normalizeRequestedReviewers(
+    await getRequestedReviewers(repository, number, token, runtime),
+  );
+  if (
+    requestedReviewers.users.some(
+      (user) => user.id === COPILOT_REVIEW_BOT_DATABASE_ID,
+    )
+  ) {
+    return {
+      status: "pending",
+      fingerprint: sha256(
+        JSON.stringify({
+          checks: checks.fingerprint,
+          requestedReviewers,
+        }),
+      ),
+    };
+  }
+  const copilotRuns = await listCopilotReviewRuns(
+    repository,
+    headSha,
+    token,
+    runtime,
+  );
+  const copilot = assessCopilotReviewRuns(copilotRuns, headSha, number, {
+    required: requireCopilotReviewRun,
+    requestedAt: copilotReviewRequestedAt,
+  });
+  const freshReviewMustCompleteRequest =
+    requireCopilotReviewRun && copilotReviewRequestedAt !== null;
+  if (copilot.status !== "clear" && !freshReviewMustCompleteRequest) {
+    return {
+      status: copilot.status,
+      fingerprint: sha256(`copilot:${copilot.fingerprint}`),
+    };
+  }
+  if (copilot.activeRunCount > 0) {
+    return {
+      status: "pending",
+      fingerprint: sha256(`copilot:${copilot.fingerprint}`),
+    };
+  }
   const reviews = await readReviewFeedbackState(
     { repository, number, headSha, token },
     { ...runtime, getReviewSnapshot },
   );
+  if (reviews.status === "blocked") {
+    return {
+      ...reviews,
+      fingerprint: sha256(
+        JSON.stringify({
+          checks: checks.fingerprint,
+          requestedReviewers,
+          copilot: copilot.fingerprint,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
+  const hasFreshExactHeadCopilotReview =
+    copilotReviewRequestedAt !== null &&
+    reviews.latestExactHeadCopilotReviewAt !== null &&
+    Date.parse(reviews.latestExactHeadCopilotReviewAt) >
+      Date.parse(copilotReviewRequestedAt);
+  if (freshReviewMustCompleteRequest && !hasFreshExactHeadCopilotReview) {
+    return {
+      status: "pending",
+      fingerprint: sha256(
+        JSON.stringify({
+          copilot: copilot.fingerprint,
+          requestedReviewers,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
   return {
     status: reviews.status,
     fingerprint: sha256(
       JSON.stringify({
         checks: checks.fingerprint,
+        requestedReviewers,
+        copilot: copilot.fingerprint,
         reviews: reviews.fingerprint,
       }),
     ),
     suppressedCommentCount: reviews.suppressedCommentCount,
     blockingCodexCommentIds: reviews.blockingCodexCommentIds,
+    blockingCodexReviewIds: reviews.blockingCodexReviewIds,
+    blockingBotReviewStateIds: reviews.blockingBotReviewStateIds,
+    pendingBotReviewStateIds: reviews.pendingBotReviewStateIds,
     unresolvedBotThreadIds: reviews.unresolvedBotThreadIds,
+    latestExactHeadCopilotReviewAt: reviews.latestExactHeadCopilotReviewAt,
   };
 }
 
@@ -1212,12 +2389,70 @@ export async function readReviewFeedbackState(
     fingerprint: reviews.fingerprint,
     suppressedCommentCount: reviews.suppressedCommentCount,
     blockingCodexCommentIds: reviews.blockingCodexCommentIds,
+    blockingCodexReviewIds: reviews.blockingCodexReviewIds,
+    blockingBotReviewStateIds: reviews.blockingBotReviewStateIds,
+    pendingBotReviewStateIds: reviews.pendingBotReviewStateIds,
     unresolvedBotThreadIds: reviews.unresolvedBotThreadIds,
+    latestExactHeadCopilotReviewAt: reviews.latestExactHeadCopilotReviewAt,
+  };
+}
+
+export async function readMergeGroupFeedbackState(
+  { repository, number, headSha, token },
+  runtime = {},
+) {
+  const getRequestedReviewers =
+    runtime.getRequestedReviewers ?? githubGetRequestedReviewers;
+  const listCopilotReviewRuns =
+    runtime.listCopilotReviewRuns ?? githubListDynamicWorkflowRuns;
+  const requestedReviewers = normalizeRequestedReviewers(
+    await getRequestedReviewers(repository, number, token, runtime),
+  );
+  if (
+    requestedReviewers.users.some(
+      (user) => user.id === COPILOT_REVIEW_BOT_DATABASE_ID,
+    )
+  ) {
+    return {
+      status: "pending",
+      fingerprint: sha256(JSON.stringify({ requestedReviewers })),
+    };
+  }
+  const copilotRuns = await listCopilotReviewRuns(
+    repository,
+    headSha,
+    token,
+    runtime,
+  );
+  const copilot = assessCopilotReviewRuns(copilotRuns, headSha, number);
+  if (copilot.status !== "clear") {
+    return {
+      status: copilot.status,
+      fingerprint: sha256(`copilot:${copilot.fingerprint}`),
+    };
+  }
+  const reviews = await readReviewFeedbackState(
+    { repository, number, headSha, token },
+    runtime,
+  );
+  return {
+    ...reviews,
+    fingerprint: sha256(
+      JSON.stringify({
+        requestedReviewers,
+        copilot: copilot.fingerprint,
+        reviews: reviews.fingerprint,
+      }),
+    ),
   };
 }
 
 export async function waitForReviewReconciliation(request, runtime = {}) {
   const readState = runtime.readState ?? readReviewReconciliationState;
+  const beforeRead = runtime.beforeRead ?? (async () => {});
+  if (typeof beforeRead !== "function") {
+    throw new Error("review reconciliation beforeRead must be a function");
+  }
   const now = runtime.now ?? Date.now;
   const sleep =
     runtime.sleep ??
@@ -1251,7 +2486,22 @@ export async function waitForReviewReconciliation(request, runtime = {}) {
     ) {
       throw new Error("Review reconciliation timed out");
     }
-    const state = await readState(request, runtime);
+    await beforeRead(request, runtime);
+    let state;
+    try {
+      state = await readState(request, runtime);
+    } catch (error) {
+      if (!(error instanceof ReviewSnapshotChangedError)) throw error;
+      stableFingerprint = null;
+      stableSince = null;
+      latestState = null;
+      const remainingAfterDrift = timeoutMilliseconds - (now() - startedAt);
+      if (remainingAfterDrift <= 0) {
+        throw new Error("Review reconciliation timed out");
+      }
+      await sleep(Math.min(pollMilliseconds, remainingAfterDrift));
+      continue;
+    }
     if (!isObject(state) || typeof state.status !== "string") {
       throw new Error("Malformed review reconciliation state");
     }
@@ -1290,9 +2540,9 @@ export async function githubGetEffectiveRules(repository, token, runtime = {}) {
   nonEmpty(token, "automation_token input");
   const rules = [];
   for (let page = 1; page <= MAX_EFFECTIVE_RULE_PAGES; page += 1) {
-    const payload = await githubRequest(
+    const payload = await githubRestGet(
       `/repos/${repository}/rules/branches/main?per_page=${EFFECTIVE_RULES_PER_PAGE}&page=${page}`,
-      { method: "GET", token },
+      token,
       runtime,
     );
     if (!Array.isArray(payload)) {
@@ -1320,16 +2570,12 @@ export async function githubGetNativeState(
     throw new Error("pull request number must be a positive safe integer");
   }
   nonEmpty(token, "automation_token input");
-  const payload = await githubRequest(
-    "/graphql",
+  const payload = await githubGraphqlQuery(
     {
-      method: "POST",
-      token,
-      body: {
-        query: NATIVE_STATE_QUERY,
-        variables: { owner, repo, number },
-      },
+      query: NATIVE_STATE_QUERY,
+      variables: { owner, repo, number },
     },
+    token,
     runtime,
   );
   if (Array.isArray(payload?.errors) && payload.errors.length > 0) {
@@ -1358,7 +2604,7 @@ async function githubNativeMutation(
   token,
   runtime,
 ) {
-  const payload = await githubRequest(
+  const payload = await githubRequestOnce(
     "/graphql",
     {
       method: "POST",
@@ -1415,7 +2661,7 @@ export async function githubDequeuePullRequest(
   );
 }
 
-async function removeNativeMergePrivilege(
+export async function removeNativeMergePrivilege(
   { repository, number, token },
   { getNativeState, disableAutoMerge, dequeuePull },
   runtime = {},
@@ -1437,17 +2683,49 @@ async function removeNativeMergePrivilege(
   if (!nativeState?.mergeQueueEntry && !nativeState?.autoMergeRequest) {
     return false;
   }
-  if (nativeState.mergeQueueEntry) {
-    await dequeuePull(nativeState.id, nativeState.mergeQueueEntry.id, token);
+  const mutationErrors = [];
+  for (
+    let attempt = 0;
+    attempt < NATIVE_PRIVILEGE_RETRY_ATTEMPTS;
+    attempt += 1
+  ) {
+    const pullRequestId = nonEmpty(
+      nativeState.id,
+      "native pull request node ID",
+    );
+    if (nativeState.mergeQueueEntry) {
+      try {
+        await dequeuePull(
+          pullRequestId,
+          nonEmpty(
+            nativeState.mergeQueueEntry.id,
+            "native merge queue entry node ID",
+          ),
+          token,
+        );
+      } catch (error) {
+        mutationErrors.push(error);
+      }
+    }
+    if (nativeState.autoMergeRequest) {
+      try {
+        await disableAutoMerge(pullRequestId, token);
+      } catch (error) {
+        mutationErrors.push(error);
+      }
+    }
+    nativeState = await getNativeState(repository, number, token);
+    if (!nativeState.mergeQueueEntry && !nativeState.autoMergeRequest) {
+      return true;
+    }
+    if (attempt + 1 < NATIVE_PRIVILEGE_RETRY_ATTEMPTS) {
+      await sleep(NATIVE_PRIVILEGE_RETRY_MILLISECONDS);
+    }
   }
-  if (nativeState.autoMergeRequest) {
-    await disableAutoMerge(nativeState.id, token);
-  }
-  const finalNativeState = await getNativeState(repository, number, token);
-  if (finalNativeState.mergeQueueEntry || finalNativeState.autoMergeRequest) {
-    throw new Error("Native merge privilege remained after late feedback");
-  }
-  return true;
+  throw new AggregateError(
+    mutationErrors,
+    "Native merge privilege remained after late feedback",
+  );
 }
 
 export async function runGhAutoMerge(
@@ -1501,11 +2779,149 @@ export async function runGhAutoMerge(
   );
 }
 
+function validateMergeGroupPull(pull, repository) {
+  if (
+    !positivePullNumber(pull?.number) ||
+    pull.state !== "open" ||
+    pull.draft !== false ||
+    !SHA_PATTERN.test(pull.head?.sha ?? "") ||
+    typeof pull.head?.ref !== "string" ||
+    pull.head.ref === "" ||
+    pull.head?.repo?.full_name !== repository ||
+    pull.base?.ref !== "main" ||
+    pull.base?.repo?.full_name !== repository
+  ) {
+    throw new Error("Merge-group pull request identity is malformed");
+  }
+  return {
+    number: pull.number,
+    headSha: pull.head.sha,
+    headRef: pull.head.ref,
+  };
+}
+
+async function readMergeGroupAssociation(
+  { repository, headSha, token },
+  runtime = {},
+) {
+  const listPullsForCommit =
+    runtime.listPullsForCommit ?? githubListPullsForCommit;
+  const getPull = runtime.getPull ?? githubGetPull;
+  const associated = await listPullsForCommit(
+    repository,
+    headSha,
+    token,
+    runtime,
+  );
+  if (!Array.isArray(associated) || associated.length !== 1) {
+    throw new Error(
+      "Merge-group synthetic commit must map to exactly one pull request",
+    );
+  }
+  const candidate = validateMergeGroupPull(associated[0], repository);
+  const current = validateMergeGroupPull(
+    await getPull(repository, candidate.number, token, runtime),
+    repository,
+  );
+  if (
+    current.number !== candidate.number ||
+    current.headSha !== candidate.headSha ||
+    current.headRef !== candidate.headRef
+  ) {
+    throw new Error("Merge-group pull request identity changed after mapping");
+  }
+  return current;
+}
+
+export async function runMergeGroupFeedbackGate(
+  env = process.env,
+  runtime = {},
+) {
+  const repository = nonEmpty(env.GITHUB_REPOSITORY, "GITHUB_REPOSITORY");
+  parseRepository(repository);
+  if (env.GITHUB_EVENT_NAME !== "merge_group") {
+    throw new Error("merge-group feedback gate requires a merge_group event");
+  }
+  const event = mergeGroupEventFromInputs(env);
+  if (event.repository !== repository) {
+    throw new Error("merge-group event repository does not match the runner");
+  }
+  const token = nonEmpty(env.INPUT_GITHUB_TOKEN, "github_token input");
+  const associationRequest = {
+    repository,
+    headSha: event.headSha,
+    token,
+  };
+  const initial = await readMergeGroupAssociation(associationRequest, runtime);
+  const reconciliationRequest = {
+    repository,
+    number: initial.number,
+    headSha: initial.headSha,
+    token,
+  };
+  const waitForFeedback =
+    runtime.waitForReviewReconciliation ?? waitForReviewReconciliation;
+  const readFeedback =
+    runtime.readMergeGroupFeedbackState ?? readMergeGroupFeedbackState;
+  const feedback = await waitForFeedback(reconciliationRequest, {
+    ...runtime,
+    readState: readFeedback,
+  });
+  if (
+    feedback?.status !== "clear" ||
+    typeof feedback.fingerprint !== "string" ||
+    feedback.fingerprint === ""
+  ) {
+    throw new Error("Merge-group bot feedback is blocked or incomplete");
+  }
+  const final = await readMergeGroupAssociation(associationRequest, runtime);
+  if (
+    final.number !== initial.number ||
+    final.headSha !== initial.headSha ||
+    final.headRef !== initial.headRef
+  ) {
+    throw new Error("Merge-group association changed during reconciliation");
+  }
+  const finalFeedback = await readFeedback(reconciliationRequest, runtime);
+  if (
+    finalFeedback?.status !== "clear" ||
+    finalFeedback.fingerprint !== feedback.fingerprint
+  ) {
+    throw new Error("Merge-group bot feedback changed after reconciliation");
+  }
+  log(
+    `PR #${initial.number}: merge-group bot feedback gate passed for exact head ${initial.headSha}.`,
+  );
+  return {
+    action: "merge-group-feedback-clear",
+    head: event.headSha,
+    pulls: [initial.number],
+  };
+}
+
 export async function runNativeAutoMerge(env = process.env, runtime = {}) {
+  const operation = (env.INPUT_OPERATION ?? "").trim() || "auto-merge";
+  if (operation === "merge-group-feedback-gate") {
+    return runMergeGroupFeedbackGate(env, runtime);
+  }
+  if (operation !== "auto-merge") {
+    throw new Error("Unsupported native auto-merge operation");
+  }
+  if (
+    typeof env.INPUT_GITHUB_TOKEN === "string" &&
+    env.INPUT_GITHUB_TOKEN.trim() !== ""
+  ) {
+    throw new Error(
+      "github_token is forbidden for native auto-merge mutations",
+    );
+  }
   const { repository } = parseRepository(env.GITHUB_REPOSITORY);
   const eventName = nonEmpty(env.GITHUB_EVENT_NAME, "GITHUB_EVENT_NAME");
   const token = nonEmpty(env.INPUT_AUTOMATION_TOKEN, "automation_token input");
-  const event = workflowRunEventFromInputs(env);
+  const event =
+    eventName === "pull_request_target"
+      ? pullRequestTargetEventFromInputs(env)
+      : workflowRunEventFromInputs(env);
   const candidates = extractCandidates(eventName, event, repository);
   if (candidates.length === 0) {
     log("No completed CodeQL pull-request run with an exact head was found.");
@@ -1518,229 +2934,307 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
   const getEffectiveRules =
     runtime.getEffectiveRules ?? githubGetEffectiveRules;
   const getNativeState = runtime.getNativeState ?? githubGetNativeState;
+  const getWorkflowRun = runtime.getWorkflowRun ?? githubGetWorkflowRun;
   const waitForFeedback =
     runtime.waitForReviewReconciliation ?? waitForReviewReconciliation;
   const readFeedback =
     runtime.readReviewReconciliationState ?? readReviewReconciliationState;
-  const readFeedbackOnly =
-    runtime.readReviewFeedbackState ?? readReviewFeedbackState;
   const enableAutoMerge = runtime.enableAutoMerge ?? runGhAutoMerge;
   const disableAutoMerge =
     runtime.disableAutoMerge ?? githubDisablePullRequestAutoMerge;
   const dequeuePull = runtime.dequeuePull ?? githubDequeuePullRequest;
   const candidate = candidates[0];
-  const openPulls = await listOpenPulls(repository, token);
-  if (!Array.isArray(openPulls)) {
-    throw new Error("Malformed open pull request inventory payload");
-  }
-  const currentPull = openPulls.find((pull) =>
-    isEligiblePull(pull, candidateForOpenPull(candidate, pull), repository),
-  );
-  if (!currentPull) {
-    log(
-      `PR #${candidate.number}: current identity, state, base or exact head is ineligible.`,
+  const isCopilotReviewRequest =
+    candidate.source === "copilot-review-requested";
+  const holdCopilotMergePrivilege = async (options = {}) => {
+    if (!isCopilotReviewRequest) return false;
+    return removeNativeMergePrivilege(
+      {
+        repository,
+        number: candidate.number,
+        token,
+      },
+      { getNativeState, disableAutoMerge, dequeuePull },
+      runtime,
+      options,
     );
-    return { action: "skipped", reason: "ineligible" };
-  }
-  const canonicalCandidate = {
-    number: currentPull.number,
-    headSha: currentPull.head.sha,
-    source: "github",
   };
+  let retainCopilotMergePrivilege = false;
+  let primaryFailure = null;
+  try {
+    await holdCopilotMergePrivilege();
+    const openPulls = await listOpenPulls(repository, token);
+    if (!Array.isArray(openPulls)) {
+      throw new Error("Malformed open pull request inventory payload");
+    }
+    const currentPull = openPulls.find((pull) =>
+      isEligiblePull(pull, candidate, repository),
+    );
+    if (!currentPull) {
+      log(
+        `PR #${candidate.number}: current identity, state, base or exact head is ineligible.`,
+      );
+      return { action: "skipped", reason: "ineligible" };
+    }
+    const canonicalCandidate = {
+      number: currentPull.number,
+      headSha: currentPull.head.sha,
+      source: "github",
+    };
 
-  if (candidate.source === "feedback-workflow-run") {
+    let copilotReviewRequestedAt = null;
+    if (isCopilotReviewRequest) {
+      await holdCopilotMergePrivilege();
+      const triggerRun = await getWorkflowRun(
+        repository,
+        candidate.triggerRunId,
+        token,
+        runtime,
+      );
+      copilotReviewRequestedAt = trustedCopilotReviewRequestTime(
+        triggerRun,
+        repository,
+        candidate.triggerRunId,
+        canonicalCandidate.headSha,
+      );
+    }
+
+    const requiredChecks = await loadPolicyChecks(repository);
+    if (requiredChecks === null) {
+      log(
+        `PR #${canonicalCandidate.number}: repository is absent from pinned policy.`,
+      );
+      return {
+        action: "skipped",
+        reason: "repository-not-in-policy",
+      };
+    }
+
+    const effectiveRules = await getEffectiveRules(repository, token);
+    if (!hasRequiredNativeEnforcement(effectiveRules, requiredChecks)) {
+      log(
+        `PR #${canonicalCandidate.number}: required native enforcement is not fully active on main.`,
+      );
+      return {
+        action: "skipped",
+        reason: "native-enforcement-inactive",
+      };
+    }
+
+    const reconciliationRequest = {
+      repository,
+      number: canonicalCandidate.number,
+      headSha: canonicalCandidate.headSha,
+      requiredChecks,
+      token,
+      requireCopilotReviewRun: candidate.source === "copilot-review-requested",
+      copilotReviewRequestedAt,
+    };
+    const reconciliationRuntime = isCopilotReviewRequest
+      ? {
+          ...runtime,
+          beforeRead: async () => holdCopilotMergePrivilege(),
+        }
+      : runtime;
     let feedback;
     try {
-      feedback = await readFeedbackOnly(
+      feedback = await waitForFeedback(
+        reconciliationRequest,
+        reconciliationRuntime,
+      );
+    } catch (error) {
+      if (isCopilotReviewRequest) {
+        await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      }
+      throw error;
+    }
+    if (feedback?.status !== "clear") {
+      if (isCopilotReviewRequest) {
+        await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      }
+      const reason =
+        feedback?.status === "blocked"
+          ? "review-feedback-blocking"
+          : "required-checks-unsuccessful";
+      log(
+        `PR #${canonicalCandidate.number}: review reconciliation blocked native auto-merge (${reason}).`,
+      );
+      return { action: "skipped", reason };
+    }
+    if (
+      typeof feedback.fingerprint !== "string" ||
+      feedback.fingerprint === ""
+    ) {
+      throw new Error("Malformed review reconciliation result");
+    }
+
+    const state = await getNativeState(
+      repository,
+      canonicalCandidate.number,
+      token,
+    );
+    if (
+      isCopilotReviewRequest &&
+      (state.mergeQueueEntry || state.autoMergeRequest)
+    ) {
+      await holdCopilotMergePrivilege();
+    } else if (state.mergeQueueEntry) {
+      log(
+        `PR #${canonicalCandidate.number}: already in the native merge queue.`,
+      );
+      return { action: "already-queued", pull: canonicalCandidate.number };
+    } else if (state.autoMergeRequest) {
+      log(
+        `PR #${canonicalCandidate.number}: native auto-merge is already enabled.`,
+      );
+      return { action: "already-enabled", pull: canonicalCandidate.number };
+    }
+
+    await holdCopilotMergePrivilege();
+    const finalEffectiveRules = await getEffectiveRules(repository, token);
+    if (!hasRequiredNativeEnforcement(finalEffectiveRules, requiredChecks)) {
+      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      log(
+        `PR #${canonicalCandidate.number}: required native enforcement changed before the mutation.`,
+      );
+      return {
+        action: "skipped",
+        reason: "native-enforcement-inactive",
+      };
+    }
+
+    await holdCopilotMergePrivilege();
+    const finalPull = await getPull(
+      repository,
+      canonicalCandidate.number,
+      token,
+    );
+    if (!isEligiblePull(finalPull, canonicalCandidate, repository)) {
+      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      log(
+        `PR #${canonicalCandidate.number}: pull request identity, state, base or exact head changed before the mutation.`,
+      );
+      return { action: "skipped", reason: "ineligible" };
+    }
+
+    await holdCopilotMergePrivilege();
+    const finalFeedback = await readFeedback(reconciliationRequest, runtime);
+    if (
+      finalFeedback?.status !== "clear" ||
+      finalFeedback.fingerprint !== feedback.fingerprint
+    ) {
+      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      log(
+        `PR #${canonicalCandidate.number}: checks or review feedback changed before the mutation.`,
+      );
+      return { action: "skipped", reason: "review-state-changed" };
+    }
+
+    await holdCopilotMergePrivilege();
+    const preArmFeedback = await readFeedback(reconciliationRequest, runtime);
+    if (
+      preArmFeedback?.status !== "clear" ||
+      preArmFeedback.fingerprint !== feedback.fingerprint
+    ) {
+      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      log(
+        `PR #${canonicalCandidate.number}: checks or review feedback changed immediately before the mutation.`,
+      );
+      return { action: "skipped", reason: "review-state-changed" };
+    }
+
+    try {
+      await enableAutoMerge(
+        repository,
+        canonicalCandidate.number,
+        canonicalCandidate.headSha,
+        token,
+      );
+    } catch (enableError) {
+      try {
+        await removeNativeMergePrivilege(
+          {
+            repository,
+            number: canonicalCandidate.number,
+            token,
+          },
+          { getNativeState, disableAutoMerge, dequeuePull },
+          runtime,
+          { retryWhenAbsent: true },
+        );
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [enableError, cleanupError],
+          "Native auto-merge failed ambiguously and privilege cleanup could not be proven",
+        );
+      }
+      throw enableError;
+    }
+
+    let postArmFeedback;
+    try {
+      postArmFeedback = await readFeedback(reconciliationRequest, runtime);
+    } catch (error) {
+      postArmFeedback = {
+        status: "blocked",
+        fingerprint: sha256(`post-arm-feedback-read-failed:${error.message}`),
+      };
+    }
+    if (
+      postArmFeedback?.status !== "clear" ||
+      postArmFeedback.fingerprint !== feedback.fingerprint
+    ) {
+      const removed = await removeNativeMergePrivilege(
         {
           repository,
           number: canonicalCandidate.number,
-          headSha: canonicalCandidate.headSha,
           token,
         },
+        { getNativeState, disableAutoMerge, dequeuePull },
         runtime,
+        { retryWhenAbsent: true },
       );
-    } catch (error) {
-      feedback = {
-        status: "blocked",
-        fingerprint: sha256(`feedback-read-failed:${error.message}`),
+      if (!removed) {
+        throw new Error(
+          "Checks or review feedback changed after arm, but no native privilege could be removed",
+        );
+      }
+      log(
+        `PR #${canonicalCandidate.number}: post-arm review drift removed native merge privilege.`,
+      );
+      return {
+        action: "deprivileged",
+        pull: canonicalCandidate.number,
+        reason: "review-state-changed-after-arm",
       };
     }
-    if (feedback?.status === "clear") {
-      log(
-        `PR #${canonicalCandidate.number}: feedback signal contains no blocking review state.`,
-      );
-      return { action: "none", reason: "feedback-clear" };
-    }
-    if (feedback?.status !== "blocked") {
-      throw new Error("Malformed late-feedback reconciliation state");
-    }
-
-    const changed = await removeNativeMergePrivilege(
-      {
-        repository,
-        number: canonicalCandidate.number,
-        token,
-      },
-      { getNativeState, disableAutoMerge, dequeuePull },
-      runtime,
-      { retryWhenAbsent: true },
-    );
-    if (!changed) {
-      log(
-        `PR #${canonicalCandidate.number}: blocking feedback found with no native merge privilege to remove.`,
-      );
-      return { action: "none", reason: "feedback-blocking-no-privilege" };
-    }
-
+    retainCopilotMergePrivilege = true;
     log(
-      `PR #${canonicalCandidate.number}: blocking late feedback removed native merge privilege.`,
-    );
-    return { action: "deprivileged", pull: canonicalCandidate.number };
-  }
-
-  const requiredChecks = await loadPolicyChecks(repository);
-  if (requiredChecks === null) {
-    log(
-      `PR #${canonicalCandidate.number}: repository is absent from pinned policy.`,
+      `PR #${canonicalCandidate.number}: native auto-merge enabled for exact head ${canonicalCandidate.headSha}.`,
     );
     return {
-      action: "skipped",
-      reason: "repository-not-in-policy",
-    };
-  }
-
-  const effectiveRules = await getEffectiveRules(repository, token);
-  if (!hasRequiredNativeEnforcement(effectiveRules, requiredChecks)) {
-    log(
-      `PR #${canonicalCandidate.number}: required native enforcement is not fully active on main.`,
-    );
-    return {
-      action: "skipped",
-      reason: "native-enforcement-inactive",
-    };
-  }
-
-  const reconciliationRequest = {
-    repository,
-    number: canonicalCandidate.number,
-    headSha: canonicalCandidate.headSha,
-    requiredChecks,
-    token,
-  };
-  const feedback = await waitForFeedback(reconciliationRequest, runtime);
-  if (feedback?.status !== "clear") {
-    const reason =
-      feedback?.status === "blocked"
-        ? "review-feedback-blocking"
-        : "required-checks-unsuccessful";
-    log(
-      `PR #${canonicalCandidate.number}: review reconciliation blocked native auto-merge (${reason}).`,
-    );
-    return { action: "skipped", reason };
-  }
-  if (typeof feedback.fingerprint !== "string" || feedback.fingerprint === "") {
-    throw new Error("Malformed review reconciliation result");
-  }
-
-  const state = await getNativeState(
-    repository,
-    canonicalCandidate.number,
-    token,
-  );
-  if (state.mergeQueueEntry) {
-    log(`PR #${canonicalCandidate.number}: already in the native merge queue.`);
-    return { action: "already-queued", pull: canonicalCandidate.number };
-  }
-  if (state.autoMergeRequest) {
-    log(
-      `PR #${canonicalCandidate.number}: native auto-merge is already enabled.`,
-    );
-    return { action: "already-enabled", pull: canonicalCandidate.number };
-  }
-
-  const finalEffectiveRules = await getEffectiveRules(repository, token);
-  if (!hasRequiredNativeEnforcement(finalEffectiveRules, requiredChecks)) {
-    log(
-      `PR #${canonicalCandidate.number}: required native enforcement changed before the mutation.`,
-    );
-    return {
-      action: "skipped",
-      reason: "native-enforcement-inactive",
-    };
-  }
-
-  const finalPull = await getPull(repository, canonicalCandidate.number, token);
-  if (!isEligiblePull(finalPull, canonicalCandidate, repository)) {
-    log(
-      `PR #${canonicalCandidate.number}: pull request identity, state, base or exact head changed before the mutation.`,
-    );
-    return { action: "skipped", reason: "ineligible" };
-  }
-
-  const finalFeedback = await readFeedback(reconciliationRequest, runtime);
-  if (
-    finalFeedback?.status !== "clear" ||
-    finalFeedback.fingerprint !== feedback.fingerprint
-  ) {
-    log(
-      `PR #${canonicalCandidate.number}: checks or review feedback changed before the mutation.`,
-    );
-    return { action: "skipped", reason: "review-state-changed" };
-  }
-
-  await enableAutoMerge(
-    repository,
-    canonicalCandidate.number,
-    canonicalCandidate.headSha,
-    token,
-  );
-
-  let postArmFeedback;
-  try {
-    postArmFeedback = await readFeedback(reconciliationRequest, runtime);
-  } catch (error) {
-    postArmFeedback = {
-      status: "blocked",
-      fingerprint: sha256(`post-arm-feedback-read-failed:${error.message}`),
-    };
-  }
-  if (
-    postArmFeedback?.status !== "clear" ||
-    postArmFeedback.fingerprint !== feedback.fingerprint
-  ) {
-    const removed = await removeNativeMergePrivilege(
-      {
-        repository,
-        number: canonicalCandidate.number,
-        token,
-      },
-      { getNativeState, disableAutoMerge, dequeuePull },
-      runtime,
-      { retryWhenAbsent: true },
-    );
-    if (!removed) {
-      throw new Error(
-        "Checks or review feedback changed after arm, but no native privilege could be removed",
-      );
-    }
-    log(
-      `PR #${canonicalCandidate.number}: post-arm review drift removed native merge privilege.`,
-    );
-    return {
-      action: "deprivileged",
+      action: "enabled",
       pull: canonicalCandidate.number,
-      reason: "review-state-changed-after-arm",
+      head: canonicalCandidate.headSha,
     };
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
+  } finally {
+    if (isCopilotReviewRequest && !retainCopilotMergePrivilege) {
+      try {
+        await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      } catch (cleanupError) {
+        if (primaryFailure) {
+          throw new AggregateError(
+            [primaryFailure, cleanupError],
+            "Copilot review reconciliation failed and native privilege cleanup could not be proven",
+          );
+        }
+        throw cleanupError;
+      }
+    }
   }
-  log(
-    `PR #${canonicalCandidate.number}: native auto-merge enabled for exact head ${canonicalCandidate.headSha}.`,
-  );
-  return {
-    action: "enabled",
-    pull: canonicalCandidate.number,
-    head: canonicalCandidate.headSha,
-  };
 }
 
 const invokedDirectly =
