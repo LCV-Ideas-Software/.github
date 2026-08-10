@@ -6,8 +6,13 @@ but it cannot decide that a pull request is safe and it never bypasses a rule.
 
 ## Enforcement model
 
-The applicable Enterprise and organization rulesets target every repository's
-default branch without a bypass actor. Their effective union requires:
+The live Enterprise policy has two active branch layers, both without a bypass
+actor. `Enterprise All Branch Ruleset` targets `~ALL` branches and requires
+verified signatures, CodeQL and zizmor at zero-tolerance thresholds, Code
+Quality at `all`, license compliance, automatic Copilot review on new pushes
+and drafts, and the declared branch-name pattern. `Enterprise Default Branch
+Ruleset` targets `~DEFAULT_BRANCH`; organization and repository rulesets add
+their default-branch controls. Their effective union on `main` requires:
 
 - a pull request with squash as the only merge method and zero mandatory human
   approvals;
@@ -62,6 +67,34 @@ scan has one exact bootstrap `BranchProtectionID` signature because upstream
 v2.4.4 cannot inspect live rules in that mode. Any additional warning, changed
 message body, score outside Scorecard's official 0–10 domain, unexpected path,
 nonzero review numerator, new rule, or code finding fails the job.
+
+### Feature-branch pre-scan
+
+The all-branch Code Scanning rule evaluates an update against CodeQL and zizmor
+results already recorded for the exact SHA. The workflows intentionally scan
+`main`, pull requests to `main`, merge groups, and explicit
+`workflow_dispatch`; a normal feature-branch push cannot create its own result
+before the ref update is accepted. A new branch creation is exempt from that
+update cycle, so contributors use this no-bypass protocol for every subsequent
+feature-branch commit:
+
+1. Create an ephemeral scan branch whose allowed name points directly to the
+   final signed commit, for example
+   `git push origin HEAD:refs/heads/fix/native-scan-<short-sha>`.
+2. Use the existing `workflow_dispatch` entry points to dispatch both
+   `codeql.yml` and `zizmor.yml` on that ref with
+   `gh workflow run ... --ref <scan-branch>`.
+3. Wait for both workflow runs to succeed and query the repository's
+   code-scanning analyses. The inventory must contain the exact SHA from both
+   tools, `CodeQL` and `zizmor`; a workflow conclusion alone is insufficient.
+4. Push that unchanged commit to the real feature branch. Any new commit starts
+   the protocol again because results are SHA-bound.
+5. Re-read the real ref, then delete the ephemeral scan branch. Never retain a
+   scan ref, reuse an older analysis, bypass a ruleset, or push a different SHA.
+
+This is the same path for people and local coding agents. It does not require a
+fork and does not widen any workflow trigger beyond the explicit trusted
+dispatch that already exists.
 
 ## Native auto-merge arming
 

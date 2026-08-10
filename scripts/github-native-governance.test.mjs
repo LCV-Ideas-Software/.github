@@ -513,6 +513,16 @@ test("rollout documentation lists every active repository ruleset", async () => 
     /policy rollback pull request[\s\S]*gh pr merge[\s\S]*--auto[\s\S]*--squash[\s\S]*--match-head-commit[\s\S]*never[^.\n]*`--admin`[\s\S]*all other merges remain frozen/i,
     "the queue-disabled rollback must define its sole exact-head merge exception",
   );
+  assert.match(
+    documentation,
+    /Enterprise All Branch Ruleset[\s\S]*`~ALL`[\s\S]*CodeQL[\s\S]*zizmor[\s\S]*Code\s+Quality[\s\S]*license[\s\S]*Copilot[\s\S]*branch-name/i,
+    "the documentation must describe the live all-branch Enterprise layer",
+  );
+  assert.match(
+    documentation,
+    /ephemeral scan branch[\s\S]*workflow_dispatch[\s\S]*CodeQL[\s\S]*Zizmor[\s\S]*exact SHA[\s\S]*real feature branch[\s\S]*delete/i,
+    "feature updates must document the no-bypass pre-scan protocol",
+  );
   const section =
     /<!-- native-active-repositories:start -->([\s\S]*?)<!-- native-active-repositories:end -->/.exec(
       documentation,
