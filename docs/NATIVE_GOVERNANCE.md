@@ -232,7 +232,23 @@ fails, ordinary arming and the queue checkpoint accept that canonical review
 only if it was submitted strictly after the latest failed run attempt began;
 the controller validates `run_attempt` and uses `run_started_at`, so a rerun
 cannot inherit the original attempt's older `created_at` fence. An older or
-equal-timestamp review cannot mask a later failure. The explicit request also
+equal-timestamp review cannot mask a later failure.
+
+If GitHub Copilot is unable to perform the review because the requesting user
+has exhausted the applicable quota, the authenticated Copilot bot may submit
+the single canonical sentence observed for that condition. The controller
+classifies only that byte-for-byte body, in a `COMMENTED` review on the exact
+head, as `unavailable`. It never records the outcome as a clean review and never
+populates the canonical-review timestamp. The outcome may satisfy the
+availability portion of reconciliation only when it is strictly later than the
+trusted request and the associated failed dynamic run. Any near-variant,
+different bot, stale head, earlier attempt, or malformed body remains
+fail-closed. Existing unresolved threads, ordinary comments, blocking review
+states, and `Suppressed comments` remain cumulative and blocking; quota
+unavailability cannot erase feedback already delivered. The complete snapshot
+still has to survive the unchanged 120-second quiet window and final reread.
+
+The explicit request also
 uses the current attempt start to decide whether a run is active after its
 trusted request-run fence. Without the corresponding later review, the failed
 dynamic run continues to fail closed.

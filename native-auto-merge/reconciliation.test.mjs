@@ -12,6 +12,8 @@ import {
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
 const COPILOT_ID = 175728472;
 const CODEX_ID = 199175422;
+const COPILOT_QUOTA_UNAVAILABLE_BODY =
+  "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
 const REQUIRED_CHECKS = [
   { name: "Analyze actions", app_id: 15368 },
   { name: "Run zizmor", app_id: 15368 },
@@ -1070,6 +1072,190 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
   });
   assert.equal(failed.status, "failure");
   assert.equal(reviewReads, 2);
+});
+
+test("the exact Copilot quota outcome is unavailable without becoming a review", async () => {
+  const successfulChecks = [
+    checkRun(),
+    checkRun({ id: 2, name: "Run zizmor" }),
+  ];
+  const failedCopilotRun = {
+    id: 31336525189,
+    name: "Running Copilot Code Review",
+    path: "dynamic/agents/copilot-pull-request-reviewer",
+    event: "dynamic",
+    head_sha: HEAD_SHA,
+    status: "completed",
+    conclusion: "failure",
+    created_at: "2026-08-09T18:00:05Z",
+    run_attempt: 1,
+    run_started_at: "2026-08-09T18:00:05Z",
+    updated_at: "2026-08-09T18:00:06Z",
+    actor: { id: COPILOT_ID, login: "Copilot", type: "Bot" },
+    pull_requests: [
+      {
+        number: 99,
+        head: { sha: HEAD_SHA },
+        base: { ref: "main" },
+      },
+    ],
+  };
+  const quotaReview = review({
+    id: "PRR_quota_unavailable",
+    body: COPILOT_QUOTA_UNAVAILABLE_BODY,
+    createdAt: "2026-08-09T18:00:06Z",
+    submittedAt: "2026-08-09T18:00:06Z",
+    updatedAt: "2026-08-09T18:00:06Z",
+  });
+  const quotaSnapshot = snapshot({
+    reviews: {
+      nodes: [quotaReview],
+      pageInfo: { hasNextPage: false },
+    },
+  });
+
+  const assessed = assessReviewSnapshot(quotaSnapshot, HEAD_SHA);
+  assert.equal(assessed.status, "clear");
+  assert.equal(assessed.latestExactHeadCopilotState, "unavailable");
+  assert.equal(assessed.latestExactHeadCopilotReviewAt, null);
+  assert.equal(
+    assessed.latestExactHeadCopilotUnavailableAt,
+    "2026-08-09T18:00:06Z",
+  );
+  assert.deepEqual(assessed.copilotUnavailableReviewIds, [
+    "PRR_quota_unavailable",
+  ]);
+
+  const request = {
+    repository: "LCV-Ideas-Software/.github",
+    number: 99,
+    headSha: HEAD_SHA,
+    requiredChecks: REQUIRED_CHECKS,
+    token: "pat-token",
+    requireCopilotReviewRun: true,
+    copilotReviewRequestedAt: "2026-08-09T18:00:05Z",
+  };
+  const unavailable = await readReviewReconciliationState(request, {
+    listCheckRuns: async () => successfulChecks,
+    listCopilotReviewRuns: async () => [failedCopilotRun],
+    getReviewSnapshot: async () => quotaSnapshot,
+  });
+  assert.equal(unavailable.status, "clear");
+  assert.equal(unavailable.latestExactHeadCopilotState, "unavailable");
+  assert.equal(unavailable.latestExactHeadCopilotReviewAt, null);
+  assert.equal(
+    unavailable.latestExactHeadCopilotUnavailableAt,
+    "2026-08-09T18:00:06Z",
+  );
+
+  const staleUnavailable = await readReviewReconciliationState(request, {
+    listCheckRuns: async () => successfulChecks,
+    listCopilotReviewRuns: async () => [
+      {
+        ...failedCopilotRun,
+        run_attempt: 2,
+        run_started_at: "2026-08-09T18:10:00Z",
+        updated_at: "2026-08-09T18:10:01Z",
+      },
+    ],
+    getReviewSnapshot: async () => quotaSnapshot,
+  });
+  assert.equal(staleUnavailable.status, "failure");
+});
+
+test("the Copilot quota exception is exact, head-bound, and cumulative", () => {
+  const quotaReview = review({
+    id: "PRR_quota_unavailable",
+    body: COPILOT_QUOTA_UNAVAILABLE_BODY,
+    createdAt: "2026-08-09T18:00:04Z",
+    submittedAt: "2026-08-09T18:00:04Z",
+    updatedAt: "2026-08-09T18:00:04Z",
+  });
+
+  for (const body of [
+    `${COPILOT_QUOTA_UNAVAILABLE_BODY}\n`,
+    ` ${COPILOT_QUOTA_UNAVAILABLE_BODY}`,
+    COPILOT_QUOTA_UNAVAILABLE_BODY.replace("quota limit.", "quota limit"),
+    COPILOT_QUOTA_UNAVAILABLE_BODY.replace("their", "the"),
+  ]) {
+    assert.throws(
+      () =>
+        assessReviewSnapshot(
+          snapshot({
+            reviews: {
+              nodes: [review({ body })],
+              pageInfo: { hasNextPage: false },
+            },
+          }),
+          HEAD_SHA,
+        ),
+      /Copilot review body.*malformed/i,
+    );
+  }
+
+  const stale = assessReviewSnapshot(
+    snapshot({
+      reviews: {
+        nodes: [
+          {
+            ...quotaReview,
+            commit: { oid: "f".repeat(40) },
+          },
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(stale.status, "clear");
+  assert.equal(stale.latestExactHeadCopilotState, null);
+  assert.equal(stale.latestExactHeadCopilotUnavailableAt, null);
+  assert.deepEqual(stale.copilotUnavailableReviewIds, []);
+
+  const suppressedBody = [
+    "## Pull request overview",
+    "",
+    "Copilot reviewed 1 out of 1 changed file in this pull request and generated no new comments.",
+    "",
+    "<details>",
+    "<summary>Suppressed comments (2)</summary>",
+    "two earlier findings",
+    "</details>",
+  ].join("\n");
+  const cumulative = assessReviewSnapshot(
+    snapshot({
+      reviews: {
+        nodes: [
+          review({
+            id: "PRR_earlier_suppressed",
+            body: suppressedBody,
+            createdAt: "2026-08-09T18:00:01Z",
+            submittedAt: "2026-08-09T18:00:01Z",
+            updatedAt: "2026-08-09T18:00:01Z",
+          }),
+          quotaReview,
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+      reviewThreads: {
+        nodes: [thread({ id: "PRRT_earlier_finding" })],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(cumulative.status, "blocked");
+  assert.equal(cumulative.suppressedCommentCount, 2);
+  assert.deepEqual(cumulative.unresolvedBotThreadIds, ["PRRT_earlier_finding"]);
+  assert.equal(
+    cumulative.latestExactHeadCopilotReviewAt,
+    "2026-08-09T18:00:01Z",
+  );
+  assert.equal(cumulative.latestExactHeadCopilotState, "unavailable");
+  assert.equal(
+    cumulative.latestExactHeadCopilotUnavailableAt,
+    "2026-08-09T18:00:04Z",
+  );
 });
 
 test("current-head Codex issue comments are clean only under the exact known contract", () => {
