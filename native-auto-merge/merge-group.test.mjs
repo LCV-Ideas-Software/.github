@@ -14,6 +14,8 @@ const REPOSITORY = "LCV-Ideas-Software/.github";
 const SYNTHETIC_SHA = "a".repeat(40);
 const BASE_SHA = "c".repeat(40);
 const HEAD_SHA = "b".repeat(40);
+const COPILOT_QUOTA_UNAVAILABLE_BODY =
+  "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
 
 function mergeGroupEnv(overrides = {}) {
   return {
@@ -247,6 +249,24 @@ function copilotReviewSnapshot(submittedAt) {
           updatedAt: submittedAt,
           isMinimized: false,
           minimizedReason: null,
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  };
+}
+
+function copilotQuotaUnavailableSnapshot(submittedAt, overrides = {}) {
+  const review = copilotReviewSnapshot(submittedAt).reviews.nodes[0];
+  return {
+    ...emptyReviewSnapshot(),
+    ...overrides,
+    reviews: {
+      nodes: [
+        {
+          ...review,
+          id: "PRR_copilot_quota_unavailable",
+          body: COPILOT_QUOTA_UNAVAILABLE_BODY,
         },
       ],
       pageInfo: { hasNextPage: false },
@@ -829,6 +849,201 @@ test("merge-group feedback state is read-only and keeps bot absence neutral", as
     },
   );
   assert.equal(laterCanonicalFallbackReview.status, "clear");
+
+  const laterQuotaUnavailableOutcome = await readMergeGroupFeedbackState(
+    {
+      repository: REPOSITORY,
+      number: 108,
+      headSha: HEAD_SHA,
+      token: "github-token",
+    },
+    {
+      getRequestedReviewers: async () => ({ users: [], teams: [] }),
+      listCopilotReviewRuns: async () => [copilotRun()],
+      getReviewSnapshot: async () =>
+        copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+    },
+  );
+  assert.equal(laterQuotaUnavailableOutcome.status, "clear");
+  assert.equal(
+    laterQuotaUnavailableOutcome.latestExactHeadCopilotState,
+    "unavailable",
+  );
+  assert.equal(
+    laterQuotaUnavailableOutcome.latestExactHeadCopilotReviewAt,
+    null,
+  );
+
+  const detachedRunFromClosedPull = copilotRun({
+    id: 31336525000,
+    created_at: "2026-08-09T17:59:00Z",
+    run_started_at: "2026-08-09T17:59:00Z",
+    updated_at: "2026-08-09T17:59:01Z",
+    pull_requests: [],
+  });
+  const sharedHeadAcrossClosedAndCurrentPulls =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [
+          detachedRunFromClosedPull,
+          copilotRun(),
+        ],
+        getReviewSnapshot: async () =>
+          copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+      },
+    );
+  assert.equal(sharedHeadAcrossClosedAndCurrentPulls.status, "clear");
+
+  const detachedRunCannotAuthorizeMergeGroupQuota =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [detachedRunFromClosedPull],
+        getReviewSnapshot: async () =>
+          copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+      },
+    );
+  assert.equal(detachedRunCannotAuthorizeMergeGroupQuota.status, "failure");
+
+  const unassociatedQuotaUnavailableOutcome = await readMergeGroupFeedbackState(
+    {
+      repository: REPOSITORY,
+      number: 108,
+      headSha: HEAD_SHA,
+      token: "github-token",
+    },
+    {
+      getRequestedReviewers: async () => ({ users: [], teams: [] }),
+      listCopilotReviewRuns: async () => [],
+      getReviewSnapshot: async () =>
+        copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+    },
+  );
+  assert.equal(unassociatedQuotaUnavailableOutcome.status, "failure");
+
+  const canonicalReviewAfterQuotaUnavailableOutcome =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [],
+        getReviewSnapshot: async () => {
+          const quota = copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z");
+          return {
+            ...quota,
+            reviews: {
+              nodes: [
+                ...quota.reviews.nodes,
+                copilotReviewSnapshot("2026-08-09T18:00:03Z").reviews.nodes[0],
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          };
+        },
+      },
+    );
+  assert.equal(canonicalReviewAfterQuotaUnavailableOutcome.status, "clear");
+  assert.equal(
+    canonicalReviewAfterQuotaUnavailableOutcome.latestExactHeadCopilotState,
+    "reviewed",
+  );
+
+  const quotaUnavailableBeforeSuccessfulRerun =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [
+          copilotRun({
+            run_attempt: 2,
+            run_started_at: "2026-08-09T18:10:00Z",
+            updated_at: "2026-08-09T18:10:01Z",
+            conclusion: "success",
+          }),
+        ],
+        getReviewSnapshot: async () =>
+          copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z"),
+      },
+    );
+  assert.equal(quotaUnavailableBeforeSuccessfulRerun.status, "failure");
+
+  const quotaUnavailableDoesNotEraseFindings =
+    await readMergeGroupFeedbackState(
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [copilotRun()],
+        getReviewSnapshot: async () => {
+          const quota = copilotQuotaUnavailableSnapshot("2026-08-09T18:00:02Z");
+          return {
+            ...quota,
+            reviewThreads: {
+              nodes: [
+                {
+                  id: "PRRT_existing_finding",
+                  isResolved: false,
+                  isOutdated: false,
+                  isCollapsed: false,
+                  comments: {
+                    nodes: [
+                      {
+                        id: "PRRC_existing_finding",
+                        author: {
+                          __typename: "Bot",
+                          databaseId: 175728472,
+                          login: "copilot-pull-request-reviewer",
+                        },
+                        originalCommit: { oid: HEAD_SHA },
+                        pullRequestReview: { id: "PRR_existing_finding" },
+                        createdAt: "2026-08-09T17:59:59Z",
+                        updatedAt: "2026-08-09T17:59:59Z",
+                        isMinimized: false,
+                        minimizedReason: null,
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false },
+                  },
+                },
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          };
+        },
+      },
+    );
+  assert.equal(quotaUnavailableDoesNotEraseFindings.status, "blocked");
+  assert.deepEqual(
+    quotaUnavailableDoesNotEraseFindings.unresolvedBotThreadIds,
+    ["PRRT_existing_finding"],
+  );
 
   const reviewOlderThanFailedRerun = await readMergeGroupFeedbackState(
     {

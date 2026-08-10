@@ -62,6 +62,8 @@ const CODEX_REVIEW_BOT_DATABASE_ID = 199175422;
 const COPILOT_REVIEW_WORKFLOW_NAME = "Running Copilot Code Review";
 const COPILOT_REVIEW_WORKFLOW_PATH =
   "dynamic/agents/copilot-pull-request-reviewer";
+const COPILOT_QUOTA_UNAVAILABLE_BODY =
+  "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
 const CODEX_CLEAN_REVIEW_HEADLINES = new Set([
   "Codex Review: Didn't find any major issues. :+1:",
   "Codex Review: Didn't find any major issues. :rocket:",
@@ -719,6 +721,12 @@ function parseSuppressedCommentCount(body) {
 }
 
 function parseCopilotReviewBody(body) {
+  if (body === COPILOT_QUOTA_UNAVAILABLE_BODY) {
+    return {
+      state: "unavailable",
+      suppressedCommentCount: 0,
+    };
+  }
   if (
     typeof body !== "string" ||
     !/^## Pull request overview\r?\n/.test(body)
@@ -754,6 +762,7 @@ function parseCopilotReviewBody(body) {
     }
   }
   return {
+    state: "reviewed",
     suppressedCommentCount: parseSuppressedCommentCount(body),
   };
 }
@@ -1179,20 +1188,46 @@ export function assessReviewSnapshot(snapshot, headSha) {
     .map((candidate) => candidate.id)
     .sort();
   let suppressedCommentCount = 0;
+  const copilotReviewOutcomes = [];
+  const copilotUnavailableReviewIds = [];
   for (const copilotReview of exactHeadCopilotReviews) {
     if (copilotReview.state !== "COMMENTED") continue;
     const parsed = parseCopilotReviewBody(copilotReview.body);
+    if (parsed.state === "unavailable") {
+      copilotUnavailableReviewIds.push(copilotReview.id);
+    }
+    if (copilotReview.submittedAt !== null) {
+      copilotReviewOutcomes.push({
+        id: copilotReview.id,
+        state: parsed.state,
+        submittedAt: copilotReview.submittedAt,
+        updatedAt: copilotReview.updatedAt,
+      });
+    }
     suppressedCommentCount += parsed.suppressedCommentCount;
     if (!Number.isSafeInteger(suppressedCommentCount)) {
       throw new Error("Copilot Suppressed comments count is malformed");
     }
   }
+  copilotUnavailableReviewIds.sort();
+  copilotReviewOutcomes.sort(
+    (left, right) =>
+      Date.parse(left.submittedAt) - Date.parse(right.submittedAt) ||
+      Date.parse(left.updatedAt) - Date.parse(right.updatedAt) ||
+      left.id.localeCompare(right.id),
+  );
+  const latestExactHeadCopilotState =
+    copilotReviewOutcomes.at(-1)?.state ?? null;
   const latestExactHeadCopilotReviewAt =
-    exactHeadCopilotReviews
-      .filter(
-        (review) => review.state === "COMMENTED" && review.submittedAt !== null,
-      )
-      .map((review) => review.submittedAt)
+    copilotReviewOutcomes
+      .filter((outcome) => outcome.state === "reviewed")
+      .map((outcome) => outcome.submittedAt)
+      .sort((left, right) => Date.parse(left) - Date.parse(right))
+      .at(-1) ?? null;
+  const latestExactHeadCopilotUnavailableAt =
+    copilotReviewOutcomes
+      .filter((outcome) => outcome.state === "unavailable")
+      .map((outcome) => outcome.submittedAt)
       .sort((left, right) => Date.parse(left) - Date.parse(right))
       .at(-1) ?? null;
 
@@ -1248,7 +1283,10 @@ export function assessReviewSnapshot(snapshot, headSha) {
     blockingBotReviewStateIds,
     pendingBotReviewStateIds,
     unresolvedBotThreadIds,
+    copilotUnavailableReviewIds,
+    latestExactHeadCopilotState,
     latestExactHeadCopilotReviewAt,
+    latestExactHeadCopilotUnavailableAt,
     fingerprint: sha256(JSON.stringify(canonical)),
   };
 }
@@ -2470,6 +2508,32 @@ export function assessCopilotReviewRuns(
       run.path === COPILOT_REVIEW_WORKFLOW_PATH;
     const knownActor = run.actor.id === COPILOT_REVIEW_BOT_DATABASE_ID;
     if (!knownIdentity && !knownActor) continue;
+    for (const pull of run.pull_requests) {
+      if (
+        !isObject(pull) ||
+        !positivePullNumber(pull.number) ||
+        !isObject(pull.head) ||
+        !SHA_PATTERN.test(pull.head.sha ?? "") ||
+        !isObject(pull.base) ||
+        typeof pull.base.ref !== "string" ||
+        pull.base.ref === ""
+      ) {
+        throw new Error("Malformed Copilot review pull request association");
+      }
+    }
+    const pullAssociations = run.pull_requests.filter(
+      (pull) => pull.number === number,
+    );
+    if (pullAssociations.length === 0) {
+      continue;
+    }
+    if (
+      pullAssociations.length !== 1 ||
+      pullAssociations[0].head.sha !== headSha ||
+      pullAssociations[0].base.ref !== "main"
+    ) {
+      throw new Error("Copilot review workflow lost its exact pull request");
+    }
     if (
       !knownIdentity ||
       !knownActor ||
@@ -2478,15 +2542,6 @@ export function assessCopilotReviewRuns(
       run.head_sha !== headSha
     ) {
       throw new Error("Copilot review workflow identity drifted");
-    }
-    const associatedPull = run.pull_requests.some(
-      (pull) =>
-        pull?.number === number &&
-        pull?.head?.sha === headSha &&
-        pull?.base?.ref === "main",
-    );
-    if (!associatedPull) {
-      throw new Error("Copilot review workflow lost its exact pull request");
     }
     const createdAt = validTimestamp(
       run.created_at,
@@ -2850,7 +2905,28 @@ export async function readReviewReconciliationState(
     reviews.latestExactHeadCopilotReviewAt !== null &&
     Date.parse(reviews.latestExactHeadCopilotReviewAt) >
       Date.parse(copilotReviewRequestedAt);
-  if (freshReviewMustCompleteRequest && !hasFreshExactHeadCopilotReview) {
+  const hasFreshExactHeadCopilotUnavailableOutcome =
+    copilotReviewRequestedAt !== null &&
+    reviews.latestExactHeadCopilotUnavailableAt !== null &&
+    Date.parse(reviews.latestExactHeadCopilotUnavailableAt) >
+      Date.parse(copilotReviewRequestedAt);
+  const unavailableOutcomeFollowsFailedRun =
+    copilot.status === "failure" &&
+    copilot.latestFailureStartedAt !== null &&
+    reviews.latestExactHeadCopilotUnavailableAt !== null &&
+    Date.parse(reviews.latestExactHeadCopilotUnavailableAt) >
+      Date.parse(copilot.latestFailureStartedAt);
+  const hasValidExactHeadCopilotUnavailableOutcome =
+    hasFreshExactHeadCopilotUnavailableOutcome &&
+    unavailableOutcomeFollowsFailedRun;
+  const unassociatedQuotaUnavailableOutcome =
+    reviews.latestExactHeadCopilotState === "unavailable" &&
+    !unavailableOutcomeFollowsFailedRun;
+  if (
+    freshReviewMustCompleteRequest &&
+    !hasFreshExactHeadCopilotReview &&
+    !hasFreshExactHeadCopilotUnavailableOutcome
+  ) {
     return {
       status: "pending",
       fingerprint: sha256(
@@ -2868,7 +2944,11 @@ export async function readReviewReconciliationState(
     reviews.latestExactHeadCopilotReviewAt !== null &&
     Date.parse(reviews.latestExactHeadCopilotReviewAt) >
       Date.parse(copilot.latestFailureStartedAt);
-  if (copilot.status === "failure" && !canonicalReviewFollowsFailedRun) {
+  if (
+    copilot.status === "failure" &&
+    !canonicalReviewFollowsFailedRun &&
+    !unavailableOutcomeFollowsFailedRun
+  ) {
     return {
       status: "failure",
       fingerprint: sha256(
@@ -2876,6 +2956,35 @@ export async function readReviewReconciliationState(
           checks: checks.fingerprint,
           requestedReviewers,
           copilot: copilot.fingerprint,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
+  if (unassociatedQuotaUnavailableOutcome) {
+    return {
+      status: "pending",
+      fingerprint: sha256(
+        JSON.stringify({
+          checks: checks.fingerprint,
+          requestedReviewers,
+          copilot: copilot.fingerprint,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
+  if (
+    freshReviewMustCompleteRequest &&
+    !hasFreshExactHeadCopilotReview &&
+    !hasValidExactHeadCopilotUnavailableOutcome
+  ) {
+    return {
+      status: "pending",
+      fingerprint: sha256(
+        JSON.stringify({
+          copilot: copilot.fingerprint,
+          requestedReviewers,
           reviews: reviews.fingerprint,
         }),
       ),
@@ -2897,7 +3006,11 @@ export async function readReviewReconciliationState(
     blockingBotReviewStateIds: reviews.blockingBotReviewStateIds,
     pendingBotReviewStateIds: reviews.pendingBotReviewStateIds,
     unresolvedBotThreadIds: reviews.unresolvedBotThreadIds,
+    copilotUnavailableReviewIds: reviews.copilotUnavailableReviewIds,
+    latestExactHeadCopilotState: reviews.latestExactHeadCopilotState,
     latestExactHeadCopilotReviewAt: reviews.latestExactHeadCopilotReviewAt,
+    latestExactHeadCopilotUnavailableAt:
+      reviews.latestExactHeadCopilotUnavailableAt,
   };
 }
 
@@ -2923,7 +3036,11 @@ export async function readReviewFeedbackState(
     blockingBotReviewStateIds: reviews.blockingBotReviewStateIds,
     pendingBotReviewStateIds: reviews.pendingBotReviewStateIds,
     unresolvedBotThreadIds: reviews.unresolvedBotThreadIds,
+    copilotUnavailableReviewIds: reviews.copilotUnavailableReviewIds,
+    latestExactHeadCopilotState: reviews.latestExactHeadCopilotState,
     latestExactHeadCopilotReviewAt: reviews.latestExactHeadCopilotReviewAt,
+    latestExactHeadCopilotUnavailableAt:
+      reviews.latestExactHeadCopilotUnavailableAt,
   };
 }
 
@@ -2971,10 +3088,21 @@ export async function readMergeGroupFeedbackState(
     reviews.latestExactHeadCopilotReviewAt !== null &&
     Date.parse(reviews.latestExactHeadCopilotReviewAt) >
       Date.parse(copilot.latestFailureStartedAt);
-  if (
+  const unavailableOutcomeFollowsFailedRun =
     copilot.status === "failure" &&
+    copilot.latestFailureStartedAt !== null &&
+    reviews.latestExactHeadCopilotUnavailableAt !== null &&
+    Date.parse(reviews.latestExactHeadCopilotUnavailableAt) >
+      Date.parse(copilot.latestFailureStartedAt);
+  const unassociatedQuotaUnavailableOutcome =
+    reviews.latestExactHeadCopilotState === "unavailable" &&
+    !unavailableOutcomeFollowsFailedRun;
+  if (
     reviews.status === "clear" &&
-    !canonicalReviewFollowsFailedRun
+    ((copilot.status === "failure" &&
+      !canonicalReviewFollowsFailedRun &&
+      !unavailableOutcomeFollowsFailedRun) ||
+      unassociatedQuotaUnavailableOutcome)
   ) {
     return {
       status: "failure",

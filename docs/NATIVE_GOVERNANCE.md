@@ -158,6 +158,15 @@ run by its GitHub bot database ID, event, workflow name, internal path, and pull
 request association. If that run exists, reconciliation remains pending until
 it completes; a failed ordinary review run fails closed. If it does not exist,
 bot absence stays neutral after the quiet window.
+Because the REST inventory is filtered by repository and head SHA, the same
+commit can legitimately expose runs from another pull request or a detached run
+whose pull request was already closed. Well-formed runs that are not associated
+with the pull request currently being reconciled are excluded; a run that names
+the current pull request but disagrees on its exact head or `main` base still
+fails closed. A quota-unavailable review can never use an excluded run as its
+required failed-run fence. An ordinary wake that sees `unavailable` without a
+current associated failed run remains pending until the association converges
+or reconciliation times out; the merge-group checkpoint fails closed.
 Only after checks and review state remain unchanged and non-blocking for a
 120-second quiet window may the action continue. Polling is bounded to 12
 minutes and the trusted job has a 30-minute timeout. Idempotent REST GET and
@@ -232,7 +241,23 @@ fails, ordinary arming and the queue checkpoint accept that canonical review
 only if it was submitted strictly after the latest failed run attempt began;
 the controller validates `run_attempt` and uses `run_started_at`, so a rerun
 cannot inherit the original attempt's older `created_at` fence. An older or
-equal-timestamp review cannot mask a later failure. The explicit request also
+equal-timestamp review cannot mask a later failure.
+
+If GitHub Copilot is unable to perform the review because the requesting user
+has exhausted the applicable quota, the authenticated Copilot bot may submit
+the single canonical sentence observed for that condition. The controller
+classifies only that byte-for-byte body, in a `COMMENTED` review on the exact
+head, as `unavailable`. It never records the outcome as a clean review and never
+populates the canonical-review timestamp. The outcome may satisfy the
+availability portion of reconciliation only when it is strictly later than the
+trusted request and the associated failed dynamic run. Any near-variant,
+different bot, stale head, earlier attempt, or malformed body remains
+fail-closed. Existing unresolved threads, ordinary comments, blocking review
+states, and `Suppressed comments` remain cumulative and blocking; quota
+unavailability cannot erase feedback already delivered. The complete snapshot
+still has to survive the unchanged 120-second quiet window and final reread.
+
+The explicit request also
 uses the current attempt start to decide whether a run is active after its
 trusted request-run fence. Without the corresponding later review, the failed
 dynamic run continues to fail closed.

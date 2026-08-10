@@ -3296,7 +3296,7 @@ test("action and consumer workflow keep the credential and execution boundary na
   assert.equal(
     (
       workflow.match(
-        /LCV-Ideas-Software\/\.github\/native-auto-merge@faa9f91026f33adacc6b01643aad46bf3d841344 # native-auto-merge\/v2\.1\.1/g,
+        /LCV-Ideas-Software\/\.github\/native-auto-merge@231cd33f27c260a6b01fec26aa1d0eb606e1ee2d # native-auto-merge\/v2\.1\.4/g,
       ) ?? []
     ).length,
     1,
