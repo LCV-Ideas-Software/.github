@@ -45,6 +45,7 @@ function feedbackRuntime(overrides = {}) {
   return {
     waitForReviewReconciliation: async () => CLEAR_FEEDBACK,
     readReviewReconciliationState: async () => CLEAR_FEEDBACK,
+    sleep: async () => {},
     ...overrides,
   };
 }
@@ -1847,8 +1848,12 @@ test("controller refetches exact state and enables native auto-merge once", asyn
     "policy",
     "rules",
     "state",
+    "state",
     "rules",
+    "state",
     "pull",
+    "state",
+    "state",
     "gh",
   ]);
   assert.deepEqual(mutations, [[REPOSITORY, 81, HEAD_SHA, "pat-token"]]);
@@ -1895,6 +1900,7 @@ test("feedback appearing between the final read and arm is removed after the mut
         assert.equal(token, "pat-token");
         disabled = true;
       },
+      sleep: async () => {},
     },
   );
 
@@ -1907,12 +1913,20 @@ test("feedback appearing between the final read and arm is removed after the mut
   assert.equal(disabled, true);
   assert.deepEqual(trace, [
     "state",
+    "state",
+    "state",
+    "state",
     "feedback:1",
+    "state",
     "feedback:2",
     "enable",
     "feedback:3",
     "state",
     "disable",
+    "state",
+    "state",
+    "state",
+    "state",
     "state",
   ]);
 });
@@ -2013,8 +2027,12 @@ test("controller binds workflow candidates to a fixed open-pull inventory before
     "policy",
     "rules",
     "state",
+    "state",
     "rules",
+    "state",
     "pull",
+    "state",
+    "state",
     "gh",
   ]);
 });
@@ -2048,21 +2066,27 @@ test("controller consumes explicit workflow inputs without reading GITHUB_EVENT_
   });
 });
 
-test("controller is idempotent for native auto-merge and merge queue state", async () => {
-  for (const [state, expectedAction] of [
+test("controller holds pre-existing native privilege while revalidating", async () => {
+  for (const [initialState, expectedRemoval] of [
     [
       {
+        id: "PR_test",
         autoMergeRequest: { enabledAt: "2026-08-08T00:00:00Z" },
         mergeQueueEntry: null,
       },
-      "already-enabled",
+      "disable",
     ],
     [
-      { autoMergeRequest: null, mergeQueueEntry: { id: "MQE_test" } },
-      "already-queued",
+      {
+        id: "PR_test",
+        autoMergeRequest: null,
+        mergeQueueEntry: { id: "MQE_test" },
+      },
+      "dequeue",
     ],
   ]) {
-    let mutations = 0;
+    let state = structuredClone(initialState);
+    const mutations = [];
     const result = await runNativeAutoMerge(
       {
         ...workflowRunInputEnv(),
@@ -2074,15 +2098,144 @@ test("controller is idempotent for native auto-merge and merge queue state", asy
         getPull: async () => pull(),
         getEffectiveRules: async () => effectiveRules(),
         getNativeState: async () => state,
-        enableAutoMerge: async () => {
-          mutations += 1;
+        disableAutoMerge: async () => {
+          mutations.push("disable");
+          state = {
+            ...state,
+            autoMergeRequest: null,
+          };
         },
+        dequeuePull: async () => {
+          mutations.push("dequeue");
+          state = {
+            ...state,
+            mergeQueueEntry: null,
+          };
+        },
+        enableAutoMerge: async () => {
+          mutations.push("enable");
+          state = {
+            ...state,
+            autoMergeRequest: { enabledAt: "2026-08-09T18:30:00Z" },
+          };
+        },
+        sleep: async () => {},
       },
     );
 
-    assert.deepEqual(result, { action: expectedAction, pull: 81 });
-    assert.equal(mutations, 0);
+    assert.deepEqual(result, {
+      action: "enabled",
+      pull: 81,
+      head: HEAD_SHA,
+    });
+    assert.deepEqual(mutations, [expectedRemoval, "enable"]);
   }
+});
+
+test("ordinary reconciliation removes existing merge privilege when feedback blocks", async () => {
+  let armed = true;
+  let clock = 0;
+  let disables = 0;
+  let feedbackReads = 0;
+  const result = await runNativeAutoMerge(
+    {
+      ...workflowRunInputEnv(),
+      INPUT_AUTOMATION_TOKEN: "pat-token",
+    },
+    {
+      listOpenPulls: async () => [pull()],
+      loadRequiredChecks: async () => POLICY_REQUIRED_CHECKS,
+      getEffectiveRules: async () => effectiveRules(),
+      readState: async () => {
+        feedbackReads += 1;
+        assert.equal(
+          armed,
+          false,
+          "native privilege must be absent before every feedback read",
+        );
+        return {
+          status: "blocked",
+          fingerprint: "late-finding",
+        };
+      },
+      getNativeState: async () => ({
+        id: "PR_test",
+        autoMergeRequest: armed ? { enabledAt: "2026-08-09T18:20:00Z" } : null,
+        mergeQueueEntry: null,
+      }),
+      disableAutoMerge: async () => {
+        disables += 1;
+        armed = false;
+      },
+      dequeuePull: async () =>
+        assert.fail("the blocked PR was auto-merge enabled, not queued"),
+      enableAutoMerge: async () =>
+        assert.fail("blocking feedback must never arm auto-merge"),
+      now: () => clock,
+      pollMilliseconds: 1,
+      quietMilliseconds: 0,
+      timeoutMilliseconds: 2,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+      },
+    },
+  );
+
+  assert.deepEqual(result, {
+    action: "skipped",
+    reason: "review-feedback-blocking",
+  });
+  assert.equal(armed, false);
+  assert.equal(disables, 1);
+  assert.equal(feedbackReads, 3);
+});
+
+test("ordinary reconciliation removes existing merge privilege when feedback fails closed", async () => {
+  let armed = true;
+  let disables = 0;
+  await assert.rejects(
+    runNativeAutoMerge(
+      {
+        ...workflowRunInputEnv(),
+        INPUT_AUTOMATION_TOKEN: "pat-token",
+      },
+      {
+        listOpenPulls: async () => [pull()],
+        loadRequiredChecks: async () => POLICY_REQUIRED_CHECKS,
+        getEffectiveRules: async () => effectiveRules(),
+        readState: async () => {
+          assert.equal(
+            armed,
+            false,
+            "native privilege must be absent before a feedback read that throws",
+          );
+          throw new Error("review snapshot read failed");
+        },
+        getNativeState: async () => ({
+          id: "PR_test",
+          autoMergeRequest: armed
+            ? { enabledAt: "2026-08-09T18:20:00Z" }
+            : null,
+          mergeQueueEntry: null,
+        }),
+        disableAutoMerge: async () => {
+          disables += 1;
+          armed = false;
+        },
+        dequeuePull: async () =>
+          assert.fail("the failing PR was auto-merge enabled, not queued"),
+        enableAutoMerge: async () =>
+          assert.fail(
+            "failed feedback reconciliation must never arm auto-merge",
+          ),
+        sleep: async () => {},
+      },
+    ),
+    /review snapshot read failed/i,
+  );
+
+  assert.equal(armed, false);
+  assert.equal(disables, 1);
 });
 
 test("native privilege removal handles auto-merge, queue, or both", async () => {

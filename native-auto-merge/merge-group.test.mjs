@@ -61,6 +61,66 @@ function emptyReviewSnapshot() {
   };
 }
 
+function copilotRun(overrides = {}) {
+  return {
+    id: 31336525189,
+    name: "Running Copilot Code Review",
+    path: "dynamic/agents/copilot-pull-request-reviewer",
+    event: "dynamic",
+    head_sha: HEAD_SHA,
+    status: "completed",
+    conclusion: "failure",
+    created_at: "2026-08-09T18:00:00Z",
+    run_attempt: 1,
+    run_started_at: "2026-08-09T18:00:00Z",
+    updated_at: "2026-08-09T18:00:01Z",
+    actor: { id: 175728472, login: "Copilot", type: "Bot" },
+    pull_requests: [
+      {
+        number: 108,
+        head: { sha: HEAD_SHA },
+        base: { ref: "main" },
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function copilotReviewSnapshot(submittedAt) {
+  return {
+    ...emptyReviewSnapshot(),
+    reviews: {
+      nodes: [
+        {
+          id: "PRR_copilot",
+          author: {
+            __typename: "Bot",
+            databaseId: 175728472,
+            login: "copilot-pull-request-reviewer",
+          },
+          body: [
+            "## Pull request overview",
+            "",
+            "Adds deterministic governance coverage.",
+            "",
+            "### Reviewed changes",
+            "",
+            "Copilot reviewed 1 out of 1 changed file in this pull request and generated no comments.",
+          ].join("\n"),
+          state: "COMMENTED",
+          commit: { oid: HEAD_SHA },
+          createdAt: submittedAt,
+          submittedAt,
+          updatedAt: submittedAt,
+          isMinimized: false,
+          minimizedReason: null,
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  };
+}
+
 test("merge-group inputs bind the exact synthetic event without a PAT", () => {
   assert.deepEqual(mergeGroupEventFromInputs(mergeGroupEnv()), {
     repository: REPOSITORY,
@@ -245,6 +305,59 @@ test("merge-group feedback state is read-only and keeps bot absence neutral", as
     },
   );
   assert.equal(pending.status, "pending");
+
+  const failedWithoutFallbackReview = await readMergeGroupFeedbackState(
+    {
+      repository: REPOSITORY,
+      number: 108,
+      headSha: HEAD_SHA,
+      token: "github-token",
+    },
+    {
+      getRequestedReviewers: async () => ({ users: [], teams: [] }),
+      listCopilotReviewRuns: async () => [copilotRun()],
+      getReviewSnapshot: async () => emptyReviewSnapshot(),
+    },
+  );
+  assert.equal(failedWithoutFallbackReview.status, "failure");
+
+  const laterCanonicalFallbackReview = await readMergeGroupFeedbackState(
+    {
+      repository: REPOSITORY,
+      number: 108,
+      headSha: HEAD_SHA,
+      token: "github-token",
+    },
+    {
+      getRequestedReviewers: async () => ({ users: [], teams: [] }),
+      listCopilotReviewRuns: async () => [copilotRun()],
+      getReviewSnapshot: async () =>
+        copilotReviewSnapshot("2026-08-09T18:00:02Z"),
+    },
+  );
+  assert.equal(laterCanonicalFallbackReview.status, "clear");
+
+  const reviewOlderThanFailedRerun = await readMergeGroupFeedbackState(
+    {
+      repository: REPOSITORY,
+      number: 108,
+      headSha: HEAD_SHA,
+      token: "github-token",
+    },
+    {
+      getRequestedReviewers: async () => ({ users: [], teams: [] }),
+      listCopilotReviewRuns: async () => [
+        copilotRun({
+          run_attempt: 2,
+          run_started_at: "2026-08-09T18:10:00Z",
+          updated_at: "2026-08-09T18:10:01Z",
+        }),
+      ],
+      getReviewSnapshot: async () =>
+        copilotReviewSnapshot("2026-08-09T18:05:00Z"),
+    },
+  );
+  assert.equal(reviewOlderThanFailedRerun.status, "failure");
 });
 
 test("merge-group gate revalidates association and feedback without mutations", async () => {

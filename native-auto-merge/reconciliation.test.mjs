@@ -216,6 +216,8 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
     status: "in_progress",
     conclusion: null,
     created_at: "2026-08-09T18:00:00Z",
+    run_attempt: 1,
+    run_started_at: "2026-08-09T18:00:00Z",
     updated_at: "2026-08-09T18:00:01Z",
     actor: { id: COPILOT_ID, login: "Copilot", type: "Bot" },
     pull_requests: [
@@ -235,6 +237,23 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
     requiredChecks: REQUIRED_CHECKS,
     token: "pat-token",
   };
+
+  for (const malformedAttempt of [
+    { run_attempt: 0 },
+    { run_started_at: null },
+    { run_started_at: "2026-08-09T17:59:59Z" },
+    { run_started_at: "2026-08-09T18:00:02Z" },
+  ]) {
+    await assert.rejects(
+      readReviewReconciliationState(request, {
+        listCheckRuns: async () => successfulChecks,
+        listCopilotReviewRuns: async () => [copilotRun(malformedAttempt)],
+        getReviewSnapshot: async () =>
+          assert.fail("malformed run attempts cannot reach review reads"),
+      }),
+      /malformed dynamic workflow run|timestamps are inconsistent/i,
+    );
+  }
 
   const outstandingRequestedReviewer = await readReviewReconciliationState(
     request,
@@ -366,6 +385,7 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
             status: "completed",
             conclusion: "failure",
             created_at: "2026-08-09T18:00:05Z",
+            run_started_at: "2026-08-09T18:00:05Z",
             updated_at: "2026-08-09T18:00:06Z",
           }),
         ],
@@ -385,6 +405,156 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
       },
     );
   assert.equal(freshReviewIsCanonicalWhenTheDynamicRunFails.status, "clear");
+
+  const ordinaryWakeAcceptsTheLaterCanonicalFallbackReview =
+    await readReviewReconciliationState(request, {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({
+          status: "completed",
+          conclusion: "failure",
+          created_at: "2026-08-09T18:00:00Z",
+          updated_at: "2026-08-09T18:00:01Z",
+        }),
+      ],
+      getReviewSnapshot: async () =>
+        snapshot({
+          reviews: {
+            nodes: [
+              review({
+                createdAt: "2026-08-09T18:00:01Z",
+                submittedAt: "2026-08-09T18:00:02Z",
+                updatedAt: "2026-08-09T18:00:02Z",
+              }),
+            ],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+    });
+  assert.equal(
+    ordinaryWakeAcceptsTheLaterCanonicalFallbackReview.status,
+    "clear",
+  );
+
+  const ordinaryWakeRejectsAReviewOlderThanTheFailedDynamicRun =
+    await readReviewReconciliationState(request, {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({
+          status: "completed",
+          conclusion: "failure",
+          created_at: "2026-08-09T18:00:02Z",
+          run_started_at: "2026-08-09T18:00:02Z",
+          updated_at: "2026-08-09T18:00:03Z",
+        }),
+      ],
+      getReviewSnapshot: async () =>
+        snapshot({
+          reviews: {
+            nodes: [review()],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+    });
+  assert.equal(
+    ordinaryWakeRejectsAReviewOlderThanTheFailedDynamicRun.status,
+    "failure",
+  );
+
+  const ordinaryWakeRejectsAReviewOlderThanTheFailedRerun =
+    await readReviewReconciliationState(request, {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({
+          status: "completed",
+          conclusion: "failure",
+          run_attempt: 2,
+          run_started_at: "2026-08-09T18:10:00Z",
+          updated_at: "2026-08-09T18:10:01Z",
+        }),
+      ],
+      getReviewSnapshot: async () =>
+        snapshot({
+          reviews: {
+            nodes: [
+              review({
+                createdAt: "2026-08-09T18:05:00Z",
+                submittedAt: "2026-08-09T18:05:01Z",
+                updatedAt: "2026-08-09T18:05:01Z",
+              }),
+            ],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+    });
+  assert.equal(
+    ordinaryWakeRejectsAReviewOlderThanTheFailedRerun.status,
+    "failure",
+  );
+
+  const ordinaryWakeRejectsAReviewAtTheFailedRerunStart =
+    await readReviewReconciliationState(request, {
+      listCheckRuns: async () => successfulChecks,
+      listCopilotReviewRuns: async () => [
+        copilotRun({
+          status: "completed",
+          conclusion: "failure",
+          run_attempt: 2,
+          run_started_at: "2026-08-09T18:10:00Z",
+          updated_at: "2026-08-09T18:10:01Z",
+        }),
+      ],
+      getReviewSnapshot: async () =>
+        snapshot({
+          reviews: {
+            nodes: [
+              review({
+                createdAt: "2026-08-09T18:09:59Z",
+                submittedAt: "2026-08-09T18:10:00Z",
+                updatedAt: "2026-08-09T18:10:00Z",
+              }),
+            ],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+    });
+  assert.equal(
+    ordinaryWakeRejectsAReviewAtTheFailedRerunStart.status,
+    "failure",
+  );
+
+  const requestedRerunInProgressRemainsPending =
+    await readReviewReconciliationState(
+      {
+        ...request,
+        requireCopilotReviewRun: true,
+        copilotReviewRequestedAt: "2026-08-09T18:10:00Z",
+      },
+      {
+        listCheckRuns: async () => successfulChecks,
+        listCopilotReviewRuns: async () => [
+          copilotRun({
+            run_attempt: 2,
+            run_started_at: "2026-08-09T18:11:00Z",
+            updated_at: "2026-08-09T18:11:01Z",
+          }),
+        ],
+        getReviewSnapshot: async () =>
+          snapshot({
+            reviews: {
+              nodes: [
+                review({
+                  createdAt: "2026-08-09T18:12:00Z",
+                  submittedAt: "2026-08-09T18:12:01Z",
+                  updatedAt: "2026-08-09T18:12:01Z",
+                }),
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          }),
+      },
+    );
+  assert.equal(requestedRerunInProgressRemainsPending.status, "pending");
 
   const staleActiveRunDoesNotBlockFreshReview =
     await readReviewReconciliationState(
@@ -466,6 +636,7 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
         copilotRun({
           id: 31336525190,
           created_at: "2026-08-09T18:00:05Z",
+          run_started_at: "2026-08-09T18:00:05Z",
           updated_at: "2026-08-09T18:00:06Z",
         }),
       ],
@@ -493,6 +664,7 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
           status: "completed",
           conclusion: "success",
           created_at: "2026-08-09T18:00:05Z",
+          run_started_at: "2026-08-09T18:00:05Z",
           updated_at: "2026-08-09T18:00:06Z",
         }),
       ],
@@ -551,6 +723,7 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
         status: "completed",
         conclusion: "success",
         created_at: "2026-08-09T18:00:02Z",
+        run_started_at: "2026-08-09T18:00:02Z",
         updated_at: "2026-08-09T18:00:03Z",
       }),
     ],
@@ -613,7 +786,7 @@ test("Copilot dynamic review completion is part of reconciliation readiness", as
     },
   });
   assert.equal(failed.status, "failure");
-  assert.equal(reviewReads, 1);
+  assert.equal(reviewReads, 2);
 });
 
 test("current-head Codex issue comments are clean only under the exact known contract", () => {

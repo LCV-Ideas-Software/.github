@@ -70,13 +70,16 @@ nonzero review numerator, new rule, or code finding fails the job.
 
 ### Feature-branch pre-scan
 
-The all-branch Code Scanning rule evaluates an update against CodeQL and zizmor
-results already recorded for the exact SHA. The workflows intentionally scan
-`main`, pull requests to `main`, merge groups, and explicit
+GitHub's rules API defines the all-branch Code Scanning rule in terms of CodeQL
+and zizmor results for the commit and the reference being updated. The workflows
+intentionally scan `main`, pull requests to `main`, merge groups, and explicit
 `workflow_dispatch`; a normal feature-branch push cannot create its own result
-before the ref update is accepted. A new branch creation is exempt from that
-update cycle, so contributors use this no-bypass protocol for every subsequent
-feature-branch commit:
+before the ref update is accepted. GitHub does not document a universal
+code-scanning creation exemption. Under the current live Enterprise ruleset,
+however, the rule suite for an allowed ephemeral ref with `before_sha` equal to
+all zeroes passes before analysis, while an existing-ref update without both
+tools fails. Contributors therefore use this measured no-bypass protocol for
+every subsequent feature-branch commit:
 
 1. Create an ephemeral scan branch whose allowed name points directly to the
    final signed commit, for example
@@ -208,10 +211,15 @@ second-resolution timestamp remains pending. A fresh active
 dynamic review run keeps the hold pending; a dynamic run alone never substitutes
 for the submitted review. GitHub may emit the canonical review without a
 dynamic Actions run, so a fresh, structurally valid, finding-free review remains
-the authoritative result in that fallback. This explicit-request fallback also
-applies when the auxiliary dynamic run fails but GitHub still submits that
-canonical review; an ordinary failed run without a fresh post-fence review
-continues to fail closed.
+the authoritative result in that fallback. When the auxiliary dynamic run
+fails, ordinary arming and the queue checkpoint accept that canonical review
+only if it was submitted strictly after the latest failed run attempt began;
+the controller validates `run_attempt` and uses `run_started_at`, so a rerun
+cannot inherit the original attempt's older `created_at` fence. An older or
+equal-timestamp review cannot mask a later failure. The explicit request also
+uses the current attempt start to decide whether a run is active after its
+trusted request-run fence. Without the corresponding later review, the failed
+dynamic run continues to fail closed.
 
 The Action also exposes a `merge-group-feedback-gate` operation for the final
 read-only checkpoint. This bootstrap change deliberately does not invoke that
@@ -254,6 +262,14 @@ auto-merge nor a queue entry remains. Removal handles queue and auto-merge state
 independently, attempts both even after an ambiguous mutation response, and
 retries a mutation only when a fresh exact-state read still proves the privilege
 exists.
+
+After the ordinary CodeQL-triggered candidate passes repository-policy and
+effective-rules validation, the controller removes any prior merge privilege
+before its first feedback read and repeats that hold before every reconciliation
+read. Blocking, unsuccessful, and throwing reconciliation paths verify that the
+privilege remains absent instead of relying on the failing run alone to revoke
+it. A clear snapshot is rearmed only after the final rules, PR identity, and
+feedback rereads remain unchanged.
 
 GitHub does not expose an atomic precondition that couples the review snapshot
 to the queue mutation. The quiet windows, final rereads, native conversation
@@ -395,6 +411,7 @@ rather than reused.
 - [`merge_group` event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group)
 - [Pull requests associated with a commit](https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit)
 - [`workflow_run` event and security boundary](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
+- [REST workflow-run attempts and timestamps](https://docs.github.com/en/rest/actions/workflow-runs?apiVersion=2026-03-10)
 - [Pull-request review and comment events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_review)
 - [GraphQL cursor pagination](https://docs.github.com/en/enterprise-cloud@latest/graphql/guides/using-pagination-in-the-graphql-api)
 - [Workflow approval for outside contributors](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#controlling-changes-from-forks-to-workflows-in-public-repositories)

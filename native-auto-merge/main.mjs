@@ -1996,6 +1996,9 @@ export function assessCopilotReviewRuns(
       !SHA_PATTERN.test(run.head_sha ?? "") ||
       typeof run.status !== "string" ||
       !(run.conclusion === null || typeof run.conclusion === "string") ||
+      !Number.isSafeInteger(run.run_attempt) ||
+      run.run_attempt <= 0 ||
+      typeof run.run_started_at !== "string" ||
       !isObject(run.actor) ||
       !Number.isSafeInteger(run.actor.id) ||
       !Array.isArray(run.pull_requests)
@@ -2037,10 +2040,22 @@ export function assessCopilotReviewRuns(
       run.updated_at,
       "Copilot review run updated_at",
     );
-    if (Date.parse(updatedAt) < Date.parse(createdAt)) {
+    const runStartedAt = validTimestamp(
+      run.run_started_at,
+      "Copilot review run run_started_at",
+    );
+    if (
+      Date.parse(runStartedAt) < Date.parse(createdAt) ||
+      Date.parse(updatedAt) < Date.parse(runStartedAt)
+    ) {
       throw new Error("Copilot review workflow timestamps are inconsistent");
     }
-    matching.push({ ...run, created_at: createdAt, updated_at: updatedAt });
+    matching.push({
+      ...run,
+      created_at: createdAt,
+      run_started_at: runStartedAt,
+      updated_at: updatedAt,
+    });
   }
 
   if (matching.length === 0) {
@@ -2048,12 +2063,13 @@ export function assessCopilotReviewRuns(
       status: required ? "pending" : "clear",
       fingerprint: sha256(`copilot-review:none:required=${required}`),
       activeRunCount: 0,
+      latestFailureStartedAt: null,
     };
   }
   matching.sort((left, right) => {
-    const createdAtDifference =
-      Date.parse(left.created_at) - Date.parse(right.created_at);
-    return createdAtDifference === 0 ? left.id - right.id : createdAtDifference;
+    const startedAtDifference =
+      Date.parse(left.run_started_at) - Date.parse(right.run_started_at);
+    return startedAtDifference === 0 ? left.id - right.id : startedAtDifference;
   });
   const canonical = matching.map((run) => ({
     id: run.id,
@@ -2061,6 +2077,8 @@ export function assessCopilotReviewRuns(
     conclusion: run.conclusion,
     headSha: run.head_sha,
     createdAt: run.created_at,
+    runAttempt: run.run_attempt,
+    runStartedAt: run.run_started_at,
     updatedAt: run.updated_at,
   }));
   const fingerprint = sha256(JSON.stringify(canonical));
@@ -2068,24 +2086,39 @@ export function assessCopilotReviewRuns(
     requestedAtMilliseconds === null
       ? matching
       : matching.filter(
-          (run) => Date.parse(run.created_at) >= requestedAtMilliseconds,
+          (run) => Date.parse(run.run_started_at) >= requestedAtMilliseconds,
         );
   const active = eligible.filter((run) => run.status !== "completed");
   if (active.length > 0) {
     if (active.some((run) => run.conclusion !== null)) {
       throw new Error("Incomplete Copilot review run has a conclusion");
     }
-    return { status: "pending", fingerprint, activeRunCount: active.length };
+    return {
+      status: "pending",
+      fingerprint,
+      activeRunCount: active.length,
+      latestFailureStartedAt: null,
+    };
   }
   if (required && eligible.length === 0) {
-    return { status: "pending", fingerprint, activeRunCount: 0 };
+    return {
+      status: "pending",
+      fingerprint,
+      activeRunCount: 0,
+      latestFailureStartedAt: null,
+    };
   }
-  const latestCreatedAt = (eligible.at(-1) ?? matching.at(-1)).created_at;
+  const latestStartedAt = (eligible.at(-1) ?? matching.at(-1)).run_started_at;
   const latest = (eligible.length > 0 ? eligible : matching).filter(
-    (run) => run.created_at === latestCreatedAt,
+    (run) => run.run_started_at === latestStartedAt,
   );
   if (latest.every((run) => run.conclusion === "success")) {
-    return { status: "clear", fingerprint, activeRunCount: 0 };
+    return {
+      status: "clear",
+      fingerprint,
+      activeRunCount: 0,
+      latestFailureStartedAt: null,
+    };
   }
   if (
     latest.some(
@@ -2094,7 +2127,12 @@ export function assessCopilotReviewRuns(
   ) {
     throw new Error("Completed Copilot review run has no conclusion");
   }
-  return { status: "failure", fingerprint, activeRunCount: 0 };
+  return {
+    status: "failure",
+    fingerprint,
+    activeRunCount: 0,
+    latestFailureStartedAt: latestStartedAt,
+  };
 }
 
 export async function githubGetReviewSnapshot(
@@ -2305,13 +2343,13 @@ export async function readReviewReconciliationState(
   });
   const freshReviewMustCompleteRequest =
     requireCopilotReviewRun && copilotReviewRequestedAt !== null;
-  if (copilot.status !== "clear" && !freshReviewMustCompleteRequest) {
+  if (copilot.activeRunCount > 0) {
     return {
-      status: copilot.status,
+      status: "pending",
       fingerprint: sha256(`copilot:${copilot.fingerprint}`),
     };
   }
-  if (copilot.activeRunCount > 0) {
+  if (copilot.status === "pending" && !freshReviewMustCompleteRequest) {
     return {
       status: "pending",
       fingerprint: sha256(`copilot:${copilot.fingerprint}`),
@@ -2322,6 +2360,19 @@ export async function readReviewReconciliationState(
     { ...runtime, getReviewSnapshot },
   );
   if (reviews.status === "blocked") {
+    return {
+      ...reviews,
+      fingerprint: sha256(
+        JSON.stringify({
+          checks: checks.fingerprint,
+          requestedReviewers,
+          copilot: copilot.fingerprint,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
+  if (reviews.status === "pending") {
     return {
       ...reviews,
       fingerprint: sha256(
@@ -2346,6 +2397,25 @@ export async function readReviewReconciliationState(
         JSON.stringify({
           copilot: copilot.fingerprint,
           requestedReviewers,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
+  const canonicalReviewFollowsFailedRun =
+    copilot.status === "failure" &&
+    copilot.latestFailureStartedAt !== null &&
+    reviews.latestExactHeadCopilotReviewAt !== null &&
+    Date.parse(reviews.latestExactHeadCopilotReviewAt) >
+      Date.parse(copilot.latestFailureStartedAt);
+  if (copilot.status === "failure" && !canonicalReviewFollowsFailedRun) {
+    return {
+      status: "failure",
+      fingerprint: sha256(
+        JSON.stringify({
+          checks: checks.fingerprint,
+          requestedReviewers,
+          copilot: copilot.fingerprint,
           reviews: reviews.fingerprint,
         }),
       ),
@@ -2425,9 +2495,9 @@ export async function readMergeGroupFeedbackState(
     runtime,
   );
   const copilot = assessCopilotReviewRuns(copilotRuns, headSha, number);
-  if (copilot.status !== "clear") {
+  if (copilot.activeRunCount > 0 || copilot.status === "pending") {
     return {
-      status: copilot.status,
+      status: "pending",
       fingerprint: sha256(`copilot:${copilot.fingerprint}`),
     };
   }
@@ -2435,6 +2505,28 @@ export async function readMergeGroupFeedbackState(
     { repository, number, headSha, token },
     runtime,
   );
+  const canonicalReviewFollowsFailedRun =
+    copilot.status === "failure" &&
+    copilot.latestFailureStartedAt !== null &&
+    reviews.latestExactHeadCopilotReviewAt !== null &&
+    Date.parse(reviews.latestExactHeadCopilotReviewAt) >
+      Date.parse(copilot.latestFailureStartedAt);
+  if (
+    copilot.status === "failure" &&
+    reviews.status === "clear" &&
+    !canonicalReviewFollowsFailedRun
+  ) {
+    return {
+      status: "failure",
+      fingerprint: sha256(
+        JSON.stringify({
+          requestedReviewers,
+          copilot: copilot.fingerprint,
+          reviews: reviews.fingerprint,
+        }),
+      ),
+    };
+  }
   return {
     ...reviews,
     fingerprint: sha256(
@@ -2946,9 +3038,8 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
   const candidate = candidates[0];
   const isCopilotReviewRequest =
     candidate.source === "copilot-review-requested";
-  const holdCopilotMergePrivilege = async (options = {}) => {
-    if (!isCopilotReviewRequest) return false;
-    return removeNativeMergePrivilege(
+  const removeCandidateMergePrivilege = async (options = {}) =>
+    removeNativeMergePrivilege(
       {
         repository,
         number: candidate.number,
@@ -2958,8 +3049,12 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
       runtime,
       options,
     );
+  const holdCopilotMergePrivilege = async (options = {}) => {
+    if (!isCopilotReviewRequest) return false;
+    return removeCandidateMergePrivilege(options);
   };
-  let retainCopilotMergePrivilege = false;
+  let candidateMergePrivilegeHoldStarted = isCopilotReviewRequest;
+  let retainCandidateMergePrivilege = false;
   let primaryFailure = null;
   try {
     await holdCopilotMergePrivilege();
@@ -3021,6 +3116,9 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
       };
     }
 
+    candidateMergePrivilegeHoldStarted = true;
+    await removeCandidateMergePrivilege();
+
     const reconciliationRequest = {
       repository,
       number: canonicalCandidate.number,
@@ -3030,12 +3128,10 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
       requireCopilotReviewRun: candidate.source === "copilot-review-requested",
       copilotReviewRequestedAt,
     };
-    const reconciliationRuntime = isCopilotReviewRequest
-      ? {
-          ...runtime,
-          beforeRead: async () => holdCopilotMergePrivilege(),
-        }
-      : runtime;
+    const reconciliationRuntime = {
+      ...runtime,
+      beforeRead: async () => removeCandidateMergePrivilege(),
+    };
     let feedback;
     try {
       feedback = await waitForFeedback(
@@ -3043,15 +3139,18 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
         reconciliationRuntime,
       );
     } catch (error) {
-      if (isCopilotReviewRequest) {
-        await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      try {
+        await removeCandidateMergePrivilege({ retryWhenAbsent: true });
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Review reconciliation failed and native privilege cleanup could not be proven",
+        );
       }
       throw error;
     }
     if (feedback?.status !== "clear") {
-      if (isCopilotReviewRequest) {
-        await holdCopilotMergePrivilege({ retryWhenAbsent: true });
-      }
+      await removeCandidateMergePrivilege({ retryWhenAbsent: true });
       const reason =
         feedback?.status === "blocked"
           ? "review-feedback-blocking"
@@ -3068,32 +3167,10 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
       throw new Error("Malformed review reconciliation result");
     }
 
-    const state = await getNativeState(
-      repository,
-      canonicalCandidate.number,
-      token,
-    );
-    if (
-      isCopilotReviewRequest &&
-      (state.mergeQueueEntry || state.autoMergeRequest)
-    ) {
-      await holdCopilotMergePrivilege();
-    } else if (state.mergeQueueEntry) {
-      log(
-        `PR #${canonicalCandidate.number}: already in the native merge queue.`,
-      );
-      return { action: "already-queued", pull: canonicalCandidate.number };
-    } else if (state.autoMergeRequest) {
-      log(
-        `PR #${canonicalCandidate.number}: native auto-merge is already enabled.`,
-      );
-      return { action: "already-enabled", pull: canonicalCandidate.number };
-    }
-
-    await holdCopilotMergePrivilege();
+    await removeCandidateMergePrivilege();
     const finalEffectiveRules = await getEffectiveRules(repository, token);
     if (!hasRequiredNativeEnforcement(finalEffectiveRules, requiredChecks)) {
-      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      await removeCandidateMergePrivilege({ retryWhenAbsent: true });
       log(
         `PR #${canonicalCandidate.number}: required native enforcement changed before the mutation.`,
       );
@@ -3103,40 +3180,40 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
       };
     }
 
-    await holdCopilotMergePrivilege();
+    await removeCandidateMergePrivilege();
     const finalPull = await getPull(
       repository,
       canonicalCandidate.number,
       token,
     );
     if (!isEligiblePull(finalPull, canonicalCandidate, repository)) {
-      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      await removeCandidateMergePrivilege({ retryWhenAbsent: true });
       log(
         `PR #${canonicalCandidate.number}: pull request identity, state, base or exact head changed before the mutation.`,
       );
       return { action: "skipped", reason: "ineligible" };
     }
 
-    await holdCopilotMergePrivilege();
+    await removeCandidateMergePrivilege();
     const finalFeedback = await readFeedback(reconciliationRequest, runtime);
     if (
       finalFeedback?.status !== "clear" ||
       finalFeedback.fingerprint !== feedback.fingerprint
     ) {
-      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      await removeCandidateMergePrivilege({ retryWhenAbsent: true });
       log(
         `PR #${canonicalCandidate.number}: checks or review feedback changed before the mutation.`,
       );
       return { action: "skipped", reason: "review-state-changed" };
     }
 
-    await holdCopilotMergePrivilege();
+    await removeCandidateMergePrivilege();
     const preArmFeedback = await readFeedback(reconciliationRequest, runtime);
     if (
       preArmFeedback?.status !== "clear" ||
       preArmFeedback.fingerprint !== feedback.fingerprint
     ) {
-      await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+      await removeCandidateMergePrivilege({ retryWhenAbsent: true });
       log(
         `PR #${canonicalCandidate.number}: checks or review feedback changed immediately before the mutation.`,
       );
@@ -3208,7 +3285,7 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
         reason: "review-state-changed-after-arm",
       };
     }
-    retainCopilotMergePrivilege = true;
+    retainCandidateMergePrivilege = true;
     log(
       `PR #${canonicalCandidate.number}: native auto-merge enabled for exact head ${canonicalCandidate.headSha}.`,
     );
@@ -3221,14 +3298,14 @@ export async function runNativeAutoMerge(env = process.env, runtime = {}) {
     primaryFailure = error;
     throw error;
   } finally {
-    if (isCopilotReviewRequest && !retainCopilotMergePrivilege) {
+    if (candidateMergePrivilegeHoldStarted && !retainCandidateMergePrivilege) {
       try {
-        await holdCopilotMergePrivilege({ retryWhenAbsent: true });
+        await removeCandidateMergePrivilege({ retryWhenAbsent: true });
       } catch (cleanupError) {
         if (primaryFailure) {
           throw new AggregateError(
             [primaryFailure, cleanupError],
-            "Copilot review reconciliation failed and native privilege cleanup could not be proven",
+            "Review reconciliation failed and native privilege cleanup could not be proven",
           );
         }
         throw cleanupError;
