@@ -198,6 +198,52 @@ function addActionRoutes(
   }
 }
 
+function addInternalComponentReleaseRoutes(
+  routes,
+  {
+    tag,
+    sha,
+    annotated = true,
+    objectTag = tag,
+    verified = true,
+    reason = "valid",
+    release = true,
+    draft = false,
+    prerelease = false,
+    immutable = true,
+    releaseTag = tag,
+  },
+) {
+  const prefix = "/repos/LCV-Ideas-Software/.github";
+  const encodedTag = encodeURIComponent(tag);
+  if (annotated) {
+    const tagObjectSha = createHash("sha256")
+      .update(`annotated:${tag}`)
+      .digest("hex")
+      .slice(0, 40);
+    routes.set(`${prefix}/git/ref/tags/${encodedTag}`, {
+      object: { type: "tag", sha: tagObjectSha },
+    });
+    routes.set(`${prefix}/git/tags/${tagObjectSha}`, {
+      tag: objectTag,
+      object: { type: "commit", sha },
+      verification: { verified, reason },
+    });
+  } else {
+    routes.set(`${prefix}/git/ref/tags/${encodedTag}`, {
+      object: { type: "commit", sha },
+    });
+  }
+  if (release) {
+    routes.set(`${prefix}/releases/tags/${encodedTag}`, {
+      tag_name: releaseTag,
+      draft,
+      prerelease,
+      immutable,
+    });
+  }
+}
+
 function releaseAsset({ source, tag, name, digest = DIGEST_BASELINE }) {
   return {
     name,
@@ -337,7 +383,7 @@ test("uses parser accepts local Actions and exact SHA plus exact tag comments", 
       "steps:",
       "  - uses: ./local-action",
       `  - uses: actions/checkout@${SHA_CHECKOUT} # v7.0.1`,
-      `  - uses: 'LCV-Ideas-Software/.github/dependabot-automerge@${SHA_INTERNAL}' # v1.0.0`,
+      `  - uses: 'LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL}' # native-auto-merge/v2.1.1`,
     ].join("\n"),
     { repository: "LCV-Ideas-Software/example", path: "workflow.yml" },
   );
@@ -356,9 +402,38 @@ test("uses parser accepts local Actions and exact SHA plus exact tag comments", 
       },
       {
         source: "LCV-Ideas-Software/.github",
-        actionPath: "dependabot-automerge",
-        commentTag: "v1.0.0",
+        actionPath: "native-auto-merge",
+        commentTag: "native-auto-merge/v2.1.1",
       },
+    ],
+  );
+});
+
+test("uses parser binds known internal component paths to explicit tag families", () => {
+  const canonical = parseUsesReferences(
+    [
+      `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # native-auto-merge/v2.1.1`,
+      `- uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@${SHA_INTERNAL} # zizmor/v2.0.0`,
+      `- uses: LCV-Ideas-Software/.github/codeql-sarif-gate@${SHA_INTERNAL} # codeql-sarif-gate/v1.0.0`,
+    ].join("\n"),
+    { repository: "LCV-Ideas-Software/example", path: "workflow.yml" },
+  );
+  assert.deepEqual(canonical.findings, []);
+
+  const divergent = parseUsesReferences(
+    [
+      `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # v2.0.0`,
+      `- uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@${SHA_INTERNAL} # v2.0.0`,
+      `- uses: LCV-Ideas-Software/.github/codeql-sarif-gate@${SHA_INTERNAL} # codeql-sarif-v1.0.0`,
+    ].join("\n"),
+    { repository: "LCV-Ideas-Software/example", path: "workflow.yml" },
+  );
+  assert.deepEqual(
+    divergent.findings.map(({ code, line }) => ({ code, line })),
+    [
+      { code: "INTERNAL_COMPONENT_TAG_FAMILY_MISMATCH", line: 1 },
+      { code: "INTERNAL_COMPONENT_TAG_FAMILY_MISMATCH", line: 2 },
+      { code: "INTERNAL_COMPONENT_TAG_FAMILY_MISMATCH", line: 3 },
     ],
   );
 });
@@ -1063,7 +1138,7 @@ test("organization audit covers internal and third-party Actions with zero mutat
     "name: CI",
     "steps:",
     `  - uses: actions/checkout@${SHA_CHECKOUT} # v7.0.1`,
-    `  - uses: LCV-Ideas-Software/.github/dependabot-automerge@${SHA_INTERNAL} # v1.0.0`,
+    `  - uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # native-auto-merge/v2.1.1`,
   ].join("\n");
   const routes = new Map();
   addActionRoutes(routes, {
@@ -1074,10 +1149,14 @@ test("organization audit covers internal and third-party Actions with zero mutat
   });
   addActionRoutes(routes, {
     source: "LCV-Ideas-Software/.github",
-    latestTag: "v1.0.0",
+    latestTag: "native-auto-merge/v2.1.1",
     latestSha: SHA_INTERNAL,
-    commentTags: { "v1.0.0": SHA_INTERNAL },
-    actionPath: "dependabot-automerge",
+    commentTags: { "native-auto-merge/v2.1.1": SHA_INTERNAL },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag: "native-auto-merge/v2.1.1",
+    sha: SHA_INTERNAL,
   });
   const api = new FixtureApi({
     workflow,
@@ -1097,6 +1176,431 @@ test("organization audit covers internal and third-party Actions with zero mutat
   assert.equal(
     api.calls.every(({ method }) => method === "GET"),
     true,
+  );
+});
+
+test("internal native-auto-merge rejects a generic root release tag", async () => {
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # v2.0.0\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: "v2.0.0",
+    latestSha: SHA_INTERNAL,
+    commentTags: { "v2.0.0": SHA_INTERNAL },
+    actionPath: "native-auto-merge",
+  });
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: "native-auto-merge/v2.1.1",
+    latestSha: SHA_CHECKOUT,
+    commentTags: { "native-auto-merge/v2.1.1": SHA_CHECKOUT },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag: "native-auto-merge/v2.1.1",
+    sha: SHA_CHECKOUT,
+  });
+
+  const result = await runAudit({
+    api: new FixtureApi({ workflow, routes }),
+    minimumRepositories: 1,
+  });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    [
+      "INTERNAL_COMPONENT_TAG_FAMILY_MISMATCH",
+      "STALE_ACTION_PIN",
+      "STALE_VERSION_COMMENT",
+    ],
+  );
+});
+
+test("internal Zizmor resolves its component tag without misclassifying the shared SHA", async () => {
+  const workflow = `- uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yml@${SHA_INTERNAL} # v2.0.0\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: "v2.0.0",
+    latestSha: SHA_INTERNAL,
+    commentTags: { "v2.0.0": SHA_INTERNAL },
+    actionPath: ".github/workflows/zizmor.yml",
+  });
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: "zizmor/v2.0.0",
+    latestSha: SHA_INTERNAL,
+    commentTags: { "zizmor/v2.0.0": SHA_INTERNAL },
+    actionPath: ".github/workflows/zizmor.yml",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag: "zizmor/v2.0.0",
+    sha: SHA_INTERNAL,
+  });
+
+  const api = new FixtureApi({ workflow, routes });
+  const result = await runAudit({ api, minimumRepositories: 1 });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    ["INTERNAL_COMPONENT_TAG_FAMILY_MISMATCH", "STALE_VERSION_COMMENT"],
+  );
+  assert.equal(
+    result.findings.some(({ code }) => code === "STALE_ACTION_PIN"),
+    false,
+  );
+  assert.equal(
+    api.calls.some(({ path }) =>
+      path?.endsWith("/git/matching-refs/tags/zizmor/v"),
+    ),
+    true,
+  );
+});
+
+test("internal CodeQL SARIF gate resolves only its canonical component family", async () => {
+  const workflow = `- uses: LCV-Ideas-Software/.github/codeql-sarif-gate@${SHA_INTERNAL} # codeql-sarif-gate/v1.0.0\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: "codeql-sarif-gate/v1.0.0",
+    latestSha: SHA_INTERNAL,
+    commentTags: { "codeql-sarif-gate/v1.0.0": SHA_INTERNAL },
+    actionPath: "codeql-sarif-gate",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag: "codeql-sarif-gate/v1.0.0",
+    sha: SHA_INTERNAL,
+  });
+
+  const api = new FixtureApi({ workflow, routes });
+  const result = await runAudit({ api, minimumRepositories: 1 });
+
+  assert.deepEqual(result.findings, []);
+  assert.equal(
+    api.calls.some(({ path }) =>
+      path?.endsWith("/git/matching-refs/tags/codeql-sarif-gate/v"),
+    ),
+    true,
+  );
+});
+
+test("internal component release provenance rejects a lightweight tag", async () => {
+  const tag = "native-auto-merge/v2.1.1";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # ${tag}\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: tag,
+    latestSha: SHA_INTERNAL,
+    commentTags: { [tag]: SHA_INTERNAL },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag,
+    sha: SHA_INTERNAL,
+    annotated: false,
+  });
+
+  const result = await runAudit({
+    api: new FixtureApi({ workflow, routes }),
+    minimumRepositories: 1,
+  });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    ["LIGHTWEIGHT_INTERNAL_COMPONENT_TAG"],
+  );
+});
+
+test("internal component release provenance rejects an unverified annotated tag", async () => {
+  const tag = "native-auto-merge/v2.1.1";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # ${tag}\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: tag,
+    latestSha: SHA_INTERNAL,
+    commentTags: { [tag]: SHA_INTERNAL },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag,
+    sha: SHA_INTERNAL,
+    verified: false,
+    reason: "unsigned",
+  });
+
+  const result = await runAudit({
+    api: new FixtureApi({ workflow, routes }),
+    minimumRepositories: 1,
+  });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    ["UNVERIFIED_INTERNAL_COMPONENT_TAG"],
+  );
+});
+
+test("internal component release provenance binds the ref to the exact signed tag name", async () => {
+  const tag = "native-auto-merge/v2.1.1";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # ${tag}\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: tag,
+    latestSha: SHA_INTERNAL,
+    commentTags: { [tag]: SHA_INTERNAL },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag,
+    sha: SHA_INTERNAL,
+    objectTag: "native-auto-merge/v2.1.0",
+  });
+
+  const result = await runAudit({
+    api: new FixtureApi({ workflow, routes }),
+    minimumRepositories: 1,
+  });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    ["INTERNAL_COMPONENT_TAG_NAME_MISMATCH"],
+  );
+});
+
+test("internal component release provenance requires an exact GitHub release", async () => {
+  const tag = "native-auto-merge/v2.1.1";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # ${tag}\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag: tag,
+    latestSha: SHA_INTERNAL,
+    commentTags: { [tag]: SHA_INTERNAL },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag,
+    sha: SHA_INTERNAL,
+    release: false,
+  });
+
+  const result = await runAudit({
+    api: new FixtureApi({ workflow, routes }),
+    minimumRepositories: 1,
+  });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    ["MISSING_INTERNAL_COMPONENT_RELEASE"],
+  );
+});
+
+test("internal component release provenance reports a missing canonical comment tag", async () => {
+  const latestTag = "native-auto-merge/v2.1.1";
+  const commentTag = "native-auto-merge/v2.1.0";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_OLD} # ${commentTag}\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag,
+    latestSha: SHA_INTERNAL,
+    commentTags: { [commentTag]: SHA_OLD },
+    commits: { [SHA_OLD]: { verified: true, reason: "valid" } },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag: latestTag,
+    sha: SHA_INTERNAL,
+  });
+  routes.delete(
+    `/repos/LCV-Ideas-Software/.github/git/ref/tags/${encodeURIComponent(commentTag)}`,
+  );
+
+  const result = await runAudit({
+    api: new FixtureApi({ workflow, routes }),
+    minimumRepositories: 1,
+  });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    [
+      "MISSING_INTERNAL_COMPONENT_TAG",
+      "STALE_ACTION_PIN",
+      "STALE_VERSION_COMMENT",
+      "UNKNOWN_VERSION_COMMENT",
+    ],
+  );
+});
+
+test("internal component release provenance validates an existing stale comment tag", async () => {
+  const latestTag = "native-auto-merge/v2.1.1";
+  const commentTag = "native-auto-merge/v2.1.0";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_OLD} # ${commentTag}\n`;
+  const routes = new Map();
+  addActionRoutes(routes, {
+    source: "LCV-Ideas-Software/.github",
+    latestTag,
+    latestSha: SHA_INTERNAL,
+    commentTags: { [commentTag]: SHA_OLD },
+    commits: { [SHA_OLD]: { verified: true, reason: "valid" } },
+    actionPath: "native-auto-merge",
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag: latestTag,
+    sha: SHA_INTERNAL,
+  });
+  addInternalComponentReleaseRoutes(routes, {
+    tag: commentTag,
+    sha: SHA_OLD,
+    annotated: false,
+  });
+
+  const result = await runAudit({
+    api: new FixtureApi({ workflow, routes }),
+    minimumRepositories: 1,
+  });
+
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    [
+      "LIGHTWEIGHT_INTERNAL_COMPONENT_TAG",
+      "STALE_ACTION_PIN",
+      "STALE_VERSION_COMMENT",
+    ],
+  );
+});
+
+test("internal component release provenance rejects unsafe release metadata", async () => {
+  const tag = "native-auto-merge/v2.1.1";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # ${tag}\n`;
+  for (const unsafeRelease of [
+    { releaseTag: "native-auto-merge/v2.1.0" },
+    { draft: true },
+    { prerelease: true },
+    { immutable: false },
+  ]) {
+    const routes = new Map();
+    addActionRoutes(routes, {
+      source: "LCV-Ideas-Software/.github",
+      latestTag: tag,
+      latestSha: SHA_INTERNAL,
+      commentTags: { [tag]: SHA_INTERNAL },
+      actionPath: "native-auto-merge",
+    });
+    addInternalComponentReleaseRoutes(routes, {
+      tag,
+      sha: SHA_INTERNAL,
+      ...unsafeRelease,
+    });
+
+    const result = await runAudit({
+      api: new FixtureApi({ workflow, routes }),
+      minimumRepositories: 1,
+    });
+
+    assert.deepEqual(
+      result.findings.map(({ code }) => code),
+      ["INVALID_INTERNAL_COMPONENT_RELEASE"],
+      JSON.stringify(unsafeRelease),
+    );
+  }
+});
+
+test("internal component release provenance aborts on malformed tag graphs", async () => {
+  const tag = "native-auto-merge/v2.1.1";
+  const workflow = `- uses: LCV-Ideas-Software/.github/native-auto-merge@${SHA_INTERNAL} # ${tag}\n`;
+  const prefix = "/repos/LCV-Ideas-Software/.github";
+  const refPath = `${prefix}/git/ref/tags/${encodeURIComponent(tag)}`;
+  const scenarios = [
+    {
+      message: /latest release tag .* is missing/,
+      mutate(routes) {
+        routes.delete(refPath);
+      },
+    },
+    {
+      message: /returned a malformed Git ref/,
+      mutate(routes) {
+        routes.set(refPath, { object: { type: "tag", sha: "not-a-sha" } });
+      },
+    },
+    {
+      message: /unsupported Git object type tree/,
+      mutate(routes) {
+        routes.set(refPath, {
+          object: { type: "tree", sha: SHA_ANNOTATED_TAG },
+        });
+      },
+    },
+    {
+      message: /must directly target a commit/,
+      mutate(routes) {
+        routes.set(refPath, {
+          object: { type: "tag", sha: SHA_ANNOTATED_TAG },
+        });
+        routes.set(`${prefix}/git/tags/${SHA_ANNOTATED_TAG}`, {
+          tag,
+          object: { type: "tag", sha: SHA_CHECKOUT },
+          verification: { verified: true, reason: "valid" },
+        });
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const routes = new Map();
+    addActionRoutes(routes, {
+      source: "LCV-Ideas-Software/.github",
+      latestTag: tag,
+      latestSha: SHA_INTERNAL,
+      commentTags: { [tag]: SHA_INTERNAL },
+      actionPath: "native-auto-merge",
+    });
+    addInternalComponentReleaseRoutes(routes, { tag, sha: SHA_INTERNAL });
+    scenario.mutate(routes);
+
+    await assert.rejects(
+      runAudit({
+        api: new FixtureApi({ workflow, routes }),
+        minimumRepositories: 1,
+      }),
+      scenario.message,
+    );
+  }
+});
+
+test("unknown internal component paths fail closed before trusting a root tag", async () => {
+  const workflow = `- uses: LCV-Ideas-Software/.github/unregistered-action@${SHA_INTERNAL} # v1.0.0\n`;
+  const parsed = parseUsesReferences(
+    [
+      workflow.trimEnd(),
+      `- uses: LCV-Ideas-Software/.github/.github/workflows/zizmor.yaml@${SHA_INTERNAL} # zizmor/v2.0.0`,
+      `- uses: LCV-Ideas-Software/.github/NATIVE-AUTO-MERGE@${SHA_INTERNAL} # native-auto-merge/v2.1.1`,
+    ].join("\n"),
+    { repository: "LCV-Ideas-Software/example", path: "workflow.yml" },
+  );
+  assert.deepEqual(
+    parsed.findings.map(({ code }) => code),
+    [
+      "UNKNOWN_INTERNAL_COMPONENT_PATH",
+      "UNKNOWN_INTERNAL_COMPONENT_PATH",
+      "UNKNOWN_INTERNAL_COMPONENT_PATH",
+    ],
+  );
+
+  const api = new FixtureApi({ workflow });
+  const result = await runAudit({ api, minimumRepositories: 1 });
+  assert.deepEqual(
+    result.findings.map(({ code }) => code),
+    ["UNKNOWN_INTERNAL_COMPONENT_PATH"],
+  );
+  assert.equal(
+    api.calls.some(({ path }) =>
+      path?.startsWith("/repos/LCV-Ideas-Software/.github/"),
+    ),
+    false,
   );
 });
 
