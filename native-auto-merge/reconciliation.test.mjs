@@ -1996,3 +1996,57 @@ test("quiet-window reconciliation is bounded, resets on drift, and keeps bot abs
     /timed out/i,
   );
 });
+
+test("Copilot's no-reviewable-files verdict counts as a completed review", () => {
+  // Regression for #134. Sentence and footer are written out literally on purpose:
+  // deriving them from the production constant would let a wording drift change the
+  // fixture too, leaving this test green while the parser no longer matches reality.
+  const VERDICT = "Copilot wasn't able to review any files in this pull request.";
+  const FOOTER =
+    '\n\n---\n\n\u{1F4A1} <a href="/LCV-Ideas-Software/.github/new/main?filename=.github/skills/code-review/SKILL.md">add instructions</a>';
+
+  for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", VERDICT + FOOTER]) {
+    const assessed = assessReviewSnapshot(
+      snapshot({
+        reviews: {
+          nodes: [
+            review({
+              id: "PRR_nf",
+              body,
+              createdAt: "2026-08-10T22:02:42Z",
+              submittedAt: "2026-08-10T22:02:42Z",
+              updatedAt: "2026-08-10T22:02:42Z",
+            }),
+          ],
+          pageInfo: { hasNextPage: false },
+        },
+      }),
+      HEAD_SHA,
+    );
+    assert.equal(assessed.status, "clear");
+    assert.equal(assessed.latestExactHeadCopilotState, "reviewed");
+    assert.equal(assessed.latestExactHeadCopilotReviewAt, "2026-08-10T22:02:42Z");
+    assert.equal(assessed.latestExactHeadCopilotUnavailableAt, null);
+    assert.deepEqual(assessed.copilotUnavailableReviewIds, []);
+  }
+
+  // Fail closed on anything beyond the observed shapes.
+  for (const suffix of [
+    "\n\nWARNING: new advisory text",
+    "\n\n<details><summary>Suppressed comments (2)</summary></details>",
+  ]) {
+    assert.throws(
+      () =>
+        assessReviewSnapshot(
+          snapshot({
+            reviews: {
+              nodes: [review({ body: VERDICT + suffix })],
+              pageInfo: { hasNextPage: false },
+            },
+          }),
+          HEAD_SHA,
+        ),
+      /Copilot .*malformed/i,
+    );
+  }
+});

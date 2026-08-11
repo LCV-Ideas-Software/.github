@@ -1190,3 +1190,47 @@ test("merge-group gate fails closed on association or feedback drift", async () 
     );
   }
 });
+
+test("a successful Copilot run with no reviewable files clears the merge-group gate", async () => {
+  // Regression for #134 through the FULL reconciliation path, not assessReviewSnapshot
+  // alone. Sentence and footer are literal so implementation drift cannot hide here.
+  const VERDICT = "Copilot wasn't able to review any files in this pull request.";
+  const FOOTER =
+    '\n\n---\n\n\u{1F4A1} <a href="/LCV-Ideas-Software/.github/new/main?filename=.github/skills/code-review/SKILL.md">add instructions</a>';
+  const snapshotWith = (body) => ({
+    id: "PR_test",
+    headRefOid: HEAD_SHA,
+    comments: { nodes: [], pageInfo: { hasNextPage: false } },
+    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+    reviews: {
+      nodes: [
+        {
+          id: "PRR_nf",
+          author: { __typename: "Bot", databaseId: 175728472, login: "copilot-pull-request-reviewer" },
+          body,
+          state: "COMMENTED",
+          commit: { oid: HEAD_SHA },
+          createdAt: "2026-08-09T18:00:05Z",
+          submittedAt: "2026-08-09T18:00:05Z",
+          updatedAt: "2026-08-09T18:00:05Z",
+          isMinimized: false,
+          minimizedReason: null,
+        },
+      ],
+      pageInfo: { hasNextPage: false },
+    },
+  });
+
+  for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", VERDICT + FOOTER]) {
+    const state = await readMergeGroupFeedbackState(
+      { repository: REPOSITORY, number: 108, headSha: HEAD_SHA, token: "github-token" },
+      {
+        getRequestedReviewers: async () => ({ users: [], teams: [] }),
+        listCopilotReviewRuns: async () => [copilotRun({ conclusion: "success" })],
+        getReviewSnapshot: async () => snapshotWith(body),
+      },
+    );
+    assert.equal(state.status, "clear");
+    assert.match(state.fingerprint, /^[0-9a-f]{64}$/);
+  }
+});

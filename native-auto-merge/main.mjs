@@ -64,6 +64,18 @@ const COPILOT_REVIEW_WORKFLOW_PATH =
   "dynamic/agents/copilot-pull-request-reviewer";
 const COPILOT_QUOTA_UNAVAILABLE_BODY =
   "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
+// Copilot skips files it cannot review (generated output, unsupported types). When the
+// whole diff is skippable its review run still SUCCEEDS and it renders this verdict
+// instead of the usual overview. That is a completed review with nothing to report, not
+// an unavailable one: "unavailable" is reserved for outcomes following a FAILED run
+// (exhausted quota), and readMergeGroupFeedbackState rejects an unavailable outcome that
+// is not associated with a failure.
+export const COPILOT_NO_REVIEWABLE_FILES_PREFIX =
+  "Copilot wasn't able to review any files in this pull request.";
+// Only the two shapes observed in production are accepted after that sentence: nothing
+// but whitespace, or the standard footer. Anything else fails closed.
+const COPILOT_NO_REVIEWABLE_FILES_FOOTER =
+  /^\s*\r?\n---\r?\n\r?\n\u{1F4A1} <a href="\/[^"\r\n]+\/new\/main\?filename=\.github\/skills\/code-review\/SKILL\.md"[\s\S]*$/u;
 const CODEX_CLEAN_REVIEW_HEADLINES = new Set([
   "Codex Review: Didn't find any major issues. :+1:",
   "Codex Review: Didn't find any major issues. :rocket:",
@@ -725,6 +737,24 @@ function parseCopilotReviewBody(body) {
     return {
       state: "unavailable",
       suppressedCommentCount: 0,
+    };
+  }
+  if (
+    typeof body === "string" &&
+    body.trimStart().startsWith(COPILOT_NO_REVIEWABLE_FILES_PREFIX)
+  ) {
+    const remainder = body
+      .trimStart()
+      .slice(COPILOT_NO_REVIEWABLE_FILES_PREFIX.length);
+    if (
+      !/^\s*$/.test(remainder) &&
+      !COPILOT_NO_REVIEWABLE_FILES_FOOTER.test(remainder)
+    ) {
+      throw new Error("Copilot review body is malformed");
+    }
+    return {
+      state: "reviewed",
+      suppressedCommentCount: parseSuppressedCommentCount(body),
     };
   }
   if (
