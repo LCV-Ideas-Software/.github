@@ -20,12 +20,15 @@ on:
 concurrency:
   group: scorecard-${{ github.ref }}
   cancel-in-progress: true
-permissions: write-all
+permissions: {} # authorized exception, see CONTRIBUTING.md
 
 jobs:
   scorecard:
     name: OpenSSF Scorecard
-    permissions: write-all
+    permissions:
+      security-events: write # upload the Scorecard SARIF to code scanning
+      contents: read # checkout this repository
+      actions: read # read workflow definitions during the analysis
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

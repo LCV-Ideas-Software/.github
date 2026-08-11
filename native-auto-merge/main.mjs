@@ -75,7 +75,7 @@ export const COPILOT_NO_REVIEWABLE_FILES_PREFIX =
 // Only the two shapes observed in production are accepted after that sentence: nothing
 // but whitespace, or the standard footer. Anything else fails closed.
 const COPILOT_NO_REVIEWABLE_FILES_FOOTER =
-  /^\s*\r?\n---\r?\n\r?\n\u{1F4A1} <a href="\/[^"\r\n]+\/new\/main\?filename=\.github\/skills\/code-review\/SKILL\.md"[\s\S]*$/u;
+  /^\s*\r?\n---\r?\n\r?\n\u{1F4A1} <a href="\/[^"\r\n]+\/new\/main\?filename=\.github\/skills\/code-review\/SKILL\.md"[^<\r\n]*>[^<]*<\/a>\s*$/u;
 const CODEX_CLEAN_REVIEW_HEADLINES = new Set([
   "Codex Review: Didn't find any major issues. :+1:",
   "Codex Review: Didn't find any major issues. :rocket:",

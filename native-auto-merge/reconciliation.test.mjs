@@ -2034,6 +2034,8 @@ test("Copilot's no-reviewable-files verdict counts as a completed review", () =>
   for (const suffix of [
     "\n\nWARNING: new advisory text",
     "\n\n<details><summary>Suppressed comments (2)</summary></details>",
+    // A valid footer must not become a licence for arbitrary trailing content.
+    FOOTER + "\n\nWARNING: new advisory text",
   ]) {
     assert.throws(
       () =>
