@@ -6,6 +6,10 @@ const workflow = await readFile(
   new URL("../.github/workflows/dependency-review.yml", import.meta.url),
   "utf8",
 );
+const zizmorWorkflow = await readFile(
+  new URL("../.github/workflows/zizmor.yml", import.meta.url),
+  "utf8",
+);
 
 test("Dependency Review scans same-repository and fork pull requests", () => {
   assert.doesNotMatch(
@@ -32,5 +36,14 @@ test("Dependency Review validates the GitHub Actions pin auditor", () => {
   assert.match(
     workflow,
     /^\s{6}- name: Test GitHub Actions pin auditor\n\s{8}run: node --test scripts\/github-actions-pin-audit\.test\.mjs$/m,
+  );
+});
+
+test("reusable Zizmor grants the minimum metadata access required by SARIF upload", () => {
+  assert.match(zizmorWorkflow, /^permissions:\s*\{\}\s*$/m);
+  assert.doesNotMatch(zizmorWorkflow, /permissions:\s*write-all/);
+  assert.match(
+    zizmorWorkflow,
+    /\n    permissions:\n      actions: read # CodeQL upload-sarif reads workflow-run metadata\.\n      contents: read\n      security-events: write # Upload the SARIF to GitHub code scanning\.\n/,
   );
 });
