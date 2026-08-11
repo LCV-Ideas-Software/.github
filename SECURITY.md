@@ -39,7 +39,13 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - versioned CodeQL Advanced Setup workflows in public repositories containing code;
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
-- privileged external credentials isolated in protected environments and never exposed to pull-request jobs;
+- external credentials scoped to the jobs that consume them: the Slack service token and the
+  webhook-recovery App key are held in protected environments restricted to `main`. The Cloudflare
+  deployment credentials are still repository-scoped, so they resolve in any job of this repository,
+  including jobs triggered by same-repository pull requests; moving them into the protected
+  environment is tracked in
+  [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Fork pull requests never receive
+  any secret;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by effective rulesets and GitHub's native merge queue;
 - no long-lived secrets in source control.
 
