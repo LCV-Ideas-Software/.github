@@ -34,6 +34,12 @@ test("deployment verifies both protected triggers without logging their details"
   assert.match(workflowSource, /SLACK_GITHUB_ACTIVITY_TRIGGER_ID/);
   assert.match(workflowSource, /SLACK_GITHUB_ALERT_TRIGGER_ID/);
   assert.match(workflowSource, /slack api workflows\.triggers\.list/);
+  assert.ok(
+    workflowSource.includes(
+      `request_body="$(printf '{"app_id":"%s","limit":100}' "$SLACK_APP_ID")"`,
+    ),
+    "the Slack CLI request body must use unambiguous literal JSON",
+  );
   assert.match(workflowSource, /scripts\/verify_trigger_inventory\.ts/);
   assert.doesNotMatch(workflowSource, /slack trigger (?:list|info)/);
   assert.doesNotMatch(workflowSource, /trigger_output/);

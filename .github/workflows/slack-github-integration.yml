@@ -198,7 +198,7 @@ jobs:
           # omit workflow mappings. Stream the raw API response directly to a
           # fail-closed validator; never persist or log the response.
           inventory_error="${RUNNER_TEMP}/slack-trigger-inventory.err"
-          request_body="$(printf '{\"app_id\":\"%s\",\"limit\":100}' "$SLACK_APP_ID")"
+          request_body="$(printf '{"app_id":"%s","limit":100}' "$SLACK_APP_ID")"
           if ! slack api workflows.triggers.list \
             --token "$SLACK_SERVICE_TOKEN" \
             --json "$request_body" \
