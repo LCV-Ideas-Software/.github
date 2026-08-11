@@ -118,6 +118,7 @@ function continuityWorkflowRun(startedAt, { id = 9_001 } = {}) {
 
 function rawJob({
   id,
+  name = "Redeliver failed organization webhook deliveries",
   runId = 9_001,
   runAttempt = 1,
   status = "completed",
@@ -133,6 +134,7 @@ function rawJob({
 }) {
   return {
     id,
+    name,
     run_id: runId,
     run_attempt: runAttempt,
     status,
@@ -495,6 +497,7 @@ test("continuity proves the exact recovery step through paginated run-attempt jo
   const irrelevantJobs = Array.from({ length: 100 }, (_, index) =>
     rawJob({
       id: index + 1,
+      name: `Irrelevant job ${index + 1}`,
       steps: [
         {
           name: `Irrelevant step ${index + 1}`,
@@ -561,6 +564,27 @@ test("continuity rejects skipped, duplicate, absent, and malformed recovery-step
       /No successful scheduled .* proven successful recovery step/,
     ],
     [
+      [rawJob({ id: 1, name: "Impostor recovery job" })],
+      /No successful scheduled .* proven successful recovery step/,
+    ],
+    [
+      [
+        rawJob({ id: 1 }),
+        rawJob({
+          id: 2,
+          steps: [
+            {
+              name: "Irrelevant step",
+              number: 1,
+              status: "completed",
+              conclusion: "success",
+            },
+          ],
+        }),
+      ],
+      /must not contain more than one recovery job/,
+    ],
+    [
       [
         rawJob({
           id: 1,
@@ -602,6 +626,7 @@ test("continuity rejects skipped, duplicate, absent, and malformed recovery-step
       /invalid terminal step conclusion/,
     ],
     [[rawJob({ id: 0 })], /invalid job ID/],
+    [[rawJob({ id: 1, name: "" })], /invalid job name/],
     [[rawJob({ id: 1, runId: 9_002 })], /unexpected workflow run/],
     [[rawJob({ id: 1, runAttempt: 2 })], /unexpected workflow run attempt/],
   ];

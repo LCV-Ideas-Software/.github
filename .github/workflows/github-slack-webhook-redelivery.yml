@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   redeliver:
-    name: Audit and recover organization webhook deliveries
+    name: Redeliver failed organization webhook deliveries
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||

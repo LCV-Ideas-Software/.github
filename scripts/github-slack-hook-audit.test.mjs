@@ -133,6 +133,10 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
   assert.match(redelivery, /^permissions: \{\}$/m);
   assert.match(
     redelivery,
+    /jobs:\n  redeliver:\n    name: Redeliver failed organization webhook deliveries/,
+  );
+  assert.match(
+    redelivery,
     /permissions:\n      actions: read # Read the last successful schedule used as the continuity checkpoint\.\n      contents: read/,
   );
   assert.match(redelivery, /github-slack-hook-audit\.mjs/);

@@ -16,6 +16,7 @@ const MAX_PAGES = 1_000;
 const MAX_ACTION_RUN_PAGES = 10;
 const REQUEST_TIMEOUT_MS = 30_000;
 const USER_AGENT = "lcv-github-slack-webhook-redelivery";
+const RECOVERY_JOB_NAME = "Redeliver failed organization webhook deliveries";
 const RECOVERY_STEP_NAME = "Recover failed webhook deliveries";
 const TERMINAL_CONCLUSIONS = new Set([
   "action_required",
@@ -594,6 +595,9 @@ function normalizeWorkflowJob(rawJob, workflowRun) {
   if (!Number.isSafeInteger(rawJob.id) || rawJob.id <= 0) {
     throw new Error("GitHub returned a workflow job with an invalid job ID.");
   }
+  if (typeof rawJob.name !== "string" || rawJob.name === "") {
+    throw new Error("GitHub returned a workflow job with an invalid job name.");
+  }
   if (
     !Number.isSafeInteger(rawJob.run_id) ||
     rawJob.run_id <= 0 ||
@@ -665,6 +669,7 @@ function normalizeWorkflowJob(rawJob, workflowRun) {
 
   return Object.freeze({
     id: String(rawJob.id),
+    name: rawJob.name,
     status: rawJob.status,
     conclusion: rawJob.conclusion,
     steps: Object.freeze(steps),
@@ -768,20 +773,28 @@ export async function verifyRecoveryStepExecution({
     );
   }
 
-  const matches = jobs.flatMap((job) =>
-    job.steps
-      .filter((step) => step.name === RECOVERY_STEP_NAME)
-      .map((step) => ({ job, step })),
+  const recoveryJobs = jobs.filter((job) => job.name === RECOVERY_JOB_NAME);
+  if (recoveryJobs.length > 1) {
+    throw new Error(
+      `A scheduled workflow run must not contain more than one recovery job named ${RECOVERY_JOB_NAME}.`,
+    );
+  }
+  if (recoveryJobs.length === 0) {
+    return undefined;
+  }
+  const [job] = recoveryJobs;
+  const recoverySteps = job.steps.filter(
+    (step) => step.name === RECOVERY_STEP_NAME,
   );
-  if (matches.length > 1) {
+  if (recoverySteps.length > 1) {
     throw new Error(
       `A scheduled workflow run must not contain more than one recovery step named ${RECOVERY_STEP_NAME}.`,
     );
   }
-  if (matches.length === 0) {
+  if (recoverySteps.length === 0) {
     return undefined;
   }
-  const [{ job, step }] = matches;
+  const [step] = recoverySteps;
   if (job.status !== "completed" || job.conclusion !== "success") {
     return undefined;
   }
