@@ -324,20 +324,29 @@ scheduled `GitHub Slack Webhook Redelivery` workflow checks every 15 minutes,
 first verifies the sole active exact organization hook through GET requests
 only, groups attempts by GUID, accepts GitHub's documented HTTP 200-399 success
 classification, and redelivers unresolved attempts within the three-day
-retention window. It never sends a scheduled ping. Its checkpoint advances only
-after the complete run succeeds. Pagination accepts only the exact named and
-numeric canonical paths for the configured organization and hook, and
+retention window. It never sends a scheduled ping. Before reading the hook, it
+validates the most recent successful scheduled run through the native Actions
+API, its exact successful recovery step and a 15-minute retention margin as a
+fail-closed continuity checkpoint. Every retry requires one retained original
+delivery, a classified HTTP status and a fresh lineage read immediately before
+POST. Pagination accepts only the exact
+named and numeric canonical paths for the configured organization and hook, and
 reconstructs each request from the returned cursor instead of following a
 `Link` URL blindly.
 
 The controller reads the hook ID from repository variable
-`SLACK_RELAY_ORG_HOOK_ID`, stores its epoch-millisecond checkpoint in repository
-variable `SLACK_RELAY_LAST_REDELIVERY`, and authenticates with
-`LCV_AUTOMATION_TOKEN` from the protected `cloudflare-production` environment.
-That classic PAT needs `admin:org_hook`, repository access, and an active SAML
-SSO authorization for `LCV-Ideas-Software`. Regenerating it or changing its
-scopes requires a fresh **Configure SSO** authorization; replacing the
-environment secret alone does not restore organization access.
+`SLACK_RELAY_ORG_HOOK_ID` and authenticates through the private,
+organization-owned `lcv-slack-webhook-recovery` GitHub App. The workflow
+validates the exact App slug and a positive installation ID before use. The
+protected `cloudflare-production` environment provides
+`SLACK_REDELIVERY_APP_CLIENT_ID` and the
+`SLACK_REDELIVERY_APP_PRIVATE_KEY` PEM to this controller. Its only optional
+permission is organization `Webhooks: read and write`; GitHub's mandatory
+`Metadata: read` remains, while its own webhook, OAuth user authorization and
+all other optional permissions are disabled. Manual audit tokens are downscoped
+to read, while scheduled or explicitly requested recovery tokens are downscoped
+to write and revoked after the job. The built-in `GITHUB_TOKEN` has
+`actions: read` only for continuity history; no repository variable is mutated.
 
 ## Official references
 
@@ -345,7 +354,7 @@ environment secret alone does not restore organization access.
 - [GitHub webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads)
 - [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 - [GitHub organization webhook redelivery](https://docs.github.com/en/webhooks/using-webhooks/automatically-redelivering-failed-deliveries-for-an-organization-webhook)
-- [Authorizing a personal access token for use with SSO](https://docs.github.com/en/enterprise-cloud@latest/authentication/authenticating-with-single-sign-on/authorizing-a-personal-access-token-for-use-with-single-sign-on)
+- [Authenticating with a GitHub App in Actions](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/making-authenticated-api-requests-with-a-github-app-in-a-github-actions-workflow)
 - [Slack Deno workflows](https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-workflows/)
 - [Slack custom functions](https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-custom-functions/)
 - [Slack webhook triggers](https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-webhook-triggers/)

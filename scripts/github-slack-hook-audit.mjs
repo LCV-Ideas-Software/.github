@@ -112,11 +112,6 @@ function apiError(response, pathname) {
   const reset = response.headers.get("x-ratelimit-reset");
   const retryAfter = response.headers.get("retry-after");
   const requestId = response.headers.get("x-github-request-id") ?? undefined;
-  const oauthScopes = (response.headers.get("x-oauth-scopes") ?? "")
-    .split(",")
-    .map((scope) => scope.trim())
-    .filter(Boolean);
-  const ssoAuthorization = response.headers.get("x-github-sso");
   const rateLimited =
     response.status === 429 || (response.status === 403 && remaining === "0");
 
@@ -129,12 +124,6 @@ function apiError(response, pathname) {
     );
   }
   if (requestId) context.push(`request-id=${requestId}`);
-  if (response.status === 404 && pathname.startsWith("/orgs/")) {
-    context.push(
-      `admin:org_hook-scope=${oauthScopes.includes("admin:org_hook") ? "present" : "missing"}`,
-    );
-  }
-  if (ssoAuthorization) context.push("sso-authorization=required");
 
   const suffix = context.length > 0 ? ` (${context.join(", ")})` : "";
   return new GitHubApiError(
@@ -210,7 +199,7 @@ function validateTargetHook(hook, expectedHookId) {
   const hookId = hookIdFromResponse(hook);
   if (hookId !== expectedHookId) {
     throw new Error(
-      `PAT-visible organization webhook ${hookId} does not match configured HOOK_ID.`,
+      `Installation-visible organization webhook ${hookId} does not match configured HOOK_ID.`,
     );
   }
   if (hook.active !== true) {
@@ -372,7 +361,7 @@ export async function auditOrganizationWebhook({
   const hooks = await listVisibleHooks({ ...configuration, fetchImpl });
   if (hooks.length !== 1) {
     throw new Error(
-      `Expected exactly one PAT-visible organization webhook; found ${hooks.length}.`,
+      `Expected exactly one installation-visible organization webhook; found ${hooks.length}.`,
     );
   }
   validateTargetHook(hooks[0], configuration.hookId);

@@ -34,6 +34,16 @@ const REMOVED_MANAGEMENT_WORKFLOW_URL = new URL(
   import.meta.url,
 );
 const AUDITOR_URL = new URL("./github-slack-hook-audit.mjs", import.meta.url);
+const APP_TOKEN_ACTION =
+  "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0";
+
+function workflowStep(source, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `workflow step not found: ${name}`);
+  const next = source.indexOf("\n      - name:", start + marker.length);
+  return source.slice(start, next === -1 ? source.length : next);
+}
 
 function responseJson(body, { status = 200, headers = {} } = {}) {
   return new Response(JSON.stringify(body), {
@@ -113,6 +123,10 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
     readFile(AUDITOR_URL, "utf8"),
   ]);
   assert.match(redelivery, /^permissions: \{\}$/m);
+  assert.match(
+    redelivery,
+    /permissions:\n      actions: read # Read the last successful schedule used as the continuity checkpoint\.\n      contents: read/,
+  );
   assert.match(redelivery, /github-slack-hook-audit\.mjs/);
   assert.match(redelivery, /default: audit/);
   assert.match(
@@ -122,6 +136,86 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
   assert.match(
     redelivery,
     /inputs\.operation == 'redeliver'[\s\S]*SLACK_GITHUB_INTEGRATION_ENABLED=true/,
+  );
+  const auditToken = workflowStep(
+    redelivery,
+    "Mint read-only GitHub App token for audit",
+  );
+  const validation = workflowStep(
+    redelivery,
+    "Validate required configuration",
+  );
+  const recoveryToken = workflowStep(
+    redelivery,
+    "Mint least-privilege GitHub App token for recovery",
+  );
+  const audit = workflowStep(
+    redelivery,
+    "Audit active App-visible organization webhook without mutation",
+  );
+  const identity = workflowStep(
+    redelivery,
+    "Validate exact GitHub App identity",
+  );
+  const recovery = workflowStep(
+    redelivery,
+    "Recover failed webhook deliveries",
+  );
+
+  assert.equal(redelivery.split(APP_TOKEN_ACTION).length - 1, 2);
+  assert.match(
+    validation,
+    /APP_CLIENT_ID: \$\{\{ vars\.SLACK_REDELIVERY_APP_CLIENT_ID \}\}/,
+  );
+  assert.doesNotMatch(validation, /APP_PRIVATE_KEY/);
+  assert.equal(
+    redelivery.split("secrets.SLACK_REDELIVERY_APP_PRIVATE_KEY").length - 1,
+    2,
+  );
+  for (const step of [auditToken, recoveryToken]) {
+    assert.ok(step.includes(`uses: ${APP_TOKEN_ACTION}`));
+    assert.match(
+      step,
+      /client-id: \$\{\{ vars\.SLACK_REDELIVERY_APP_CLIENT_ID \}\}/,
+    );
+    assert.match(
+      step,
+      /private-key: \$\{\{ secrets\.SLACK_REDELIVERY_APP_PRIVATE_KEY \}\}/,
+    );
+    assert.match(step, /owner: \$\{\{ github\.repository_owner \}\}/);
+    assert.match(
+      step,
+      /repositories: \$\{\{ github\.event\.repository\.name \}\}/,
+    );
+    assert.match(step, /skip-token-revoke: false/);
+    assert.doesNotMatch(step, /app-id:/);
+  }
+  assert.match(auditToken, /permission-organization-hooks: read/);
+  assert.doesNotMatch(auditToken, /permission-variables:/);
+  assert.match(recoveryToken, /permission-organization-hooks: write/);
+  assert.doesNotMatch(recoveryToken, /permission-variables:/);
+  assert.match(
+    identity,
+    /APP_SLUG: \$\{\{ steps\.audit-app-token\.outputs\.app-slug \|\| steps\.recovery-app-token\.outputs\.app-slug \}\}/,
+  );
+  assert.match(
+    identity,
+    /INSTALLATION_ID: \$\{\{ steps\.audit-app-token\.outputs\.installation-id \|\| steps\.recovery-app-token\.outputs\.installation-id \}\}/,
+  );
+  assert.match(identity, /lcv-slack-webhook-recovery/);
+  assert.match(identity, /\^\[1-9\]\[0-9\]\*\$/);
+  assert.match(
+    audit,
+    /TOKEN: \$\{\{ steps\.audit-app-token\.outputs\.token \|\| steps\.recovery-app-token\.outputs\.token \}\}/,
+  );
+  assert.match(
+    recovery,
+    /HOOK_TOKEN: \$\{\{ steps\.recovery-app-token\.outputs\.token \}\}/,
+  );
+  assert.match(recovery, /ACTIONS_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.doesNotMatch(
+    redelivery,
+    /LCV_AUTOMATION_TOKEN|admin:org_hook|permission-organization-hooks: admin|permission-variables:/,
   );
   assert.doesNotMatch(redelivery, /OPERATION|WEBHOOK_SECRET|hook-management/);
   assert.doesNotMatch(auditor, /method:\s*"(?:POST|PUT|PATCH|DELETE)"/);
@@ -317,7 +411,7 @@ test("audit paginates and rejects absence, duplicates, ID drift, and configurati
   );
 });
 
-test("404 and timeout diagnostics classify authorization without leaking credentials", async () => {
+test("404 and timeout diagnostics retain request metadata without leaking credentials", async () => {
   await assert.rejects(
     auditOrganizationWebhook({
       environment: { ...BASE_ENVIRONMENT },
@@ -327,7 +421,6 @@ test("404 and timeout diagnostics classify authorization without leaking credent
           {
             status: 404,
             headers: {
-              "x-oauth-scopes": "repo, admin:org_hook, workflow",
               "x-github-request-id": "request-scope",
             },
           },
@@ -336,9 +429,8 @@ test("404 and timeout diagnostics classify authorization without leaking credent
     }),
     (error) =>
       error instanceof GitHubApiError &&
-      /admin:org_hook-scope=present/.test(error.message) &&
       /request-id=request-scope/.test(error.message) &&
-      !/repo, admin:org_hook, workflow/.test(error.message) &&
+      !/admin:org_hook/.test(error.message) &&
       !error.message.includes(TEST_TOKEN),
   );
 
