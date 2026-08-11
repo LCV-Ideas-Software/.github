@@ -1201,7 +1201,8 @@ test("a successful Copilot run with no reviewable files clears the merge-group g
     new URL("./fixtures/copilot-no-reviewable-files.txt", import.meta.url),
     "utf8",
   );
-  const VERDICT = "Copilot wasn't able to review any files in this pull request.";
+  const VERDICT =
+    "Copilot wasn't able to review any files in this pull request.";
   assert.ok(CAPTURED.startsWith(VERDICT));
   const snapshotWith = (body) => ({
     id: "PR_test",
@@ -1212,7 +1213,11 @@ test("a successful Copilot run with no reviewable files clears the merge-group g
       nodes: [
         {
           id: "PRR_nf",
-          author: { __typename: "Bot", databaseId: 175728472, login: "copilot-pull-request-reviewer" },
+          author: {
+            __typename: "Bot",
+            databaseId: 175728472,
+            login: "copilot-pull-request-reviewer",
+          },
           body,
           state: "COMMENTED",
           commit: { oid: HEAD_SHA },
@@ -1229,10 +1234,17 @@ test("a successful Copilot run with no reviewable files clears the merge-group g
 
   for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", CAPTURED]) {
     const state = await readMergeGroupFeedbackState(
-      { repository: REPOSITORY, number: 108, headSha: HEAD_SHA, token: "github-token" },
+      {
+        repository: REPOSITORY,
+        number: 108,
+        headSha: HEAD_SHA,
+        token: "github-token",
+      },
       {
         getRequestedReviewers: async () => ({ users: [], teams: [] }),
-        listCopilotReviewRuns: async () => [copilotRun({ conclusion: "success" })],
+        listCopilotReviewRuns: async () => [
+          copilotRun({ conclusion: "success" }),
+        ],
         getReviewSnapshot: async () => snapshotWith(body),
       },
     );

@@ -734,6 +734,16 @@ function parseSuppressedCommentCount(body) {
   return count;
 }
 
+// The verdict is a complete sentence, so whatever follows it is either nothing or
+// separated from it by whitespace. Matching the bare prefix would also accept
+// "...pull request.EXTRA", letting arbitrary trailing text through the branch that
+// deliberately skips the overview-shaped validation below.
+function startsWithCopilotNoReviewableFilesVerdict(body) {
+  if (!body.startsWith(COPILOT_NO_REVIEWABLE_FILES_PREFIX)) return false;
+  const boundary = body.charAt(COPILOT_NO_REVIEWABLE_FILES_PREFIX.length);
+  return boundary === "" || /\s/.test(boundary);
+}
+
 function parseCopilotReviewBody(body) {
   if (body === COPILOT_QUOTA_UNAVAILABLE_BODY) {
     return {
@@ -743,7 +753,7 @@ function parseCopilotReviewBody(body) {
   }
   if (
     typeof body === "string" &&
-    body.trimStart().startsWith(COPILOT_NO_REVIEWABLE_FILES_PREFIX)
+    startsWithCopilotNoReviewableFilesVerdict(body.trimStart())
   ) {
     // A real review always opens with the overview heading. Seeing it after the
     // no-reviewable-files verdict means the body is not what it claims to be.

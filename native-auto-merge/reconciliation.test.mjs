@@ -2007,7 +2007,8 @@ test("Copilot's no-reviewable-files verdict counts as a completed review", () =>
     new URL("./fixtures/copilot-no-reviewable-files.txt", import.meta.url),
     "utf8",
   );
-  const VERDICT = "Copilot wasn't able to review any files in this pull request.";
+  const VERDICT =
+    "Copilot wasn't able to review any files in this pull request.";
   assert.ok(CAPTURED.startsWith(VERDICT));
 
   for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", CAPTURED]) {
@@ -2030,7 +2031,10 @@ test("Copilot's no-reviewable-files verdict counts as a completed review", () =>
     );
     assert.equal(assessed.status, "clear");
     assert.equal(assessed.latestExactHeadCopilotState, "reviewed");
-    assert.equal(assessed.latestExactHeadCopilotReviewAt, "2026-08-10T22:02:42Z");
+    assert.equal(
+      assessed.latestExactHeadCopilotReviewAt,
+      "2026-08-10T22:02:42Z",
+    );
     assert.equal(assessed.latestExactHeadCopilotUnavailableAt, null);
     assert.deepEqual(assessed.copilotUnavailableReviewIds, []);
   }
@@ -2083,14 +2087,30 @@ test("Copilot's no-reviewable-files verdict counts as a completed review", () =>
       assessReviewSnapshot(
         snapshot({
           reviews: {
-            nodes: [
-              review({ body: VERDICT + "\n\nSuppressed comments (2)" }),
-            ],
+            nodes: [review({ body: VERDICT + "\n\nSuppressed comments (2)" })],
             pageInfo: { hasNextPage: false },
           },
         }),
         HEAD_SHA,
       ),
     /Suppressed comments marker is malformed/i,
+  );
+
+  // The verdict is a whole sentence: every accepted form ends the body there or continues
+  // after whitespace. Without that boundary a bare prefix match would carry arbitrary
+  // trailing text into the branch that deliberately skips the overview-shaped validation.
+  assert.ok(/\s/.test(CAPTURED.charAt(VERDICT.length)));
+  assert.throws(
+    () =>
+      assessReviewSnapshot(
+        snapshot({
+          reviews: {
+            nodes: [review({ body: VERDICT + "EXTRA" })],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+        HEAD_SHA,
+      ),
+    /Copilot .*malformed/i,
   );
 });
