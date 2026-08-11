@@ -1,16 +1,33 @@
 import { pathToFileURL } from "node:url";
 
 export const API_VERSION = "2026-03-10";
-export const CHECKPOINT_VARIABLE = "SLACK_RELAY_LAST_REDELIVERY";
 export const MAX_DELIVERY_ATTEMPTS = 3;
+export const MAX_DELIVERY_CLOCK_SKEW_MS = 60 * 1000;
+export const MAX_REDELIVERIES_PER_RUN = 10;
 export const MAX_REDELIVERY_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+export const RETENTION_SAFETY_MARGIN_MS = 15 * 60 * 1000;
+export const REDELIVERY_WORKFLOW_FILE = "github-slack-webhook-redelivery.yml";
+export const REDELIVERY_WORKFLOW_PATH =
+  ".github/workflows/github-slack-webhook-redelivery.yml";
 
 const API_ORIGIN = "https://api.github.com";
-const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 1_000;
+const MAX_ACTION_RUN_PAGES = 10;
 const REQUEST_TIMEOUT_MS = 30_000;
 const USER_AGENT = "lcv-github-slack-webhook-redelivery";
+const RECOVERY_JOB_NAME = "Redeliver failed organization webhook deliveries";
+const RECOVERY_STEP_NAME = "Recover failed webhook deliveries";
+const TERMINAL_CONCLUSIONS = new Set([
+  "action_required",
+  "cancelled",
+  "failure",
+  "neutral",
+  "skipped",
+  "stale",
+  "success",
+  "timed_out",
+]);
 
 export class GitHubApiError extends Error {
   constructor(message, { status, requestId, rateLimited } = {}) {
@@ -31,6 +48,13 @@ function requiredEnvironmentValue(environment, name) {
 }
 
 export function readConfiguration(environment = process.env) {
+  const actionsToken = requiredEnvironmentValue(environment, "ACTIONS_TOKEN");
+  const hookToken = requiredEnvironmentValue(environment, "HOOK_TOKEN");
+  if (actionsToken === hookToken) {
+    throw new Error(
+      "ACTIONS_TOKEN and HOOK_TOKEN must be distinct least-privilege credentials.",
+    );
+  }
   const hookId = requiredEnvironmentValue(environment, "HOOK_ID");
   if (!/^\d+$/.test(hookId) || BigInt(hookId) <= 0n) {
     throw new Error("HOOK_ID must be a positive integer.");
@@ -44,7 +68,8 @@ export function readConfiguration(environment = process.env) {
   }
 
   return Object.freeze({
-    token: requiredEnvironmentValue(environment, "TOKEN"),
+    actionsToken,
+    hookToken,
     organizationName: requiredEnvironmentValue(
       environment,
       "ORGANIZATION_NAME",
@@ -83,10 +108,6 @@ function apiError(response, method, pathname) {
   const reset = response.headers.get("x-ratelimit-reset");
   const retryAfter = response.headers.get("retry-after");
   const requestId = response.headers.get("x-github-request-id") ?? undefined;
-  const oauthScopes = (response.headers.get("x-oauth-scopes") ?? "")
-    .split(",")
-    .map((scope) => scope.trim())
-    .filter(Boolean);
   const ssoAuthorization = response.headers.get("x-github-sso");
   const rateLimited =
     response.status === 429 || (response.status === 403 && remaining === "0");
@@ -106,11 +127,6 @@ function apiError(response, method, pathname) {
   if (requestId) {
     context.push(`request-id=${requestId}`);
   }
-  if (response.status === 404 && oauthScopes.length > 0) {
-    context.push(
-      `admin:org_hook-scope=${oauthScopes.includes("admin:org_hook") ? "present" : "missing"}`,
-    );
-  }
   if (ssoAuthorization) {
     context.push("sso-authorization=required");
   }
@@ -122,14 +138,7 @@ function apiError(response, method, pathname) {
   );
 }
 
-async function githubRequest({
-  token,
-  method = "GET",
-  url,
-  body,
-  fetchImpl,
-  allowedStatuses = [],
-}) {
+async function githubRequest({ token, method = "GET", url, body, fetchImpl }) {
   const headers = {
     Accept: "application/vnd.github+json",
     Authorization: `Bearer ${token}`,
@@ -162,7 +171,7 @@ async function githubRequest({
     );
   }
 
-  if (!response.ok && !allowedStatuses.includes(response.status)) {
+  if (!response.ok) {
     throw apiError(response, method, url.pathname);
   }
   return response;
@@ -220,80 +229,583 @@ export function parseNextCursor(
     return undefined;
   }
 
-  for (const match of linkHeader.matchAll(/<([^>]+)>([^,]*)/g)) {
-    const [, candidate, parameters] = match;
-    const relation = parameters.match(/(?:^|;)\s*rel\s*=\s*"?([^";,]+)"?/i);
-    if (!relation?.[1].split(/\s+/).includes("next")) {
-      continue;
-    }
-
-    let nextUrl;
-    try {
-      nextUrl = new URL(candidate);
-    } catch (error) {
-      throw new Error("GitHub returned an invalid next-page URL.", {
-        cause: error,
-      });
-    }
-    const allowedPathnames = new Set(
-      [expectedPathname, canonicalPathname].filter(Boolean),
-    );
+  let nextCandidate;
+  let nextRelationCount = 0;
+  for (const rawEntry of linkHeader.split(",")) {
+    const entry = rawEntry.trim();
+    const closingBracketIndex = entry.indexOf(">");
     if (
-      nextUrl.origin !== API_ORIGIN ||
-      !allowedPathnames.has(nextUrl.pathname)
+      !entry.startsWith("<") ||
+      closingBracketIndex <= 1 ||
+      entry.lastIndexOf(">") !== closingBracketIndex
     ) {
-      throw new Error(
-        "GitHub returned a next-page URL outside the expected deliveries endpoint.",
+      throw new Error("GitHub returned a malformed Link header.");
+    }
+    const candidate = entry.slice(1, closingBracketIndex);
+    const rawParameters = entry.slice(closingBracketIndex + 1);
+    let parameters = [];
+    if (rawParameters !== "") {
+      const firstNonWhitespaceIndex = rawParameters.search(/\S/);
+      if (
+        firstNonWhitespaceIndex === -1 ||
+        rawParameters[firstNonWhitespaceIndex] !== ";"
+      ) {
+        throw new Error("GitHub returned a malformed Link header.");
+      }
+      parameters = rawParameters
+        .slice(firstNonWhitespaceIndex + 1)
+        .split(";")
+        .map((parameter) => parameter.trim());
+      if (parameters.some((parameter) => parameter === "")) {
+        throw new Error("GitHub returned a malformed Link parameter.");
+      }
+    }
+    for (const parameter of parameters) {
+      const parameterMatch = parameter.match(
+        /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*=\s*(?:"([^"]*)"|([^\s;]+))$/,
       );
+      if (!parameterMatch) {
+        throw new Error("GitHub returned a malformed Link parameter.");
+      }
+      if (parameterMatch[1].toLowerCase() !== "rel") {
+        continue;
+      }
+      const relations = (parameterMatch[2] ?? parameterMatch[3])
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const relation of relations) {
+        if (relation.toLowerCase() === "next") {
+          nextRelationCount += 1;
+          nextCandidate = candidate;
+        }
+      }
     }
-
-    const cursor = nextUrl.searchParams.get("cursor");
-    if (!cursor) {
-      throw new Error("GitHub returned a next-page URL without a cursor.");
-    }
-    return cursor;
   }
 
-  return undefined;
-}
-
-function parseCheckpoint(value) {
-  if (/^\d+$/.test(value)) {
-    return Number(value);
+  if (nextRelationCount === 0) {
+    return undefined;
   }
-  return Date.parse(value);
+  if (nextRelationCount !== 1 || !nextCandidate) {
+    throw new Error(
+      "GitHub must return exactly one next relation in a paginated Link header.",
+    );
+  }
+
+  let nextUrl;
+  try {
+    nextUrl = new URL(nextCandidate);
+  } catch (error) {
+    throw new Error("GitHub returned an invalid next-page URL.", {
+      cause: error,
+    });
+  }
+  const allowedPathnames = new Set(
+    [expectedPathname, canonicalPathname].filter(Boolean),
+  );
+  if (
+    nextUrl.origin !== API_ORIGIN ||
+    nextUrl.username !== "" ||
+    nextUrl.password !== "" ||
+    nextUrl.hash !== "" ||
+    !allowedPathnames.has(nextUrl.pathname)
+  ) {
+    throw new Error(
+      "GitHub returned a next-page URL outside the expected deliveries endpoint.",
+    );
+  }
+
+  const queryEntries = [...nextUrl.searchParams.entries()];
+  const cursorValues = queryEntries
+    .filter(([name]) => name === "cursor")
+    .map(([, value]) => value);
+  const perPageValues = queryEntries
+    .filter(([name]) => name === "per_page")
+    .map(([, value]) => value);
+  if (cursorValues.length === 0) {
+    throw new Error("GitHub returned a next-page URL without a cursor.");
+  }
+  if (cursorValues.length !== 1) {
+    throw new Error(
+      "GitHub returned a next-page URL without exactly one cursor.",
+    );
+  }
+  if (cursorValues[0].trim() === "") {
+    throw new Error(
+      "GitHub returned a next-page URL without a non-empty cursor.",
+    );
+  }
+  if (perPageValues.length !== 1 || perPageValues[0] !== String(PAGE_SIZE)) {
+    throw new Error(
+      `GitHub returned a next-page URL without per_page=${PAGE_SIZE} exactly once.`,
+    );
+  }
+  if (queryEntries.length !== 2) {
+    throw new Error(
+      "GitHub returned a next-page URL with unexpected query parameters.",
+    );
+  }
+  return cursorValues[0];
 }
 
-export function resolveCheckpoint(storedValue, startedAt) {
+function validateStartedAt(startedAt) {
   if (!Number.isSafeInteger(startedAt) || startedAt <= 0) {
     throw new Error(
       "The run start time must be a positive epoch millisecond value.",
     );
   }
+}
 
-  const candidate =
-    storedValue === undefined
-      ? startedAt - DEFAULT_LOOKBACK_MS
-      : parseCheckpoint(storedValue);
-  if (!Number.isSafeInteger(candidate) || candidate <= 0) {
+export function resolveContinuityCheckpoint(workflowRun, startedAt) {
+  validateStartedAt(startedAt);
+  if (
+    !workflowRun ||
+    typeof workflowRun !== "object" ||
+    !Number.isSafeInteger(workflowRun.runStartedAt) ||
+    workflowRun.runStartedAt <= 0
+  ) {
     throw new Error(
-      `${CHECKPOINT_VARIABLE} must contain epoch milliseconds or a valid timestamp.`,
+      "A valid successful scheduled workflow run is required for continuity.",
     );
   }
+
+  const candidate = workflowRun.runStartedAt;
   if (candidate > startedAt) {
-    throw new Error(`${CHECKPOINT_VARIABLE} cannot be in the future.`);
+    throw new Error(
+      "The successful scheduled workflow run cannot start in the future.",
+    );
   }
 
-  const oldestRedeliverable = startedAt - MAX_REDELIVERY_AGE_MS;
-  if (candidate < oldestRedeliverable) {
+  const oldestSafelyRedeliverable =
+    startedAt - MAX_REDELIVERY_AGE_MS + RETENTION_SAFETY_MARGIN_MS;
+  if (candidate <= oldestSafelyRedeliverable) {
     throw new Error(
-      `${CHECKPOINT_VARIABLE} is older than GitHub's three-day redelivery window; refusing to advance the checkpoint because unrecoverable deliveries may exist.`,
+      "The last successful scheduled workflow run is older than GitHub's three-day redelivery window or inside its 15-minute safety margin; refusing recovery because unrecoverable deliveries may exist.",
     );
   }
   return candidate;
 }
 
-function normalizeDelivery(delivery) {
+function parseRequiredTimestamp(value, description) {
+  if (typeof value !== "string" || value === "") {
+    throw new Error(`GitHub returned a workflow run without ${description}.`);
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) {
+    throw new Error(
+      `GitHub returned a workflow run with an invalid ${description}.`,
+    );
+  }
+  return timestamp;
+}
+
+function normalizeSuccessfulScheduledRun(rawRun, { oldestAllowed, startedAt }) {
+  if (!rawRun || typeof rawRun !== "object") {
+    throw new Error("GitHub returned a malformed workflow run.");
+  }
+  if (!Number.isSafeInteger(rawRun.id) || rawRun.id <= 0) {
+    throw new Error("GitHub returned a workflow run with an invalid ID.");
+  }
+  if (rawRun.path !== REDELIVERY_WORKFLOW_PATH) {
+    throw new Error(
+      "GitHub returned a workflow run for an unexpected workflow path.",
+    );
+  }
+  if (
+    rawRun.event !== "schedule" ||
+    rawRun.status !== "completed" ||
+    rawRun.conclusion !== "success" ||
+    rawRun.head_branch !== "main"
+  ) {
+    throw new Error(
+      "GitHub returned a workflow run that does not satisfy the requested schedule, success, completed, and main filters.",
+    );
+  }
+  if (
+    typeof rawRun.head_sha !== "string" ||
+    !/^[0-9a-f]{40}$/i.test(rawRun.head_sha)
+  ) {
+    throw new Error("GitHub returned a workflow run with an invalid head SHA.");
+  }
+  if (!Number.isSafeInteger(rawRun.run_attempt) || rawRun.run_attempt <= 0) {
+    throw new Error(
+      "GitHub returned a workflow run with an invalid run attempt.",
+    );
+  }
+
+  const createdAt = parseRequiredTimestamp(rawRun.created_at, "created_at");
+  const runStartedAt = parseRequiredTimestamp(
+    rawRun.run_started_at,
+    "run_started_at",
+  );
+  const updatedAt = parseRequiredTimestamp(rawRun.updated_at, "updated_at");
+  if (
+    createdAt < oldestAllowed ||
+    createdAt > runStartedAt ||
+    runStartedAt > updatedAt ||
+    updatedAt > startedAt
+  ) {
+    throw new Error(
+      "GitHub returned a workflow run with timestamps outside the requested continuity window or in an invalid order.",
+    );
+  }
+
+  return Object.freeze({
+    id: String(rawRun.id),
+    createdAt,
+    runStartedAt,
+    updatedAt,
+    headSha: rawRun.head_sha.toLowerCase(),
+    runAttempt: rawRun.run_attempt,
+  });
+}
+
+export async function fetchLastSuccessfulScheduledRun({
+  token,
+  owner,
+  repository,
+  startedAt,
+  fetchImpl = globalThis.fetch,
+}) {
+  validateStartedAt(startedAt);
+  const oldestAllowed =
+    startedAt - MAX_REDELIVERY_AGE_MS + RETENTION_SAFETY_MARGIN_MS;
+  const pathname = `/repos/${endpointPath([
+    owner,
+    repository,
+  ])}/actions/workflows/${endpointPath([REDELIVERY_WORKFLOW_FILE])}/runs`;
+  const createdFilter = `>=${new Date(oldestAllowed).toISOString()}`;
+  let expectedTotalCount;
+  const seenIds = new Set();
+  const runs = [];
+
+  for (let page = 1; page <= MAX_ACTION_RUN_PAGES; page += 1) {
+    const response = await githubRequest({
+      token,
+      url: apiUrl(pathname, {
+        branch: "main",
+        created: createdFilter,
+        event: "schedule",
+        status: "success",
+        per_page: PAGE_SIZE,
+        page,
+      }),
+      fetchImpl,
+    });
+    const data = await readJson(response, "successful scheduled workflow runs");
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !Number.isSafeInteger(data.total_count) ||
+      data.total_count < 0 ||
+      !Array.isArray(data.workflow_runs) ||
+      data.workflow_runs.length > PAGE_SIZE
+    ) {
+      throw new Error(
+        "GitHub returned a malformed successful scheduled workflow-runs page.",
+      );
+    }
+    if (expectedTotalCount === undefined) {
+      expectedTotalCount = data.total_count;
+      if (expectedTotalCount > PAGE_SIZE * MAX_ACTION_RUN_PAGES) {
+        throw new Error(
+          `GitHub workflow-run pagination exceeded the safety limit of ${MAX_ACTION_RUN_PAGES} pages.`,
+        );
+      }
+    } else if (data.total_count !== expectedTotalCount) {
+      throw new Error(
+        "GitHub changed the workflow-run total while it was being paginated.",
+      );
+    }
+
+    for (const rawRun of data.workflow_runs) {
+      const run = normalizeSuccessfulScheduledRun(rawRun, {
+        oldestAllowed,
+        startedAt,
+      });
+      if (seenIds.has(run.id)) {
+        throw new Error(
+          "GitHub returned a duplicate workflow-run ID while paginating.",
+        );
+      }
+      seenIds.add(run.id);
+      runs.push(run);
+    }
+
+    if (runs.length > expectedTotalCount) {
+      throw new Error(
+        "GitHub returned more workflow runs than its declared total count.",
+      );
+    }
+    if (runs.length === expectedTotalCount) {
+      break;
+    }
+    if (data.workflow_runs.length === 0) {
+      throw new Error(
+        "GitHub returned an empty workflow-runs page before the declared total was collected.",
+      );
+    }
+    if (page === MAX_ACTION_RUN_PAGES) {
+      throw new Error(
+        `GitHub workflow-run pagination exceeded the safety limit of ${MAX_ACTION_RUN_PAGES} pages.`,
+      );
+    }
+  }
+
+  if (expectedTotalCount === undefined || runs.length !== expectedTotalCount) {
+    throw new Error(
+      "GitHub workflow-run pagination ended before the declared total was collected.",
+    );
+  }
+  if (runs.length === 0) {
+    throw new Error(
+      "No successful scheduled redelivery workflow run exists within GitHub's three-day redelivery window; refusing recovery without a continuity checkpoint.",
+    );
+  }
+
+  runs.sort((left, right) => {
+    if (left.runStartedAt !== right.runStartedAt) {
+      return right.runStartedAt - left.runStartedAt;
+    }
+    const leftId = BigInt(left.id);
+    const rightId = BigInt(right.id);
+    return leftId < rightId ? 1 : leftId > rightId ? -1 : 0;
+  });
+  for (const run of runs) {
+    const proof = await verifyRecoveryStepExecution({
+      token,
+      owner,
+      repository,
+      workflowRun: run,
+      fetchImpl,
+    });
+    if (proof) {
+      return run;
+    }
+  }
+
+  throw new Error(
+    "No successful scheduled redelivery workflow run contains a proven successful recovery step within GitHub's three-day redelivery window; refusing recovery without a continuity checkpoint.",
+  );
+}
+
+function normalizeWorkflowJob(rawJob, workflowRun) {
+  if (!rawJob || typeof rawJob !== "object") {
+    throw new Error("GitHub returned a malformed workflow job.");
+  }
+  if (!Number.isSafeInteger(rawJob.id) || rawJob.id <= 0) {
+    throw new Error("GitHub returned a workflow job with an invalid job ID.");
+  }
+  if (typeof rawJob.name !== "string" || rawJob.name === "") {
+    throw new Error("GitHub returned a workflow job with an invalid job name.");
+  }
+  if (
+    !Number.isSafeInteger(rawJob.run_id) ||
+    rawJob.run_id <= 0 ||
+    String(rawJob.run_id) !== workflowRun.id
+  ) {
+    throw new Error(
+      "GitHub returned a workflow job for an unexpected workflow run.",
+    );
+  }
+  if (
+    !Number.isSafeInteger(rawJob.run_attempt) ||
+    rawJob.run_attempt <= 0 ||
+    rawJob.run_attempt !== workflowRun.runAttempt
+  ) {
+    throw new Error(
+      "GitHub returned a workflow job for an unexpected workflow run attempt.",
+    );
+  }
+  if (rawJob.status !== "completed") {
+    throw new Error(
+      "GitHub returned a workflow job with an invalid terminal job status.",
+    );
+  }
+  if (!TERMINAL_CONCLUSIONS.has(rawJob.conclusion)) {
+    throw new Error(
+      "GitHub returned a workflow job with an invalid terminal job conclusion.",
+    );
+  }
+  if (!Array.isArray(rawJob.steps)) {
+    throw new Error("GitHub returned a workflow job without a steps array.");
+  }
+
+  const seenStepNumbers = new Set();
+  const steps = rawJob.steps.map((rawStep) => {
+    if (!rawStep || typeof rawStep !== "object") {
+      throw new Error("GitHub returned a malformed workflow step.");
+    }
+    if (typeof rawStep.name !== "string" || rawStep.name === "") {
+      throw new Error("GitHub returned a workflow step without a valid name.");
+    }
+    if (!Number.isSafeInteger(rawStep.number) || rawStep.number <= 0) {
+      throw new Error(
+        "GitHub returned a workflow step with an invalid step number.",
+      );
+    }
+    if (seenStepNumbers.has(rawStep.number)) {
+      throw new Error(
+        "GitHub returned duplicate workflow step numbers in one job.",
+      );
+    }
+    seenStepNumbers.add(rawStep.number);
+    if (rawStep.status !== "completed") {
+      throw new Error(
+        "GitHub returned a workflow step with an invalid terminal step status.",
+      );
+    }
+    if (!TERMINAL_CONCLUSIONS.has(rawStep.conclusion)) {
+      throw new Error(
+        "GitHub returned a workflow step with an invalid terminal step conclusion.",
+      );
+    }
+    return Object.freeze({
+      name: rawStep.name,
+      number: rawStep.number,
+      status: rawStep.status,
+      conclusion: rawStep.conclusion,
+    });
+  });
+
+  return Object.freeze({
+    id: String(rawJob.id),
+    name: rawJob.name,
+    status: rawJob.status,
+    conclusion: rawJob.conclusion,
+    steps: Object.freeze(steps),
+  });
+}
+
+export async function verifyRecoveryStepExecution({
+  token,
+  owner,
+  repository,
+  workflowRun,
+  fetchImpl = globalThis.fetch,
+}) {
+  if (
+    !workflowRun ||
+    typeof workflowRun !== "object" ||
+    typeof workflowRun.id !== "string" ||
+    !/^\d+$/.test(workflowRun.id) ||
+    BigInt(workflowRun.id) <= 0n ||
+    !Number.isSafeInteger(workflowRun.runAttempt) ||
+    workflowRun.runAttempt <= 0
+  ) {
+    throw new Error(
+      "A valid successful scheduled workflow run is required for job verification.",
+    );
+  }
+  const pathname = `/repos/${endpointPath([
+    owner,
+    repository,
+  ])}/actions/runs/${endpointPath([workflowRun.id])}/attempts/${endpointPath([
+    String(workflowRun.runAttempt),
+  ])}/jobs`;
+  let expectedTotalCount;
+  const seenJobIds = new Set();
+  const jobs = [];
+
+  for (let page = 1; page <= MAX_ACTION_RUN_PAGES; page += 1) {
+    const response = await githubRequest({
+      token,
+      url: apiUrl(pathname, { per_page: PAGE_SIZE, page }),
+      fetchImpl,
+    });
+    const data = await readJson(response, "workflow-run attempt jobs");
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !Number.isSafeInteger(data.total_count) ||
+      data.total_count < 0 ||
+      !Array.isArray(data.jobs) ||
+      data.jobs.length > PAGE_SIZE
+    ) {
+      throw new Error("GitHub returned a malformed workflow-jobs page.");
+    }
+    if (expectedTotalCount === undefined) {
+      expectedTotalCount = data.total_count;
+      if (expectedTotalCount > PAGE_SIZE * MAX_ACTION_RUN_PAGES) {
+        throw new Error(
+          `GitHub workflow-job pagination exceeded the safety limit of ${MAX_ACTION_RUN_PAGES} pages.`,
+        );
+      }
+    } else if (data.total_count !== expectedTotalCount) {
+      throw new Error(
+        "GitHub changed the workflow-job total while it was being paginated.",
+      );
+    }
+
+    for (const rawJob of data.jobs) {
+      const job = normalizeWorkflowJob(rawJob, workflowRun);
+      if (seenJobIds.has(job.id)) {
+        throw new Error(
+          "GitHub returned a duplicate workflow-job ID while paginating.",
+        );
+      }
+      seenJobIds.add(job.id);
+      jobs.push(job);
+    }
+
+    if (jobs.length > expectedTotalCount) {
+      throw new Error(
+        "GitHub returned more workflow jobs than its declared total count.",
+      );
+    }
+    if (jobs.length === expectedTotalCount) {
+      break;
+    }
+    if (data.jobs.length === 0) {
+      throw new Error(
+        "GitHub returned an empty workflow-jobs page before the declared total was collected.",
+      );
+    }
+    if (page === MAX_ACTION_RUN_PAGES) {
+      throw new Error(
+        `GitHub workflow-job pagination exceeded the safety limit of ${MAX_ACTION_RUN_PAGES} pages.`,
+      );
+    }
+  }
+
+  if (expectedTotalCount === undefined || jobs.length !== expectedTotalCount) {
+    throw new Error(
+      "GitHub workflow-job pagination ended before the declared total was collected.",
+    );
+  }
+
+  const recoveryJobs = jobs.filter((job) => job.name === RECOVERY_JOB_NAME);
+  if (recoveryJobs.length > 1) {
+    throw new Error(
+      `A scheduled workflow run must not contain more than one recovery job named ${RECOVERY_JOB_NAME}.`,
+    );
+  }
+  if (recoveryJobs.length === 0) {
+    return undefined;
+  }
+  const [job] = recoveryJobs;
+  const recoverySteps = job.steps.filter(
+    (step) => step.name === RECOVERY_STEP_NAME,
+  );
+  if (recoverySteps.length > 1) {
+    throw new Error(
+      `A scheduled workflow run must not contain more than one recovery step named ${RECOVERY_STEP_NAME}.`,
+    );
+  }
+  if (recoverySteps.length === 0) {
+    return undefined;
+  }
+  const [step] = recoverySteps;
+  if (job.status !== "completed" || job.conclusion !== "success") {
+    return undefined;
+  }
+  if (step.status !== "completed" || step.conclusion !== "success") {
+    return undefined;
+  }
+
+  return Object.freeze({ jobId: job.id, stepNumber: step.number });
+}
+
+function normalizeDelivery(delivery, observedAt) {
   if (!delivery || typeof delivery !== "object") {
     throw new Error("GitHub returned a malformed webhook delivery.");
   }
@@ -312,12 +824,26 @@ function normalizeDelivery(delivery) {
       "GitHub returned a webhook delivery with an invalid timestamp.",
     );
   }
-  if (typeof delivery.status !== "string") {
+  if (deliveredAt > observedAt + MAX_DELIVERY_CLOCK_SKEW_MS) {
+    throw new Error(
+      "GitHub returned a webhook delivery with a future timestamp.",
+    );
+  }
+  if (typeof delivery.status !== "string" || delivery.status === "") {
     throw new Error("GitHub returned a webhook delivery without a status.");
   }
-  if (!Number.isInteger(delivery.status_code)) {
+  if (
+    !Number.isInteger(delivery.status_code) ||
+    delivery.status_code < 200 ||
+    delivery.status_code > 599
+  ) {
     throw new Error(
-      "GitHub returned a webhook delivery without a status code.",
+      "GitHub returned a webhook delivery whose status code is not between 200 and 599.",
+    );
+  }
+  if (typeof delivery.redelivery !== "boolean") {
+    throw new Error(
+      "GitHub returned a webhook delivery without a boolean redelivery flag.",
     );
   }
 
@@ -329,6 +855,7 @@ function normalizeDelivery(delivery) {
     deliveredAt,
     status: delivery.status,
     statusCode: delivery.status_code,
+    redelivery: delivery.redelivery,
   });
 }
 
@@ -338,8 +865,19 @@ export async function fetchDeliveriesSince({
   organizationId,
   hookId,
   cutoff,
+  startedAt,
+  now = Date.now,
   fetchImpl = globalThis.fetch,
 }) {
+  validateStartedAt(startedAt);
+  if (typeof now !== "function") {
+    throw new Error("A clock implementation is required for delivery reads.");
+  }
+  if (!Number.isSafeInteger(cutoff) || cutoff <= 0 || cutoff > startedAt) {
+    throw new Error(
+      "The delivery cutoff must be a positive epoch millisecond value no later than the run start time.",
+    );
+  }
   const deliveriesPath = `/orgs/${endpointPath([
     organizationName,
   ])}/hooks/${endpointPath([hookId])}/deliveries`;
@@ -347,6 +885,7 @@ export async function fetchDeliveriesSince({
     organizationId,
   ])}/hooks/${endpointPath([hookId])}/deliveries`;
   let cursor;
+  let lastObservedAt = startedAt;
   const seenCursors = new Set();
   const seenDeliveries = new Map();
   const deliveries = [];
@@ -371,6 +910,14 @@ export async function fetchDeliveriesSince({
       fetchImpl,
     });
     const pageData = await readDeliveryPageJson(response);
+    const pageObservedAt = now();
+    validateStartedAt(pageObservedAt);
+    if (pageObservedAt < lastObservedAt) {
+      throw new Error(
+        "The delivery observation clock moved backwards while paginating.",
+      );
+    }
+    lastObservedAt = pageObservedAt;
     if (!Array.isArray(pageData)) {
       throw new Error("GitHub returned a non-array deliveries page.");
     }
@@ -390,14 +937,15 @@ export async function fetchDeliveriesSince({
     }
 
     for (const rawDelivery of pageData) {
-      const delivery = normalizeDelivery(rawDelivery);
+      const delivery = normalizeDelivery(rawDelivery, pageObservedAt);
       const prior = seenDeliveries.get(delivery.id);
       if (
         prior &&
         (prior.guid !== delivery.guid ||
           prior.deliveredAt !== delivery.deliveredAt ||
           prior.status !== delivery.status ||
-          prior.statusCode !== delivery.statusCode)
+          prior.statusCode !== delivery.statusCode ||
+          prior.redelivery !== delivery.redelivery)
       ) {
         throw new Error(
           "GitHub returned contradictory metadata for the same webhook delivery ID.",
@@ -433,6 +981,15 @@ export async function fetchDeliveriesSince({
 }
 
 export function wasSuccessful(delivery) {
+  if (
+    !Number.isInteger(delivery?.statusCode) ||
+    delivery.statusCode < 200 ||
+    delivery.statusCode > 599
+  ) {
+    throw new Error(
+      "A webhook delivery with a status code outside 200-599 reached selection.",
+    );
+  }
   // The organization-deliveries endpoint classifies 200-399 as success. The
   // numeric status is authoritative so a contradictory textual "OK" can never
   // turn a 4xx/5xx attempt into a successful one.
@@ -448,6 +1005,14 @@ export function selectFailedDeliveryIds(deliveries) {
 
   const byGuid = new Map();
   for (const delivery of deliveries) {
+    if (!delivery || typeof delivery !== "object") {
+      throw new Error("A malformed webhook delivery reached selection.");
+    }
+    if (typeof delivery.redelivery !== "boolean") {
+      throw new Error(
+        "A webhook delivery without a boolean redelivery flag reached selection.",
+      );
+    }
     const attempts = byGuid.get(delivery.guid) ?? [];
     attempts.push(delivery);
     byGuid.set(delivery.guid, attempts);
@@ -455,8 +1020,17 @@ export function selectFailedDeliveryIds(deliveries) {
 
   const failures = [];
   for (const attempts of byGuid.values()) {
-    if (attempts.some(wasSuccessful)) {
+    const hasSuccessfulAttempt = attempts.map(wasSuccessful).some(Boolean);
+    if (hasSuccessfulAttempt) {
       continue;
+    }
+    const originalCount = attempts.filter(
+      (attempt) => attempt.redelivery === false,
+    ).length;
+    if (originalCount !== 1) {
+      throw new Error(
+        "A webhook delivery GUID must have exactly one original delivery in the retained history; refusing automatic redelivery because the history may be truncated or contradictory.",
+      );
     }
     if (attempts.length >= MAX_DELIVERY_ATTEMPTS) {
       throw new Error(
@@ -480,52 +1054,6 @@ export function selectFailedDeliveryIds(deliveries) {
       left.deliveredAt - right.deliveredAt || compareIds(left.id, right.id),
   );
   return failures.map((delivery) => delivery.id);
-}
-
-async function getCheckpointVariable({ token, owner, repository, fetchImpl }) {
-  const pathname = `/repos/${endpointPath([
-    owner,
-    repository,
-  ])}/actions/variables/${CHECKPOINT_VARIABLE}`;
-  const response = await githubRequest({
-    token,
-    url: apiUrl(pathname),
-    fetchImpl,
-    allowedStatuses: [404],
-  });
-  if (response.status === 404) {
-    return { exists: false, value: undefined };
-  }
-
-  const data = await readJson(response, CHECKPOINT_VARIABLE);
-  if (!data || typeof data.value !== "string" || data.value === "") {
-    throw new Error(`GitHub returned an invalid ${CHECKPOINT_VARIABLE} value.`);
-  }
-  return { exists: true, value: data.value };
-}
-
-async function writeCheckpointVariable({
-  token,
-  owner,
-  repository,
-  value,
-  exists,
-  fetchImpl,
-}) {
-  const variablesPath = `/repos/${endpointPath([
-    owner,
-    repository,
-  ])}/actions/variables`;
-  const url = exists
-    ? apiUrl(`${variablesPath}/${CHECKPOINT_VARIABLE}`)
-    : apiUrl(variablesPath);
-  await githubRequest({
-    token,
-    method: exists ? "PATCH" : "POST",
-    url,
-    body: { name: CHECKPOINT_VARIABLE, value },
-    fetchImpl,
-  });
 }
 
 async function redeliver({
@@ -564,60 +1092,115 @@ export async function runRedelivery({
   if (typeof fetchImpl !== "function") {
     throw new Error("A Fetch-compatible implementation is required.");
   }
+  if (typeof now !== "function") {
+    throw new Error("A clock implementation is required for recovery.");
+  }
 
-  const startedAt = now();
-  const checkpoint = await getCheckpointVariable({
-    token: configuration.token,
+  let lastObservedAt;
+  const readMonotonicNow = () => {
+    const observedAt = now();
+    validateStartedAt(observedAt);
+    if (lastObservedAt !== undefined && observedAt < lastObservedAt) {
+      throw new Error(
+        "The recovery clock moved backwards; refusing webhook mutation.",
+      );
+    }
+    lastObservedAt = observedAt;
+    return observedAt;
+  };
+
+  const startedAt = readMonotonicNow();
+  const continuityRun = await fetchLastSuccessfulScheduledRun({
+    token: configuration.actionsToken,
     owner: configuration.workflowRepoOwner,
     repository: configuration.workflowRepoName,
+    startedAt,
     fetchImpl,
   });
-  resolveCheckpoint(checkpoint.value, startedAt);
+  const continuityStartedAt = resolveContinuityCheckpoint(
+    continuityRun,
+    startedAt,
+  );
 
-  // Scan GitHub's complete retained window on every run so attempts for the
-  // same GUID remain countable across checkpoints. The checkpoint is still a
-  // fail-closed continuity guard: a gap beyond the retention window aborts
-  // before any redelivery request or checkpoint mutation.
-  const cutoff = startedAt - MAX_REDELIVERY_AGE_MS;
+  // Stay fifteen minutes inside GitHub's documented three-day retention edge.
+  // This makes an original attempt disappearing at the boundary fail closed
+  // instead of silently renewing a GUID's automatic retry budget.
+  const cutoff = startedAt - MAX_REDELIVERY_AGE_MS + RETENTION_SAFETY_MARGIN_MS;
 
   const deliveries = await fetchDeliveriesSince({
-    token: configuration.token,
+    token: configuration.hookToken,
     organizationName: configuration.organizationName,
     organizationId: configuration.organizationId,
     hookId: configuration.hookId,
     cutoff,
+    startedAt,
+    now: readMonotonicNow,
     fetchImpl,
   });
   const failedDeliveryIds = selectFailedDeliveryIds(deliveries);
+  const targetBatch = failedDeliveryIds.slice(0, MAX_REDELIVERIES_PER_RUN);
+  let deferredTargets = failedDeliveryIds.length - targetBatch.length;
 
-  for (const deliveryId of failedDeliveryIds) {
+  let acceptedRedeliveries = 0;
+  let staleTargetsSkipped = 0;
+  let revalidatedTargets = targetBatch;
+  if (targetBatch.length > 0) {
+    const revalidationStartedAt = readMonotonicNow();
+    if (revalidationStartedAt < startedAt) {
+      throw new Error(
+        "The revalidation clock moved backwards; refusing webhook mutation.",
+      );
+    }
+    const refreshedDeliveries = await fetchDeliveriesSince({
+      token: configuration.hookToken,
+      organizationName: configuration.organizationName,
+      organizationId: configuration.organizationId,
+      hookId: configuration.hookId,
+      cutoff,
+      startedAt: revalidationStartedAt,
+      now: readMonotonicNow,
+      fetchImpl,
+    });
+    const refreshedFailedDeliveryIds =
+      selectFailedDeliveryIds(refreshedDeliveries);
+    const refreshedFailedIds = new Set(refreshedFailedDeliveryIds);
+    revalidatedTargets = targetBatch.filter((deliveryId) => {
+      if (refreshedFailedIds.has(deliveryId)) {
+        return true;
+      }
+      staleTargetsSkipped += 1;
+      return false;
+    });
+    const revalidatedTargetIds = new Set(revalidatedTargets);
+    deferredTargets = refreshedFailedDeliveryIds.filter(
+      (deliveryId) => !revalidatedTargetIds.has(deliveryId),
+    ).length;
+  }
+
+  for (const deliveryId of revalidatedTargets) {
+    // GitHub exposes no conditional redelivery precondition tied to a delivery
+    // snapshot. One complete revalidation occurs before this bounded mutation
+    // batch; a residual race can still exist between that snapshot and a POST.
     await redeliver({
-      token: configuration.token,
+      token: configuration.hookToken,
       organizationName: configuration.organizationName,
       hookId: configuration.hookId,
       deliveryId,
       fetchImpl,
     });
+    acceptedRedeliveries += 1;
   }
 
-  // Persist only after every API read and redelivery request has succeeded. A
-  // partial failure therefore keeps the previous checkpoint for the next run.
-  await writeCheckpointVariable({
-    token: configuration.token,
-    owner: configuration.workflowRepoOwner,
-    repository: configuration.workflowRepoName,
-    value: String(startedAt),
-    exists: checkpoint.exists,
-    fetchImpl,
-  });
-
   logger.info(
-    `Accepted ${failedDeliveryIds.length} webhook redelivery request(s) after examining ${deliveries.length} delivery record(s) since ${new Date(cutoff).toISOString()}.`,
+    `Accepted ${acceptedRedeliveries} webhook redelivery request(s), skipped ${staleTargetsSkipped} stale target(s), deferred ${deferredTargets} target(s) to a later run, and initially examined ${deliveries.length} delivery record(s) since ${new Date(cutoff).toISOString()}; continuity was proven by successful scheduled workflow run ${continuityRun.id}.`,
   );
   return Object.freeze({
     examined: deliveries.length,
-    redeliveries: failedDeliveryIds.length,
-    checkpoint: String(startedAt),
+    redeliveries: acceptedRedeliveries,
+    continuityStartedAt: String(continuityStartedAt),
+    continuityRunId: continuityRun.id,
+    deferredTargets,
+    staleTargetsSkipped,
   });
 }
 

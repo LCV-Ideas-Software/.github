@@ -25,12 +25,13 @@ concurrency:
 
 jobs:
   redeliver:
-    name: Audit and recover organization webhook deliveries
+    name: Redeliver failed organization webhook deliveries
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
       vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true')
     permissions:
+      actions: read # Read the last successful schedule used as the continuity checkpoint.
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -57,12 +58,12 @@ jobs:
 
       - name: Validate required configuration
         env:
-          TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+          APP_CLIENT_ID: ${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${TOKEN}" ]]; then
-            echo "::error::Required secret LCV_AUTOMATION_TOKEN is missing."
+          if [[ -z "${APP_CLIENT_ID}" ]]; then
+            echo "::error::Required variable SLACK_REDELIVERY_APP_CLIENT_ID is missing."
             exit 1
           fi
           if [[ -z "${HOOK_ID}" ]]; then
@@ -73,15 +74,6 @@ jobs:
             echo "::error::SLACK_RELAY_ORG_HOOK_ID must be a positive integer."
             exit 1
           fi
-
-      - name: Audit active PAT-owned organization webhook without mutation
-        env:
-          GITHUB_REF: ${{ github.ref }}
-          ORGANIZATION_NAME: ${{ github.repository_owner }}
-          TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
-          WORKFLOW_REPO_NAME: ${{ github.event.repository.name }}
-          WORKFLOW_REPO_OWNER: ${{ github.repository_owner }}
-        run: node scripts/github-slack-hook-audit.mjs
 
       - name: Require the production gate for requested recovery
         if: >-
@@ -97,13 +89,68 @@ jobs:
             exit 1
           fi
 
+      - name: Mint read-only GitHub App token for audit
+        id: audit-app-token
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.operation == 'audit'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SLACK_REDELIVERY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-organization-hooks: read
+          skip-token-revoke: false
+
+      - name: Mint least-privilege GitHub App token for recovery
+        id: recovery-app-token
+        if: >-
+          github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+          inputs.operation == 'redeliver')
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SLACK_REDELIVERY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-organization-hooks: write
+          skip-token-revoke: false
+
+      - name: Validate exact GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.audit-app-token.outputs.app-slug || steps.recovery-app-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.audit-app-token.outputs.installation-id || steps.recovery-app-token.outputs.installation-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${APP_SLUG}" != "lcv-slack-webhook-recovery" ]]; then
+            echo "::error::The minted token does not belong to the expected GitHub App."
+            exit 1
+          fi
+          if [[ ! "${INSTALLATION_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::The GitHub App installation ID is missing or invalid."
+            exit 1
+          fi
+
+      - name: Audit active App-visible organization webhook without mutation
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          ORGANIZATION_NAME: ${{ github.repository_owner }}
+          TOKEN: ${{ steps.audit-app-token.outputs.token || steps.recovery-app-token.outputs.token }}
+          WORKFLOW_REPO_NAME: ${{ github.event.repository.name }}
+          WORKFLOW_REPO_OWNER: ${{ github.repository_owner }}
+        run: node scripts/github-slack-hook-audit.mjs
+
       - name: Recover failed webhook deliveries
         if: >-
           vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
           (github.event_name == 'schedule' ||
           inputs.operation == 'redeliver')
         env:
-          TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          HOOK_TOKEN: ${{ steps.recovery-app-token.outputs.token }}
           ORGANIZATION_NAME: ${{ github.repository_owner }}
           ORGANIZATION_ID: ${{ github.repository_owner_id }}
           WORKFLOW_REPO_OWNER: ${{ github.repository_owner }}

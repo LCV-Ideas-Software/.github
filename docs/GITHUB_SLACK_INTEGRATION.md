@@ -345,38 +345,67 @@ channel paths.
    a second Actions copy: no workflow is authorized to configure or mutate the
    organization webhook. Keep the organization webhook inactive while the
    Cloudflare secret is being changed.
-10. Under an explicitly authorized human maintenance window, configure exactly
-    one organization webhook through GitHub's native settings UI or official
-    REST API. Use the credential that owns the hook; GitHub does not let a
-    user/PAT administer a hook created by an OAuth app, or an OAuth app
-    administer a hook it did not create. Keep it inactive initially, target
-    `<worker-url>/github/webhook`, require JSON and TLS verification, and select
-    exactly these events: workflow runs, deployment statuses, Dependabot,
-    code-scanning and secret-scanning alerts, pushes, pull requests,
-    pull-request reviews and comments, issues and comments, releases,
-    discussions, and discussion comments. No GitHub Actions workflow may create,
-    update, activate, deactivate, delete, or ping an organization webhook.
-11. Store the resulting positive numeric hook ID as repository variable
+10. Register the private organization-owned GitHub App
+    `lcv-slack-webhook-recovery`, disable its own webhook and OAuth user
+    authorization, and grant only organization `Webhooks: read and write`.
+    Leave every optional repository permission at `No access`; GitHub's
+    mandatory `Metadata: read` remains. Install the App on
+    `LCV-Ideas-Software`, restricted to the `.github` repository, and store its
+    Client ID as environment variable `SLACK_REDELIVERY_APP_CLIENT_ID` plus its
+    generated PEM as environment secret `SLACK_REDELIVERY_APP_PRIVATE_KEY` in
+    protected environment `cloudflare-production`. No App ID or client secret
+    is used. The workflow restricts the installation token to the current
+    repository and validates the exact App slug and a positive installation ID
+    before use.
+11. Under an explicitly authorized human maintenance window, configure exactly
+    one App-owned organization webhook with the official REST API and an
+    installation token minted for `lcv-slack-webhook-recovery`. Do not create it
+    through the settings UI, a PAT, an OAuth token, or another App: creator
+    boundaries can make that hook invisible to the installation token used by
+    audit and recovery. If a legacy user-owned hook exists, first set the
+    production gate to `false`, deactivate it with its owning credential, and
+    create the replacement inactive with `POST /orgs/{org}/hooks` using the
+    dedicated App installation token. Target `<worker-url>/github/webhook`,
+    require JSON and TLS verification, and select exactly these events: workflow
+    runs, deployment statuses, Dependabot, code-scanning and secret-scanning
+    alerts, pushes, pull requests, pull-request reviews and comments, issues and
+    comments, releases, discussions, and discussion comments. No GitHub Actions
+    workflow may create, update, activate, deactivate, delete, or ping an
+    organization webhook.
+12. Store the resulting positive numeric hook ID as repository variable
     `SLACK_RELAY_ORG_HOOK_ID`. Keep the hook inactive until the GitHub and
     Cloudflare copies of the HMAC secret and every downstream binding are
     verified.
-12. The authorized human activates the hook through GitHub's native UI or
-    official REST API. Immediately dispatch `GitHub Slack Webhook Redelivery`
-    with its default `audit` operation, which works while the production gate is
-    still false. Its GET-only audit must prove there is exactly one PAT-visible
-    hook and that its ID, active state, URL, JSON content type, TLS verification,
-    and complete 14-event set match this contract before any redelivery is
-    attempted.
-13. Change `SLACK_GITHUB_INTEGRATION_ENABLED` from `false` to `true`, then run the
+13. Set `SLACK_GITHUB_INTEGRATION_ENABLED=false`. On a verified `main`, enable
+    `GitHub Slack Webhook Redelivery` if it is disabled, and confirm that a
+    previously successful scheduled recovery remains inside the three-day
+    GitHub delivery-retention window with the controller's safety margin. If no
+    such run exists, stop for human reconciliation; never invent or seed a
+    checkpoint. Keeping the gate false prevents a scheduled recovery from
+    running before the read-only audit.
+14. The authorized human activates the replacement through the official REST
+    API with a token from the same dedicated App installation, then immediately dispatches
+    `GitHub Slack Webhook Redelivery` with its default `audit` operation. Its
+    GET-only audit works while the production gate is false, mints an
+    installation token downscoped to `Webhooks: read`, and must prove there is
+    exactly one installation-visible hook whose ID, active state, URL, JSON
+    content type, TLS verification, and complete 14-event set match this
+    contract. A 404 or ambiguous inventory stops the rollout; return the hook to
+    inactive and do not recreate or mutate it from Actions.
+15. Change `SLACK_GITHUB_INTEGRATION_ENABLED` from `false` to `true`, explicitly
+    dispatch the `redeliver` operation, then run the
     redelivery, relay, and Slack-app workflows and confirm their scheduled jobs
     are no longer skipped by the gate.
-14. A healthy control-plane audit does not prove delivery. Run real issue and
+16. A healthy control-plane audit does not prove delivery. Run real issue and
     failed-workflow canaries and require correlated GitHub delivery, Worker,
     D1, Slack activity, and private-channel evidence for both destinations.
 
 If any check fails after activation, immediately return the gate to `false` and
-have the authorized human deactivate the hook through GitHub's native settings
-UI or official REST API. Never leave partially verified live ingestion enabled.
+have the authorized human deactivate the replacement with the same App
+installation credential. If rollback is required, reactivate the preserved
+legacy hook only with its owning human credential. Never leave both hooks active
+or partially verified live ingestion enabled. Delete the legacy hook only after
+the App-owned replacement and both delivery destinations are proven.
 
 The gate controls the production jobs in GitHub Actions; it does not disable an
 already deployed Worker or the GitHub organization webhook. Disabling live
@@ -409,7 +438,7 @@ ingestion therefore requires an intentional webhook action as well.
   `operation: monitor` input to run the same production activity check on
   demand; its default manual operation remains `deploy`.
 - `scripts/github-slack-hook-audit.mjs`, invoked by redelivery, is deliberately
-  GET-only. It proves the PAT-visible organization-hook inventory and exact
+  GET-only. It proves the GitHub-App-installation-visible organization-hook inventory and exact
   target contract without accepting a webhook secret or exposing any mutation
   method. Organization-hook configuration and state changes remain native,
   explicit human operations outside GitHub Actions.
@@ -490,9 +519,13 @@ Monitoring and recovery are layered:
   audit, groups attempts by GUID, treats HTTP 200-399 as a successful GitHub
   delivery, and redelivers unresolved attempts within GitHub's three-day
   window;
-- the webhook recovery workflow advances the epoch-millisecond repository
-  variable `SLACK_RELAY_LAST_REDELIVERY` only after the entire scan and all
-  accepted redelivery requests succeed.
+- the webhook recovery workflow evaluates successful scheduled runs newest
+  first and uses the newest candidate whose exact recovery step is proven
+  completed and successful. A well-formed run whose job did not execute is not a
+  checkpoint; malformed, duplicated or contradictory evidence aborts. A
+  15-minute safety margin stays inside GitHub's moving three-day retention
+  boundary. The built-in `GITHUB_TOKEN` grants only `actions: read` and
+  `contents: read`; no repository variable is written.
 
 GitHub can canonicalize a paginated `/orgs/{name}/...` request into an
 `/organizations/{id}/...` URL in the `Link` header. The recovery controller
@@ -500,18 +533,36 @@ accepts only those two exact path identities for the configured organization
 and hook, keeps `api.github.com` as the mandatory origin, and copies only the
 opaque cursor into a newly constructed request URL.
 
-The recovery workflow uses `LCV_AUTOMATION_TOKEN` because the built-in
-`GITHUB_TOKEN` cannot administer organization webhooks. The classic PAT needs
-`admin:org_hook` and repository access for the checkpoint variable.
-The organization hook must also have been created by that PAT. GitHub's
-documented creator-ownership boundary can otherwise return HTTP 404 even when
-the PAT has the required scope and the same human owns the organization.
-Because the organization uses Enterprise SAML SSO, the classic PAT must also
-remain authorized for `LCV-Ideas-Software`. Regenerating the token or changing
-its scopes revokes that authorization; after either operation, authorize it
-again with **Configure SSO** before relying on the protected workflow. Updating
-the environment secret alone is not sufficient. See [Authorizing a personal
-access token for use with SSO][github-pat-sso].
+The recovery workflow uses the official, SHA-pinned
+`actions/create-github-app-token` action because the built-in `GITHUB_TOKEN`
+cannot administer organization webhooks. The dedicated GitHub App has only
+organization `Webhooks: read and write`; all other optional permissions, its own
+webhook and OAuth user authorization remain disabled. Manual audit tokens are
+downscoped to read. Scheduled or explicitly requested recovery tokens are
+downscoped to write, last no more than one hour, and are revoked by the action at
+job completion. The App Client ID is a protected environment variable and the
+PEM is a protected environment secret; neither is copied into the repository.
+GitHub's `Webhooks: write` permission also technically permits broader hook
+administration because the API has no redelivery-only grant. The dedicated App,
+current-repository token restriction, protected `main` environment, exact App
+identity check, and reviewed controller compensate for that unavoidable
+granularity; the controller exposes no create, update, delete or ping request.
+
+Before the controller's delivery scan, the recovery path uses `GITHUB_TOKEN`
+with `actions: read` and `contents: read` to enumerate successful scheduled runs
+from the preceding three-day GitHub delivery-retention window. It examines
+candidates newest first until it proves the exact recovery step completed
+successfully and uses that run's start time as a continuity guard. A well-formed
+skipped or otherwise non-executed candidate is not a checkpoint; missing proof
+ends in a closed failure, while malformed, duplicated or contradictory history
+aborts immediately. Each failed GUID must retain exactly one original delivery;
+truncated lineage, an exhausted attempt limit or an unclassified response code
+also fails closed. Before any POST, the controller performs one complete lineage
+revalidation, intersects it with the initial oldest-first candidates, and
+mutates at most ten targets per run. The remaining targets are explicitly
+deferred to later schedules, bounding API use without hiding backlog. It never
+invents an automatic seed or persistent repository-variable checkpoint that
+could conceal a coverage gap.
 
 See [`apps.activities.list`][slack-activities], [Slack app activity logging][slack-logging],
 and [GitHub's automatic redelivery design][github-redelivery].
@@ -553,7 +604,8 @@ and [GitHub's automatic redelivery design][github-redelivery].
 - [Validating GitHub webhook deliveries][github-hmac]
 - [Automatically redelivering failed organization webhook deliveries][github-redelivery]
 - [REST API endpoints and creator ownership for organization webhooks][github-org-webhooks]
-- [Authorizing a personal access token for use with SSO][github-pat-sso]
+- [Authenticating with a GitHub App in Actions][github-app-auth]
+- [Installing an organization-owned GitHub App][github-app-install]
 - [Implementing Slack slash commands][slack-slash-commands]
 - [Formatting dates in Slack messages][slack-date-formatting]
 - [Creating Slack workflows][slack-workflows]
@@ -576,7 +628,8 @@ and [GitHub's automatic redelivery design][github-redelivery].
 [github-events]: https://docs.github.com/en/webhooks/webhook-events-and-payloads
 [github-hmac]: https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
 [github-org-webhooks]: https://docs.github.com/en/rest/orgs/webhooks
-[github-pat-sso]: https://docs.github.com/en/enterprise-cloud@latest/authentication/authenticating-with-single-sign-on/authorizing-a-personal-access-token-for-use-with-single-sign-on
+[github-app-auth]: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/making-authenticated-api-requests-with-a-github-app-in-a-github-actions-workflow
+[github-app-install]: https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app
 [github-redelivery]: https://docs.github.com/en/webhooks/using-webhooks/automatically-redelivering-failed-deliveries-for-an-organization-webhook
 [github-slack]: https://docs.github.com/en/integrations/how-tos/slack/use-github-in-slack
 [github-slack-install]: https://docs.github.com/en/integrations/how-tos/slack/integrate-github-with-slack
