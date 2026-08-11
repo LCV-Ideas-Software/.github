@@ -8,6 +8,8 @@ updates:
       timezone: "America/Los_Angeles"
     cooldown:
       default-days: 7
+      exclude:
+        - "*"
     rebase-strategy: auto
     labels:
       - "dependencies"
@@ -48,7 +50,6 @@ updates:
     labels:
       - "dependencies"
       - "npm"
-      - "public-format"
     commit-message:
       prefix: "deps"
       include: "scope"
