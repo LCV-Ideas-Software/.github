@@ -16,8 +16,14 @@ an unversioned repository.
 
 First repository of the enterprise-wide governance rollout described in
 [Discussion #150](https://github.com/orgs/LCV-Ideas-Software/discussions/150) and executed under
-[#148](https://github.com/LCV-Ideas-Software/.github/issues/148). Every change below reached `main`
-through the native merge queue with signed squash commits and no ruleset bypass.
+[#148](https://github.com/LCV-Ideas-Software/.github/issues/148).
+
+Every **versioned** change below reached `main` through the native merge queue, with signed squash
+commits and no ruleset bypass. Some entries also required repository-setting mutations — deleting
+secrets, variables and environments, and changing Actions permissions and the repository ruleset —
+which do not pass through a merge queue and leave no commit. Those are marked _(out-of-band)_; their
+evidence is the execution trail recorded in
+[#148](https://github.com/LCV-Ideas-Software/.github/issues/148), not this file.
 
 ### Removed
 
@@ -29,7 +35,7 @@ through the native merge queue with signed squash commits and no ruleset bypass.
   ([#151](https://github.com/LCV-Ideas-Software/.github/pull/151)).
 - Consolidated `format-public.yml` into the `Build Pages artifact` job and removed the duplicated
   workflow and check context ([#151](https://github.com/LCV-Ideas-Software/.github/pull/151)).
-- Removed the legacy `LCV_AUTOMATION_TOKEN`, `SLACK_RELAY_GITHUB_WEBHOOK_SECRET`,
+- _(out-of-band)_ Removed the legacy `LCV_AUTOMATION_TOKEN`, `SLACK_RELAY_GITHUB_WEBHOOK_SECRET`,
   `LCV_NATIVE_RECONCILE_ENABLED` and `SLACK_RELAY_LAST_REDELIVERY` secrets and variables, and the
   orphaned `dependabot-automation`, `github-administration` and `projects-automation` environments,
   after the recovery canary proved green.
@@ -44,11 +50,14 @@ through the native merge queue with signed squash commits and no ruleset bypass.
 - Pinned Wrangler by exact version in the manifests and lockfiles and removed `wrangler@latest`;
   every workflow now verifies the effective npm registry before `npm ci`
   ([#149](https://github.com/LCV-Ideas-Software/.github/pull/149)).
-- Restricted the repository to `allowed_actions=selected` with SHA pinning required, admitting only
-  GitHub-owned actions plus `denoland/setup-deno` and `ossf/scorecard-action`.
-- Reduced the repository ruleset to the seven functional check contexts that the inherited
-  Enterprise and organization rulesets cannot express, and removed `Test native auto-merge`,
-  `Test native governance`, `OpenSSF Scorecard` and `Check index.html formatting`.
+- _(out-of-band)_ Restricted the repository to `allowed_actions=selected` with SHA pinning
+  required, admitting only GitHub-owned actions plus `denoland/setup-deno` and
+  `ossf/scorecard-action`; set `default_workflow_permissions=read` and disabled pull-request
+  approval by GitHub Actions.
+- _(out-of-band)_ Reduced the repository ruleset to the seven functional check contexts that the
+  inherited Enterprise and organization rulesets cannot express, and removed
+  `Test native auto-merge`, `Test native governance`, `OpenSSF Scorecard` and
+  `Check index.html formatting`.
 - Restored the exact Slack scope set required by the official `SendMessage` backend —
   `chat:write`, `chat:write.public`, `channels:read` — as a narrow, documented exception
   ([#156](https://github.com/LCV-Ideas-Software/.github/pull/156)).
@@ -92,18 +101,38 @@ through the native merge queue with signed squash commits and no ruleset bypass.
   is recorded for it. The same placement is reported across the repositories that deploy to
   Cloudflare, which makes the decision organization-wide rather than local to this repository.
   Tracked in [#169](https://github.com/LCV-Ideas-Software/.github/issues/169).
-- Two fail-closed gates are not protected by a regression assertion: the step that invokes the
-  CodeQL SARIF gate is not asserted free of `continue-on-error`, and `.github/zizmor.yml` is read by
-  no test. Tracked in [#170](https://github.com/LCV-Ideas-Software/.github/issues/170).
-- Workflow run
-  [31509445513](https://github.com/LCV-Ideas-Software/.github/actions/runs/31509445513) is stuck in
-  `queued` with no job; cancel and force-cancel return HTTP 500 and delete returns 403. It never
-  materialized a job, so nothing executed. Tracked in
-  [#125](https://github.com/LCV-Ideas-Software/.github/issues/125).
+- None of the seven required status-check contexts is protected against structural regression. The
+  live re-read widened this beyond the two gates originally reported: a job disabled with `if: false`
+  reports **Success** and does not block the merge, so a workflow that only tests itself stops
+  protecting anything the moment its own job is skipped; `continue-on-error` is unguarded on the
+  enforcement steps; `pages.yml` is read by no test at all; and in `.github/zizmor.yml` a
+  `rules.<id>.disable: true` remains a real bypass even under `--no-ignores`, which suppresses
+  ignores but does not make the configuration inert. No active defect exists in the current YAML —
+  the gap is that nothing stops one line from removing each guarantee. Tracked in
+  [#170](https://github.com/LCV-Ideas-Software/.github/issues/170), to be remediated in its own pull
+  request rather than mixed into documentation work.
+- A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. On 2026-08-11
+  the trigger endpoint answered `{"ok":true}`, D1 stored `accepted_by_slack`, and the asynchronous
+  workflow execution then ended in `TIMEOUT`; that message does not exist in the channel. Terminal
+  states are not retried, and GitHub webhook redelivery cannot repair it because the same
+  `delivery_id` is idempotently recognized as already accepted. Acceptance by the trigger is not
+  confirmation that the message was delivered, and the two are not distinguished today. Tracked in
+  [#171](https://github.com/LCV-Ideas-Software/.github/issues/171).
+
+### Platform defect, no longer tracked as a pendency
+
+Workflow run [31509445513](https://github.com/LCV-Ideas-Software/.github/actions/runs/31509445513)
+is permanently `queued` with no job: cancel and force-cancel return HTTP 500 and delete returns 403,
+because deletion requires a completed run. It never materialized a job, so nothing executed and the
+fail-closed containment held. Its tracker
+[#125](https://github.com/LCV-Ideas-Software/.github/issues/125) was closed as completed; the run is
+superseded by the scheduled executions that succeeded after it, and is recorded here only so a
+future audit does not reopen it as an unexplained non-terminal run.
 
 ## Earlier history
 
-Before this sanitation the repository grew through 255 commits on `main` covering the organization
+Before this sanitation the repository grew through 247 commits on `main` — the count at
+`e327307^`, immediately before the first change listed above — covering the organization
 profile, the static site at <https://www.lcv.dev>, the GitHub Pages mirror, the sponsor page, the
 GitHub-to-Slack relay and successive iterations of security and automation baselines. That history
 was never summarized in a changelog; rather than reconstruct it after the fact, it is left where it

@@ -49,18 +49,24 @@ it is not imported directly by this repository.
 
 ## Externally hosted scripts — `site/sponsor/index.html`
 
-The sponsor page loads the official Mercado Pago browser SDK directly from Mercado Pago's own
-origin. These scripts are **not vendored** into this repository, carry no version pin addressable
-from here, and are governed by Mercado Pago's terms rather than by an open-source license.
+The sponsor page loads official Mercado Pago browser scripts directly from Mercado Pago's own
+origin. Neither is **vendored** into this repository, neither carries a version pin addressable from
+here, and both are governed by Mercado Pago's terms rather than by an open-source license.
+
+The two are not interchangeable and are not equally required. `MercadoPago.js V2` is the SDK that
+builds the Card Payment Brick secure fields and, as a side effect of constructing
+`new MercadoPago(publicKey, ...)`, sets `window.MP_DEVICE_SESSION_ID` automatically. `security.js`
+is loaded with `output="deviceId"` and only populates `window.deviceId`, which the page uses as the
+**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1306-1307`,
+where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when it is absent.
 
 | Component                  | Version               | License                    | Scope   | Source                                     |
 | -------------------------- | --------------------- | -------------------------- | ------- | ------------------------------------------ |
 | MercadoPago.js V2          | v2 endpoint, unpinned | Proprietary — Mercado Pago | runtime | https://sdk.mercadopago.com/js/v2          |
 | Mercado Pago `security.js` | v2 endpoint, unpinned | Proprietary — Mercado Pago | runtime | https://www.mercadopago.com/v2/security.js |
 
-Both are required by the Card Payment Brick secure-fields integration: the SDK must execute from
-the payment provider's origin for PCI scope reasons, so pinning or vendoring them is not available
-to this repository.
+The SDK must execute from the payment provider's origin for PCI scope reasons, so pinning or
+vendoring either script is not available to this repository.
 
 ## This repository
 
