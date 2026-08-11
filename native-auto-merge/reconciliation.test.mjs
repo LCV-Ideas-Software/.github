@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   assessRequiredCheckRuns,
@@ -1998,14 +1999,18 @@ test("quiet-window reconciliation is bounded, resets on drift, and keeps bot abs
 });
 
 test("Copilot's no-reviewable-files verdict counts as a completed review", () => {
-  // Regression for #134. Sentence and footer are written out literally on purpose:
-  // deriving them from the production constant would let a wording drift change the
-  // fixture too, leaving this test green while the parser no longer matches reality.
+  // Regression for #134. The captured fixture is the verbatim body Copilot posted on
+  // LCV-Ideas-Software/.github#133 - not a hand-written approximation, and not derived
+  // from the production constant, so neither an invented shape nor a wording drift in the
+  // implementation can keep this test green while production breaks.
+  const CAPTURED = readFileSync(
+    new URL("./fixtures/copilot-no-reviewable-files.txt", import.meta.url),
+    "utf8",
+  );
   const VERDICT = "Copilot wasn't able to review any files in this pull request.";
-  const FOOTER =
-    '\n\n---\n\n\u{1F4A1} <a href="/LCV-Ideas-Software/.github/new/main?filename=.github/skills/code-review/SKILL.md">add instructions</a>';
+  assert.ok(CAPTURED.startsWith(VERDICT));
 
-  for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", VERDICT + FOOTER]) {
+  for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", CAPTURED]) {
     const assessed = assessReviewSnapshot(
       snapshot({
         reviews: {
@@ -2030,25 +2035,57 @@ test("Copilot's no-reviewable-files verdict counts as a completed review", () =>
     assert.deepEqual(assessed.copilotUnavailableReviewIds, []);
   }
 
-  // Fail closed on anything beyond the observed shapes.
-  for (const suffix of [
-    "\n\nWARNING: new advisory text",
-    "\n\n<details><summary>Suppressed comments (2)</summary></details>",
-    // A valid footer must not become a licence for arbitrary trailing content.
-    FOOTER + "\n\nWARNING: new advisory text",
-  ]) {
-    assert.throws(
-      () =>
-        assessReviewSnapshot(
-          snapshot({
-            reviews: {
-              nodes: [review({ body: VERDICT + suffix })],
-              pageInfo: { hasNextPage: false },
-            },
+  // A real review carries the overview heading. Seeing it after this verdict means the
+  // body is not what it claims to be, so it must not pass as a clean review.
+  assert.throws(
+    () =>
+      assessReviewSnapshot(
+        snapshot({
+          reviews: {
+            nodes: [
+              review({
+                body: VERDICT + "\n\n## Pull request overview\n\nreal findings",
+              }),
+            ],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+        HEAD_SHA,
+      ),
+    /Copilot .*malformed/i,
+  );
+
+  // Suppressed feedback is counted, never dropped, and a malformed marker still throws.
+  const withSuppressed = assessReviewSnapshot(
+    snapshot({
+      reviews: {
+        nodes: [
+          review({
+            body:
+              VERDICT +
+              "\n\n<details>\n<summary>Suppressed comments (2)</summary>\n</details>",
           }),
-          HEAD_SHA,
-        ),
-      /Copilot .*malformed/i,
-    );
-  }
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+    HEAD_SHA,
+  );
+  assert.equal(withSuppressed.latestExactHeadCopilotState, "reviewed");
+
+  assert.throws(
+    () =>
+      assessReviewSnapshot(
+        snapshot({
+          reviews: {
+            nodes: [
+              review({ body: VERDICT + "\n\nSuppressed comments (2)" }),
+            ],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+        HEAD_SHA,
+      ),
+    /Suppressed comments marker is malformed/i,
+  );
 });

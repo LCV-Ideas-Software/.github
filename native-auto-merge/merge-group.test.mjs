@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   githubGetMergeQueueSnapshot,
@@ -1193,10 +1194,15 @@ test("merge-group gate fails closed on association or feedback drift", async () 
 
 test("a successful Copilot run with no reviewable files clears the merge-group gate", async () => {
   // Regression for #134 through the FULL reconciliation path, not assessReviewSnapshot
-  // alone. Sentence and footer are literal so implementation drift cannot hide here.
+  // alone. The captured fixture is the verbatim body Copilot posted on
+  // LCV-Ideas-Software/.github#133, so neither an invented shape nor a wording drift in
+  // the implementation can keep this green while production breaks.
+  const CAPTURED = readFileSync(
+    new URL("./fixtures/copilot-no-reviewable-files.txt", import.meta.url),
+    "utf8",
+  );
   const VERDICT = "Copilot wasn't able to review any files in this pull request.";
-  const FOOTER =
-    '\n\n---\n\n\u{1F4A1} <a href="/LCV-Ideas-Software/.github/new/main?filename=.github/skills/code-review/SKILL.md">add instructions</a>';
+  assert.ok(CAPTURED.startsWith(VERDICT));
   const snapshotWith = (body) => ({
     id: "PR_test",
     headRefOid: HEAD_SHA,
@@ -1221,7 +1227,7 @@ test("a successful Copilot run with no reviewable files clears the merge-group g
     },
   });
 
-  for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", VERDICT + FOOTER]) {
+  for (const body of [VERDICT, VERDICT + "\n\n\n\n\n", CAPTURED]) {
     const state = await readMergeGroupFeedbackState(
       { repository: REPOSITORY, number: 108, headSha: HEAD_SHA, token: "github-token" },
       {

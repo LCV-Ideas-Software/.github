@@ -72,10 +72,12 @@ const COPILOT_QUOTA_UNAVAILABLE_BODY =
 // is not associated with a failure.
 export const COPILOT_NO_REVIEWABLE_FILES_PREFIX =
   "Copilot wasn't able to review any files in this pull request.";
-// Only the two shapes observed in production are accepted after that sentence: nothing
-// but whitespace, or the standard footer. Anything else fails closed.
-const COPILOT_NO_REVIEWABLE_FILES_FOOTER =
-  /^\s*\r?\n---\r?\n\r?\n\u{1F4A1} <a href="\/[^"\r\n]+\/new\/main\?filename=\.github\/skills\/code-review\/SKILL\.md"[^<\r\n]*>[^<]*<\/a>\s*$/u;
+// What follows that sentence is Copilot's own boilerplate footer, whose wording is
+// third-party prose and has already changed once. It is deliberately NOT pattern-matched:
+// freezing it here is the same fragility this component already carries elsewhere, and a
+// copy change would break the merge queue org-wide. Safety comes from the two conditions
+// that actually matter instead - a real review always carries the overview heading, and a
+// suppressed-comments block is counted by the shared helper rather than assumed absent.
 const CODEX_CLEAN_REVIEW_HEADLINES = new Set([
   "Codex Review: Didn't find any major issues. :+1:",
   "Codex Review: Didn't find any major issues. :rocket:",
@@ -743,17 +745,15 @@ function parseCopilotReviewBody(body) {
     typeof body === "string" &&
     body.trimStart().startsWith(COPILOT_NO_REVIEWABLE_FILES_PREFIX)
   ) {
-    const remainder = body
-      .trimStart()
-      .slice(COPILOT_NO_REVIEWABLE_FILES_PREFIX.length);
-    if (
-      !/^\s*$/.test(remainder) &&
-      !COPILOT_NO_REVIEWABLE_FILES_FOOTER.test(remainder)
-    ) {
+    // A real review always opens with the overview heading. Seeing it after the
+    // no-reviewable-files verdict means the body is not what it claims to be.
+    if (/^## Pull request overview$/m.test(body)) {
       throw new Error("Copilot review body is malformed");
     }
     return {
       state: "reviewed",
+      // Never assumed: parseSuppressedCommentCount throws on a malformed marker and
+      // counts a well-formed block, so suppressed feedback can never be dropped here.
       suppressedCommentCount: parseSuppressedCommentCount(body),
     };
   }
