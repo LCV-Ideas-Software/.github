@@ -4,7 +4,7 @@ body:
     attributes:
       value: |
         Use Q&A para conhecimento durável sobre este repositório ou sobre a governança da
-        organização. Redija dados sensíveis e identificadores operacionais privados.
+        organização. Não inclua dados sensíveis nem identificadores operacionais privados.
   - type: textarea
     id: question
     attributes:
