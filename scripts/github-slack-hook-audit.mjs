@@ -231,69 +231,77 @@ function validateTargetHook(hook, expectedHookId) {
   return Object.freeze({ hookId, active: true });
 }
 
-export function parseNextHookPage(linkHeader, expectedPathname) {
+export function parseNextHookPage(linkHeader, expectedPathname, expectedPage) {
   if (!linkHeader) return undefined;
 
+  const nextCandidates = [];
   for (const match of linkHeader.matchAll(/<([^>]+)>([^,]*)/g)) {
     const [, candidate, parameters] = match;
     const relation = parameters.match(/(?:^|;)\s*rel\s*=\s*"?([^";,]+)"?/i);
     if (!relation?.[1].split(/\s+/).includes("next")) continue;
+    nextCandidates.push(candidate);
+  }
+  if (nextCandidates.length === 0) return undefined;
+  if (nextCandidates.length !== 1) {
+    throw new Error("GitHub returned multiple next-page URLs.");
+  }
+  if (!Number.isSafeInteger(expectedPage) || expectedPage <= 1) {
+    throw new Error("The expected GitHub next-page number is invalid.");
+  }
 
-    let nextUrl;
-    try {
-      nextUrl = new URL(candidate);
-    } catch (error) {
-      throw new Error("GitHub returned an invalid next-page URL.", {
-        cause: error,
-      });
-    }
-    if (
-      nextUrl.origin !== API_ORIGIN ||
-      nextUrl.pathname !== expectedPathname
-    ) {
-      throw new Error(
-        "GitHub returned a next-page URL outside the expected organization hooks endpoint.",
-      );
-    }
-    const parameterNames = [...nextUrl.searchParams.keys()];
-    const pageSizes = nextUrl.searchParams.getAll("per_page");
-    const pages = nextUrl.searchParams.getAll("page");
-    if (
-      parameterNames.length !== 2 ||
-      pageSizes.length !== 1 ||
-      pages.length !== 1 ||
-      parameterNames.some(
-        (parameterName) =>
-          parameterName !== "per_page" && parameterName !== "page",
-      )
-    ) {
-      throw new Error(
-        "GitHub returned a next-page URL with unexpected query parameters.",
-      );
-    }
-    if (pageSizes[0] !== String(PAGE_SIZE)) {
-      throw new Error(
-        "GitHub returned a next-page URL with an invalid page size.",
-      );
-    }
-    const page = pages[0];
-    const pageNumber = Number(page);
-    if (
-      !/^[1-9]\d*$/.test(page) ||
-      !Number.isSafeInteger(pageNumber) ||
-      pageNumber <= 1 ||
-      String(pageNumber) !== page
-    ) {
-      throw new Error(
-        "GitHub returned a next-page URL with an invalid page number.",
-      );
-    }
-    return apiUrl(expectedPathname, {
-      per_page: PAGE_SIZE,
-      page: pageNumber,
+  let nextUrl;
+  try {
+    nextUrl = new URL(nextCandidates[0]);
+  } catch (error) {
+    throw new Error("GitHub returned an invalid next-page URL.", {
+      cause: error,
     });
   }
-  return undefined;
+  if (nextUrl.origin !== API_ORIGIN || nextUrl.pathname !== expectedPathname) {
+    throw new Error(
+      "GitHub returned a next-page URL outside the expected organization hooks endpoint.",
+    );
+  }
+  const parameterNames = [...nextUrl.searchParams.keys()];
+  const pageSizes = nextUrl.searchParams.getAll("per_page");
+  const pages = nextUrl.searchParams.getAll("page");
+  if (
+    parameterNames.length !== 2 ||
+    pageSizes.length !== 1 ||
+    pages.length !== 1 ||
+    parameterNames.some(
+      (parameterName) =>
+        parameterName !== "per_page" && parameterName !== "page",
+    )
+  ) {
+    throw new Error(
+      "GitHub returned a next-page URL with unexpected query parameters.",
+    );
+  }
+  if (pageSizes[0] !== String(PAGE_SIZE)) {
+    throw new Error(
+      "GitHub returned a next-page URL with an invalid page size.",
+    );
+  }
+  const page = pages[0];
+  const pageNumber = Number(page);
+  if (
+    !/^[1-9]\d*$/.test(page) ||
+    !Number.isSafeInteger(pageNumber) ||
+    pageNumber <= 1 ||
+    String(pageNumber) !== page
+  ) {
+    throw new Error(
+      "GitHub returned a next-page URL with an invalid page number.",
+    );
+  }
+  if (pageNumber !== expectedPage) {
+    throw new Error("GitHub returned a non-contiguous next-page URL.");
+  }
+  return apiUrl(expectedPathname, {
+    per_page: PAGE_SIZE,
+    page: pageNumber,
+  });
 }
 
 async function listVisibleHooks({ token, organizationName, fetchImpl }) {
@@ -326,7 +334,11 @@ async function listVisibleHooks({ token, organizationName, fetchImpl }) {
       hooks.push(hook);
     }
 
-    nextUrl = parseNextHookPage(response.headers.get("link"), pathname);
+    nextUrl = parseNextHookPage(
+      response.headers.get("link"),
+      pathname,
+      Number(page) + 1,
+    );
     if (!nextUrl) return hooks;
   }
 

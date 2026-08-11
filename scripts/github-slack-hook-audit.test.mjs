@@ -178,6 +178,7 @@ test("pagination accepts only the exact GitHub organization hooks endpoint", () 
   const next = parseNextHookPage(
     `<https://api.github.com${path}?per_page=100&page=2>; rel="next"`,
     path,
+    2,
   );
   assert.equal(next?.searchParams.get("page"), "2");
   assert.throws(
@@ -185,6 +186,7 @@ test("pagination accepts only the exact GitHub organization hooks endpoint", () 
       parseNextHookPage(
         `<https://example.test${path}?per_page=100&page=2>; rel="next"`,
         path,
+        2,
       ),
     /outside the expected/,
   );
@@ -193,6 +195,7 @@ test("pagination accepts only the exact GitHub organization hooks endpoint", () 
       parseNextHookPage(
         `<https://api.github.com${path}?per_page=50&page=2>; rel="next"`,
         path,
+        2,
       ),
     /invalid page size/,
   );
@@ -207,10 +210,29 @@ test("pagination accepts only the exact GitHub organization hooks endpoint", () 
         parseNextHookPage(
           `<https://api.github.com${path}?${query}>; rel="next"`,
           path,
+          2,
         ),
       /invalid|unexpected/,
     );
   }
+  assert.throws(
+    () =>
+      parseNextHookPage(
+        `<https://api.github.com${path}?per_page=100&page=3>; rel="next"`,
+        path,
+        2,
+      ),
+    /non-contiguous/,
+  );
+  assert.throws(
+    () =>
+      parseNextHookPage(
+        `<https://api.github.com${path}?per_page=100&page=2>; rel="next", <https://api.github.com${path}?per_page=100&page=3>; rel="next"`,
+        path,
+        2,
+      ),
+    /multiple next-page/,
+  );
   assert.equal(next?.href, `https://api.github.com${path}?per_page=100&page=2`);
 });
 
