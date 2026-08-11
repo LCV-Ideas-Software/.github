@@ -11,5 +11,5 @@ export default Manifest({
   functions: [ValidateRelayMessageDefinition],
   workflows: [GitHubActivityWorkflow, GitHubAlertWorkflow],
   outgoingDomains: [],
-  botScopes: ["chat:write", "channels:read"],
+  botScopes: ["chat:write", "chat:write.public", "channels:read"],
 });
