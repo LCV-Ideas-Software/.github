@@ -11,6 +11,17 @@ const zizmorWorkflow = await readFile(
   "utf8",
 );
 
+function zizmorJobPermissions(source) {
+  const lines = source.replaceAll("\r\n", "\n").split("\n");
+  const start = lines.indexOf("    permissions:");
+  assert.notEqual(start, -1, "Zizmor job permissions must be present");
+  let end = start + 1;
+  while (end < lines.length && lines[end].startsWith("      ")) {
+    end += 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
 test("Dependency Review scans same-repository and fork pull requests", () => {
   assert.doesNotMatch(
     workflow,
@@ -42,8 +53,13 @@ test("Dependency Review validates the GitHub Actions pin auditor", () => {
 test("reusable Zizmor grants the minimum metadata access required by SARIF upload", () => {
   assert.match(zizmorWorkflow, /^permissions:\s*\{\}\s*$/m);
   assert.doesNotMatch(zizmorWorkflow, /permissions:\s*write-all/);
-  assert.match(
-    zizmorWorkflow,
-    /\n    permissions:\n      actions: read # CodeQL upload-sarif reads workflow-run metadata\.\n      contents: read\n      security-events: write # Upload the SARIF to GitHub code scanning\.\n/,
+  assert.equal(
+    zizmorJobPermissions(zizmorWorkflow),
+    [
+      "    permissions:",
+      "      actions: read # CodeQL upload-sarif reads workflow-run metadata.",
+      "      contents: read",
+      "      security-events: write # Upload the SARIF to GitHub code scanning.",
+    ].join("\n"),
   );
 });
