@@ -39,15 +39,17 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - versioned CodeQL Advanced Setup workflows in public repositories containing code;
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
-- external credentials scoped to the jobs that consume them: the Slack service token and the
-  webhook-recovery App key are held in protected environments restricted to `main`. The Cloudflare
-  deployment credentials are still repository-scoped. GitHub does not hand a repository secret to a
-  job that does not ask for it, but any workflow in this repository may reference them without
-  declaring `cloudflare-production`, including workflows that run on same-repository pull requests —
-  so the environment's branch policy is not what gates them. Moving them into the protected
-  environment is tracked in
-  [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Fork pull requests never receive
-  any secret;
+- external credentials held in protected environments restricted to `main`, with two limits stated
+  plainly rather than implied. First, an environment is shared by every job that declares it, not
+  scoped to the job that uses a given secret: `SLACK_SERVICE_TOKEN` lives in `slack-production` and
+  `SLACK_REDELIVERY_APP_PRIVATE_KEY` in `cloudflare-production`, and the two deploy jobs that also
+  declare `cloudflare-production` can reach the App key without using it. Second, the Cloudflare
+  deployment credentials are still repository-scoped: GitHub does not hand a repository secret to a
+  job that does not reference it, but any workflow here may reference them without declaring the
+  environment at all, including workflows that run on same-repository pull requests, so the
+  environment's branch policy does not gate them. Both are tracked in
+  [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Fork pull requests receive no
+  secret;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by effective rulesets and GitHub's native merge queue;
 - no long-lived secrets in source control.
 
