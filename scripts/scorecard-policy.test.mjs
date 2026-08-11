@@ -7,13 +7,6 @@ import test from "node:test";
 const POLICY_URL = new URL("./scorecard-policy.jq", import.meta.url);
 const POLICY_PATH = fileURLToPath(POLICY_URL);
 const NO_FILE = "no file associated with this alert";
-const PINNED_MESSAGE =
-  "score is 7: npmCommand not pinned by hash\n" +
-  "Click Remediation section below to solve this issue";
-const WRANGLER_INSTALL =
-  'npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest';
-const WRANGLER_REUSE =
-  'npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund';
 const BOOTSTRAP_BRANCH_PROTECTION_MESSAGE =
   "score is 3: branch protection is not maximal on development and all release branches:\n" +
   "Warn: could not determine whether codeowners review is allowed\n" +
@@ -144,7 +137,7 @@ test("missing, null, primitive, and malformed SARIF shapes fail closed", () => {
   assertRejected("{");
 });
 
-test("only the exact durable write-all and Wrangler signatures pass", () => {
+test("only the exact transitional write-all signature passes", () => {
   const token = result("TokenPermissionsID", {
     message: tokenMessage("codeql.yml"),
     snippet: "write-all",
@@ -155,12 +148,7 @@ test("only the exact durable write-all and Wrangler signatures pass", () => {
     snippet: "write-all",
     uri: ".github/workflows/pages.yml",
   });
-  const pinned = result("PinnedDependenciesID", {
-    message: PINNED_MESSAGE,
-    snippet: WRANGLER_INSTALL,
-    uri: ".github/workflows/cloudflare-pages.yml",
-  });
-  assertAccepted(sarif([token, localToken, pinned]));
+  assertAccepted(sarif([token, localToken]));
   assertAccepted(
     sarif([
       result("TokenPermissionsID", {
@@ -214,14 +202,11 @@ test("only the exact durable write-all and Wrangler signatures pass", () => {
       uri: ".github/workflows/pages.yml",
     }),
     result("PinnedDependenciesID", {
-      message: PINNED_MESSAGE,
-      snippet: "npm install wrangler@latest",
+      message:
+        "score is 7: npmCommand not pinned by hash\n" +
+        "Click Remediation section below to solve this issue",
+      snippet: "npm install wrangler@" + "latest",
       uri: ".github/workflows/cloudflare-pages.yml",
-    }),
-    result("PinnedDependenciesID", {
-      message: PINNED_MESSAGE,
-      snippet: WRANGLER_REUSE,
-      uri: ".github/workflows/other.yml",
     }),
   ]) {
     assertRejected(sarif([rejected]));
@@ -292,22 +277,18 @@ test("an unapproved finding fails even beside approved findings", () => {
   assertRejected(sarif([token, unknown]));
 });
 
-test("removing all transitional branches leaves durable decisions executable", async () => {
+test("removing later exceptions preserves the transitional token decision", async () => {
   const policy = await readFile(POLICY_URL, "utf8");
-  const pinnedMarker = '.ruleId == "PinnedDependenciesID"';
-  const pinnedStart = policy.indexOf(pinnedMarker);
   const firstTransitionalBranch = policy.indexOf(
-    "\n    elif ",
-    pinnedStart + pinnedMarker.length,
+    '\n    elif .ruleId == "BranchProtectionID" then',
   );
   const finalElse = policy.indexOf(
     "\n    else\n      false\n    end;",
     firstTransitionalBranch,
   );
-  assert.ok(pinnedStart >= 0);
-  assert.ok(firstTransitionalBranch > pinnedStart);
+  assert.ok(firstTransitionalBranch >= 0);
   assert.ok(finalElse > firstTransitionalBranch);
-  const permanentOnly =
+  const tokenOnly =
     policy.slice(0, firstTransitionalBranch) + policy.slice(finalElse);
 
   assertAccepted(
@@ -317,13 +298,8 @@ test("removing all transitional branches leaves durable decisions executable", a
         snippet: "write-all",
         uri: ".github/workflows/codeql.yml",
       }),
-      result("PinnedDependenciesID", {
-        message: PINNED_MESSAGE,
-        snippet: WRANGLER_REUSE,
-        uri: ".github/workflows/github-slack-integration.yml",
-      }),
     ]),
-    { program: permanentOnly },
+    { program: tokenOnly },
   );
 });
 

@@ -122,7 +122,7 @@ Desktop      Tauri 2  (Maestro)
 - **Native PR governance.** A pull request is required for every change to the default branch. Squash is the only merge method; eligible PRs use native auto-merge and the merge queue, with required checks repeated on the synthetic revision before GitHub creates a signed, single-parent squash. Default branches cannot be deleted or force-pushed, review conversations that exist must be resolved, and no actor has a ruleset bypass.
 - **`cross-review` anti-drift checks.** In the `cross-review` repository, push CI verifies package/runtime version consistency and the expected release markers in `README.md`, `SECURITY.md`, and `CHANGELOG.md`.
 - **Agent-instruction parity.** Program-wide directives are mirrored across the active agent environments as an operator process; GitHub does not enforce this parity.
-- **Supply-chain baseline.** Organization policy requires external GitHub Actions to be pinned by full commit SHA. Cloudflare deployment workflows intentionally resolve `wrangler@latest` in an isolated prefix and verify package signatures and audit results before execution.
+- **Supply-chain baseline.** External GitHub Actions are pinned by full commit SHA. Cloudflare deployment workflows use exact Wrangler versions from committed manifests and lockfiles, verify package signatures and audit results, and rely on daily Dependabot checks for updates.
 
 ---
 

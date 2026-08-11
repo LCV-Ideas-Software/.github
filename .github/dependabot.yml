@@ -7,9 +7,7 @@ updates:
       time: "01:00"
       timezone: "America/Los_Angeles"
     cooldown:
-      default-days: 3
-      exclude:
-        - "*"
+      default-days: 7
     labels:
       - "dependencies"
       - "github-actions"
@@ -22,10 +20,20 @@ updates:
         applies-to: version-updates
         patterns:
           - "github/codeql-action*"
+        update-types:
+          - "minor"
+          - "patch"
       codeql-action-security-updates:
         applies-to: security-updates
         patterns:
           - "github/codeql-action*"
+      github-actions-non-breaking:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "npm"
     directory: "/"
@@ -34,7 +42,7 @@ updates:
       time: "01:00"
       timezone: "America/Los_Angeles"
     cooldown:
-      default-days: 3
+      default-days: 7
     labels:
       - "dependencies"
       - "npm"
@@ -48,7 +56,12 @@ updates:
         patterns:
           - "prettier"
         update-types:
-          - "major"
+          - "minor"
+          - "patch"
+      cloudflare-tooling:
+        patterns:
+          - "wrangler"
+        update-types:
           - "minor"
           - "patch"
     open-pull-requests-limit: 10
@@ -60,7 +73,7 @@ updates:
       time: "01:00"
       timezone: "America/Los_Angeles"
     cooldown:
-      default-days: 3
+      default-days: 7
     labels:
       - "dependencies"
       - "npm"
@@ -73,7 +86,6 @@ updates:
         patterns:
           - "*"
         update-types:
-          - "major"
           - "minor"
           - "patch"
     open-pull-requests-limit: 10
@@ -85,7 +97,7 @@ updates:
       time: "01:00"
       timezone: "America/Los_Angeles"
     cooldown:
-      default-days: 3
+      default-days: 7
     labels:
       - "dependencies"
       - "deno"
@@ -97,7 +109,6 @@ updates:
         patterns:
           - "*"
         update-types:
-          - "major"
           - "minor"
           - "patch"
     open-pull-requests-limit: 10
@@ -109,7 +120,7 @@ updates:
       time: "01:00"
       timezone: "America/Los_Angeles"
     cooldown:
-      default-days: 3
+      default-days: 7
     labels:
       - "dependencies"
       - "docker"
@@ -121,7 +132,6 @@ updates:
         patterns:
           - "zizmorcore/zizmor"
         update-types:
-          - "major"
           - "minor"
           - "patch"
     open-pull-requests-limit: 10

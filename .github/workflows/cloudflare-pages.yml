@@ -11,13 +11,14 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   NODE_OPTIONS: "--no-deprecation"
-permissions: write-all
+permissions: {}
 concurrency:
   group: cloudflare-pages-org-site
   cancel-in-progress: false
 jobs:
   deploy:
-    permissions: write-all
+    permissions:
+      contents: read
     name: Deploy org-site
     runs-on: ubuntu-latest
     environment: cloudflare-production
@@ -32,52 +33,22 @@ jobs:
           node-version: 24
           check-latest: true
           cache: npm
-      - name: Install and verify latest Wrangler
-        id: wrangler
-        shell: bash
-        run: | # zizmor: ignore[adhoc-packages] Wrangler latest is an explicit organization policy; signatures are verified below.
-          set -euo pipefail
-          wrangler_prefix="$RUNNER_TEMP/wrangler-latest"
-          effective_registry="$(npm config get registry --prefix "$wrangler_prefix")"
-          if [ "$effective_registry" != "https://registry.npmjs.org/" ]; then
-            echo "::error::Unexpected npm registry for the isolated Wrangler prefix: $effective_registry" >&2
-            exit 1
-          fi
-          npm install --prefix "$wrangler_prefix" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest
-
-          undici_package="$wrangler_prefix/node_modules/undici/package.json"
-          if [ -f "$undici_package" ]; then
-            installed_undici="$(node -p "require(process.argv[1]).version" "$undici_package")"
-            if [ "$installed_undici" = "7.28.0" ]; then
-              npm pkg set --prefix "$wrangler_prefix" overrides.undici=7.29.0
-              npm install --prefix "$wrangler_prefix" --ignore-scripts --no-audit --no-fund
-            fi
-          fi
-          npm audit signatures --prefix "$wrangler_prefix"
-          npm audit --prefix "$wrangler_prefix" --audit-level=low
-
-          WRANGLER_BIN="$wrangler_prefix/node_modules/.bin/wrangler"
-          if [ ! -x "$WRANGLER_BIN" ]; then
-            echo "::error::The isolated Wrangler executable was not created." >&2
-            exit 1
-          fi
-          WRANGLER_VERSION="$("$WRANGLER_BIN" --version)"
-          if ! [[ "$WRANGLER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Unexpected Wrangler version: $WRANGLER_VERSION" >&2
-            exit 1
-          fi
-
-          printf 'Resolved Wrangler version: %s\n' "$WRANGLER_VERSION"
-          printf 'bin=%s\nversion=%s\n' "$WRANGLER_BIN" "$WRANGLER_VERSION" >> "$GITHUB_OUTPUT"
       - name: Install dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        run: |
+          test "$(npm config get registry)" = "https://registry.npmjs.org/"
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify dependency signatures and advisories
+        run: |
+          npm audit signatures
+          npm audit --audit-level=low
+          expected_wrangler="$(node -p "require('./package.json').devDependencies.wrangler")"
+          test "$(./node_modules/.bin/wrangler --version)" = "$expected_wrangler"
       - name: Check public page formatting
         run: npm run format:public:check
       - name: Deploy site to Cloudflare Pages
         run: |
-          "$WRANGLER_BIN" pages deploy site --project-name=org-site --branch=main --commit-dirty=true
+          ./node_modules/.bin/wrangler pages deploy site --project-name=org-site --branch=main --commit-dirty=true
         env:
-          WRANGLER_BIN: ${{ steps.wrangler.outputs.bin }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     timeout-minutes: 30

@@ -414,13 +414,17 @@ UTC−03:00 timezone. The exception must be removed sooner if Slack publishes a
 fixed hook. Deploys do not use the Slack CLI's broad `--force` warning
 override.
 
-The CI-only Wrangler installation always resolves `wrangler@latest`, verifies
-registry signatures and attestations, and fails on any low-or-higher advisory.
-Wrangler 4.118.0 briefly arrived with exact transitive `undici@7.28.0` on the
-same day that five advisories were published. The installer narrowly overrides
-only that exact version to patched `undici@7.29.0`; any other vulnerable graph
-fails closed, and the override becomes inactive as soon as Wrangler updates its
-dependency.
+Wrangler is an exact development dependency in the relay manifest and lockfile.
+CI requires npm's effective registry to remain the official
+`https://registry.npmjs.org/` default before installing that reviewed graph
+with `npm ci`, verifies registry signatures, and fails on any low-or-higher
+advisory. Dependabot checks the npm ecosystem daily; a Wrangler update must
+include its lockfile and regenerated `worker-configuration.d.ts`, then pass
+this same deterministic verification before merge.
+
+CI uses Wrangler's native `types --check` contract for the committed bindings
+and strict deployment mode so an unexpected remote configuration change blocks
+publication for human review.
 
 ## Delivery state, monitoring and recovery
 
