@@ -7,6 +7,3 @@ coverage
 .next
 .cache
 *.bkp.html
-# Historical note: this file previously carried an ignore for the README
-# release-history tables. Those tables were replaced by CHANGELOG.md, and no
-# ignore is needed for them any more.
