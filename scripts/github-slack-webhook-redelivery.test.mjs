@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 
 import {
   API_VERSION,
@@ -256,7 +257,6 @@ test("Actions pagination uses the read-only token and selects the latest valid r
     startedAt,
     fetchImpl: async (input, init) => {
       const url = new URL(input);
-      requests.push({ url, init });
       assert.equal(
         init.headers.Authorization,
         `Bearer ${baseEnvironment.ACTIONS_TOKEN}`,
@@ -265,6 +265,14 @@ test("Actions pagination uses the read-only token and selects the latest valid r
         init.headers.Authorization,
         `Bearer ${baseEnvironment.HOOK_TOKEN}`,
       );
+      if (url.pathname.includes("/actions/runs/")) {
+        assert.equal(
+          url.pathname,
+          "/repos/example-org/.github/actions/runs/101/attempts/1/jobs",
+        );
+        return successfulRecoveryJobResponse({ runId: 101 });
+      }
+      requests.push({ url, init });
       assert.equal(
         url.pathname,
         `/repos/example-org/.github/actions/workflows/${REDELIVERY_WORKFLOW_FILE}/runs`,
@@ -312,6 +320,55 @@ test("Actions continuity has no fallback when no successful scheduled run exists
     }),
     /No successful scheduled redelivery workflow run exists/,
   );
+});
+
+test("continuity skips a non-executed schedule and selects the newest proven recovery", async () => {
+  const startedAt = Date.parse("2026-08-04T12:00:00.000Z");
+  const proven = rawWorkflowRun({
+    id: 9_001,
+    runStartedAt: startedAt - 120_000,
+  });
+  const skipped = rawWorkflowRun({
+    id: 9_002,
+    runStartedAt: startedAt - 60_000,
+  });
+  const inspectedRunIds = [];
+  let hookReads = 0;
+
+  const result = await runRedelivery({
+    environment: baseEnvironment,
+    now: () => startedAt,
+    logger: { info() {}, warn() {} },
+    fetchImpl: async (input) => {
+      const url = new URL(input);
+      if (url.pathname.includes("/actions/workflows/")) {
+        return successfulRunsResponse([proven, skipped]);
+      }
+      if (url.pathname.includes("/actions/runs/")) {
+        const runId = url.pathname.split("/").at(-4);
+        inspectedRunIds.push(runId);
+        return runId === "9002"
+          ? jobsResponse([
+              rawJob({
+                id: 7_002,
+                runId: 9_002,
+                conclusion: "skipped",
+                steps: [],
+              }),
+            ])
+          : successfulRecoveryJobResponse({ runId: 9_001 });
+      }
+      if (url.pathname.endsWith("/deliveries")) {
+        hookReads += 1;
+        return responseJson([]);
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    },
+  });
+
+  assert.deepEqual(inspectedRunIds, ["9002", "9001"]);
+  assert.equal(hookReads, 1);
+  assert.equal(result.continuityRunId, "9001");
 });
 
 test("Actions continuity rejects server-filter violations and malformed run identity", async () => {
@@ -497,10 +554,10 @@ test("continuity rejects skipped, duplicate, absent, and malformed recovery-step
     conclusion: "success",
   };
   const cases = [
-    [[], /exactly one successful recovery step/],
+    [[], /No successful scheduled .* proven successful recovery step/],
     [
       [rawJob({ id: 1, status: "completed", conclusion: "skipped" })],
-      /job .*must be completed successfully/,
+      /No successful scheduled .* proven successful recovery step/,
     ],
     [
       [
@@ -509,7 +566,7 @@ test("continuity rejects skipped, duplicate, absent, and malformed recovery-step
           steps: [{ ...successfulStep, conclusion: "skipped" }],
         }),
       ],
-      /step must be completed successfully/,
+      /No successful scheduled .* proven successful recovery step/,
     ],
     [
       [
@@ -518,7 +575,30 @@ test("continuity rejects skipped, duplicate, absent, and malformed recovery-step
           steps: [successfulStep, { ...successfulStep, number: 2 }],
         }),
       ],
-      /exactly one successful recovery step/,
+      /must not contain more than one recovery step/,
+    ],
+    [[rawJob({ id: 1, status: "banana" })], /invalid terminal job status/],
+    [
+      [rawJob({ id: 1, conclusion: "banana" })],
+      /invalid terminal job conclusion/,
+    ],
+    [
+      [
+        rawJob({
+          id: 1,
+          steps: [{ ...successfulStep, status: "banana" }],
+        }),
+      ],
+      /invalid terminal step status/,
+    ],
+    [
+      [
+        rawJob({
+          id: 1,
+          steps: [{ ...successfulStep, conclusion: "banana" }],
+        }),
+      ],
+      /invalid terminal step conclusion/,
     ],
     [[rawJob({ id: 0 })], /invalid job ID/],
     [[rawJob({ id: 1, runId: 9_002 })], /unexpected workflow run/],
@@ -703,6 +783,34 @@ test("Link pagination extracts only a cursor from the expected GitHub endpoint",
       ),
     /non-empty cursor/,
   );
+});
+
+test("Link parsing rejects adversarial parameters without regex backtracking", () => {
+  const moduleUrl = new URL(
+    "./github-slack-webhook-redelivery.mjs",
+    import.meta.url,
+  ).href;
+  const script = `
+    import { parseNextCursor } from ${JSON.stringify(moduleUrl)};
+    let rejected = false;
+    try {
+      parseNextCursor("<=>;" + " : ;".repeat(32) + ";", "/orgs/example-org/hooks/12345/deliveries");
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) process.exit(2);
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "--eval", script],
+    {
+      encoding: "utf8",
+      timeout: 5_000,
+    },
+  );
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("delivery pagination follows Link cursors and handles a terminal empty page", async () => {
@@ -1360,6 +1468,7 @@ test("a complete run isolates Actions and hook credentials and mutates only rede
     redeliveries: 1,
     continuityStartedAt: String(startedAt - 60_000),
     continuityRunId: "9001",
+    deferredTargets: 0,
     staleTargetsSkipped: 0,
   });
   assert.equal(calls.at(-1).url.pathname.endsWith("/attempts"), true);
@@ -1373,6 +1482,108 @@ test("a complete run isolates Actions and hook credentials and mutates only rede
   );
   assert.equal(messages.length, 1);
   assert.doesNotMatch(messages[0], /actions-token|hook-token|failed-guid/);
+});
+
+test("recovery performs one revalidation scan and drains a bounded oldest-first batch", async () => {
+  const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
+  const expectedBatchSize = 10;
+  const failures = Array.from({ length: expectedBatchSize + 2 }, (_, index) =>
+    rawDelivery({
+      id: 100 + index,
+      guid: `batch-guid-${index}`,
+      deliveredAt: new Date(
+        startedAt - (expectedBatchSize + 2 - index) * 1_000,
+      ).toISOString(),
+    }),
+  );
+  let deliveryReads = 0;
+  const postedIds = [];
+
+  const result = await runRedelivery({
+    environment: baseEnvironment,
+    now: () => startedAt,
+    logger: { info() {}, warn() {} },
+    fetchImpl: async (input, init) => {
+      const url = new URL(input);
+      if (url.pathname.includes("/actions/workflows/")) {
+        return successfulRunsResponse([continuityWorkflowRun(startedAt)]);
+      }
+      if (url.pathname.includes("/actions/runs/")) {
+        return successfulRecoveryJobResponse();
+      }
+      if (init.method === "GET" && url.pathname.endsWith("/deliveries")) {
+        deliveryReads += 1;
+        return responseJson(failures);
+      }
+      if (init.method === "POST" && url.pathname.endsWith("/attempts")) {
+        postedIds.push(url.pathname.split("/").at(-2));
+        return new Response(null, { status: 202 });
+      }
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+    },
+  });
+
+  assert.equal(deliveryReads, 2);
+  assert.deepEqual(
+    postedIds,
+    Array.from({ length: expectedBatchSize }, (_, index) =>
+      String(100 + index),
+    ),
+  );
+  assert.equal(result.redeliveries, expectedBatchSize);
+  assert.equal(result.deferredTargets, 2);
+});
+
+test("revalidation reports newly observed failed targets as deferred backlog", async () => {
+  const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
+  const initial = [
+    rawDelivery({
+      id: 100,
+      guid: "initial-guid",
+      deliveredAt: new Date(startedAt - 20_000).toISOString(),
+    }),
+  ];
+  const refreshed = [
+    ...initial,
+    ...Array.from({ length: 11 }, (_, index) =>
+      rawDelivery({
+        id: 200 + index,
+        guid: `new-guid-${index}`,
+        deliveredAt: new Date(startedAt - 10_000 + index).toISOString(),
+      }),
+    ),
+  ];
+  let deliveryReads = 0;
+  const postedIds = [];
+
+  const result = await runRedelivery({
+    environment: baseEnvironment,
+    now: () => startedAt,
+    logger: { info() {}, warn() {} },
+    fetchImpl: async (input, init) => {
+      const url = new URL(input);
+      if (url.pathname.includes("/actions/workflows/")) {
+        return successfulRunsResponse([continuityWorkflowRun(startedAt)]);
+      }
+      if (url.pathname.includes("/actions/runs/")) {
+        return successfulRecoveryJobResponse();
+      }
+      if (init.method === "GET" && url.pathname.endsWith("/deliveries")) {
+        deliveryReads += 1;
+        return responseJson(deliveryReads === 1 ? initial : refreshed);
+      }
+      if (init.method === "POST" && url.pathname.endsWith("/attempts")) {
+        postedIds.push(url.pathname.split("/").at(-2));
+        return new Response(null, { status: 202 });
+      }
+      throw new Error(`Unexpected request: ${init.method} ${url.pathname}`);
+    },
+  });
+
+  assert.equal(deliveryReads, 2);
+  assert.deepEqual(postedIds, ["100"]);
+  assert.equal(result.redeliveries, 1);
+  assert.equal(result.deferredTargets, 11);
 });
 
 test("a complete run preserves a large delivery ID in the redelivery endpoint", async () => {

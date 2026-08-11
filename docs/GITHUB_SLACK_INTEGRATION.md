@@ -358,16 +358,20 @@ channel paths.
     repository and validates the exact App slug and a positive installation ID
     before use.
 11. Under an explicitly authorized human maintenance window, configure exactly
-    one organization webhook through GitHub's native settings UI or official
-    REST API. Use the credential that owns the hook; GitHub does not let a
-    user/PAT administer a hook created by an OAuth app, or an OAuth app
-    administer a hook it did not create. Keep it inactive initially, target
-    `<worker-url>/github/webhook`, require JSON and TLS verification, and select
-    exactly these events: workflow runs, deployment statuses, Dependabot,
-    code-scanning and secret-scanning alerts, pushes, pull requests,
-    pull-request reviews and comments, issues and comments, releases,
-    discussions, and discussion comments. No GitHub Actions workflow may create,
-    update, activate, deactivate, delete, or ping an organization webhook.
+    one App-owned organization webhook with the official REST API and an
+    installation token minted for `lcv-slack-webhook-recovery`. Do not create it
+    through the settings UI, a PAT, an OAuth token, or another App: creator
+    boundaries can make that hook invisible to the installation token used by
+    audit and recovery. If a legacy user-owned hook exists, first set the
+    production gate to `false`, deactivate it with its owning credential, and
+    create the replacement inactive with `POST /orgs/{org}/hooks` using the
+    dedicated App installation token. Target `<worker-url>/github/webhook`,
+    require JSON and TLS verification, and select exactly these events: workflow
+    runs, deployment statuses, Dependabot, code-scanning and secret-scanning
+    alerts, pushes, pull requests, pull-request reviews and comments, issues and
+    comments, releases, discussions, and discussion comments. No GitHub Actions
+    workflow may create, update, activate, deactivate, delete, or ping an
+    organization webhook.
 12. Store the resulting positive numeric hook ID as repository variable
     `SLACK_RELAY_ORG_HOOK_ID`. Keep the hook inactive until the GitHub and
     Cloudflare copies of the HMAC secret and every downstream binding are
@@ -379,8 +383,8 @@ channel paths.
     such run exists, stop for human reconciliation; never invent or seed a
     checkpoint. Keeping the gate false prevents a scheduled recovery from
     running before the read-only audit.
-14. The authorized human activates the hook through GitHub's native UI or
-    official REST API, then immediately dispatches
+14. The authorized human activates the replacement through the official REST
+    API with a token from the same dedicated App installation, then immediately dispatches
     `GitHub Slack Webhook Redelivery` with its default `audit` operation. Its
     GET-only audit works while the production gate is false, mints an
     installation token downscoped to `Webhooks: read`, and must prove there is
@@ -397,8 +401,11 @@ channel paths.
     D1, Slack activity, and private-channel evidence for both destinations.
 
 If any check fails after activation, immediately return the gate to `false` and
-have the authorized human deactivate the hook through GitHub's native settings
-UI or official REST API. Never leave partially verified live ingestion enabled.
+have the authorized human deactivate the replacement with the same App
+installation credential. If rollback is required, reactivate the preserved
+legacy hook only with its owning human credential. Never leave both hooks active
+or partially verified live ingestion enabled. Delete the legacy hook only after
+the App-owned replacement and both delivery destinations are proven.
 
 The gate controls the production jobs in GitHub Actions; it does not disable an
 already deployed Worker or the GitHub organization webhook. Disabling live
@@ -512,12 +519,13 @@ Monitoring and recovery are layered:
   audit, groups attempts by GUID, treats HTTP 200-399 as a successful GitHub
   delivery, and redelivers unresolved attempts within GitHub's three-day
   window;
-- the webhook recovery workflow uses the latest successful scheduled run from
-  GitHub Actions as its continuity checkpoint, but accepts it only after the
-  exact recovery step is proven completed and successful. A 15-minute safety
-  margin stays inside GitHub's moving three-day retention boundary. The
-  built-in `GITHUB_TOKEN` has only `actions: read`; no repository variable is
-  written.
+- the webhook recovery workflow evaluates successful scheduled runs newest
+  first and uses the newest candidate whose exact recovery step is proven
+  completed and successful. A well-formed run whose job did not execute is not a
+  checkpoint; malformed, duplicated or contradictory evidence aborts. A
+  15-minute safety margin stays inside GitHub's moving three-day retention
+  boundary. The built-in `GITHUB_TOKEN` has only `actions: read`; no repository
+  variable is written.
 
 GitHub can canonicalize a paginated `/orgs/{name}/...` request into an
 `/organizations/{id}/...` URL in the `Link` header. The recovery controller
@@ -542,13 +550,17 @@ granularity; the controller exposes no create, update, delete or ping request.
 
 Before any hook read, the recovery path uses `GITHUB_TOKEN` with `actions: read`
 to enumerate successful scheduled runs from the preceding three-day GitHub
-delivery-retention window. It validates the newest run plus its exact job and
-recovery-step execution, and uses the start time as a continuity guard. Missing,
-stale, skipped, malformed, duplicated or contradictory history fails before any
-redelivery attempt. Each failed GUID must retain exactly one original delivery;
-truncated lineage, an exhausted attempt limit or an unclassified response code
-also fails closed. The controller refreshes a target's lineage immediately
-before POST and never invents an automatic seed or persistent
+delivery-retention window. It examines candidates newest first until it proves
+the exact recovery step completed successfully and uses that run's start time as
+a continuity guard. A well-formed skipped or otherwise non-executed candidate is
+not a checkpoint; missing proof ends in a closed failure, while malformed,
+duplicated or contradictory history aborts immediately. Each failed GUID must
+retain exactly one original delivery; truncated lineage, an exhausted attempt
+limit or an unclassified response code also fails closed. Before any POST, the
+controller performs one complete lineage revalidation, intersects it with the
+initial oldest-first candidates, and mutates at most ten targets per run. The
+remaining targets are explicitly deferred to later schedules, bounding API use
+without hiding backlog. It never invents an automatic seed or persistent
 repository-variable checkpoint that could conceal a coverage gap.
 
 See [`apps.activities.list`][slack-activities], [Slack app activity logging][slack-logging],

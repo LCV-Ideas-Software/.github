@@ -325,11 +325,14 @@ first verifies the sole active exact organization hook through GET requests
 only, groups attempts by GUID, accepts GitHub's documented HTTP 200-399 success
 classification, and redelivers unresolved attempts within the three-day
 retention window. It never sends a scheduled ping. Before reading the hook, it
-validates the most recent successful scheduled run through the native Actions
-API, its exact successful recovery step and a 15-minute retention margin as a
-fail-closed continuity checkpoint. Every retry requires one retained original
-delivery, a classified HTTP status and a fresh lineage read immediately before
-POST. Pagination accepts only the exact
+evaluates successful scheduled runs newest first through the native Actions API
+and accepts only the newest candidate with an exact successful recovery step,
+plus a 15-minute retention margin, as a fail-closed continuity checkpoint.
+Well-formed non-executed runs do not eclipse an older proven checkpoint;
+malformed or contradictory evidence aborts. Every retry requires one retained
+original delivery and a classified HTTP status. Before any POST, one complete
+lineage refresh intersects the oldest-first candidates and limits the mutation
+batch to ten; excess targets are explicitly deferred. Pagination accepts only the exact
 named and numeric canonical paths for the configured organization and hook, and
 reconstructs each request from the returned cursor instead of following a
 `Link` URL blindly.

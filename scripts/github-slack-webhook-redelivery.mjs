@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 
 export const API_VERSION = "2026-03-10";
 export const MAX_DELIVERY_ATTEMPTS = 3;
+export const MAX_REDELIVERIES_PER_RUN = 10;
 export const MAX_REDELIVERY_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 export const RETENTION_SAFETY_MARGIN_MS = 15 * 60 * 1000;
 export const REDELIVERY_WORKFLOW_FILE = "github-slack-webhook-redelivery.yml";
@@ -15,6 +16,16 @@ const MAX_ACTION_RUN_PAGES = 10;
 const REQUEST_TIMEOUT_MS = 30_000;
 const USER_AGENT = "lcv-github-slack-webhook-redelivery";
 const RECOVERY_STEP_NAME = "Recover failed webhook deliveries";
+const TERMINAL_CONCLUSIONS = new Set([
+  "action_required",
+  "cancelled",
+  "failure",
+  "neutral",
+  "skipped",
+  "stale",
+  "success",
+  "timed_out",
+]);
 
 export class GitHubApiError extends Error {
   constructor(message, { status, requestId, rateLimited } = {}) {
@@ -220,15 +231,33 @@ export function parseNextCursor(
   let nextRelationCount = 0;
   for (const rawEntry of linkHeader.split(",")) {
     const entry = rawEntry.trim();
-    const match = entry.match(/^<([^>]+)>((?:\s*;[^;]+)*)$/);
-    if (!match) {
+    const closingBracketIndex = entry.indexOf(">");
+    if (
+      !entry.startsWith("<") ||
+      closingBracketIndex <= 1 ||
+      entry.lastIndexOf(">") !== closingBracketIndex
+    ) {
       throw new Error("GitHub returned a malformed Link header.");
     }
-    const [, candidate, rawParameters] = match;
-    const parameters = rawParameters
-      .split(";")
-      .map((parameter) => parameter.trim())
-      .filter(Boolean);
+    const candidate = entry.slice(1, closingBracketIndex);
+    const rawParameters = entry.slice(closingBracketIndex + 1);
+    let parameters = [];
+    if (rawParameters !== "") {
+      const firstNonWhitespaceIndex = rawParameters.search(/\S/);
+      if (
+        firstNonWhitespaceIndex === -1 ||
+        rawParameters[firstNonWhitespaceIndex] !== ";"
+      ) {
+        throw new Error("GitHub returned a malformed Link header.");
+      }
+      parameters = rawParameters
+        .slice(firstNonWhitespaceIndex + 1)
+        .split(";")
+        .map((parameter) => parameter.trim());
+      if (parameters.some((parameter) => parameter === "")) {
+        throw new Error("GitHub returned a malformed Link parameter.");
+      }
+    }
     for (const parameter of parameters) {
       const parameterMatch = parameter.match(
         /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*=\s*(?:"([^"]*)"|([^\s;]+))$/,
@@ -531,12 +560,30 @@ export async function fetchLastSuccessfulScheduledRun({
     );
   }
 
-  return runs.reduce((latest, run) => {
-    if (run.runStartedAt !== latest.runStartedAt) {
-      return run.runStartedAt > latest.runStartedAt ? run : latest;
+  runs.sort((left, right) => {
+    if (left.runStartedAt !== right.runStartedAt) {
+      return right.runStartedAt - left.runStartedAt;
     }
-    return BigInt(run.id) > BigInt(latest.id) ? run : latest;
+    const leftId = BigInt(left.id);
+    const rightId = BigInt(right.id);
+    return leftId < rightId ? 1 : leftId > rightId ? -1 : 0;
   });
+  for (const run of runs) {
+    const proof = await verifyRecoveryStepExecution({
+      token,
+      owner,
+      repository,
+      workflowRun: run,
+      fetchImpl,
+    });
+    if (proof) {
+      return run;
+    }
+  }
+
+  throw new Error(
+    "No successful scheduled redelivery workflow run contains a proven successful recovery step within GitHub's three-day redelivery window; refusing recovery without a continuity checkpoint.",
+  );
 }
 
 function normalizeWorkflowJob(rawJob, workflowRun) {
@@ -564,12 +611,14 @@ function normalizeWorkflowJob(rawJob, workflowRun) {
       "GitHub returned a workflow job for an unexpected workflow run attempt.",
     );
   }
-  if (typeof rawJob.status !== "string" || rawJob.status === "") {
-    throw new Error("GitHub returned a workflow job without a valid status.");
-  }
-  if (typeof rawJob.conclusion !== "string" || rawJob.conclusion === "") {
+  if (rawJob.status !== "completed") {
     throw new Error(
-      "GitHub returned a workflow job without a valid conclusion.",
+      "GitHub returned a workflow job with an invalid terminal job status.",
+    );
+  }
+  if (!TERMINAL_CONCLUSIONS.has(rawJob.conclusion)) {
+    throw new Error(
+      "GitHub returned a workflow job with an invalid terminal job conclusion.",
     );
   }
   if (!Array.isArray(rawJob.steps)) {
@@ -595,14 +644,14 @@ function normalizeWorkflowJob(rawJob, workflowRun) {
       );
     }
     seenStepNumbers.add(rawStep.number);
-    if (typeof rawStep.status !== "string" || rawStep.status === "") {
+    if (rawStep.status !== "completed") {
       throw new Error(
-        "GitHub returned a workflow step without a valid status.",
+        "GitHub returned a workflow step with an invalid terminal step status.",
       );
     }
-    if (typeof rawStep.conclusion !== "string" || rawStep.conclusion === "") {
+    if (!TERMINAL_CONCLUSIONS.has(rawStep.conclusion)) {
       throw new Error(
-        "GitHub returned a workflow step without a valid conclusion.",
+        "GitHub returned a workflow step with an invalid terminal step conclusion.",
       );
     }
     return Object.freeze({
@@ -723,19 +772,20 @@ export async function verifyRecoveryStepExecution({
       .filter((step) => step.name === RECOVERY_STEP_NAME)
       .map((step) => ({ job, step })),
   );
-  if (matches.length !== 1) {
+  if (matches.length > 1) {
     throw new Error(
-      `The selected scheduled workflow run must contain exactly one successful recovery step named ${RECOVERY_STEP_NAME}.`,
+      `A scheduled workflow run must not contain more than one recovery step named ${RECOVERY_STEP_NAME}.`,
     );
+  }
+  if (matches.length === 0) {
+    return undefined;
   }
   const [{ job, step }] = matches;
   if (job.status !== "completed" || job.conclusion !== "success") {
-    throw new Error(
-      "The job containing the recovery step must be completed successfully.",
-    );
+    return undefined;
   }
   if (step.status !== "completed" || step.conclusion !== "success") {
-    throw new Error("The recovery step must be completed successfully.");
+    return undefined;
   }
 
   return Object.freeze({ jobId: job.id, stepNumber: step.number });
@@ -1028,13 +1078,6 @@ export async function runRedelivery({
     continuityRun,
     startedAt,
   );
-  await verifyRecoveryStepExecution({
-    token: configuration.actionsToken,
-    owner: configuration.workflowRepoOwner,
-    repository: configuration.workflowRepoName,
-    workflowRun: continuityRun,
-    fetchImpl,
-  });
 
   // Stay fifteen minutes inside GitHub's documented three-day retention edge.
   // This makes an original attempt disappearing at the boundary fail closed
@@ -1051,10 +1094,13 @@ export async function runRedelivery({
     fetchImpl,
   });
   const failedDeliveryIds = selectFailedDeliveryIds(deliveries);
+  const targetBatch = failedDeliveryIds.slice(0, MAX_REDELIVERIES_PER_RUN);
+  let deferredTargets = failedDeliveryIds.length - targetBatch.length;
 
   let acceptedRedeliveries = 0;
   let staleTargetsSkipped = 0;
-  for (const deliveryId of failedDeliveryIds) {
+  let revalidatedTargets = targetBatch;
+  if (targetBatch.length > 0) {
     const revalidationStartedAt = now();
     validateStartedAt(revalidationStartedAt);
     if (revalidationStartedAt < startedAt) {
@@ -1071,15 +1117,26 @@ export async function runRedelivery({
       startedAt: revalidationStartedAt,
       fetchImpl,
     });
-    const refreshedFailedIds = selectFailedDeliveryIds(refreshedDeliveries);
-    if (!refreshedFailedIds.includes(deliveryId)) {
+    const refreshedFailedDeliveryIds =
+      selectFailedDeliveryIds(refreshedDeliveries);
+    const refreshedFailedIds = new Set(refreshedFailedDeliveryIds);
+    revalidatedTargets = targetBatch.filter((deliveryId) => {
+      if (refreshedFailedIds.has(deliveryId)) {
+        return true;
+      }
       staleTargetsSkipped += 1;
-      continue;
-    }
+      return false;
+    });
+    const revalidatedTargetIds = new Set(revalidatedTargets);
+    deferredTargets = refreshedFailedDeliveryIds.filter(
+      (deliveryId) => !revalidatedTargetIds.has(deliveryId),
+    ).length;
+  }
 
+  for (const deliveryId of revalidatedTargets) {
     // GitHub exposes no conditional redelivery precondition tied to a delivery
-    // snapshot. A residual race can still exist between this final GET and the
-    // POST; bounding that interval is the narrowest available native control.
+    // snapshot. One complete revalidation occurs before this bounded mutation
+    // batch; a residual race can still exist between that snapshot and a POST.
     await redeliver({
       token: configuration.hookToken,
       organizationName: configuration.organizationName,
@@ -1091,13 +1148,14 @@ export async function runRedelivery({
   }
 
   logger.info(
-    `Accepted ${acceptedRedeliveries} webhook redelivery request(s), skipped ${staleTargetsSkipped} stale target(s), and initially examined ${deliveries.length} delivery record(s) since ${new Date(cutoff).toISOString()}; continuity was proven by successful scheduled workflow run ${continuityRun.id}.`,
+    `Accepted ${acceptedRedeliveries} webhook redelivery request(s), skipped ${staleTargetsSkipped} stale target(s), deferred ${deferredTargets} target(s) to a later run, and initially examined ${deliveries.length} delivery record(s) since ${new Date(cutoff).toISOString()}; continuity was proven by successful scheduled workflow run ${continuityRun.id}.`,
   );
   return Object.freeze({
     examined: deliveries.length,
     redeliveries: acceptedRedeliveries,
     continuityStartedAt: String(continuityStartedAt),
     continuityRunId: continuityRun.id,
+    deferredTargets,
     staleTargetsSkipped,
   });
 }
