@@ -3,10 +3,12 @@
 Scope of this inventory: every **direct** dependency declared by a manifest committed to this
 repository, plus every third-party script loaded at runtime by a page this repository publishes.
 
-Transitive dependencies are not listed individually; they are pinned by the committed lockfiles
-(`package-lock.json`, `workers/github-slack-relay/package-lock.json`,
-`slack/github-integration/deno.lock`) and audited by Dependency Review, `npm audit`,
-`deno task audit` and the weekly OSV-Scanner sweep. GitHub Actions are not listed here either: they
+Transitive dependencies are not listed individually; they are pinned by the committed lockfiles, and
+each lockfile is audited by a different set of tools rather than by all of them:
+`package-lock.json` and `workers/github-slack-relay/package-lock.json` by Dependency Review,
+`npm audit` and the weekly OSV-Scanner sweep; `slack/github-integration/deno.lock` by
+`deno task audit` alone — the OSV collector selects only `package-lock.json` and `Cargo.lock`
+(`.github/workflows/oss-advisory-watch.yml:126-129`), so the Deno graph never reaches that scanner. GitHub Actions are not listed here either: they
 are pinned by immutable commit SHA and audited daily by `GitHub Actions Pin Audit`. The single
 container image committed here, in `.github/zizmor/Dockerfile`, is pinned by immutable digest and
 watched daily by the `docker` Dependabot ecosystem; the pin auditor does not cover it, because it
