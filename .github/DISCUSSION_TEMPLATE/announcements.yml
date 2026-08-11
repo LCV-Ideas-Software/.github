@@ -3,8 +3,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Use este formulário para registrar uma publicação concluída. Não inclua segredos,
-        credenciais nem identificadores operacionais privados.
+        Use este formulário para registrar uma publicação concluída. Não publique segredos,
+        credenciais, URLs privadas nem identificadores reais de contas ou infraestrutura.
   - type: input
     id: version
     attributes:

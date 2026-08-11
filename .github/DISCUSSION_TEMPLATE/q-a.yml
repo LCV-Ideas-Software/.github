@@ -4,7 +4,8 @@ body:
     attributes:
       value: |
         Use Q&A para conhecimento durável sobre este repositório ou sobre a governança da
-        organização. Não inclua dados sensíveis nem identificadores operacionais privados.
+        organização. Não publique segredos, credenciais, URLs privadas nem identificadores
+        reais de contas ou infraestrutura.
   - type: textarea
     id: question
     attributes:
