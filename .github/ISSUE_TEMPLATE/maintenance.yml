@@ -3,6 +3,11 @@ description: Dependências, lockfiles, versões e manutenção rotineira
 title: "[Maintenance]: "
 type: Maintenance
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Este repositório é público. Não publique segredos, credenciais, URLs privadas nem
+        identificadores reais de contas ou infraestrutura.
   - type: textarea
     id: objective
     attributes:

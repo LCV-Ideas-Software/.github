@@ -3,6 +3,11 @@ description: Investigação com tempo limitado e sem entrega de implementação 
 title: "[Spike]: "
 type: Spike
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Este repositório é público. Não publique segredos, credenciais, URLs privadas nem
+        identificadores reais de contas ou infraestrutura.
   - type: textarea
     id: question
     attributes:

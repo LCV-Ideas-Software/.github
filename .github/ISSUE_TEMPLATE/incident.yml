@@ -1,5 +1,5 @@
 name: Incident
-description: Produção ou CI está indisponível ou degradado e exige análise de causa
+description: Produção ou CI está indisponível ou degradada e exige análise de causa
 title: "[Incident]: "
 labels: ["bug"]
 type: Incident
@@ -48,7 +48,7 @@ body:
     id: evidence
     attributes:
       label: Evidências
-      description: Inclua logs, checks e erros, sempre com dados sensíveis redigidos.
+      description: Inclua logs, checks e erros, sempre com dados sensíveis removidos ou ocultados.
     validations:
       required: true
   - type: textarea
