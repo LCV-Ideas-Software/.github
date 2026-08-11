@@ -17,7 +17,7 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - The org-profile content lives in [`profile/README.md`](./profile/README.md). GitHub renders it on the organization landing page automatically.
 - The static organization site lives in [`site/`](./site/) and is deployed from that directory as the root of the Cloudflare Pages project `org-site`, whose canonical public domain is <https://www.lcv.dev>.
 - The sponsor landing page lives in [`site/sponsor/`](./site/sponsor/) and renders MercadoPago.js V2 Card Payment Brick secure fields backed by the dedicated `sponsor-motor` Worker at `https://sponsor-motor.lcv.app.br`.
-- Dependabot checks GitHub Actions, npm, Deno, and the pinned Zizmor container daily, automatically rebases its pull requests, and applies a seven-day cooldown to ordinary version updates without delaying security updates.
+- Dependabot checks GitHub Actions, npm, Deno, and the pinned Zizmor container daily and automatically rebases its pull requests. GitHub Actions updates are evaluated immediately; the other ecosystems apply a seven-day cooldown to ordinary version updates. Security updates are never delayed.
 - The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build.
 - Pull requests reach `main` only through squash and GitHub's native merge queue after authorized human admission; no repository-owned auto-merge or governance controller is used.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
