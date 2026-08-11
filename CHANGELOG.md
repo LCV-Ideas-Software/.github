@@ -1,6 +1,7 @@
 # Changelog
 
-All notable changes to this repository are recorded here.
+Notable changes to this repository are recorded here **from 2026-08-11 onward**. Earlier work is not
+summarized in this file; see [Earlier history](#earlier-history) for where it is verifiable.
 
 This repository is **not versioned**: it publishes the organization profile, the static
 organization site, the sponsor page, the GitHub-to-Slack relay and the shared community-health
@@ -56,8 +57,8 @@ through the native merge queue with signed squash commits and no ruleset bypass.
   read-only for audit and write-scoped only for recovery, and revoked by the post-job step
   ([#163](https://github.com/LCV-Ideas-Software/.github/pull/163)).
 - Aligned the Dependabot policy: GitHub Actions updates are evaluated immediately; every other
-  ecosystem keeps a seven-day cooldown for ordinary version updates; security updates are never
-  delayed ([#164](https://github.com/LCV-Ideas-Software/.github/pull/164)).
+  ecosystem keeps a seven-day cooldown for ordinary version updates; the cooldown does not apply to
+  security updates ([#164](https://github.com/LCV-Ideas-Software/.github/pull/164)).
 - Kept the Enterprise hardened OIDC issuer for Scorecard and disabled only the incompatible public
   result publication, preserving the official scanner, the SARIF upload and the fail-closed policy
   ([#165](https://github.com/LCV-Ideas-Software/.github/pull/165)).
@@ -85,9 +86,12 @@ through the native merge queue with signed squash commits and no ruleset bypass.
 
 ### Known issues
 
-- `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` remain repository-scoped secrets rather than
-  environment-scoped ones, an organization-wide convention shared by every repository that deploys
-  to Cloudflare. Tracked in [#169](https://github.com/LCV-Ideas-Software/.github/issues/169).
+- `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are repository-scoped secrets rather than
+  environment-scoped ones, so the `cloudflare-production` branch policy does not gate them. This
+  diverges from the protected-environment baseline of Discussion #150 §4 and no authorized exception
+  is recorded for it. The same placement is reported across the repositories that deploy to
+  Cloudflare, which makes the decision organization-wide rather than local to this repository.
+  Tracked in [#169](https://github.com/LCV-Ideas-Software/.github/issues/169).
 - Two fail-closed gates are not protected by a regression assertion: the step that invokes the
   CodeQL SARIF gate is not asserted free of `continue-on-error`, and `.github/zizmor.yml` is read by
   no test. Tracked in [#170](https://github.com/LCV-Ideas-Software/.github/issues/170).
