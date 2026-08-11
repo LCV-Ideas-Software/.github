@@ -23,7 +23,7 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
 - The organization-wide GitHub-to-Slack alert relay lives in [`workers/github-slack-relay`](./workers/github-slack-relay); its architecture and operating procedure are documented in [`docs/GITHUB_SLACK_INTEGRATION.md`](./docs/GITHUB_SLACK_INTEGRATION.md).
 
-Changes from 11/08/2026 onward are recorded in [`CHANGELOG.md`](./CHANGELOG.md), grouped by date and linked to the pull request that carried each one. Earlier work is not summarized there; the commit history remains its record.
+Changes from 11/08/2026 onward are recorded in [`CHANGELOG.md`](./CHANGELOG.md), grouped by date, each linked to the pull request that carried it or, for changes that are repository settings rather than files, to the issue holding their execution trail. Earlier work is not summarized there; the commit history remains its record.
 
 For product-specific documentation, see each repository in the [organization listing](https://github.com/orgs/LCV-Ideas-Software/repositories).
 

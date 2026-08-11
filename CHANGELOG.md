@@ -8,9 +8,15 @@ organization site, the sponsor page, the GitHub-to-Slack relay and the shared co
 defaults, and none of them is released under a number. The one manifest that carries a `version`
 field, `workers/github-slack-relay/package.json` at `0.1.0`, is `private: true` and is never
 published to any registry — the Worker is deployed from this repository's source by
-`wrangler deploy`, and that field does not gate, tag or name any deployment. Entries are therefore grouped by date rather than
-by semantic version, and each one names the pull request that carried it so the full diff, its
-reviews and its checks stay reachable.
+`wrangler deploy`, and that field does not gate, tag or name any deployment.
+
+Two **components** hosted here are released under numbers, and their history is their tags, not this
+file: the reusable Zizmor workflow (`zizmor/v2.2.0` at the time of writing) and the CodeQL SARIF gate
+action (`codeql-sarif-gate/v1.0.0`). Consumers pin them by commit SHA, so a change to either is only
+in effect once a new tag is cut and the consumer's pin is bumped. Entries are therefore grouped by date rather than
+by semantic version. Each entry names the record that carries its evidence: the pull request, for a
+versioned change, so the full diff, its reviews and its checks stay reachable; or the execution issue
+for a change marked _(out-of-band)_, which by definition has no diff.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) as far as it applies to
 an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC−03:00), the
@@ -98,7 +104,8 @@ evidence is the execution trail recorded in
   explanatory comment in `.github/zizmor.yml`; the
   public repository count and the AI-roster claims on `site/index.html`; a typo in the site heading;
   a false credential-isolation claim in `SECURITY.md`; the private-board links in
-  `.github/WORK-TRACKING.md`; and the third-party inventory in `THIRDPARTY.md`
+  `.github/WORK-TRACKING.md`; the canonical-artifact coverage in `.github/CODEOWNERS`; and the
+  third-party inventory in `THIRDPARTY.md`
   ([#167](https://github.com/LCV-Ideas-Software/.github/issues/167),
   [#168](https://github.com/LCV-Ideas-Software/.github/pull/168)).
 - _(out-of-band)_ Created the repository label `maintenance`, declared by

@@ -6,18 +6,22 @@ repository, plus every third-party script loaded at runtime by a page this repos
 Transitive dependencies are not listed individually; they are pinned by the committed lockfiles
 (`package-lock.json`, `workers/github-slack-relay/package-lock.json`,
 `slack/github-integration/deno.lock`) and audited by Dependency Review, `npm audit`,
-`deno task audit` and the weekly OSV-Scanner sweep. GitHub Actions and container images are not
-listed here either: they are pinned by immutable commit SHA or image digest and audited daily by
-`GitHub Actions Pin Audit`.
+`deno task audit` and the weekly OSV-Scanner sweep. GitHub Actions are not listed here either: they
+are pinned by immutable commit SHA and audited daily by `GitHub Actions Pin Audit`. The single
+container image committed here, in `.github/zizmor/Dockerfile`, is pinned by immutable digest and
+watched daily by the `docker` Dependabot ecosystem; the pin auditor does not cover it, because it
+audits `docker://` references declared by Docker Actions rather than `FROM` lines in a Dockerfile.
 
 Versions and licenses below were read from each package's own published manifest or from its
-upstream repository, not inferred.
+upstream repository, not inferred. Versions are the ones actually resolved by the committed
+lockfiles, not the ranges declared in the manifests: the root `package.json` requests `prettier`
+as `^3.9.6` and `package-lock.json` resolves it to `3.9.6`.
 
 ## Repository root — `package.json`
 
 | Component | Version | License           | Scope       | Source                                 |
 | --------- | ------- | ----------------- | ----------- | -------------------------------------- |
-| prettier  | ^3.9.6  | MIT               | development | https://www.npmjs.com/package/prettier |
+| prettier  | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier |
 | wrangler  | 4.120.1 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler |
 
 ## GitHub-to-Slack relay — `workers/github-slack-relay/package.json`
@@ -35,14 +39,21 @@ deployed bundle is built from this repository's own source.
 
 ## Slack workflow app — `slack/github-integration/deno.jsonc`
 
-| Component  | Version | License | Scope   | Source                    |
-| ---------- | ------- | ------- | ------- | ------------------------- |
-| @slack/sdk | 2.15.2  | MIT     | runtime | https://jsr.io/@slack/sdk |
-| @slack/api | 2.9.3   | MIT     | runtime | https://jsr.io/@slack/api |
+| Component        | Version | License | Scope   | Source                                     |
+| ---------------- | ------- | ------- | ------- | ------------------------------------------ |
+| @slack/sdk       | 2.15.2  | MIT     | runtime | https://jsr.io/@slack/sdk                  |
+| @slack/api       | 2.9.3   | MIT     | runtime | https://jsr.io/@slack/api                  |
+| deno_slack_hooks | 1.5.0   | MIT     | build   | https://deno.land/x/deno_slack_hooks@1.5.0 |
 
 Licenses confirmed from the upstream repositories that publish these JSR packages:
 [`slackapi/deno-slack-sdk`](https://github.com/slackapi/deno-slack-sdk) and
 [`slackapi/deno-slack-api`](https://github.com/slackapi/deno-slack-api), both MIT.
+
+`deno_slack_hooks` is not a JSR import: it is the Slack CLI build hook, executed directly from
+`slack/github-integration/.slack/hooks.json:3` as
+`deno run -q --allow-read --allow-net https://deno.land/x/deno_slack_hooks@1.5.0/mod.ts` and pinned
+by integrity hash in `deno.lock`. Its license comes from the upstream repository that publishes it,
+[`slackapi/deno-slack-hooks`](https://github.com/slackapi/deno-slack-hooks), MIT.
 
 `deno.lock` additionally pins `@slack/api@2.9.0` as a transitive dependency of `@slack/sdk@2.15.2`;
 it is not imported directly by this repository.
