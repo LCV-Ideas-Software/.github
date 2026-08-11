@@ -795,7 +795,10 @@ test("Link parsing rejects adversarial parameters without regex backtracking", (
     import { parseNextCursor } from ${JSON.stringify(moduleUrl)};
     let rejected = false;
     try {
-      parseNextCursor("<=>;" + " : ;".repeat(32) + ";", "/orgs/example-org/hooks/12345/deliveries");
+      parseNextCursor(
+        "<=>;" + " : ;".repeat(100_000) + ";",
+        "/orgs/example-org/hooks/12345/deliveries",
+      );
     } catch {
       rejected = true;
     }
