@@ -39,6 +39,21 @@ const DENO_RUNTIME_SOURCE = "denoland/deno";
 const SLACK_CLI_SOURCE = "slackapi/slack-cli";
 const OSV_SCANNER_SOURCE = "google/osv-scanner";
 const OSV_SCANNER_ASSET = "osv-scanner_linux_amd64";
+const INTERNAL_COMPONENT_SOURCE = "lcv-ideas-software/.github";
+const INTERNAL_COMPONENT_TAG_POLICIES = Object.freeze({
+  "native-auto-merge": Object.freeze({
+    canonicalPrefix: "native-auto-merge/v",
+    acceptedPrefixes: Object.freeze(["native-auto-merge/v"]),
+  }),
+  ".github/workflows/zizmor.yml": Object.freeze({
+    canonicalPrefix: "zizmor/v",
+    acceptedPrefixes: Object.freeze(["zizmor/v"]),
+  }),
+  "codeql-sarif-gate": Object.freeze({
+    canonicalPrefix: "codeql-sarif-gate/v",
+    acceptedPrefixes: Object.freeze(["codeql-sarif-gate/v"]),
+  }),
+});
 const SLACK_CLI_PIN_KEYS = Object.freeze([
   "SLACK_CLI_ASSET",
   "SLACK_CLI_SHA256",
@@ -645,6 +660,41 @@ function finding(code, repository, path, line, message, reference) {
   return { code, repository, path, line, message, reference };
 }
 
+function isInternalComponentSource(source) {
+  return (
+    typeof source === "string" &&
+    source.toLowerCase() === INTERNAL_COMPONENT_SOURCE
+  );
+}
+
+function internalComponentTagPolicy(source, actionPath) {
+  if (!isInternalComponentSource(source) || typeof actionPath !== "string") {
+    return undefined;
+  }
+  return Object.hasOwn(INTERNAL_COMPONENT_TAG_POLICIES, actionPath)
+    ? INTERNAL_COMPONENT_TAG_POLICIES[actionPath]
+    : undefined;
+}
+
+function tagBelongsToComponentPolicy(tag, policy) {
+  const parsed = parseStableSemverTag(tag);
+  return Boolean(parsed && policy.acceptedPrefixes.includes(parsed.prefix));
+}
+
+function componentTagMatchesLatest(commentTag, latestTag, policy) {
+  const latest = parseStableSemverTag(latestTag);
+  return Boolean(
+    commentTag === latestTag &&
+    tagBelongsToComponentPolicy(commentTag, policy) &&
+    latest &&
+    latest.prefix === policy.canonicalPrefix,
+  );
+}
+
+function componentTagHint(policy) {
+  return `${policy.canonicalPrefix}0.0.0`;
+}
+
 export function parseUsesReferences(content, { repository, path }) {
   if (typeof content !== "string") {
     throw new Error("Workflow content must be a string.");
@@ -709,6 +759,9 @@ export function parseUsesReferences(content, { repository, path }) {
 
     const commentTag = parsed.comment?.split(/\s+/, 1)[0];
     const source = `${external[1]}/${external[2]}`;
+    const actionPath = external[3]?.slice(1);
+    const componentPolicy = internalComponentTagPolicy(source, actionPath);
+    const internalSource = isInternalComponentSource(source);
     references.push({
       repository,
       path,
@@ -717,10 +770,22 @@ export function parseUsesReferences(content, { repository, path }) {
       owner: external[1],
       sourceRepository: external[2],
       source,
-      actionPath: external[3]?.slice(1),
+      actionPath,
       sha: external[4].toLowerCase(),
       commentTag,
     });
+    if (internalSource && !componentPolicy) {
+      findings.push(
+        finding(
+          "UNKNOWN_INTERNAL_COMPONENT_PATH",
+          repository,
+          path,
+          index + 1,
+          `Internal source ${source} uses unregistered component path ${actionPath ?? "(repository root)"}; refusing to infer a release family from its comment.`,
+          parsed.value,
+        ),
+      );
+    }
     if (!commentTag) {
       findings.push(
         finding(
@@ -729,6 +794,23 @@ export function parseUsesReferences(content, { repository, path }) {
           path,
           index + 1,
           `Pinned external Action ${parsed.value} must have its exact release tag in a same-line comment.`,
+          parsed.value,
+        ),
+      );
+    } else if (
+      componentPolicy &&
+      !tagBelongsToComponentPolicy(commentTag, componentPolicy)
+    ) {
+      const expected = componentPolicy.acceptedPrefixes
+        .map((prefix) => `${prefix}MAJOR.MINOR.PATCH`)
+        .join(" or ");
+      findings.push(
+        finding(
+          "INTERNAL_COMPONENT_TAG_FAMILY_MISMATCH",
+          repository,
+          path,
+          index + 1,
+          `Internal component ${source}/${actionPath} must use a release tag from its explicit component family (${expected}); comment ${commentTag} does not.`,
           parsed.value,
         ),
       );
@@ -1286,6 +1368,107 @@ export function selectLatestStableTag(tags) {
       left.tag.localeCompare(right.tag),
   );
   return versions[0]?.tag;
+}
+
+async function inspectInternalComponentRelease(
+  api,
+  owner,
+  repository,
+  tag,
+  cache,
+) {
+  const source = `${owner}/${repository}`;
+  const key = `${source.toLowerCase()}@${tag}`;
+  return cachePromise(cache, key, async () => {
+    const ref = await api.getJson(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/git/ref/tags/${encodeURIComponent(tag)}`,
+      { allow404: true },
+    );
+    if (!ref) {
+      return {
+        sha: undefined,
+        issues: [
+          {
+            code: "MISSING_INTERNAL_COMPONENT_TAG",
+            message: `${source} has no tag named ${tag}; an exact annotated component tag is required.`,
+          },
+        ],
+      };
+    }
+    if (
+      !ref.object ||
+      typeof ref.object.type !== "string" ||
+      typeof ref.object.sha !== "string" ||
+      !FULL_COMMIT_SHA.test(ref.object.sha)
+    ) {
+      throw new Error(`${source} tag ${tag} returned a malformed Git ref.`);
+    }
+
+    const issues = [];
+    let sha;
+    if (ref.object.type === "commit") {
+      sha = ref.object.sha.toLowerCase();
+      issues.push({
+        code: "LIGHTWEIGHT_INTERNAL_COMPONENT_TAG",
+        message: `${source} tag ${tag} is lightweight; internal component releases require an annotated, GitHub-verified tag.`,
+      });
+    } else if (ref.object.type === "tag") {
+      const annotated = await api.getJson(
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/git/tags/${ref.object.sha}`,
+      );
+      if (
+        !annotated?.object ||
+        annotated.object.type !== "commit" ||
+        typeof annotated.object.sha !== "string" ||
+        !FULL_COMMIT_SHA.test(annotated.object.sha)
+      ) {
+        throw new Error(
+          `${source} annotated tag ${tag} must directly target a commit.`,
+        );
+      }
+      sha = annotated.object.sha.toLowerCase();
+      if (annotated.tag !== tag) {
+        issues.push({
+          code: "INTERNAL_COMPONENT_TAG_NAME_MISMATCH",
+          message: `${source} ref ${tag} points to an annotated tag object declaring ${typeof annotated.tag === "string" ? annotated.tag : "(missing)"}; the signed tag name must match the release family exactly.`,
+        });
+      }
+      if (annotated.verification?.verified !== true) {
+        issues.push({
+          code: "UNVERIFIED_INTERNAL_COMPONENT_TAG",
+          message: `${source} annotated tag ${tag} is not GitHub-verified (reason: ${annotated.verification?.reason ?? "unknown"}).`,
+        });
+      }
+    } else {
+      throw new Error(
+        `${source} tag ${tag} resolves to unsupported Git object type ${ref.object.type}.`,
+      );
+    }
+
+    const release = await api.getJson(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/releases/tags/${encodeURIComponent(tag)}`,
+      { allow404: true },
+    );
+    if (!release) {
+      issues.push({
+        code: "MISSING_INTERNAL_COMPONENT_RELEASE",
+        message: `${source} tag ${tag} has no exact GitHub release.`,
+      });
+    } else if (
+      Array.isArray(release) ||
+      release.tag_name !== tag ||
+      release.draft !== false ||
+      release.prerelease !== false ||
+      release.immutable !== true
+    ) {
+      issues.push({
+        code: "INVALID_INTERNAL_COMPONENT_RELEASE",
+        message: `${source} release ${tag} must have the exact tag, draft=false, prerelease=false, and immutable=true.`,
+      });
+    }
+
+    return { sha, issues };
+  });
 }
 
 async function resolveTagToCommit(api, owner, repository, tag) {
@@ -2016,6 +2199,7 @@ export async function runAudit({
 
   const latestCache = new Map();
   const tagCache = new Map();
+  const componentReleaseCache = new Map();
   const commitCache = new Map();
   const actionRuntimeCache = new Map();
   const registryDigestCache = new Map();
@@ -2023,21 +2207,42 @@ export async function runAudit({
   let dockerActionReferenceCount = 0;
   for (const reference of references) {
     const sourceKey = reference.source.toLowerCase();
-    const tagFamily = parseStableSemverTag(reference.commentTag)?.prefix ?? "";
+    const componentPolicy = internalComponentTagPolicy(
+      reference.source,
+      reference.actionPath,
+    );
+    if (isInternalComponentSource(reference.source) && !componentPolicy) {
+      continue;
+    }
+    const latestTagHint = componentPolicy
+      ? componentTagHint(componentPolicy)
+      : reference.commentTag;
+    const tagFamily = parseStableSemverTag(latestTagHint)?.prefix ?? "";
     const latestKey = `${sourceKey}|${tagFamily}`;
     const latest = await cachePromise(latestCache, latestKey, async () => {
       const tag = await latestStableRelease(
         api,
         reference.owner,
         reference.sourceRepository,
-        reference.commentTag,
+        latestTagHint,
       );
-      const sha = await resolveTagToCommit(
-        api,
-        reference.owner,
-        reference.sourceRepository,
-        tag,
-      );
+      const componentRelease = componentPolicy
+        ? await inspectInternalComponentRelease(
+            api,
+            reference.owner,
+            reference.sourceRepository,
+            tag,
+            componentReleaseCache,
+          )
+        : undefined;
+      const sha = componentRelease
+        ? componentRelease.sha
+        : await resolveTagToCommit(
+            api,
+            reference.owner,
+            reference.sourceRepository,
+            tag,
+          );
       if (!sha) {
         throw new Error(
           `${reference.source} latest release tag ${tag} is missing.`,
@@ -2050,8 +2255,26 @@ export async function runAudit({
         sha,
         commitCache,
       );
-      return { tag, sha, commit };
+      return {
+        tag,
+        sha,
+        commit,
+        componentIssues: componentRelease?.issues ?? [],
+      };
     });
+
+    for (const issue of latest.componentIssues) {
+      findings.push(
+        finding(
+          issue.code,
+          reference.repository,
+          reference.path,
+          reference.line,
+          issue.message,
+          reference.value,
+        ),
+      );
+    }
 
     const pinnedCommit = await verifiedCommit(
       api,
@@ -2087,14 +2310,45 @@ export async function runAudit({
 
     if (reference.commentTag) {
       const tagKey = `${sourceKey}@${reference.commentTag}`;
-      const commentSha = await cachePromise(tagCache, tagKey, () =>
-        resolveTagToCommit(
-          api,
-          reference.owner,
-          reference.sourceRepository,
-          reference.commentTag,
-        ),
-      );
+      let commentSha;
+      if (
+        componentPolicy &&
+        tagBelongsToComponentPolicy(reference.commentTag, componentPolicy)
+      ) {
+        if (reference.commentTag === latest.tag) {
+          commentSha = latest.sha;
+        } else {
+          const commentRelease = await inspectInternalComponentRelease(
+            api,
+            reference.owner,
+            reference.sourceRepository,
+            reference.commentTag,
+            componentReleaseCache,
+          );
+          commentSha = commentRelease.sha;
+          for (const issue of commentRelease.issues) {
+            findings.push(
+              finding(
+                issue.code,
+                reference.repository,
+                reference.path,
+                reference.line,
+                issue.message,
+                reference.value,
+              ),
+            );
+          }
+        }
+      } else {
+        commentSha = await cachePromise(tagCache, tagKey, () =>
+          resolveTagToCommit(
+            api,
+            reference.owner,
+            reference.sourceRepository,
+            reference.commentTag,
+          ),
+        );
+      }
       if (!commentSha) {
         findings.push(
           finding(
@@ -2118,7 +2372,14 @@ export async function runAudit({
           ),
         );
       }
-      if (reference.commentTag !== latest.tag) {
+      const commentMatchesLatest = componentPolicy
+        ? componentTagMatchesLatest(
+            reference.commentTag,
+            latest.tag,
+            componentPolicy,
+          )
+        : reference.commentTag === latest.tag;
+      if (!commentMatchesLatest) {
         findings.push(
           finding(
             "STALE_VERSION_COMMENT",
