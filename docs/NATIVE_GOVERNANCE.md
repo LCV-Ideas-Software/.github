@@ -50,11 +50,12 @@ synthetic merge-group revision.
 
 The `.github` Scorecard job also runs before merge and rejects every result that
 does not match an auditable exception signature. A rule ID alone is not enough:
-the matcher also binds the recorded message, path and, for Wrangler, exact
-command snippet. The durable dependency signatures preserve the explicit
-`won't fix` decisions for organization-mandated `permissions: write-all` and
-verified Wrangler `@latest`. The relay Worker has property-based tests over its
-untrusted webhook boundary, so `FuzzingID` is remediated rather than waived.
+the matcher also binds the recorded message and path. The remaining
+`permissions: write-all` signature is transitional while every workflow moves
+to explicit least privilege; Wrangler is exact in committed manifests and
+lockfiles and has no policy exception. The relay Worker has property-based
+tests over its untrusted webhook boundary, so `FuzzingID` is remediated rather
+than waived.
 
 Repository-level Scorecard heuristics are bound separately to the declared
 native-governance policy. Trusted `push`, `schedule`, and `workflow_dispatch`

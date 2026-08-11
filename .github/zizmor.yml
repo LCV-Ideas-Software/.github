@@ -1,13 +1,12 @@
-# Organization policy requires explicit `permissions: write-all` at workflow
-# and job scope. That deliberate policy leaves no useful signal for this audit;
-# every other zizmor audit remains enabled.
+# Excessive-permissions remains disabled only while the untouched workflows are
+# migrated away from their legacy write-all declarations. Re-enable it before
+# closing the repository hardening issue; every other audit stays active now.
 rules:
   dependabot-cooldown:
-    # GitHub now applies a three-day default to version updates while security
-    # updates bypass cooldown. Keep that upstream balance instead of delaying
-    # routine updates for zizmor's more conservative seven-day default.
+    # Security updates bypass Dependabot cooldowns. Version updates are checked
+    # daily and use zizmor's recommended supply-chain stabilization window.
     config:
-      days: 3
+      days: 7
   excessive-permissions:
     disable: true
   dangerous-triggers:

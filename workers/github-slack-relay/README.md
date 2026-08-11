@@ -178,31 +178,34 @@ deliveries, but a crash after Slack returns `ok: true` and before D1 commits
 
 ## Validation
 
-Wrangler is deliberately not fixed in this package or its lockfile. The
-organization installs the current Wrangler release in an isolated CI prefix,
-verifies package signatures, and then runs the checked-in tasks. Locally, use a
-current trusted Wrangler installation:
+Wrangler is an exact development dependency in this package and its lockfile.
+CI and local validation install only that reviewed graph from the effective
+official npm registry, verify package signatures and advisories, and then run
+the checked-in tasks:
 
 ```powershell
 npm ci
 npm audit signatures
 npm audit --audit-level=low
-wrangler --version
+npm exec -- wrangler --version
 npm run check
 npm run db:migrate:local
 ```
 
-`npm run check` regenerates `worker-configuration.d.ts` from `wrangler.jsonc`,
-runs strict TypeScript checking and Vitest, and creates a Wrangler dry-run
-bundle. Generated bindings are the source of truth for `Env`; there is no
-handwritten environment interface.
+`npm run check` uses Wrangler's native `types --check` mode to verify that the
+committed `worker-configuration.d.ts` still matches `wrangler.jsonc`, then runs
+strict TypeScript checking, Vitest, and a strict Wrangler dry-run bundle.
+Run `npm run types:generate` intentionally whenever a reviewed Wrangler or
+configuration update changes the generated bindings. Those bindings are the
+source of truth for `Env`; there is no handwritten environment interface.
 
 Production verification and deployment are owned by
 `.github/workflows/github-slack-integration.yml`. The workflow:
 
 1. verifies the webhook redelivery controller and Worker;
 2. checks dependency signatures and advisories;
-3. generates bindings, type-checks, runs tests, and creates a dry-run bundle;
+3. verifies committed bindings, type-checks, runs tests, and creates a strict
+   dry-run bundle;
 4. applies remote D1 migrations;
 5. deploys the verified Worker revision.
 

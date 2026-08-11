@@ -69,16 +69,6 @@ def accepted_policy_finding:
           token_permission_body("https://app.stepsecurity.io/secureworkflow/github.com/LCV-Ideas-Software/.github/\($filename)/main?enable=permissions")
         ] | index($body)) != null
       )
-    elif .ruleId == "PinnedDependenciesID" then
-      ([
-        ".github/workflows/cloudflare-pages.yml",
-        ".github/workflows/github-slack-integration.yml"
-      ] | index($uri)) != null
-      and $message == "score is 7: npmCommand not pinned by hash\nClick Remediation section below to solve this issue"
-      and ([
-        "npm install --prefix \"$wrangler_prefix\" --save-exact --ignore-scripts --no-audit --no-fund wrangler@latest",
-        "npm install --prefix \"$wrangler_prefix\" --ignore-scripts --no-audit --no-fund"
-      ] | index($snippet)) != null
     elif .ruleId == "BranchProtectionID" then
       $uri == "no file associated with this alert"
       and $snippet == ""
