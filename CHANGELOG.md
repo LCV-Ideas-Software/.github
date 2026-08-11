@@ -94,7 +94,8 @@ evidence is the execution trail recorded in
 ### Fixed
 
 - Aligned the documentation and the public surface with the repository's real state: the Dependabot
-  cooldown wording in `README.md`, `SECURITY.md`, `CONTRIBUTING.md` and `profile/README.md`; the
+  cooldown wording in `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `profile/README.md` and the
+  explanatory comment in `.github/zizmor.yml`; the
   public repository count and the AI-roster claims on `site/index.html`; a typo in the site heading;
   a false credential-isolation claim in `SECURITY.md`; the private-board links in
   `.github/WORK-TRACKING.md`; and the third-party inventory in `THIRDPARTY.md`
