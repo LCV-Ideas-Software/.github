@@ -27,6 +27,7 @@ jobs:
   zizmor:
     name: Run zizmor
     permissions:
+      actions: read # CodeQL upload-sarif reads workflow-run metadata.
       contents: read
       security-events: write # Upload the SARIF to GitHub code scanning.
     env:
