@@ -48,6 +48,13 @@ evidence is the execution trail recorded in
   ([#151](https://github.com/LCV-Ideas-Software/.github/pull/151)).
 - Consolidated `format-public.yml` into the `Build Pages artifact` job and removed the duplicated
   workflow and check context ([#151](https://github.com/LCV-Ideas-Software/.github/pull/151)).
+- Removed the manual organization-webhook control surface: the
+  `github-slack-hook-management.yml` workflow and its `github-slack-hook-management.mjs` controller,
+  which offered `provision`, `activate`, `deactivate` and `ping` operations against the hook and ran
+  with `permissions: write-all`. What remains is read-only: `github-slack-hook-audit.mjs` audits the
+  hook by GET, and `github-slack-webhook-redelivery.yml` recovers failed deliveries without ever
+  creating or reconfiguring a hook
+  ([#151](https://github.com/LCV-Ideas-Software/.github/pull/151)).
 - _(out-of-band)_ Removed the legacy `LCV_AUTOMATION_TOKEN`, `SLACK_RELAY_GITHUB_WEBHOOK_SECRET`,
   `LCV_NATIVE_RECONCILE_ENABLED` and `SLACK_RELAY_LAST_REDELIVERY` secrets and variables, and the
   orphaned `dependabot-automation`, `github-administration` and `projects-automation` environments,
@@ -136,8 +143,9 @@ evidence is the execution trail recorded in
   reports **Success** and does not block the merge, so a workflow that only tests itself stops
   protecting anything the moment its own job is skipped; `continue-on-error` is unguarded on the
   enforcement steps; `pages.yml` is read by no test at all; and in `.github/zizmor.yml` a
-  `rules.<id>.disable: true` remains a real bypass even under `--no-ignores`, which suppresses
-  ignores but does not make the configuration inert. No active defect exists in the current YAML —
+  a `rules.<id>.disable: true` entry would be a real bypass even under `--no-ignores`, which
+  suppresses ignores without making the configuration inert — the file carries no such entry today,
+  and nothing would fail if one were added. No active defect exists in the current YAML —
   the gap is that nothing stops one line from removing each guarantee. Tracked in
   [#170](https://github.com/LCV-Ideas-Software/.github/issues/170), to be remediated in its own pull
   request rather than mixed into documentation work.

@@ -26,6 +26,9 @@
 /README.md @lcv-leo
 /CHANGELOG.md @lcv-leo
 /THIRDPARTY.md @lcv-leo
+/CONTRIBUTING.md @lcv-leo
+/.prettierignore @lcv-leo
+/.github/WORK-TRACKING.md @lcv-leo
 
 # Public organization surfaces
 /profile/ @lcv-leo
