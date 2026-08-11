@@ -95,6 +95,13 @@ evidence is the execution trail recorded in
   ([#165](https://github.com/LCV-Ideas-Software/.github/pull/165)).
 - Bound the Actions pin auditor to component release families so an internal component pin must
   match its own release tag ([#166](https://github.com/LCV-Ideas-Software/.github/pull/166)).
+- Granted the reusable Zizmor workflow the `actions: read` scope that
+  `codeql-action/upload-sarif` needs to read workflow-run metadata, which was blocking
+  cross-repository SARIF uploads, and added the first structural assertions protecting a required
+  context from regression: the suite now rejects an inline permission bypass, a `write-all` grant,
+  an unexpected job list and a job-permission set other than the approved one. Released as
+  `zizmor/v2.2.0` at `97627f2`
+  ([#173](https://github.com/LCV-Ideas-Software/.github/pull/173)).
 
 ### Added
 
