@@ -27,3 +27,10 @@ test("Dependency Review remains read-only and fail-closed at low severity", () =
     2,
   );
 });
+
+test("Dependency Review validates the GitHub Actions pin auditor", () => {
+  assert.match(
+    workflow,
+    /^\s{6}- name: Test GitHub Actions pin auditor\n\s{8}run: node --test scripts\/github-actions-pin-audit\.test\.mjs$/m,
+  );
+});
