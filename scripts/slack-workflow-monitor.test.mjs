@@ -25,9 +25,14 @@ const environment = Object.freeze({
 test("production manifest keeps only the documented SendMessage scopes", () => {
   assert.match(
     manifestSource,
-    /botScopes:\s*\["chat:write", "channels:read"\]/,
+    /botScopes:\s*\["chat:write", "chat:write\.public", "channels:read"\]/,
   );
-  assert.doesNotMatch(manifestSource, /chat:write\.public|groups:(read|write)/);
+  assert.doesNotMatch(manifestSource, /groups:(read|write)/);
+  assert.doesNotMatch(
+    workflowSource,
+    /chat:write\\?\.public/,
+    "the verifier must not reject Slack's manifest-required built-in scope",
+  );
 });
 
 test("deployment verifies both protected triggers without logging their details", () => {

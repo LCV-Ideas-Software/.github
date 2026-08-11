@@ -7,12 +7,14 @@ and actionable failures/security alerts to `#github-alerts` (`C0BMUK793NV`). The
 deployed production app is `LCV GitHub integration` (`A0BMWBGES20`).
 
 The committed manifest is the production manifest. It imports both workflows,
-binds their immutable private-channel IDs, and intentionally omits the
-bootstrap-only `groups:write` scope and the public-channel bypass
-`chat:write.public`. The app retains only the `chat:write` and `channels:read`
-scopes required by Slack's built-in `SendMessage` function and is a member of
-both private destination channels. Channel provisioning code and its temporary
-trigger are not retained in the production source.
+binds their immutable private-channel IDs, and intentionally omits every
+channel-provisioning scope. Slack's live manifest validator requires the exact
+`chat:write`, `chat:write.public`, and `channels:read` scope set for the
+built-in `SendMessage` function. The app is already a member of both private
+destination channels; fixed channel IDs, exact trigger mappings,
+HMAC/destination/freshness validation, and CODEOWNERS compensate for the broader
+built-in scope. Channel provisioning code and its temporary trigger are not
+retained in production.
 
 The webhook trigger URLs are credentials. They must be written directly to
 Cloudflare Secrets Store and must never be committed, logged, or stored as a

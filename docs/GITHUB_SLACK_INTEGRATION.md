@@ -160,10 +160,13 @@ The Deno app has these stable components:
   and URL, then emits bounded Slack mrkdwn;
 - `triggers/github_activity_webhook.ts` and
   `triggers/github_alert_webhook.ts` define the two webhook triggers;
-- `manifest.ts` imports both workflows and contains only `chat:write` plus
-  `channels:read`, the scopes documented for Slack's built-in `send_message`
-  function. The app is already a member of both fixed private destinations, so
-  `chat:write.public` and private-channel discovery scopes remain absent.
+- `manifest.ts` imports both workflows and contains exactly `chat:write`,
+  `chat:write.public`, and `channels:read`. Slack's live manifest validator
+  requires that set for the built-in `send_message` function, including when
+  both fixed destinations are private and the app is already a member. Exact
+  channel IDs, trigger mappings, HMAC/destination/freshness validation, and
+  CODEOWNERS compensate for the broader built-in scope; channel-provisioning
+  scopes and discovery code remain absent.
 
 The production Slack identities are fixed and must not be replaced by names or
 newly discovered resources during deployment:
