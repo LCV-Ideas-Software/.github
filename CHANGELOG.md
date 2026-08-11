@@ -12,8 +12,10 @@ published to any registry — the Worker is deployed from this repository's sour
 
 Two **components** hosted here are released under numbers, and their history is their tags, not this
 file: the reusable Zizmor workflow (`zizmor/v2.2.0` at the time of writing) and the CodeQL SARIF gate
-action (`codeql-sarif-gate/v1.0.0`). Consumers pin them by commit SHA, so a change to either is only
-in effect once a new tag is cut and the consumer's pin is bumped. Entries are therefore grouped by date rather than
+action (`codeql-sarif-gate/v1.0.0`). **External** consumers pin them by commit SHA, so for those a
+change takes effect only once a new tag is cut and the pin is bumped. Inside this repository the
+consumption is local and immediate: `.github/workflows/codeql.yml:60` invokes the gate as
+`uses: ./codeql-sarif-gate`, and the Zizmor workflow runs from the branch under test. Entries are therefore grouped by date rather than
 by semantic version. Each entry names the record that carries its evidence: the pull request, for a
 versioned change, so the full diff, its reviews and its checks stay reachable; or the execution issue
 for a change marked _(out-of-band)_, which by definition has no diff.
@@ -107,6 +109,14 @@ evidence is the execution trail recorded in
   `.github/WORK-TRACKING.md`; the canonical-artifact coverage in `.github/CODEOWNERS`; and the
   third-party inventory in `THIRDPARTY.md`
   ([#167](https://github.com/LCV-Ideas-Software/.github/issues/167),
+  [#168](https://github.com/LCV-Ideas-Software/.github/pull/168)).
+- The footer contact link on the public site. It rendered as `Contatolcv@lcv.dev` and, without
+  JavaScript, went nowhere: a placeholder `href="#contact"`, a `::before` rule supplying the label
+  and an inline script rewriting the href at load. The obfuscation kept nothing hidden — the address
+  was served inside that same script, and is published in plain text in `SECURITY.md`,
+  `CODE_OF_CONDUCT.md` and `profile/README.md`. The footer now carries a plain
+  `mailto:` link, and the script and the `::before` rule are gone
+  ([#174](https://github.com/LCV-Ideas-Software/.github/issues/174),
   [#168](https://github.com/LCV-Ideas-Software/.github/pull/168)).
 - _(out-of-band)_ Created the repository label `maintenance`, declared by
   `.github/ISSUE_TEMPLATE/engineering_task.md` but absent from the repository, so every issue opened

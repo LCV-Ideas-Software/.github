@@ -51,9 +51,11 @@ Licenses confirmed from the upstream repositories that publish these JSR package
 
 `deno_slack_hooks` is not a JSR import: it is the Slack CLI build hook, executed directly from
 `slack/github-integration/.slack/hooks.json:3` as
-`deno run -q --allow-read --allow-net https://deno.land/x/deno_slack_hooks@1.5.0/mod.ts` and pinned
-by integrity hash in `deno.lock`. Its license comes from the upstream repository that publishes it,
-[`slackapi/deno-slack-hooks`](https://github.com/slackapi/deno-slack-hooks), MIT.
+`deno run -q --allow-read --allow-net https://deno.land/x/deno_slack_hooks@1.5.0/mod.ts`. Its
+version is pinned in that URL; the protection `deno.lock` adds is narrower than the whole tool, and
+worth stating exactly: the lock carries integrity hashes for nine modules of the package, but not
+for the executed `mod.ts` entry point itself. Its license comes from the upstream repository that
+publishes it, [`slackapi/deno-slack-hooks`](https://github.com/slackapi/deno-slack-hooks), MIT.
 
 `deno.lock` additionally pins `@slack/api@2.9.0` as a transitive dependency of `@slack/sdk@2.15.2`;
 it is not imported directly by this repository.
@@ -76,8 +78,9 @@ where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when 
 | MercadoPago.js V2          | v2 endpoint, unpinned | Proprietary — Mercado Pago | runtime | https://sdk.mercadopago.com/js/v2          |
 | Mercado Pago `security.js` | v2 endpoint, unpinned | Proprietary — Mercado Pago | runtime | https://www.mercadopago.com/v2/security.js |
 
-The SDK must execute from the payment provider's origin for PCI scope reasons, so pinning or
-vendoring either script is not available to this repository.
+What is verifiable here is the shape of the integration, not a justification for it: both scripts
+are fetched at runtime from unversioned provider endpoints, so neither carries a version this
+repository can pin, and neither is vendored.
 
 ## This repository
 

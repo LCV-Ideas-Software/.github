@@ -39,17 +39,16 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - versioned CodeQL Advanced Setup workflows in public repositories containing code;
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
-- external credentials held in protected environments restricted to `main`, with two limits stated
-  plainly rather than implied. First, an environment is shared by every job that declares it, not
-  scoped to the job that uses a given secret: `SLACK_SERVICE_TOKEN` lives in `slack-production` and
-  `SLACK_REDELIVERY_APP_PRIVATE_KEY` in `cloudflare-production`, and the two deploy jobs that also
-  declare `cloudflare-production` can reach the App key without using it. Second, the Cloudflare
-  deployment credentials are still repository-scoped: GitHub does not hand a repository secret to a
-  job that does not reference it, but any workflow here may reference them without declaring the
-  environment at all, including workflows that run on same-repository pull requests, so the
-  environment's branch policy does not gate them. Both are tracked in
-  [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Fork pull requests receive no
-  secret;
+- external credential isolation is **partial today**, and the two gaps are stated rather than
+  implied. `SLACK_SERVICE_TOKEN` is held in the protected environment `slack-production` and
+  `SLACK_REDELIVERY_APP_PRIVATE_KEY` in `cloudflare-production`, both restricted to `main` — but an
+  environment is shared by every job that declares it, so the two deploy jobs that also declare
+  `cloudflare-production` can reach the App key without using it. The Cloudflare deployment
+  credentials are not in an environment at all: they are repository-scoped, and although GitHub
+  hands a secret only to a job that references it, any workflow here may reference them without
+  declaring the environment, so no branch policy gates them. Both gaps are tracked in
+  [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Workflows triggered by fork pull
+  requests and by Dependabot receive no user-managed Actions secret;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by effective rulesets and GitHub's native merge queue;
 - no long-lived secrets in source control.
 
