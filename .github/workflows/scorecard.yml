@@ -17,16 +17,16 @@ concurrency:
 
 jobs:
   analysis:
-    name: Publish OpenSSF Scorecard
+    name: Analyze OpenSSF Scorecard
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
       security-events: write # Upload the SARIF to GitHub code scanning.
-      id-token: write # Authenticate publication to api.scorecard.dev via OIDC.
     steps:
-      # The OpenSSF publication API permits only its approved actions in this
-      # OIDC-enabled job. Policy code and tests run in the separate job below.
+      # Keep analysis and policy enforcement local to GitHub. The Enterprise
+      # uses its hardened tenant-specific OIDC issuer, which the public
+      # Scorecard API does not currently accept for result publication.
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,7 +37,7 @@ jobs:
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
-          publish_results: true
+          publish_results: false
 
       - name: Upload SARIF artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

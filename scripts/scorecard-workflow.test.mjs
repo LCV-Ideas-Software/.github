@@ -59,7 +59,7 @@ test("Scorecard runs only on supported default-branch events", async () => {
   assert.doesNotMatch(workflow, /^\s{4}paths:/m);
 });
 
-test("the publishing job satisfies OpenSSF's OIDC workflow restrictions", async () => {
+test("the analysis job stays local under the Enterprise OIDC issuer", async () => {
   const workflow = await readFile(WORKFLOW_URL, "utf8");
   const analysis = namedJob(workflow, "analysis");
 
@@ -68,7 +68,7 @@ test("the publishing job satisfies OpenSSF's OIDC workflow restrictions", async 
   assert.doesNotMatch(workflow, /permissions:\s*write-all/);
   assert.match(
     analysis,
-    /\n    permissions:\n      contents: read\n      security-events: write # Upload the SARIF to GitHub code scanning\.\n      id-token: write # Authenticate publication to api\.scorecard\.dev via OIDC\.\n/,
+    /\n    permissions:\n      contents: read\n      security-events: write # Upload the SARIF to GitHub code scanning\.\n/,
   );
   assert.doesNotMatch(analysis, /^    (env|defaults|container|services):/m);
   assert.doesNotMatch(analysis, /^\s+run:/m);
@@ -81,19 +81,15 @@ test("the publishing job satisfies OpenSSF's OIDC workflow restrictions", async 
   );
   assert.match(scorecard, /results_file: scorecard-results\.sarif/);
   assert.match(scorecard, /results_format: sarif/);
-  assert.match(scorecard, /publish_results: true/);
+  assert.match(scorecard, /publish_results: false/);
   assert.doesNotMatch(scorecard, /continue-on-error:/);
 
-  assert.equal(
-    workflow.match(/^      id-token: write(?: #.*)?$/gm)?.length,
-    1,
-    "only the publishing job may request an OIDC token",
-  );
-  assert.doesNotMatch(workflow, /publish_results:\s*false/);
+  assert.doesNotMatch(workflow, /id-token:/);
+  assert.doesNotMatch(workflow, /publish_results:\s*true/);
   assert.doesNotMatch(workflow, /^.*ghcr\.io\/ossf\/scorecard-action.*$/m);
 });
 
-test("policy enforcement is isolated from the OIDC publisher", async () => {
+test("policy enforcement is isolated from the analysis job", async () => {
   const workflow = await readFile(WORKFLOW_URL, "utf8");
   const policy = namedJob(workflow, "policy");
 
