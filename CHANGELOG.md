@@ -138,6 +138,11 @@ evidence is the execution trail recorded in
   is recorded for it. The same placement is reported across the repositories that deploy to
   Cloudflare, which makes the decision organization-wide rather than local to this repository.
   Tracked in [#169](https://github.com/LCV-Ideas-Software/.github/issues/169).
+- A protected environment is shared by every job that declares it, so
+  `SLACK_REDELIVERY_APP_PRIVATE_KEY` — which mints tokens with `Organization webhooks: write` — is
+  reachable from the two deploy jobs that declare `cloudflare-production` without using it. Both run
+  only on `main`, so the exposure is contained, but the credential is segregated by provider rather
+  than by purpose. Tracked in [#175](https://github.com/LCV-Ideas-Software/.github/issues/175).
 - None of the seven required status-check contexts is protected against structural regression. The
   live re-read widened this beyond the two gates originally reported: a job disabled with `if: false`
   reports **Success** and does not block the merge, so a workflow that only tests itself stops

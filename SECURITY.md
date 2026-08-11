@@ -46,9 +46,10 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   `cloudflare-production` can reach the App key without using it. The Cloudflare deployment
   credentials are not in an environment at all: they are repository-scoped, and although GitHub
   hands a secret only to a job that references it, any workflow here may reference them without
-  declaring the environment, so no branch policy gates them. Both gaps are tracked in
-  [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Workflows triggered by fork pull
-  requests and by Dependabot receive no user-managed Actions secret;
+  declaring the environment, so no branch policy gates them. The shared-environment gap is tracked in
+  [#175](https://github.com/LCV-Ideas-Software/.github/issues/175) and the repository-scoped
+  credentials in [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Workflows
+  triggered by fork pull requests and by Dependabot receive no user-managed Actions secret;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by effective rulesets and GitHub's native merge queue;
 - no long-lived secrets in source control.
 
