@@ -918,7 +918,9 @@
           try {
             const addr = "lcv@lcv.dev";
             el.setAttribute("href", `mailto:${addr}`);
-            el.textContent = addr;
+            // The visible label comes from the .contact-link::before rule.
+            // Writing the address into textContent as well rendered the two
+            // glued together as "Contatolcv@lcv.dev".
           } catch {
             /* ignore email-link initialization errors */
           }
