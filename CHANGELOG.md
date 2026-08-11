@@ -51,8 +51,8 @@ evidence is the execution trail recorded in
 - Removed the manual organization-webhook control surface: the
   `github-slack-hook-management.yml` workflow and its `github-slack-hook-management.mjs` controller,
   which offered `provision`, `activate`, `deactivate` and `ping` operations against the hook and ran
-  with `permissions: write-all`. What remains is read-only: `github-slack-hook-audit.mjs` audits the
-  hook by GET, and `github-slack-webhook-redelivery.yml` recovers failed deliveries without ever
+  with `permissions: write-all`. What remains is read-only: `scripts/github-slack-hook-audit.mjs` audits the
+  hook by GET, and `.github/workflows/github-slack-webhook-redelivery.yml` recovers failed deliveries without ever
   creating or reconfiguring a hook
   ([#151](https://github.com/LCV-Ideas-Software/.github/pull/151)).
 - _(out-of-band)_ Removed the legacy `LCV_AUTOMATION_TOKEN`, `SLACK_RELAY_GITHUB_WEBHOOK_SECRET`,
@@ -152,11 +152,11 @@ evidence is the execution trail recorded in
   than by purpose. Tracked in [#175](https://github.com/LCV-Ideas-Software/.github/issues/175).
 - No required status-check context is **fully** protected against structural regression. Coverage is
   partial and uneven rather than absent: #173 gave `Run zizmor` assertions over its caller's
-  permissions and job list, and `codeql-sarif-policy.test.mjs`, `dependency-review-workflow.test.mjs`
-  and `scorecard-workflow.test.mjs` each pin part of their own workflow. What none of them closes is
+  permissions and job list, and `scripts/codeql-sarif-policy.test.mjs`, `scripts/dependency-review-workflow.test.mjs`
+  and `scripts/scorecard-workflow.test.mjs` each pin part of their own workflow. What none of them closes is
   the same escape in every context. A job disabled with `if: false` reports **Success** and does not
   block the merge, so a workflow that only tests itself stops protecting anything the moment its own
-  job is skipped; `continue-on-error` is unguarded on the enforcement steps; `pages.yml` is pinned
+  job is skipped; `continue-on-error` is unguarded on the enforcement steps; `.github/workflows/pages.yml` is pinned
   only through the Scorecard policy suite, not as a required context of its own; and in
   `.github/zizmor.yml` a `rules.<id>.disable: true` entry would be a real bypass even under
   `--no-ignores`, which suppresses ignores without making the configuration inert — the file carries
