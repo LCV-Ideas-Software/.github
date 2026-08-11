@@ -1,0 +1,38 @@
+name: Maintenance
+description: Dependências, lockfiles, versões e manutenção rotineira
+title: "[Maintenance]: "
+type: Maintenance
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Este repositório é público. Não publique segredos, credenciais, URLs privadas nem
+        identificadores reais de contas ou infraestrutura.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objetivo
+      description: O que precisa de manutenção?
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Motivo
+      description: Registre advisory, descontinuação, drift ou manutenção programada.
+    validations:
+      required: true
+  - type: textarea
+    id: surfaces
+    attributes:
+      label: Superfícies afetadas
+      description: Liste os arquivos e configurações que precisam mudar em conjunto.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verificação
+      description: Quais gates e evidências serão exigidos para concluir o trabalho?
+    validations:
+      required: true

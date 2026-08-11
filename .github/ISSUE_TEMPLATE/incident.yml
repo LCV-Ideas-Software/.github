@@ -1,0 +1,66 @@
+name: Incident
+description: Produção ou CI está indisponível ou degradada e exige análise de causa
+title: "[Incident]: "
+labels: ["bug"]
+type: Incident
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Este repositório é público. Não publique segredos, credenciais, URLs privadas nem
+        identificadores reais de contas ou infraestrutura.
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impacto
+      description: O que está indisponível ou degradado e quem é afetado?
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Ambiente
+      options:
+        - Produção
+        - Preview
+        - CI
+        - Local
+    validations:
+      required: true
+  - type: input
+    id: started-at
+    attributes:
+      label: Início observado
+      description: Use data e hora no formato pt-BR e no fuso UTC−03:00 de Brasília.
+      placeholder: "11/08/2026 08:30"
+    validations:
+      required: true
+  - type: textarea
+    id: timeline
+    attributes:
+      label: Linha do tempo
+      description: Use data e hora no formato pt-BR e no fuso UTC−03:00 de Brasília.
+      placeholder: "- DD/MM/AAAA HH:MM —"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidências
+      description: Inclua logs, checks e erros, sempre com dados sensíveis removidos ou ocultados.
+    validations:
+      required: true
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: Mitigação
+      description: Registre o que restaurou o serviço ou escreva "ainda não aplicada".
+    validations:
+      required: true
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Hipótese de causa raiz
+      description: Explique a hipótese e a evidência que a sustenta.
+    validations:
+      required: true

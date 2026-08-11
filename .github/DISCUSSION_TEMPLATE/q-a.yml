@@ -1,0 +1,21 @@
+title: "[Pergunta] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use Q&A para conhecimento durável sobre este repositório ou sobre a governança da
+        organização. Não publique segredos, credenciais, URLs privadas nem identificadores
+        reais de contas ou infraestrutura.
+  - type: textarea
+    id: question
+    attributes:
+      label: Pergunta
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Contexto e tentativas
+      description: Registre arquivos consultados, evidências e hipóteses já descartadas.
+    validations:
+      required: true
