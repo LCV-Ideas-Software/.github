@@ -40,8 +40,7 @@ body:
     attributes:
       label: Linha do tempo
       description: Use data e hora no formato pt-BR e no fuso UTC−03:00 de Brasília.
-      value: |
-        - DD/MM/AAAA HH:MM —
+      placeholder: "- DD/MM/AAAA HH:MM —"
     validations:
       required: true
   - type: textarea

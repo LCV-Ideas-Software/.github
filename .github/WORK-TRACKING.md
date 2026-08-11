@@ -42,7 +42,7 @@ para decisões, desenho de governança e aprendizados que continuarão úteis de
 imediato. O repositório público `.github` é a fonte das Discussions da organização.
 
 - `Announcements`: publicações concluídas e sua verificação.
-- `Ideas`: propostas ainda abertas a exploração.
+- `Ideas`: propostas ainda abertas à exploração.
 - `Q&A`: perguntas técnicas com resposta durável.
 
 ### Pull requests
