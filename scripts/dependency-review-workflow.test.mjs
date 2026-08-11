@@ -25,8 +25,10 @@ function workflowJobNames(source) {
     if (indentation === 0) {
       break;
     }
-    if (indentation === 2 && visible.endsWith(":")) {
-      names.push(visible.slice(0, -1));
+    if (indentation === 2) {
+      const separator = visible.indexOf(":");
+      assert.notEqual(separator, -1, "every job entry must contain a colon");
+      names.push(visible.slice(0, separator));
     }
   }
   return names;
@@ -135,5 +137,14 @@ test("reusable Zizmor grants the minimum metadata access required by SARIF uploa
     workflowJobNames(precedingJob),
     ["zizmor"],
     "a preceding job must violate the exact job inventory",
+  );
+  const inlineJob = zizmorWorkflow.replace(
+    "jobs:\n  zizmor:",
+    "jobs:\n  impostor: { runs-on: ubuntu-latest, steps: [] }\n  zizmor:",
+  );
+  assert.notDeepEqual(
+    workflowJobNames(inlineJob),
+    ["zizmor"],
+    "an inline job must violate the exact job inventory",
   );
 });
