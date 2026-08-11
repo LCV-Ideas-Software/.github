@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to this repository are recorded here **a partir de 11/08/2026**. Earlier work is not
+Notable changes to this repository are recorded here **from 11/08/2026 onward**. Earlier work is not
 summarized in this file; see [Earlier history](#earlier-history) for where it is verifiable.
 
 This repository is **not versioned**: it publishes the organization profile, the static
@@ -13,7 +13,9 @@ by semantic version, and each one names the pull request that carried it so the 
 reviews and its checks stay reachable.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) as far as it applies to
-an unversioned repository.
+an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC−03:00), the
+presentation rule this organization applies to text meant for people
+([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
 ## 11/08/2026 — GitHub Actions governance sanitation
 
@@ -41,7 +43,8 @@ evidence is the execution trail recorded in
 - _(out-of-band)_ Removed the legacy `LCV_AUTOMATION_TOKEN`, `SLACK_RELAY_GITHUB_WEBHOOK_SECRET`,
   `LCV_NATIVE_RECONCILE_ENABLED` and `SLACK_RELAY_LAST_REDELIVERY` secrets and variables, and the
   orphaned `dependabot-automation`, `github-administration` and `projects-automation` environments,
-  after the recovery canary proved green.
+  after the recovery canary proved green
+  ([#148](https://github.com/LCV-Ideas-Software/.github/issues/148)).
 
 ### Changed
 
@@ -56,11 +59,12 @@ evidence is the execution trail recorded in
 - _(out-of-band)_ Restricted the repository to `allowed_actions=selected` with SHA pinning
   required, admitting only GitHub-owned actions plus `denoland/setup-deno` and
   `ossf/scorecard-action`; set `default_workflow_permissions=read` and disabled pull-request
-  approval by GitHub Actions.
+  approval by GitHub Actions
+  ([#148](https://github.com/LCV-Ideas-Software/.github/issues/148)).
 - _(out-of-band)_ Reduced the repository ruleset to the seven functional check contexts that the
   inherited Enterprise and organization rulesets cannot express, and removed
   `Test native auto-merge`, `Test native governance`, `OpenSSF Scorecard` and
-  `Check index.html formatting`.
+  `Check index.html formatting` ([#148](https://github.com/LCV-Ideas-Software/.github/issues/148)).
 - Restored the exact Slack scope set required by the official `SendMessage` backend —
   `chat:write`, `chat:write.public`, `channels:read` — as a narrow, documented exception
   ([#156](https://github.com/LCV-Ideas-Software/.github/pull/156)).
@@ -85,16 +89,21 @@ evidence is the execution trail recorded in
   repository declares no automatic backfill
   ([#161](https://github.com/LCV-Ideas-Software/.github/pull/161)).
 - This changelog, as the canonical history required by the canonical-artifact directive recorded in
-  Discussion #150.
+  Discussion #150 ([#168](https://github.com/LCV-Ideas-Software/.github/pull/168)).
 
 ### Fixed
 
 - Aligned the documentation and the public surface with the repository's real state: the Dependabot
   cooldown wording in `README.md`, `SECURITY.md`, `CONTRIBUTING.md` and `profile/README.md`; the
-  public repository count on `site/index.html`; a typo in the site heading; the third-party
-  inventory in `THIRDPARTY.md`; and a nonexistent label declared by the Engineering task issue form
+  public repository count and the AI-roster claims on `site/index.html`; a typo in the site heading;
+  a false credential-isolation claim in `SECURITY.md`; the private-board links in
+  `.github/WORK-TRACKING.md`; and the third-party inventory in `THIRDPARTY.md`
   ([#167](https://github.com/LCV-Ideas-Software/.github/issues/167),
   [#168](https://github.com/LCV-Ideas-Software/.github/pull/168)).
+- _(out-of-band)_ Created the repository label `maintenance`, declared by
+  `.github/ISSUE_TEMPLATE/engineering_task.md` but absent from the repository, so every issue opened
+  through that form was silently created unlabelled. Labels are not versioned here, so this change
+  has no file diff ([#167](https://github.com/LCV-Ideas-Software/.github/issues/167)).
 
 ### Known issues
 
@@ -114,7 +123,7 @@ evidence is the execution trail recorded in
   the gap is that nothing stops one line from removing each guarantee. Tracked in
   [#170](https://github.com/LCV-Ideas-Software/.github/issues/170), to be remediated in its own pull
   request rather than mixed into documentation work.
-- A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. Em 11/08/2026
+- A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. On 11/08/2026
   the trigger endpoint answered `{"ok":true}`, D1 stored `accepted_by_slack`, and the asynchronous
   workflow execution then ended in `TIMEOUT`; that message does not exist in the channel. Terminal
   states are not retried, and GitHub webhook redelivery cannot repair it because the same
