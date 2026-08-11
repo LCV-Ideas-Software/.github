@@ -142,7 +142,7 @@ evidence is the execution trail recorded in
   live re-read widened this beyond the two gates originally reported: a job disabled with `if: false`
   reports **Success** and does not block the merge, so a workflow that only tests itself stops
   protecting anything the moment its own job is skipped; `continue-on-error` is unguarded on the
-  enforcement steps; `pages.yml` is read by no test at all; and in `.github/zizmor.yml` a
+  enforcement steps; `pages.yml` is read by no test at all; and in `.github/zizmor.yml`
   a `rules.<id>.disable: true` entry would be a real bypass even under `--no-ignores`, which
   suppresses ignores without making the configuration inert — the file carries no such entry today,
   and nothing would fail if one were added. No active defect exists in the current YAML —
