@@ -134,3 +134,13 @@ test("normalization fails closed on unknown source provenance and incomplete JSO
     /must contain a results array/,
   );
 });
+
+test("the public workflow excludes every non-public repository before reading trees", async () => {
+  const workflow = await fs.readFile(
+    new URL("../.github/workflows/oss-advisory-watch.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /\.visibility == "public"/);
+  assert.match(workflow, /\.private == false/);
+  assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+});

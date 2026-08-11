@@ -6,21 +6,23 @@ on:
   merge_group:
     types:
       - checks_requested
-permissions: write-all
+permissions: {}
 concurrency:
   group: dependency-review-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   dependency-review:
-    permissions: write-all
+    permissions:
+      contents: read
     name: Dependency Review
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Test Dependency Review workflow contract
+        run: node --test scripts/dependency-review-workflow.test.mjs
       - name: Review pull request dependencies
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

@@ -57,7 +57,7 @@ Deno.test("accepts only a fresh HMAC for the expected destination", async () => 
   );
 });
 
-Deno.test("rejects replay, cross-channel routing, and malformed signatures", async () => {
+Deno.test("rejects stale signed messages, cross-channel routing, and malformed signatures", async () => {
   const value = inputs();
   value.relay_signature = await signRelayMessage(TEST_KEY, value);
 

@@ -42,46 +42,17 @@ def result_snippet:
   .locations[0].physicalLocation.region.snippet.text // "";
 def result_message:
   .message.text;
-def candidate_event:
-  $event == "pull_request" or $event == "merge_group";
 def trusted_event:
-  $event == "push" or $event == "schedule" or $event == "workflow_dispatch";
-def token_permission_body($target):
-  "topLevel permissions set to 'write-all'\n"
-  + "Remediation tip: Visit [https://app.stepsecurity.io/secureworkflow](\($target)).\n"
-  + "Tick the 'Restrict permissions for GITHUB_TOKEN'\n"
-  + "Untick other options\n"
-  + "NOTE: If you want to resolve multiple issues at once, you can visit [https://app.stepsecurity.io/securerepo](https://app.stepsecurity.io/securerepo) instead.\n"
-  + "Click Remediation section below for further remediation help";
+  $event == "push" or $event == "schedule";
 def accepted_policy_finding:
   (result_uri) as $uri
   | (result_snippet) as $snippet
   | (result_message) as $message
-  | if .ruleId == "TokenPermissionsID" then
-      ($uri | test("^\\.github/workflows/[^/]+\\.ya?ml$"))
-      and $snippet == "write-all"
-      and ($message | test("^score is (10|[0-9]): [\\s\\S]+$"))
-      and (
-        ($uri | sub("^\\.github/workflows/"; "")) as $filename
-        | ($message | sub("^score is (10|[0-9]): "; "")) as $body
-        | ([
-          token_permission_body("https://app.stepsecurity.io/secureworkflow/file://./\($filename)/unknown?enable=permissions"),
-          token_permission_body("https://app.stepsecurity.io/secureworkflow/github.com/LCV-Ideas-Software/.github/\($filename)/main?enable=permissions")
-        ] | index($body)) != null
-      )
-    elif .ruleId == "BranchProtectionID" then
+  | if .ruleId == "BranchProtectionID" then
       $uri == "no file associated with this alert"
       and $snippet == ""
-      and (
-        (
-          candidate_event
-          and $message == "score is 3: branch protection is not maximal on development and all release branches:\nWarn: could not determine whether codeowners review is allowed\nWarn: no status checks found to merge onto branch 'main'\nWarn: PRs are not required to make changes on branch 'main'; or we don't have data to detect it.If you think it might be the latter, make sure to run Scorecard with a PAT or use Repo Rules (that are always public) instead of Branch Protection settings\nClick Remediation section below to solve this issue"
-        )
-        or (
-          trusted_event
-          and $message == "score is 3: branch protection is not maximal on development and all release branches:\nWarn: 'stale review dismissal' is disabled on branch 'main'\nWarn: branch 'main' does not require approvers\nWarn: codeowners review is not required on branch 'main'\nWarn: 'last push approval' is disabled on branch 'main'\nWarn: 'up-to-date branches' is disabled on branch 'main'\nClick Remediation section below to solve this issue"
-        )
-      )
+      and trusted_event
+      and $message == "score is 3: branch protection is not maximal on development and all release branches:\nWarn: 'stale review dismissal' is disabled on branch 'main'\nWarn: branch 'main' does not require approvers\nWarn: codeowners review is not required on branch 'main'\nWarn: 'last push approval' is disabled on branch 'main'\nWarn: 'up-to-date branches' is disabled on branch 'main'\nClick Remediation section below to solve this issue"
     elif .ruleId == "CodeReviewID" then
       trusted_event
       and $uri == "no file associated with this alert"
@@ -98,6 +69,8 @@ def accepted_policy_finding:
 
 if (valid_sarif | not) then
   error("Malformed Scorecard SARIF")
+elif (trusted_event | not) then
+  error("Unsupported Scorecard event: \($event)")
 else
   [
     .runs[].results[]

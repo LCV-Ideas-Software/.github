@@ -331,7 +331,7 @@ export function renderIssueBody(findings, date = new Date()) {
   const lines = [
     `## OSS Advisory Watch — ${findings.length} achado(s) ativo(s)`,
     "",
-    "_Fonte: OSV-Scanner oficial aplicado aos lockfiles dos repositórios ativos e não arquivados; os arquivos `osv-scanner.toml` adjacentes foram respeitados._",
+    "_Fonte: OSV-Scanner oficial aplicado aos lockfiles dos repositórios públicos ativos e não arquivados; os arquivos `osv-scanner.toml` adjacentes foram respeitados. Repositórios privados ficam fora deste workflow público e devem ser auditados separadamente no repositório privado de governança._",
     `_Gerado em: ${brasiliaTimestamp(date)}_`,
     "",
   ];

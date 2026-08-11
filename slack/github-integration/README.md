@@ -8,7 +8,10 @@ deployed production app is `LCV GitHub integration` (`A0BMWBGES20`).
 
 The committed manifest is the production manifest. It imports both workflows,
 binds their immutable private-channel IDs, and intentionally omits the
-bootstrap-only `groups:write` scope. Channel provisioning code and its temporary
+bootstrap-only `groups:write` scope and the public-channel bypass
+`chat:write.public`. The app retains only the `chat:write` and `channels:read`
+scopes required by Slack's built-in `SendMessage` function and is a member of
+both private destination channels. Channel provisioning code and its temporary
 trigger are not retained in the production source.
 
 The webhook trigger URLs are credentials. They must be written directly to

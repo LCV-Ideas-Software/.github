@@ -161,9 +161,9 @@ The Deno app has these stable components:
 - `triggers/github_activity_webhook.ts` and
   `triggers/github_alert_webhook.ts` define the two webhook triggers;
 - `manifest.ts` imports both workflows and contains only `chat:write` plus
-  `chat:write.public`. Slack's manifest validator requires both scopes for the
-  built-in `send_message` function, including these fixed private-channel
-  workflows; private-channel discovery scopes remain absent.
+  `channels:read`, the scopes documented for Slack's built-in `send_message`
+  function. The app is already a member of both fixed private destinations, so
+  `chat:write.public` and private-channel discovery scopes remain absent.
 
 The production Slack identities are fixed and must not be replaced by names or
 newly discovered resources during deployment:
@@ -338,37 +338,42 @@ channel paths.
 8. Run signed real canaries against both Slack triggers and require the actual
    channel messages plus clean Slack activity traces. A successful trigger POST
    is insufficient.
-9. Store the GitHub webhook HMAC value both in Cloudflare Secrets Store and as
-   environment secret `SLACK_RELAY_GITHUB_WEBHOOK_SECRET` in the protected
-   `cloudflare-production` environment. Keep the organization webhook inactive
-   while either copy is being changed.
-10. Dispatch `.github/workflows/github-slack-hook-management.yml` with
-    `provision`. This is intentionally authenticated with the same
-    `LCV_AUTOMATION_TOKEN` PAT used by the redelivery controller: GitHub does
-    not let a user/PAT administer a webhook created by an OAuth app, or an OAuth
-    app administer a webhook it did not create. The operation creates one
-    inactive exact-match hook at `<worker-url>/github/webhook`, or reuses one
-    exact PAT-visible hook without changing its active state. The managed
-    configuration enables JSON content and TLS verification, and subscribes to
-    workflow runs, deployment statuses, Dependabot, code-scanning and
-    secret-scanning alerts, pushes, pull requests, pull-request reviews and
-    comments, issues and comments, releases, discussions, and discussion
-    comments.
-11. Confirm that provisioning stored the numeric hook ID as repository variable
-    `SLACK_RELAY_ORG_HOOK_ID` and that the new hook remains inactive.
-12. Change `SLACK_GITHUB_INTEGRATION_ENABLED` from `false` to `true`, then run
-    the redelivery workflow successfully while the new hook is still inactive.
-    This proves that the PAT can administer the hook before live ingestion is
-    enabled.
-13. Dispatch hook management with `activate` and require GitHub to accept its
-    ping request. The accepted ping proves only the control-plane request, so
-    also run real issue and failed-deployment canaries and require their Worker,
-    D1 and Slack evidence. Then explicitly dispatch and verify the relay and
-    Slack-app workflows and confirm that the scheduled monitor and redelivery
-    controller are no longer skipped by the gate.
+9. Store the GitHub webhook HMAC value in Cloudflare Secrets Store. Do not keep
+   a second Actions copy: no workflow is authorized to configure or mutate the
+   organization webhook. Keep the organization webhook inactive while the
+   Cloudflare secret is being changed.
+10. Under an explicitly authorized human maintenance window, configure exactly
+    one organization webhook through GitHub's native settings UI or official
+    REST API. Use the credential that owns the hook; GitHub does not let a
+    user/PAT administer a hook created by an OAuth app, or an OAuth app
+    administer a hook it did not create. Keep it inactive initially, target
+    `<worker-url>/github/webhook`, require JSON and TLS verification, and select
+    exactly these events: workflow runs, deployment statuses, Dependabot,
+    code-scanning and secret-scanning alerts, pushes, pull requests,
+    pull-request reviews and comments, issues and comments, releases,
+    discussions, and discussion comments. No GitHub Actions workflow may create,
+    update, activate, deactivate, delete, or ping an organization webhook.
+11. Store the resulting positive numeric hook ID as repository variable
+    `SLACK_RELAY_ORG_HOOK_ID`. Keep the hook inactive until the GitHub and
+    Cloudflare copies of the HMAC secret and every downstream binding are
+    verified.
+12. The authorized human activates the hook through GitHub's native UI or
+    official REST API. Immediately dispatch `GitHub Slack Webhook Redelivery`
+    with its default `audit` operation, which works while the production gate is
+    still false. Its GET-only audit must prove there is exactly one PAT-visible
+    hook and that its ID, active state, URL, JSON content type, TLS verification,
+    and complete 14-event set match this contract before any redelivery is
+    attempted.
+13. Change `SLACK_GITHUB_INTEGRATION_ENABLED` from `false` to `true`, then run the
+    redelivery, relay, and Slack-app workflows and confirm their scheduled jobs
+    are no longer skipped by the gate.
+14. A healthy control-plane audit does not prove delivery. Run real issue and
+    failed-workflow canaries and require correlated GitHub delivery, Worker,
+    D1, Slack activity, and private-channel evidence for both destinations.
 
-If any check fails after step 12 and before activation completes, immediately
-return the gate to `false`; the still-inactive hook prevents partial ingestion.
+If any check fails after activation, immediately return the gate to `false` and
+have the authorized human deactivate the hook through GitHub's native settings
+UI or official REST API. Never leave partially verified live ingestion enabled.
 
 The gate controls the production jobs in GitHub Actions; it does not disable an
 already deployed Worker or the GitHub organization webhook. Disabling live
@@ -382,17 +387,29 @@ ingestion therefore requires an intentional webhook action as well.
   `SLACK_GITHUB_INTEGRATION_ENABLED` is `true`. A separate daily schedule at
   07h17 repeats the dependency and latest-hook audit without deploying or
   running the 15-minute production monitor. It does not recreate triggers.
+  After deployment, the official Slack CLI verifies both protected trigger IDs
+  against the exact app and workspace. It streams the structured
+  `workflows.triggers.list` response directly into a bounded fail-closed
+  validator, which requires exactly the two protected IDs, webhook types,
+  workflow callback IDs, app ownership, names and 15 input mappings. The
+  response is never logged or stored because it contains bearer URLs.
 - `.github/workflows/github-slack-integration.yml` verifies the recovery
   controller and Worker, applies D1 migrations, and deploys the relay from
   `main` when the same gate is `true`.
 - `.github/workflows/github-slack-webhook-redelivery.yml` runs its scheduled or
-  manually dispatched redelivery job only while the same gate is `true`.
+  manually dispatched recovery only while the same gate is `true`. Its default
+  manual `audit` operation remains available while the gate is false so the
+  control plane can be proven before activation. Every run first audits the sole
+  active exact organization hook with GET requests; it never sends a periodic
+  ping.
 - `.github/workflows/slack-github-integration.yml` accepts the manual
   `operation: monitor` input to run the same production activity check on
   demand; its default manual operation remains `deploy`.
-- `.github/workflows/github-slack-hook-management.yml` is the fail-closed,
-  main-only control plane for provisioning, activating, deactivating, or
-  pinging the PAT-owned organization hook. It never prints either credential.
+- `scripts/github-slack-hook-audit.mjs`, invoked by redelivery, is deliberately
+  GET-only. It proves the PAT-visible organization-hook inventory and exact
+  target contract without accepting a webhook secret or exposing any mutation
+  method. Organization-hook configuration and state changes remain native,
+  explicit human operations outside GitHub Actions.
 - Pull requests run verification only. Production deployment requires a push to
   `main` or an explicit dispatch on `main`.
 
@@ -466,9 +483,10 @@ Monitoring and recovery are layered:
   validated Slack error code;
 - the operator can inspect richer hosted logs with `slack activity`;
 - `.github/workflows/github-slack-webhook-redelivery.yml` scans the organization
-  webhook every 15 minutes, groups attempts by GUID, treats HTTP 200-399 as a
-  successful GitHub delivery, and redelivers unresolved attempts within
-  GitHub's three-day window;
+  webhook every 15 minutes after a GET-only exact-configuration/active-state
+  audit, groups attempts by GUID, treats HTTP 200-399 as a successful GitHub
+  delivery, and redelivers unresolved attempts within GitHub's three-day
+  window;
 - the webhook recovery workflow advances the epoch-millisecond repository
   variable `SLACK_RELAY_LAST_REDELIVERY` only after the entire scan and all
   accepted redelivery requests succeed.

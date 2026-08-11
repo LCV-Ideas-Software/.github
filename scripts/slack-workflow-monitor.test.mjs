@@ -1,15 +1,43 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import {
   monitorSlackWorkflow,
   readSlackMonitorConfiguration,
 } from "./slack-workflow-monitor.mjs";
 
+const manifestSource = await readFile(
+  new URL("../slack/github-integration/manifest.ts", import.meta.url),
+  "utf8",
+);
+const workflowSource = await readFile(
+  new URL("../.github/workflows/slack-github-integration.yml", import.meta.url),
+  "utf8",
+);
+
 const environment = Object.freeze({
   SLACK_APP_ID: "A12345",
   SLACK_SERVICE_TOKEN: "service-token-never-log",
   SLACK_TEAM_ID: "T12345",
+});
+
+test("production manifest keeps only the documented SendMessage scopes", () => {
+  assert.match(
+    manifestSource,
+    /botScopes:\s*\["chat:write", "channels:read"\]/,
+  );
+  assert.doesNotMatch(manifestSource, /chat:write\.public|groups:(read|write)/);
+});
+
+test("deployment verifies both protected triggers without logging their details", () => {
+  assert.match(workflowSource, /SLACK_GITHUB_ACTIVITY_TRIGGER_ID/);
+  assert.match(workflowSource, /SLACK_GITHUB_ALERT_TRIGGER_ID/);
+  assert.match(workflowSource, /slack api workflows\.triggers\.list/);
+  assert.match(workflowSource, /scripts\/verify_trigger_inventory\.ts/);
+  assert.doesNotMatch(workflowSource, /slack trigger (?:list|info)/);
+  assert.doesNotMatch(workflowSource, /trigger_output/);
+  assert.match(workflowSource, /rm -f "\$inventory_error"/);
 });
 
 function slackResponse(body, { status = 200, headers = {} } = {}) {
@@ -135,4 +163,63 @@ test("malformed and HTTP failures remain fail-closed without echoing bodies", as
       /invalid JSON/.test(error.message) &&
       !/private invalid JSON/.test(error.message),
   );
+});
+
+test("HTTP 429 performs one bounded Retry-After retry and then succeeds", async () => {
+  const delays = [];
+  let requests = 0;
+  const result = await monitorSlackWorkflow({
+    environment,
+    fetchImpl: async () => {
+      requests += 1;
+      return requests === 1
+        ? new Response("withheld", {
+            status: 429,
+            headers: { "retry-after": "2" },
+          })
+        : slackResponse({ ok: true, activities: [] });
+    },
+    sleepImpl: async (milliseconds) => delays.push(milliseconds),
+  });
+  assert.deepEqual(result, { errors: 0 });
+  assert.equal(requests, 2);
+  assert.deepEqual(delays, [2_000]);
+});
+
+test("HTTP 429 never retries twice or waits beyond the safety bound", async () => {
+  for (const retryAfter of ["0", "31", "invalid"]) {
+    let requests = 0;
+    await assert.rejects(
+      monitorSlackWorkflow({
+        environment,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response("withheld", {
+            status: 429,
+            headers: { "retry-after": retryAfter },
+          });
+        },
+        sleepImpl: async () => assert.fail("unexpected sleep"),
+      }),
+      /HTTP 429/,
+    );
+    assert.equal(requests, 1);
+  }
+
+  let requests = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      fetchImpl: async () => {
+        requests += 1;
+        return new Response("withheld", {
+          status: 429,
+          headers: { "retry-after": "1" },
+        });
+      },
+      sleepImpl: async () => {},
+    }),
+    /HTTP 429/,
+  );
+  assert.equal(requests, 2);
 });

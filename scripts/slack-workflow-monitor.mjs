@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 const ACTIVITY_API_URL = "https://slack.com/api/apps.activities.list";
 const LOOKBACK_MS = 20 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_RETRY_AFTER_SECONDS = 30;
 const SAFE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 
 function requiredEnvironmentValue(environment, name) {
@@ -47,6 +48,8 @@ export async function monitorSlackWorkflow({
   environment = process.env,
   fetchImpl = globalThis.fetch,
   now = Date.now,
+  sleepImpl = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
   const configuration = readSlackMonitorConfiguration(environment);
   const currentTime = now();
@@ -66,30 +69,49 @@ export async function monitorSlackWorkflow({
     limit: "100",
   });
 
-  let response;
-  try {
-    response = await fetchImpl(ACTIVITY_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${configuration.serviceToken}`,
-        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
-      },
-      body,
-      redirect: "error",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
-      throw new Error(
-        `Slack activity API timed out after ${REQUEST_TIMEOUT_MS}ms.`,
-        { cause: error },
-      );
-    }
-    throw new Error("Slack activity API could not be reached.", {
-      cause: error,
-    });
+  if (typeof sleepImpl !== "function") {
+    throw new Error("A sleep implementation is required.");
   }
 
+  let response;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      response = await fetchImpl(ACTIVITY_API_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${configuration.serviceToken}`,
+          "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        },
+        body,
+        redirect: "error",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+        throw new Error(
+          `Slack activity API timed out after ${REQUEST_TIMEOUT_MS}ms.`,
+          { cause: error },
+        );
+      }
+      throw new Error("Slack activity API could not be reached.", {
+        cause: error,
+      });
+    }
+
+    if (response.status !== 429 || attempt === 1) break;
+    const retryAfter = response.headers.get("retry-after");
+    if (
+      !retryAfter ||
+      !/^\d+$/.test(retryAfter) ||
+      Number(retryAfter) < 1 ||
+      Number(retryAfter) > MAX_RETRY_AFTER_SECONDS
+    ) {
+      throw httpFailure(response);
+    }
+    await sleepImpl(Number(retryAfter) * 1_000);
+  }
+
+  if (!response) throw new Error("Slack activity API returned no response.");
   if (!response.ok) {
     throw httpFailure(response);
   }
