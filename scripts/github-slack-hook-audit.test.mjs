@@ -34,6 +34,14 @@ const REMOVED_MANAGEMENT_WORKFLOW_URL = new URL(
   import.meta.url,
 );
 const AUDITOR_URL = new URL("./github-slack-hook-audit.mjs", import.meta.url);
+const INTEGRATION_DOC_URL = new URL(
+  "../docs/GITHUB_SLACK_INTEGRATION.md",
+  import.meta.url,
+);
+const RELAY_README_URL = new URL(
+  "../workers/github-slack-relay/README.md",
+  import.meta.url,
+);
 const APP_TOKEN_ACTION =
   "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0";
 
@@ -228,6 +236,26 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
     relay,
     /--message "GitHub Actions \$\{GITHUB_REPOSITORY\}@\$\{GITHUB_SHA\}"/,
   );
+});
+
+test("recovery documentation states exact token grants and control-flow boundary", async () => {
+  const [integrationDocs, relayReadme] = await Promise.all([
+    readFile(INTEGRATION_DOC_URL, "utf8"),
+    readFile(RELAY_README_URL, "utf8"),
+  ]);
+
+  for (const documentation of [integrationDocs, relayReadme]) {
+    assert.match(
+      documentation,
+      /built-in `GITHUB_TOKEN`[^.]*`actions: read`[^.]*`contents: read`/,
+    );
+    assert.doesNotMatch(
+      documentation,
+      /Before any hook read|Before reading the hook/,
+    );
+  }
+  assert.match(integrationDocs, /Before the controller's delivery scan/);
+  assert.match(relayReadme, /Before scanning deliveries/);
 });
 
 test("configuration fails closed before API access", () => {

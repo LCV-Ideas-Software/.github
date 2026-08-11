@@ -6,6 +6,7 @@ import {
   API_VERSION,
   GitHubApiError,
   MAX_DELIVERY_ATTEMPTS,
+  MAX_DELIVERY_CLOCK_SKEW_MS,
   MAX_REDELIVERY_AGE_MS,
   REDELIVERY_WORKFLOW_FILE,
   REDELIVERY_WORKFLOW_PATH,
@@ -1033,6 +1034,7 @@ test("delivery normalization requires redelivery provenance, bounded status code
       hookId: baseEnvironment.HOOK_ID,
       cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
       startedAt,
+      now: () => startedAt,
       fetchImpl: async () => responseJson([delivery]),
     });
 
@@ -1040,17 +1042,20 @@ test("delivery normalization requires redelivery provenance, bounded status code
   delete withoutRedelivery.redelivery;
   await assert.rejects(fetchOne(withoutRedelivery), /redelivery flag/);
   await assert.rejects(
-    fetchOne({ ...base, delivered_at: "2026-08-03T12:00:00.001Z" }),
+    fetchOne({
+      ...base,
+      delivered_at: new Date(
+        startedAt + MAX_DELIVERY_CLOCK_SKEW_MS + 1,
+      ).toISOString(),
+    }),
     /future timestamp/,
   );
-  await assert.rejects(
-    fetchOne({ ...base, status_code: 199 }),
-    /between 200 and 599/,
-  );
-  await assert.rejects(
-    fetchOne({ ...base, status_code: 600 }),
-    /between 200 and 599/,
-  );
+  for (const statusCode of [0, 199, 600]) {
+    await assert.rejects(
+      fetchOne({ ...base, status_code: statusCode }),
+      /between 200 and 599/,
+    );
+  }
 
   for (const statusCode of [200, 399, 400, 599]) {
     const [delivery] = await fetchOne({
@@ -1060,6 +1065,100 @@ test("delivery normalization requires redelivery provenance, bounded status code
     });
     assert.equal(wasSuccessful(delivery), statusCode <= 399);
   }
+});
+
+test("delivery timestamps are bounded by page observation instead of the stale run start", async () => {
+  const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
+  const pageObservedAt = startedAt + 2 * 60 * 1000;
+  const fetchOne = (deliveredAt) =>
+    fetchDeliveriesSince({
+      token: baseEnvironment.HOOK_TOKEN,
+      organizationName: baseEnvironment.ORGANIZATION_NAME,
+      organizationId: baseEnvironment.ORGANIZATION_ID,
+      hookId: baseEnvironment.HOOK_ID,
+      cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
+      startedAt,
+      now: () => pageObservedAt,
+      fetchImpl: async () =>
+        responseJson([
+          rawDelivery({
+            id: 1,
+            deliveredAt: new Date(deliveredAt).toISOString(),
+          }),
+        ]),
+    });
+
+  const [arrivedDuringPagination] = await fetchOne(startedAt + 60_000);
+  assert.equal(arrivedDuringPagination.id, "1");
+
+  const [withinClockSkew] = await fetchOne(pageObservedAt + 60_000);
+  assert.equal(withinClockSkew.id, "1");
+
+  await assert.rejects(fetchOne(pageObservedAt + 60_001), /future timestamp/);
+});
+
+test("delivery reads use the live clock when callers do not inject one", async (context) => {
+  const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
+  const observedAt = startedAt + 120_000;
+  const deliveredAt = startedAt + 90_000;
+  context.mock.method(Date, "now", () => observedAt);
+  const [delivery] = await fetchDeliveriesSince({
+    token: baseEnvironment.HOOK_TOKEN,
+    organizationName: baseEnvironment.ORGANIZATION_NAME,
+    organizationId: baseEnvironment.ORGANIZATION_ID,
+    hookId: baseEnvironment.HOOK_ID,
+    cutoff: startedAt - 60_000,
+    startedAt,
+    fetchImpl: async () =>
+      responseJson([
+        rawDelivery({
+          id: 1,
+          deliveredAt: new Date(deliveredAt).toISOString(),
+        }),
+      ]),
+  });
+
+  assert.equal(delivery.deliveredAt, deliveredAt);
+});
+
+test("delivery pagination fails closed when its observation clock moves backwards", async () => {
+  const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
+  const path = "/orgs/example-org/hooks/12345/deliveries";
+  let page = 0;
+  const observations = [startedAt + 2_000, startedAt + 1_000];
+
+  await assert.rejects(
+    fetchDeliveriesSince({
+      token: baseEnvironment.HOOK_TOKEN,
+      organizationName: baseEnvironment.ORGANIZATION_NAME,
+      organizationId: baseEnvironment.ORGANIZATION_ID,
+      hookId: baseEnvironment.HOOK_ID,
+      cutoff: Date.parse("2026-08-03T10:00:00.000Z"),
+      startedAt,
+      now: () => observations[page - 1],
+      fetchImpl: async () => {
+        page += 1;
+        if (page === 1) {
+          return responseJson(
+            [
+              rawDelivery({
+                id: 1,
+                deliveredAt: "2026-08-03T11:00:00.000Z",
+              }),
+            ],
+            {
+              headers: {
+                link: `<https://api.github.com${path}?per_page=100&cursor=second>; rel="next"`,
+              },
+            },
+          );
+        }
+        return responseJson([]);
+      },
+    }),
+    /observation clock moved backwards/,
+  );
+  assert.equal(page, 2);
 });
 
 test("pagination filters the checkpoint without assuming later pages are older", async () => {
@@ -1743,11 +1842,58 @@ test("TOCTOU revalidation skips an obsolete target after success or a newer atte
     });
 
     assert.equal(deliveryReads, 2, description);
-    assert.equal(clockReads, 2, description);
+    assert.equal(clockReads, 4, description);
     assert.equal(posts, 0, description);
     assert.equal(result.redeliveries, 0, description);
     assert.equal(result.staleTargetsSkipped, 1, description);
   }
+});
+
+test("TOCTOU revalidation fails closed when the clock rolls back between scans", async () => {
+  const startedAt = Date.parse("2026-08-03T12:00:00.000Z");
+  const observations = [
+    startedAt,
+    startedAt + 10 * 60_000,
+    startedAt + 60_000,
+    startedAt + 60_000,
+  ];
+  let clockReads = 0;
+  let posts = 0;
+
+  await assert.rejects(
+    runRedelivery({
+      environment: baseEnvironment,
+      now: () => observations[clockReads++],
+      logger: { info() {}, warn() {} },
+      fetchImpl: async (input) => {
+        const url = new URL(input);
+        if (url.pathname.includes("/actions/workflows/")) {
+          return successfulRunsResponse([continuityWorkflowRun(startedAt)]);
+        }
+        if (url.pathname.includes("/actions/runs/")) {
+          return successfulRecoveryJobResponse();
+        }
+        if (url.pathname.endsWith("/deliveries")) {
+          return responseJson([
+            rawDelivery({
+              id: 101,
+              guid: "clock-rollback-guid",
+              deliveredAt: "2026-08-03T11:30:00.000Z",
+            }),
+          ]);
+        }
+        if (url.pathname.endsWith("/attempts")) {
+          posts += 1;
+          return new Response(null, { status: 202 });
+        }
+        throw new Error(`Unexpected request: ${url.pathname}`);
+      },
+    }),
+    /clock moved backwards/,
+  );
+
+  assert.equal(posts, 0);
+  assert.equal(clockReads, 3);
 });
 
 test("TOCTOU revalidation aborts when refreshed history loses its original", async () => {

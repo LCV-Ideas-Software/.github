@@ -324,10 +324,10 @@ scheduled `GitHub Slack Webhook Redelivery` workflow checks every 15 minutes,
 first verifies the sole active exact organization hook through GET requests
 only, groups attempts by GUID, accepts GitHub's documented HTTP 200-399 success
 classification, and redelivers unresolved attempts within the three-day
-retention window. It never sends a scheduled ping. Before reading the hook, it
-evaluates successful scheduled runs newest first through the native Actions API
-and accepts only the newest candidate with an exact successful recovery step,
-plus a 15-minute retention margin, as a fail-closed continuity checkpoint.
+retention window. It never sends a scheduled ping. Before scanning deliveries,
+it evaluates successful scheduled runs newest first through the native Actions
+API and accepts only the newest candidate with an exact successful recovery
+step, plus a 15-minute retention margin, as a fail-closed continuity checkpoint.
 Well-formed non-executed runs do not eclipse an older proven checkpoint;
 malformed or contradictory evidence aborts. Every retry requires one retained
 original delivery and a classified HTTP status. Before any POST, one complete
@@ -348,8 +348,8 @@ permission is organization `Webhooks: read and write`; GitHub's mandatory
 `Metadata: read` remains, while its own webhook, OAuth user authorization and
 all other optional permissions are disabled. Manual audit tokens are downscoped
 to read, while scheduled or explicitly requested recovery tokens are downscoped
-to write and revoked after the job. The built-in `GITHUB_TOKEN` has
-`actions: read` only for continuity history; no repository variable is mutated.
+to write and revoked after the job. The built-in `GITHUB_TOKEN` grants only
+`actions: read` and `contents: read`; no repository variable is mutated.
 
 ## Official references
 

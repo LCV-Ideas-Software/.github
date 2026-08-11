@@ -524,8 +524,8 @@ Monitoring and recovery are layered:
   completed and successful. A well-formed run whose job did not execute is not a
   checkpoint; malformed, duplicated or contradictory evidence aborts. A
   15-minute safety margin stays inside GitHub's moving three-day retention
-  boundary. The built-in `GITHUB_TOKEN` has only `actions: read`; no repository
-  variable is written.
+  boundary. The built-in `GITHUB_TOKEN` grants only `actions: read` and
+  `contents: read`; no repository variable is written.
 
 GitHub can canonicalize a paginated `/orgs/{name}/...` request into an
 `/organizations/{id}/...` URL in the `Link` header. The recovery controller
@@ -548,20 +548,21 @@ current-repository token restriction, protected `main` environment, exact App
 identity check, and reviewed controller compensate for that unavoidable
 granularity; the controller exposes no create, update, delete or ping request.
 
-Before any hook read, the recovery path uses `GITHUB_TOKEN` with `actions: read`
-to enumerate successful scheduled runs from the preceding three-day GitHub
-delivery-retention window. It examines candidates newest first until it proves
-the exact recovery step completed successfully and uses that run's start time as
-a continuity guard. A well-formed skipped or otherwise non-executed candidate is
-not a checkpoint; missing proof ends in a closed failure, while malformed,
-duplicated or contradictory history aborts immediately. Each failed GUID must
-retain exactly one original delivery; truncated lineage, an exhausted attempt
-limit or an unclassified response code also fails closed. Before any POST, the
-controller performs one complete lineage revalidation, intersects it with the
-initial oldest-first candidates, and mutates at most ten targets per run. The
-remaining targets are explicitly deferred to later schedules, bounding API use
-without hiding backlog. It never invents an automatic seed or persistent
-repository-variable checkpoint that could conceal a coverage gap.
+Before the controller's delivery scan, the recovery path uses `GITHUB_TOKEN`
+with `actions: read` and `contents: read` to enumerate successful scheduled runs
+from the preceding three-day GitHub delivery-retention window. It examines
+candidates newest first until it proves the exact recovery step completed
+successfully and uses that run's start time as a continuity guard. A well-formed
+skipped or otherwise non-executed candidate is not a checkpoint; missing proof
+ends in a closed failure, while malformed, duplicated or contradictory history
+aborts immediately. Each failed GUID must retain exactly one original delivery;
+truncated lineage, an exhausted attempt limit or an unclassified response code
+also fails closed. Before any POST, the controller performs one complete lineage
+revalidation, intersects it with the initial oldest-first candidates, and
+mutates at most ten targets per run. The remaining targets are explicitly
+deferred to later schedules, bounding API use without hiding backlog. It never
+invents an automatic seed or persistent repository-variable checkpoint that
+could conceal a coverage gap.
 
 See [`apps.activities.list`][slack-activities], [Slack app activity logging][slack-logging],
 and [GitHub's automatic redelivery design][github-redelivery].

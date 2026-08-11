@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 
 export const API_VERSION = "2026-03-10";
 export const MAX_DELIVERY_ATTEMPTS = 3;
+export const MAX_DELIVERY_CLOCK_SKEW_MS = 60 * 1000;
 export const MAX_REDELIVERIES_PER_RUN = 10;
 export const MAX_REDELIVERY_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 export const RETENTION_SAFETY_MARGIN_MS = 15 * 60 * 1000;
@@ -791,7 +792,7 @@ export async function verifyRecoveryStepExecution({
   return Object.freeze({ jobId: job.id, stepNumber: step.number });
 }
 
-function normalizeDelivery(delivery, startedAt) {
+function normalizeDelivery(delivery, observedAt) {
   if (!delivery || typeof delivery !== "object") {
     throw new Error("GitHub returned a malformed webhook delivery.");
   }
@@ -810,7 +811,7 @@ function normalizeDelivery(delivery, startedAt) {
       "GitHub returned a webhook delivery with an invalid timestamp.",
     );
   }
-  if (deliveredAt > startedAt) {
+  if (deliveredAt > observedAt + MAX_DELIVERY_CLOCK_SKEW_MS) {
     throw new Error(
       "GitHub returned a webhook delivery with a future timestamp.",
     );
@@ -852,9 +853,13 @@ export async function fetchDeliveriesSince({
   hookId,
   cutoff,
   startedAt,
+  now = Date.now,
   fetchImpl = globalThis.fetch,
 }) {
   validateStartedAt(startedAt);
+  if (typeof now !== "function") {
+    throw new Error("A clock implementation is required for delivery reads.");
+  }
   if (!Number.isSafeInteger(cutoff) || cutoff <= 0 || cutoff > startedAt) {
     throw new Error(
       "The delivery cutoff must be a positive epoch millisecond value no later than the run start time.",
@@ -867,6 +872,7 @@ export async function fetchDeliveriesSince({
     organizationId,
   ])}/hooks/${endpointPath([hookId])}/deliveries`;
   let cursor;
+  let lastObservedAt = startedAt;
   const seenCursors = new Set();
   const seenDeliveries = new Map();
   const deliveries = [];
@@ -891,6 +897,14 @@ export async function fetchDeliveriesSince({
       fetchImpl,
     });
     const pageData = await readDeliveryPageJson(response);
+    const pageObservedAt = now();
+    validateStartedAt(pageObservedAt);
+    if (pageObservedAt < lastObservedAt) {
+      throw new Error(
+        "The delivery observation clock moved backwards while paginating.",
+      );
+    }
+    lastObservedAt = pageObservedAt;
     if (!Array.isArray(pageData)) {
       throw new Error("GitHub returned a non-array deliveries page.");
     }
@@ -910,7 +924,7 @@ export async function fetchDeliveriesSince({
     }
 
     for (const rawDelivery of pageData) {
-      const delivery = normalizeDelivery(rawDelivery, startedAt);
+      const delivery = normalizeDelivery(rawDelivery, pageObservedAt);
       const prior = seenDeliveries.get(delivery.id);
       if (
         prior &&
@@ -1065,8 +1079,24 @@ export async function runRedelivery({
   if (typeof fetchImpl !== "function") {
     throw new Error("A Fetch-compatible implementation is required.");
   }
+  if (typeof now !== "function") {
+    throw new Error("A clock implementation is required for recovery.");
+  }
 
-  const startedAt = now();
+  let lastObservedAt;
+  const readMonotonicNow = () => {
+    const observedAt = now();
+    validateStartedAt(observedAt);
+    if (lastObservedAt !== undefined && observedAt < lastObservedAt) {
+      throw new Error(
+        "The recovery clock moved backwards; refusing webhook mutation.",
+      );
+    }
+    lastObservedAt = observedAt;
+    return observedAt;
+  };
+
+  const startedAt = readMonotonicNow();
   const continuityRun = await fetchLastSuccessfulScheduledRun({
     token: configuration.actionsToken,
     owner: configuration.workflowRepoOwner,
@@ -1091,6 +1121,7 @@ export async function runRedelivery({
     hookId: configuration.hookId,
     cutoff,
     startedAt,
+    now: readMonotonicNow,
     fetchImpl,
   });
   const failedDeliveryIds = selectFailedDeliveryIds(deliveries);
@@ -1101,8 +1132,7 @@ export async function runRedelivery({
   let staleTargetsSkipped = 0;
   let revalidatedTargets = targetBatch;
   if (targetBatch.length > 0) {
-    const revalidationStartedAt = now();
-    validateStartedAt(revalidationStartedAt);
+    const revalidationStartedAt = readMonotonicNow();
     if (revalidationStartedAt < startedAt) {
       throw new Error(
         "The revalidation clock moved backwards; refusing webhook mutation.",
@@ -1115,6 +1145,7 @@ export async function runRedelivery({
       hookId: configuration.hookId,
       cutoff,
       startedAt: revalidationStartedAt,
+      now: readMonotonicNow,
       fetchImpl,
     });
     const refreshedFailedDeliveryIds =
