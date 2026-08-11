@@ -150,15 +150,19 @@ evidence is the execution trail recorded in
   reachable from the two deploy jobs that declare `cloudflare-production` without using it. Both run
   only on `main`, so the exposure is contained, but the credential is segregated by provider rather
   than by purpose. Tracked in [#175](https://github.com/LCV-Ideas-Software/.github/issues/175).
-- None of the seven required status-check contexts is protected against structural regression. The
-  live re-read widened this beyond the two gates originally reported: a job disabled with `if: false`
-  reports **Success** and does not block the merge, so a workflow that only tests itself stops
-  protecting anything the moment its own job is skipped; `continue-on-error` is unguarded on the
-  enforcement steps; `pages.yml` is read by no test at all; and in `.github/zizmor.yml`
-  a `rules.<id>.disable: true` entry would be a real bypass even under `--no-ignores`, which
-  suppresses ignores without making the configuration inert — the file carries no such entry today,
-  and nothing would fail if one were added. No active defect exists in the current YAML —
-  the gap is that nothing stops one line from removing each guarantee. Tracked in
+- No required status-check context is **fully** protected against structural regression. Coverage is
+  partial and uneven rather than absent: #173 gave `Run zizmor` assertions over its caller's
+  permissions and job list, and `codeql-sarif-policy.test.mjs`, `dependency-review-workflow.test.mjs`
+  and `scorecard-workflow.test.mjs` each pin part of their own workflow. What none of them closes is
+  the same escape in every context. A job disabled with `if: false` reports **Success** and does not
+  block the merge, so a workflow that only tests itself stops protecting anything the moment its own
+  job is skipped; `continue-on-error` is unguarded on the enforcement steps; `pages.yml` is pinned
+  only through the Scorecard policy suite, not as a required context of its own; and in
+  `.github/zizmor.yml` a `rules.<id>.disable: true` entry would be a real bypass even under
+  `--no-ignores`, which suppresses ignores without making the configuration inert — the file carries
+  no such entry today, and nothing would fail if one were added. No active defect exists in the
+  current YAML; the gap is that nothing stops one line from removing each guarantee. The coverage
+  table per context is in
   [#170](https://github.com/LCV-Ideas-Software/.github/issues/170), to be remediated in its own pull
   request rather than mixed into documentation work.
 - A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. On 11/08/2026
