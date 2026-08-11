@@ -10,7 +10,7 @@
 [![license: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 Institutional repository for the organization profile and shared community-health defaults across LCV Ideas & Software repositories.
 
-**Status.** Active institutional repository. Current release: **not versioned**. See the version-history table below for the full change history.
+**Status.** Active institutional repository. Current release: **not versioned** — it publishes surfaces rather than a numbered artifact. Notable changes are recorded in [`CHANGELOG.md`](./CHANGELOG.md).
 
 This repository hosts the **organization profile** rendered at <https://github.com/LCV-Ideas-Software> and any community health files (issue templates, code of conduct, contributing guides, etc.) shared as defaults across the organization.
 
@@ -23,11 +23,7 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
 - The organization-wide GitHub-to-Slack alert relay lives in [`workers/github-slack-relay`](./workers/github-slack-relay); its architecture and operating procedure are documented in [`docs/GITHUB_SLACK_INTEGRATION.md`](./docs/GITHUB_SLACK_INTEGRATION.md).
 
-The version history at a glance:
-
-| Change  | Notes                                                                                                                       |
-| ------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Current | Active institutional repository for the org profile, static organization site, sponsor page, and shared community defaults. |
+The full change history lives in [`CHANGELOG.md`](./CHANGELOG.md), grouped by date and linked to the pull request that carried each change.
 
 For product-specific documentation, see each repository in the [organization listing](https://github.com/orgs/LCV-Ideas-Software/repositories).
 
