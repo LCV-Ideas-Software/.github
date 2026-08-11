@@ -536,9 +536,6 @@
         -webkit-text-fill-color: transparent;
         letter-spacing: -0.02em;
       }
-      .contact-link::before {
-        content: "Contato";
-      }
     </style>
   </head>
 
@@ -573,12 +570,11 @@
         />
         <span class="eyebrow">Studio Independente de Vibe Coding</span>
         <h1>
-          <strong>Tranformando Ideias em Software</strong>
+          <strong>Transformando Ideias em Software</strong>
         </h1>
         <p class="tagline">
-          Quatorze repositórios públicos no GitHub, sete hosts MCP nativos e
-          deploys cross-reviewed por quartetos de AI antes de tocar a edge da
-          Cloudflare.
+          Onze repositórios públicos no GitHub e deploys cross-reviewed pelo
+          sexteto de AI antes de tocar a edge da Cloudflare.
         </p>
         <div class="actions">
           <a class="btn primary" href="#products">Explorar produtos</a>
@@ -600,9 +596,8 @@
       </section>
 
       <section class="stats" aria-label="Números do portfólio">
-        <div><b>14</b><span>repositórios públicos</span></div>
-        <div><b>7</b><span>hosts MCP nativos</span></div>
-        <div><b>5</b><span>agentes AI</span></div>
+        <div><b>11</b><span>repositórios públicos</span></div>
+        <div><b>6</b><span>agentes AI</span></div>
         <div><b>edge</b><span>Cloudflare</span></div>
       </section>
 
@@ -846,8 +841,8 @@
             <p>
               Workbench editorial portátil para Windows (Tauri 2 + React 19)
               voltado a drafting AI protocol-driven, verificação de fontes e
-              convergência editorial multi-agent usando Claude, Codex, Gemini e
-              DeepSeek.
+              convergência editorial multi-agent usando Claude, Codex, Gemini,
+              DeepSeek, Grok e Perplexity.
             </p>
             <div class="links">
               <a
@@ -874,7 +869,9 @@
           <li><b>Database</b> Cloudflare D1</li>
           <li><b>Storage</b> Cloudflare R2</li>
           <li><b>Auth</b> Cloudflare Access (Zero Trust JWT)</li>
-          <li><b>AI</b> Claude · Codex · Gemini · DeepSeek · Grok</li>
+          <li>
+            <b>AI</b> Claude · Codex · Gemini · DeepSeek · Grok · Perplexity
+          </li>
           <li><b>Email</b> Resend</li>
           <li>
             <b>Sponsorship</b> sponsor-motor + Mercado Pago Checkout
@@ -894,11 +891,7 @@
           rel="noopener noreferrer"
           >GitHub</a
         >
-        <a
-          class="contact-link"
-          href="#contact"
-          aria-label="Contato por email"
-        ></a>
+        <a href="mailto:lcv@lcv.dev" aria-label="Contato por email">Contato</a>
         <a href="/sponsor" target="_blank" rel="noopener noreferrer">Apoiar</a>
       </div>
       <div class="copy">
@@ -910,20 +903,5 @@
         05424-150<br />CNPJ: 66.584.678/0001-77<br />IM 3039854
       </div>
     </footer>
-
-    <script>
-      (() => {
-        const links = document.querySelectorAll(".contact-link");
-        for (const el of links) {
-          try {
-            const addr = "lcv@lcv.dev";
-            el.setAttribute("href", `mailto:${addr}`);
-            el.textContent = addr;
-          } catch {
-            /* ignore email-link initialization errors */
-          }
-        }
-      })();
-    </script>
   </body>
 </html>

@@ -32,6 +32,9 @@ tomada.
 - [Project #17 — `LCV Portfolio`](https://github.com/orgs/LCV-Ideas-Software/projects/17):
   visão consolidada da organização.
 
+Os dois quadros são **privados**. Estes links exigem uma conta com acesso à organização; para quem
+lê este arquivo publicamente eles retornam 404.
+
 A presença e o estado de cada item nos dois quadros devem ser conferidos explicitamente.
 Este repositório não declara inclusão, backfill ou mudança automática de status em Projects.
 

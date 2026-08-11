@@ -26,13 +26,9 @@ LCV Ideas &amp; Software is an independent vibe-coding studio. It builds AI-assi
 
 ## Change History
 
-**Status.** Active organization profile. Current release: **not versioned**. See the version-history table below for the full change history.
+**Status.** Active organization profile. Current release: **not versioned** — it publishes a surface rather than a numbered artifact.
 
-The version history at a glance:
-
-| Change  | Notes                                                                                                  |
-| ------- | ------------------------------------------------------------------------------------------------------ |
-| Current | Organization profile and repository catalog for LCV Ideas & Software public repositories and services. |
+Changes to this profile are recorded, from 11/08/2026 onward, in the [`CHANGELOG.md`](https://github.com/LCV-Ideas-Software/.github/blob/main/CHANGELOG.md) of the `.github` repository that hosts it. Earlier work is not summarized there; the commit history remains its record.
 
 ---
 
@@ -122,7 +118,7 @@ Desktop      Tauri 2  (Maestro)
 - **GitHub-native PR governance.** A pull request is required for every change to the default branch. Squash is the only merge method; an authorized human admits an eligible pull request to GitHub's native merge queue after all effective rulesets and required checks pass, and those checks run again on the synthetic revision before GitHub creates a signed, single-parent squash. Default branches cannot be deleted or force-pushed, review conversations that exist must be resolved, and no actor has a ruleset bypass. Repository-owned auto-merge and governance controllers are not part of this design.
 - **`cross-review` anti-drift checks.** In the `cross-review` repository, push CI verifies package/runtime version consistency and the expected release markers in `README.md`, `SECURITY.md`, and `CHANGELOG.md`.
 - **Agent-instruction parity.** Program-wide directives are mirrored across the active agent environments as an operator process; GitHub does not enforce this parity.
-- **Supply-chain baseline.** External GitHub Actions are pinned by full commit SHA. Cloudflare deployment workflows use exact Wrangler versions from committed manifests and lockfiles, verify package signatures and audit results, and rely on daily Dependabot checks with automatic rebasing. Ordinary version updates observe a seven-day stability cooldown; security updates are not delayed by it.
+- **Supply-chain baseline.** External GitHub Actions are pinned by full commit SHA. Cloudflare deployment workflows use exact Wrangler versions from committed manifests and lockfiles, verify package signatures and audit results, and rely on daily Dependabot checks with automatic rebasing. GitHub Actions updates are evaluated immediately; ordinary version updates in every other ecosystem observe a seven-day stability cooldown. Security updates are not delayed by it.
 
 ---
 

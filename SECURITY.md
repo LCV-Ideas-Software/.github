@@ -39,12 +39,22 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - versioned CodeQL Advanced Setup workflows in public repositories containing code;
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
-- privileged external credentials isolated in protected environments and never exposed to pull-request jobs;
+- external credential isolation is **partial today**, and the two gaps are stated rather than
+  implied. `SLACK_SERVICE_TOKEN` is held in the protected environment `slack-production` and
+  `SLACK_REDELIVERY_APP_PRIVATE_KEY` in `cloudflare-production`, both restricted to `main` — but an
+  environment is shared by every job that declares it, so the two deploy jobs that also declare
+  `cloudflare-production` can reach the App key without using it. The Cloudflare deployment
+  credentials are not in an environment at all: they are repository-scoped, and although GitHub
+  hands a secret only to a job that references it, any workflow here may reference them without
+  declaring the environment, so no branch policy gates them. The shared-environment gap is tracked in
+  [#175](https://github.com/LCV-Ideas-Software/.github/issues/175) and the repository-scoped
+  credentials in [#169](https://github.com/LCV-Ideas-Software/.github/issues/169). Workflows
+  triggered by fork pull requests and by Dependabot receive no user-managed Actions secret;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by effective rulesets and GitHub's native merge queue;
 - no long-lived secrets in source control.
 
 ## Automation policy
 
-Dependabot checks every supported ecosystem daily, automatically rebases its pull requests, and relies on GitHub's post-merge branch deletion. Ordinary version updates use a seven-day cooldown for stability; Dependabot security updates are exempt from that delay. Required security and quality checks are never bypassed. Queue admission remains an authorized human action until a repository-scoped GitHub App with only the necessary permissions is separately approved and deployed.
+Dependabot checks every supported ecosystem daily, automatically rebases its pull requests, and relies on GitHub's post-merge branch deletion. GitHub Actions updates are evaluated immediately, so that a release can be adopted as soon as its provenance, security, and compatibility are validated; every other ecosystem applies a seven-day cooldown to ordinary version updates for stability. Dependabot security updates are exempt from that delay. Required security and quality checks are never bypassed. Queue admission remains an authorized human action until a repository-scoped GitHub App with only the necessary permissions is separately approved and deployed.
 
 Repository-local workflow and ruleset maintenance may implement this baseline. Enterprise or organization rules, settings, applications, and secrets require separate explicit operator consent before any change.
