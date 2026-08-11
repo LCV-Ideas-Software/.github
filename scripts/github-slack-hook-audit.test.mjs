@@ -196,6 +196,22 @@ test("pagination accepts only the exact GitHub organization hooks endpoint", () 
       ),
     /invalid page size/,
   );
+  for (const query of [
+    "per_page=100&per_page=50&page=2",
+    "per_page=100&page=2&page=3",
+    "per_page=100&page=2&unexpected=true",
+    "per_page=100&page=02",
+  ]) {
+    assert.throws(
+      () =>
+        parseNextHookPage(
+          `<https://api.github.com${path}?${query}>; rel="next"`,
+          path,
+        ),
+      /invalid|unexpected/,
+    );
+  }
+  assert.equal(next?.href, `https://api.github.com${path}?per_page=100&page=2`);
 });
 
 test("audit proves one exact active hook through GET-only list and detail reads", async () => {

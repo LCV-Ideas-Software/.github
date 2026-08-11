@@ -463,6 +463,11 @@ test("gate reports every finding with a normalized inventory", async (t) => {
 
 test("the CodeQL workflow tests and exercises the local composite action", async () => {
   const workflow = await readFile(WORKFLOW_URL, "utf8");
+  assert.doesNotMatch(
+    workflow,
+    /^\s+if:.*workflow_dispatch.*refs\/heads\/main.*$/m,
+    "manual CodeQL dispatch must remain available for all protected refs",
+  );
   assert.match(workflow, /node --test scripts\/codeql-sarif-policy\.test\.mjs/);
   assert.match(workflow, /uses: \.\/codeql-sarif-gate/);
   assert.match(

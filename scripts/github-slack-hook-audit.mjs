@@ -255,18 +255,43 @@ export function parseNextHookPage(linkHeader, expectedPathname) {
         "GitHub returned a next-page URL outside the expected organization hooks endpoint.",
       );
     }
-    if (nextUrl.searchParams.get("per_page") !== String(PAGE_SIZE)) {
+    const parameterNames = [...nextUrl.searchParams.keys()];
+    const pageSizes = nextUrl.searchParams.getAll("per_page");
+    const pages = nextUrl.searchParams.getAll("page");
+    if (
+      parameterNames.length !== 2 ||
+      pageSizes.length !== 1 ||
+      pages.length !== 1 ||
+      parameterNames.some(
+        (parameterName) =>
+          parameterName !== "per_page" && parameterName !== "page",
+      )
+    ) {
+      throw new Error(
+        "GitHub returned a next-page URL with unexpected query parameters.",
+      );
+    }
+    if (pageSizes[0] !== String(PAGE_SIZE)) {
       throw new Error(
         "GitHub returned a next-page URL with an invalid page size.",
       );
     }
-    const page = nextUrl.searchParams.get("page");
-    if (!page || !/^\d+$/.test(page) || Number(page) <= 1) {
+    const page = pages[0];
+    const pageNumber = Number(page);
+    if (
+      !/^[1-9]\d*$/.test(page) ||
+      !Number.isSafeInteger(pageNumber) ||
+      pageNumber <= 1 ||
+      String(pageNumber) !== page
+    ) {
       throw new Error(
         "GitHub returned a next-page URL with an invalid page number.",
       );
     }
-    return nextUrl;
+    return apiUrl(expectedPathname, {
+      per_page: PAGE_SIZE,
+      page: pageNumber,
+    });
   }
   return undefined;
 }
