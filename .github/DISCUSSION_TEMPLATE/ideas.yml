@@ -1,0 +1,38 @@
+title: "[Ideia] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Este espaço é público. Use placeholders em vez de nomes, contas ou identificadores
+        reais de infraestrutura.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema
+      description: Descreva a situação atual e quem é afetado, sem antecipar a solução.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Ideia
+      description: Descreva a mudança proposta.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativas consideradas
+      description: O que mais poderia resolver o problema e quais são os trade-offs?
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Escopo
+      options:
+        - Nova aplicação
+        - Nova funcionalidade em aplicação existente
+        - Mudança de comportamento existente
+        - Ferramentas ou infraestrutura
+    validations:
+      required: true

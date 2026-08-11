@@ -1,0 +1,33 @@
+name: Spike
+description: Investigação com tempo limitado e sem entrega de implementação garantida
+title: "[Spike]: "
+type: Spike
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Pergunta a responder
+      description: Formule uma única pergunta objetiva e decidível.
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Por que isso importa?
+      description: Qual decisão está bloqueada até a resposta?
+    validations:
+      required: true
+  - type: input
+    id: timebox
+    attributes:
+      label: Limite de tempo
+      placeholder: "Exemplo: 2 horas"
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definição de pronto
+      description: Qual artefato encerra a investigação, como resposta, benchmark ou protótipo?
+    validations:
+      required: true

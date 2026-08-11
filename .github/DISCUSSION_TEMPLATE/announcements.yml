@@ -1,0 +1,34 @@
+title: "[Release] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use este formulário para registrar uma publicação concluída. Não inclua segredos,
+        credenciais nem identificadores operacionais privados.
+  - type: input
+    id: version
+    attributes:
+      label: Versão
+      placeholder: "vXX.YY.ZZ"
+    validations:
+      required: true
+  - type: textarea
+    id: highlights
+    attributes:
+      label: Destaques
+    validations:
+      required: true
+  - type: textarea
+    id: breaking
+    attributes:
+      label: Mudanças incompatíveis
+      description: Escreva "nenhuma" quando não houver.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verificação
+      description: Indique os gates aprovados e a evidência de produção aplicável.
+    validations:
+      required: true
