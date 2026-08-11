@@ -1,18 +1,6 @@
-# Excessive-permissions remains disabled only while the untouched workflows are
-# migrated away from their legacy write-all declarations. Re-enable it before
-# closing the repository hardening issue; every other audit stays active now.
 rules:
   dependabot-cooldown:
     # Security updates bypass Dependabot cooldowns. Version updates are checked
     # daily and use zizmor's recommended supply-chain stabilization window.
     config:
       days: 7
-  excessive-permissions:
-    disable: true
-  dangerous-triggers:
-    ignore:
-      # The workflow_run and pull_request_target jobs consume only the trusted
-      # github.workflow_sha, re-read exact same-repository PR/API state, hold
-      # native merge privilege during requested review, and never check out or
-      # download candidate-head content, artifacts, or caches.
-      - native-auto-merge.yml

@@ -14,6 +14,7 @@ const WORKFLOW_URL = new URL(
   "../.github/workflows/codeql.yml",
   import.meta.url,
 );
+const JOB_LEVEL_IF_PATTERN = /^ {4}(?:if|["']if["'])\s*:/m;
 
 function bashPath(path) {
   return path.replaceAll("\\", "/");
@@ -463,6 +464,21 @@ test("gate reports every finding with a normalized inventory", async (t) => {
 
 test("the CodeQL workflow tests and exercises the local composite action", async () => {
   const workflow = await readFile(WORKFLOW_URL, "utf8");
+  assert.doesNotMatch(
+    workflow,
+    JOB_LEVEL_IF_PATTERN,
+    "manual CodeQL dispatch must remain available for all protected refs",
+  );
+  for (const condition of [
+    "    if: github.ref == 'refs/heads/main'",
+    "    if: >-\n      github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'",
+  ]) {
+    assert.match(
+      `jobs:\n  analyze:\n${condition}\n    permissions: {}`,
+      JOB_LEVEL_IF_PATTERN,
+      "the contract must detect single-line and multiline job conditions",
+    );
+  }
   assert.match(workflow, /node --test scripts\/codeql-sarif-policy\.test\.mjs/);
   assert.match(workflow, /uses: \.\/codeql-sarif-gate/);
   assert.match(

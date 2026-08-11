@@ -72,12 +72,16 @@ function repository({
   name = "example",
   archived = false,
   disabled = false,
+  visibility = "public",
+  private: isPrivate = false,
 } = {}) {
   return {
     name,
     full_name: `LCV-Ideas-Software/${name}`,
     archived,
     disabled,
+    visibility,
+    private: isPrivate,
     default_branch: "main",
     owner: { login: "LCV-Ideas-Software" },
   };
@@ -1081,6 +1085,7 @@ test("organization audit covers internal and third-party Actions with zero mutat
     repositories: [
       repository(),
       repository({ name: "retired", archived: true }),
+      repository({ name: "private", visibility: "private", private: true }),
     ],
   });
   const result = await runAudit({ api, minimumRepositories: 1 });
@@ -1240,7 +1245,7 @@ test("truncated trees and incomplete repository visibility abort coverage", asyn
   );
   await assert.rejects(
     runAudit({ api: new FixtureApi(), minimumRepositories: 11 }),
-    /can see only 1.*expected at least 11/,
+    /can see only 1 active, non-archived public repositories.*expected at least 11/,
   );
 });
 

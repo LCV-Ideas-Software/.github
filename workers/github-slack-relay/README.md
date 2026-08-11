@@ -321,12 +321,14 @@ private workflow inputs, so CI withholds raw API responses.
 
 GitHub itself does not automatically retry organization webhook failures. The
 scheduled `GitHub Slack Webhook Redelivery` workflow checks every 15 minutes,
-groups attempts by GUID, accepts GitHub's documented HTTP 200-399 success
+first verifies the sole active exact organization hook through GET requests
+only, groups attempts by GUID, accepts GitHub's documented HTTP 200-399 success
 classification, and redelivers unresolved attempts within the three-day
-retention window. Its checkpoint advances only after the complete run
-succeeds. Pagination accepts only the exact named and numeric canonical paths
-for the configured organization and hook, and reconstructs each request from
-the returned cursor instead of following a `Link` URL blindly.
+retention window. It never sends a scheduled ping. Its checkpoint advances only
+after the complete run succeeds. Pagination accepts only the exact named and
+numeric canonical paths for the configured organization and hook, and
+reconstructs each request from the returned cursor instead of following a
+`Link` URL blindly.
 
 The controller reads the hook ID from repository variable
 `SLACK_RELAY_ORG_HOOK_ID`, stores its epoch-millisecond checkpoint in repository

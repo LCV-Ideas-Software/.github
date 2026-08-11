@@ -4,8 +4,17 @@ on:
   schedule:
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Audit the hook or audit and recover failed deliveries
+        required: true
+        default: audit
+        type: choice
+        options:
+          - audit
+          - redeliver
 
-permissions: write-all
+permissions: {}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -16,11 +25,13 @@ concurrency:
 
 jobs:
   redeliver:
-    name: Redeliver failed organization webhook deliveries
+    name: Audit and recover organization webhook deliveries
     if: >-
-      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
-      github.ref == 'refs/heads/main'
-    permissions: write-all
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true')
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: cloudflare-production
@@ -41,7 +52,7 @@ jobs:
       - name: Test webhook liveness and redelivery controllers
         run: >-
           node --test
-          scripts/github-slack-hook-management.test.mjs
+          scripts/github-slack-hook-audit.test.mjs
           scripts/github-slack-webhook-redelivery.test.mjs
 
       - name: Validate required configuration
@@ -63,17 +74,34 @@ jobs:
             exit 1
           fi
 
-      - name: Validate and ping active PAT-owned organization webhook
+      - name: Audit active PAT-owned organization webhook without mutation
         env:
           GITHUB_REF: ${{ github.ref }}
-          OPERATION: ping
           ORGANIZATION_NAME: ${{ github.repository_owner }}
           TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
           WORKFLOW_REPO_NAME: ${{ github.event.repository.name }}
           WORKFLOW_REPO_OWNER: ${{ github.repository_owner }}
-        run: node scripts/github-slack-hook-management.mjs
+        run: node scripts/github-slack-hook-audit.mjs
+
+      - name: Require the production gate for requested recovery
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.operation == 'redeliver'
+        env:
+          INTEGRATION_ENABLED: ${{ vars.SLACK_GITHUB_INTEGRATION_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$INTEGRATION_ENABLED" != "true" ]]; then
+            echo "::error::Redelivery requires SLACK_GITHUB_INTEGRATION_ENABLED=true."
+            exit 1
+          fi
 
       - name: Recover failed webhook deliveries
+        if: >-
+          vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
+          (github.event_name == 'schedule' ||
+          inputs.operation == 'redeliver')
         env:
           TOKEN: ${{ secrets.LCV_AUTOMATION_TOKEN }}
           ORGANIZATION_NAME: ${{ github.repository_owner }}

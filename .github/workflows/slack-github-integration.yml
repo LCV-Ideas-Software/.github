@@ -28,7 +28,7 @@ on:
           - deploy
           - monitor
 
-permissions: write-all
+permissions: {}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -41,7 +41,8 @@ jobs:
   verify:
     name: Verify Slack workflow app
     if: github.event_name != 'schedule' || github.event.schedule == '17 7 * * *'
-    permissions: write-all
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -68,7 +69,7 @@ jobs:
         working-directory: slack/github-integration
         run: |
           set -euo pipefail
-          if grep -R -n -E 'GITHUB_(ACTIVITY|ALERTS)_CHANNEL_ID|workflows:[[:space:]]*\[\]|"groups:(read|write)"' \
+          if grep -R -n -E 'GITHUB_(ACTIVITY|ALERTS)_CHANNEL_ID|workflows:[[:space:]]*\[\]|"groups:(read|write)"|"chat:write\.public"' \
             manifest.ts workflows; then
             echo "::error::Slack app still contains bootstrap-only placeholders, an empty workflow list, or a scope outside the fixed private-channel design."
             exit 1
@@ -91,7 +92,8 @@ jobs:
       inputs.operation == 'deploy' &&
       github.ref == 'refs/heads/main'))
     needs: verify
-    permissions: write-all
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: slack-production
@@ -162,6 +164,56 @@ jobs:
             --hide-triggers \
             --skip-update
 
+      - name: Verify the exact protected production trigger inventory
+        working-directory: slack/github-integration
+        env:
+          ACTIVITY_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ACTIVITY_TRIGGER_ID }}
+          ALERT_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ALERT_TRIGGER_ID }}
+          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
+          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
+          SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
+          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
+          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
+          for trigger_id in "$ACTIVITY_TRIGGER_ID" "$ALERT_TRIGGER_ID"; do
+            if [[ ! "$trigger_id" =~ ^Ft[A-Z0-9]{8,}$ ]]; then
+              echo "::error::A protected Slack webhook trigger ID is missing or malformed."
+              exit 1
+            fi
+          done
+          if [[ "$ACTIVITY_TRIGGER_ID" == "$ALERT_TRIGGER_ID" ]]; then
+            echo "::error::The activity and alert trigger IDs must be distinct."
+            exit 1
+          fi
+
+          if [[ ! "$SLACK_APP_ID" =~ ^A[A-Z0-9]{8,}$ ]]; then
+            echo "::error::The protected Slack app ID is malformed."
+            exit 1
+          fi
+
+          # The human-facing list/info commands print bearer webhook URLs and
+          # omit workflow mappings. Stream the raw API response directly to a
+          # fail-closed validator; never persist or log the response.
+          inventory_error="${RUNNER_TEMP}/slack-trigger-inventory.err"
+          request_body="$(printf '{"app_id":"%s","limit":100}' "$SLACK_APP_ID")"
+          if ! slack api workflows.triggers.list \
+            --token "$SLACK_SERVICE_TOKEN" \
+            --json "$request_body" \
+            --no-color \
+            --skip-update \
+            2>"$inventory_error" \
+            | deno run \
+              --allow-env=ACTIVITY_TRIGGER_ID,ALERT_TRIGGER_ID,SLACK_APP_ID \
+              scripts/verify_trigger_inventory.ts; then
+            rm -f "$inventory_error"
+            echo "::error::Slack could not verify the exact production trigger inventory."
+            exit 1
+          fi
+          rm -f "$inventory_error"
+
   monitor:
     name: Monitor Slack workflow execution
     if: >-
@@ -171,7 +223,8 @@ jobs:
       github.event.schedule == '12,27,42,57 * * * *') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.operation == 'monitor'))
-    permissions: write-all
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: slack-production

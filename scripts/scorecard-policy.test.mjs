@@ -7,12 +7,6 @@ import test from "node:test";
 const POLICY_URL = new URL("./scorecard-policy.jq", import.meta.url);
 const POLICY_PATH = fileURLToPath(POLICY_URL);
 const NO_FILE = "no file associated with this alert";
-const BOOTSTRAP_BRANCH_PROTECTION_MESSAGE =
-  "score is 3: branch protection is not maximal on development and all release branches:\n" +
-  "Warn: could not determine whether codeowners review is allowed\n" +
-  "Warn: no status checks found to merge onto branch 'main'\n" +
-  "Warn: PRs are not required to make changes on branch 'main'; or we don't have data to detect it.If you think it might be the latter, make sure to run Scorecard with a PAT or use Repo Rules (that are always public) instead of Branch Protection settings\n" +
-  "Click Remediation section below to solve this issue";
 const TRUSTED_BRANCH_PROTECTION_MESSAGE =
   "score is 3: branch protection is not maximal on development and all release branches:\n" +
   "Warn: 'stale review dismissal' is disabled on branch 'main'\n" +
@@ -29,20 +23,6 @@ function codeReviewBaselineMessage(total) {
   return (
     `score is 0: Found 0/${total} approved changesets -- score normalized to 0\n` +
     "Click Remediation section below to solve this issue"
-  );
-}
-
-function tokenMessage(filename, { local = false, score = 2 } = {}) {
-  const target = local
-    ? `https://app.stepsecurity.io/secureworkflow/file://./${filename}/unknown?enable=permissions`
-    : `https://app.stepsecurity.io/secureworkflow/github.com/LCV-Ideas-Software/.github/${filename}/main?enable=permissions`;
-  return (
-    `score is ${score}: topLevel permissions set to 'write-all'\n` +
-    `Remediation tip: Visit [https://app.stepsecurity.io/secureworkflow](${target}).\n` +
-    "Tick the 'Restrict permissions for GITHUB_TOKEN'\n" +
-    "Untick other options\n" +
-    "NOTE: If you want to resolve multiple issues at once, you can visit [https://app.stepsecurity.io/securerepo](https://app.stepsecurity.io/securerepo) instead.\n" +
-    "Click Remediation section below for further remediation help"
   );
 }
 
@@ -79,12 +59,8 @@ function sarif(results = []) {
   };
 }
 
-function runPolicy(input, { event = "pull_request", program } = {}) {
-  const args =
-    program === undefined
-      ? ["-e", "--arg", "event", event, "-f", POLICY_PATH]
-      : ["-e", "--arg", "event", event, program];
-  return spawnSync("jq", args, {
+function runPolicy(input, { event = "push" } = {}) {
+  return spawnSync("jq", ["-e", "--arg", "event", event, "-f", POLICY_PATH], {
     encoding: "utf8",
     input: typeof input === "string" ? input : JSON.stringify(input),
     windowsHide: true,
@@ -137,69 +113,12 @@ test("missing, null, primitive, and malformed SARIF shapes fail closed", () => {
   assertRejected("{");
 });
 
-test("only the exact transitional write-all signature passes", () => {
-  const token = result("TokenPermissionsID", {
-    message: tokenMessage("codeql.yml"),
-    snippet: "write-all",
-    uri: ".github/workflows/codeql.yml",
-  });
-  const localToken = result("TokenPermissionsID", {
-    message: tokenMessage("pages.yml", { local: true, score: 2 }),
-    snippet: "write-all",
-    uri: ".github/workflows/pages.yml",
-  });
-  assertAccepted(sarif([token, localToken]));
-  assertAccepted(
-    sarif([
-      result("TokenPermissionsID", {
-        message: tokenMessage("pages.yml", { local: true, score: 0 }),
-        snippet: "write-all",
-        uri: ".github/workflows/pages.yml",
-      }),
-      result("TokenPermissionsID", {
-        message: tokenMessage("pages.yml", { local: true, score: 10 }),
-        snippet: "write-all",
-        uri: ".github/workflows/pages.yml",
-      }),
-    ]),
-  );
-
+test("TokenPermissions and PinnedDependencies findings always fail", () => {
   for (const rejected of [
-    { ...token, ruleId: "OtherID" },
     result("TokenPermissionsID", {
-      message: tokenMessage("codeql.yml"),
-      snippet: "contents: write",
-      uri: ".github/workflows/codeql.yml",
-    }),
-    result("TokenPermissionsID", {
-      message: tokenMessage("codeql.yml"),
-      snippet: "write-all",
-      uri: "scripts/not-a-workflow.yml",
-    }),
-    result("TokenPermissionsID", {
-      message: "score is 2: another permissions finding",
+      message: "score is 0: workflow token permissions are excessive",
       snippet: "write-all",
       uri: ".github/workflows/codeql.yml",
-    }),
-    result("TokenPermissionsID", {
-      message: `${tokenMessage("codeql.yml")}\nWarn: another permission failure`,
-      snippet: "write-all",
-      uri: ".github/workflows/codeql.yml",
-    }),
-    result("TokenPermissionsID", {
-      message: tokenMessage("pages.yml"),
-      snippet: "write-all",
-      uri: ".github/workflows/codeql.yml",
-    }),
-    result("TokenPermissionsID", {
-      message: tokenMessage("pages.yml", { local: true, score: 17 }),
-      snippet: "write-all",
-      uri: ".github/workflows/pages.yml",
-    }),
-    result("TokenPermissionsID", {
-      message: tokenMessage("pages.yml", { local: true, score: 11 }),
-      snippet: "write-all",
-      uri: ".github/workflows/pages.yml",
     }),
     result("PinnedDependenciesID", {
       message:
@@ -213,24 +132,6 @@ test("only the exact transitional write-all signature passes", () => {
   }
 });
 
-test("the bootstrap BranchProtection signature is exact, not a prefix", () => {
-  const bootstrap = result("BranchProtectionID", {
-    message: BOOTSTRAP_BRANCH_PROTECTION_MESSAGE,
-  });
-  assertAccepted(sarif([bootstrap]));
-  assertAccepted(sarif([bootstrap]), { event: "merge_group" });
-  for (const trustedEvent of ["push", "schedule", "workflow_dispatch"]) {
-    assertRejected(sarif([bootstrap]), { event: trustedEvent });
-  }
-
-  const warningMutation = structuredClone(bootstrap);
-  warningMutation.message.text = warningMutation.message.text.replace(
-    "\nClick Remediation section below",
-    "\nWarn: an additional branch protection failure\nClick Remediation section below",
-  );
-  assertRejected(sarif([warningMutation]));
-});
-
 test("accepts only the exact trusted repository-policy baseline", () => {
   const trustedBaseline = [
     result("BranchProtectionID", {
@@ -240,11 +141,12 @@ test("accepts only the exact trusted repository-policy baseline", () => {
     result("CIIBestPracticesID", { message: CII_BASELINE_MESSAGE }),
   ];
 
-  for (const event of ["push", "schedule", "workflow_dispatch"]) {
+  for (const event of ["push", "schedule"]) {
     assertAccepted(sarif(trustedBaseline), { event });
   }
-  for (const event of ["pull_request", "merge_group"]) {
+  for (const event of ["pull_request", "merge_group", "workflow_dispatch"]) {
     assertRejected(sarif(trustedBaseline), { event });
+    assertRejected(sarif(), { event });
   }
 
   for (const mutation of [
@@ -266,41 +168,13 @@ test("accepts only the exact trusted repository-policy baseline", () => {
 });
 
 test("an unapproved finding fails even beside approved findings", () => {
-  const token = result("TokenPermissionsID", {
-    message: tokenMessage("codeql.yml"),
-    snippet: "write-all",
-    uri: ".github/workflows/codeql.yml",
+  const approved = result("BranchProtectionID", {
+    message: TRUSTED_BRANCH_PROTECTION_MESSAGE,
   });
   const unknown = result("UnexpectedSecurityFindingID", {
     message: "score is 0: actionable finding",
   });
-  assertRejected(sarif([token, unknown]));
-});
-
-test("removing later exceptions preserves the transitional token decision", async () => {
-  const policy = await readFile(POLICY_URL, "utf8");
-  const firstTransitionalBranch = policy.indexOf(
-    '\n    elif .ruleId == "BranchProtectionID" then',
-  );
-  const finalElse = policy.indexOf(
-    "\n    else\n      false\n    end;",
-    firstTransitionalBranch,
-  );
-  assert.ok(firstTransitionalBranch >= 0);
-  assert.ok(finalElse > firstTransitionalBranch);
-  const tokenOnly =
-    policy.slice(0, firstTransitionalBranch) + policy.slice(finalElse);
-
-  assertAccepted(
-    sarif([
-      result("TokenPermissionsID", {
-        message: tokenMessage("codeql.yml"),
-        snippet: "write-all",
-        uri: ".github/workflows/codeql.yml",
-      }),
-    ]),
-    { program: tokenOnly },
-  );
+  assertRejected(sarif([approved, unknown]));
 });
 
 test("does not authorize unremediated or unknown quality findings", async () => {

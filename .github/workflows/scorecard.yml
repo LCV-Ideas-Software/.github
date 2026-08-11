@@ -1,95 +1,92 @@
 name: OpenSSF Scorecard
+
 on:
   push:
+    # The Scorecard action supports only the default branch for push events.
     branches: ["main"]
-    paths:
-      - ".github/workflows/**"
-      - ".github/dependabot.yml"
-      - "SECURITY.md"
-      - "scripts/scorecard-policy.jq"
-      - "scripts/scorecard-policy.test.mjs"
-      - "scripts/scorecard-workflow.test.mjs"
-  pull_request:
-    branches: ["main"]
-  merge_group:
-    types:
-      - checks_requested
   schedule:
-    - cron: "37 8 * * 1"
-  workflow_dispatch:
+    # Re-evaluate repository posture daily even when main is unchanged.
+    - cron: "37 8 * * *"
+
+# Fail closed for every future job. Each job declares only what it needs.
+permissions: {}
+
 concurrency:
-  group: scorecard-${{ github.ref }}
+  group: scorecard-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: true
-permissions: write-all
 
 jobs:
-  scorecard:
-    name: OpenSSF Scorecard
-    permissions: write-all
+  analysis:
+    name: Publish OpenSSF Scorecard
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write # Upload the SARIF to GitHub code scanning.
+      id-token: write # Authenticate publication to api.scorecard.dev via OIDC.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The OpenSSF publication API permits only its approved actions in this
+      # OIDC-enabled job. Policy code and tests run in the separate job below.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Node.js for the workflow regression
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-      - name: Test Scorecard workflow contract
-        run: >-
-          node --test
-          scripts/scorecard-workflow.test.mjs
-          scripts/scorecard-policy.test.mjs
-      - name: Run Scorecard on supported events
-        if: github.event_name != 'merge_group'
+
+      - name: Run OpenSSF Scorecard
         uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
-          # OpenSSF's publication API rejects workflows with organization-mandated write-all.
-          # SARIF and artifacts remain enabled below.
-          publish_results: false
-      - name: Run Scorecard on merge group
-        if: github.event_name == 'merge_group'
-        shell: bash
-        env:
-          # v2.4.4 validates token presence before selecting its tokenless local client.
-          INPUT_REPO_TOKEN: local-merge-group-no-credential
-          INPUT_RESULTS_FILE: scorecard-results.sarif
-          INPUT_RESULTS_FORMAT: sarif
-        run: |
-          set -euo pipefail
-          # v2.4.4 supports local candidate analysis only through its pull_request mode.
-          # Run that exact official image over GitHub's checked-out merge-group commit.
-          docker run --rm \
-            --volume "$GITHUB_EVENT_PATH:/github/event.json:ro" \
-            --volume "$GITHUB_WORKSPACE:/github/workspace" \
-            --workdir /github/workspace \
-            --env GITHUB_EVENT_NAME=pull_request \
-            --env GITHUB_EVENT_PATH=/github/event.json \
-            --env GITHUB_WORKSPACE=/github/workspace \
-            --env INPUT_REPO_TOKEN \
-            --env INPUT_RESULTS_FILE \
-            --env INPUT_RESULTS_FORMAT \
-            ghcr.io/ossf/scorecard-action:v2.4.4@sha256:ae5104dd3cc28466ebeb11144354be4cac4b7ff829654f9fab89021d71c46670
-      - name: Require Scorecard SARIF
-        shell: bash
-        run: test -s scorecard-results.sarif
-      - name: Enforce the approved Scorecard policy
-        shell: bash
-        run: >-
-          jq -e --arg event "$GITHUB_EVENT_NAME"
-          -f scripts/scorecard-policy.jq scorecard-results.sarif
+          publish_results: true
+
       - name: Upload SARIF artifact
-        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-results
           path: scorecard-results.sarif
           retention-days: 5
-      - name: Upload SARIF to code-scanning
-        if: always()
+
+      - name: Upload SARIF to code scanning
         uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: scorecard-results.sarif
+
+  policy:
+    name: Enforce Scorecard policy
+    needs: analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout policy source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js for policy regressions
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Download Scorecard SARIF
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: scorecard-results
+          path: .
+
+      - name: Test Scorecard policy contracts
+        run: >-
+          node --test
+          scripts/scorecard-workflow.test.mjs
+          scripts/scorecard-policy.test.mjs
+
+      - name: Require Scorecard SARIF
+        shell: bash
+        run: test -s scorecard-results.sarif
+
+      - name: Enforce the approved Scorecard policy
+        shell: bash
+        run: >-
+          jq -e --arg event "$GITHUB_EVENT_NAME"
+          -f scripts/scorecard-policy.jq scorecard-results.sarif

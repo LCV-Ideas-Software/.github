@@ -1943,12 +1943,15 @@ export async function runAudit({
   const repositories = allRepositories
     .filter(
       (repository) =>
-        repository.archived !== true && repository.disabled !== true,
+        repository.archived !== true &&
+        repository.disabled !== true &&
+        repository.visibility === "public" &&
+        repository.private === false,
     )
     .sort((left, right) => left.name.localeCompare(right.name));
   if (repositories.length < minimumRepositories) {
     throw new Error(
-      `The token can see only ${repositories.length} active, non-archived repositories; expected at least ${minimumRepositories}.`,
+      `The token can see only ${repositories.length} active, non-archived public repositories; expected at least ${minimumRepositories}.`,
     );
   }
 

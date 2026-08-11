@@ -5,11 +5,10 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/github-slack-integration.yml"
-      - ".github/workflows/github-slack-hook-management.yml"
       - ".github/workflows/github-slack-webhook-redelivery.yml"
       - "docs/GITHUB_SLACK_INTEGRATION.md"
-      - "scripts/github-slack-hook-management.mjs"
-      - "scripts/github-slack-hook-management.test.mjs"
+      - "scripts/github-slack-hook-audit.mjs"
+      - "scripts/github-slack-hook-audit.test.mjs"
       - "scripts/github-slack-webhook-redelivery.mjs"
       - "scripts/github-slack-webhook-redelivery.test.mjs"
       - "workers/github-slack-relay/**"
@@ -32,7 +31,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify relay and recovery controller
+    name: Verify GitHub Slack relay
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -63,10 +62,10 @@ jobs:
           expected_wrangler="$(node -p "require('./workers/github-slack-relay/package.json').devDependencies.wrangler")"
           test "$(workers/github-slack-relay/node_modules/.bin/wrangler --version)" = "$expected_wrangler"
 
-      - name: Test organization webhook controllers
+      - name: Test organization webhook audit and recovery controllers
         run: >-
           node --test
-          scripts/github-slack-hook-management.test.mjs
+          scripts/github-slack-hook-audit.test.mjs
           scripts/github-slack-webhook-redelivery.test.mjs
 
       - name: Verify Cloudflare relay
@@ -127,4 +126,8 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          workers/github-slack-relay/node_modules/.bin/wrangler deploy --strict --config workers/github-slack-relay/wrangler.jsonc
+          workers/github-slack-relay/node_modules/.bin/wrangler deploy \
+            --strict \
+            --tag "$GITHUB_SHA" \
+            --message "GitHub Actions ${GITHUB_REPOSITORY}@${GITHUB_SHA}" \
+            --config workers/github-slack-relay/wrangler.jsonc

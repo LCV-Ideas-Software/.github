@@ -5,7 +5,7 @@ on:
     - cron: "0 12 * * 1"
   workflow_dispatch:
 
-permissions: write-all
+permissions: {}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -15,10 +15,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  watch:
-    name: Scan locked organization dependencies with OSV-Scanner
+  audit:
+    name: Scan locked public-repository dependencies with OSV-Scanner
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      contents: read
+    outputs:
+      config_count: ${{ steps.sources.outputs.config_count }}
+      finding_count: ${{ steps.scan.outputs.finding_count }}
+      lockfile_count: ${{ steps.sources.outputs.lockfile_count }}
+      repository_count: ${{ steps.sources.outputs.repository_count }}
+      scanner_exit_code: ${{ steps.scan.outputs.exit_code }}
     timeout-minutes: 25
     steps:
       - name: Checkout
@@ -41,8 +49,8 @@ jobs:
       - name: Gather lockfiles and their adjacent OSV configurations
         id: sources
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MIN_ACTIVE_REPOSITORIES: "11"
+          GH_TOKEN: ${{ github.token }}
+          MIN_PUBLIC_REPOSITORIES: "11"
           MIN_LOCKFILES: "17"
           ORG: LCV-Ideas-Software
         run: |
@@ -50,7 +58,7 @@ jobs:
           scan_root=/tmp/osv-workspace
           provenance_ndjson=/tmp/osv-provenance.ndjson
           provenance_json=/tmp/osv-provenance.json
-          active_repositories=/tmp/osv-active-repositories.tsv
+          public_repositories=/tmp/osv-public-repositories.tsv
           repositories_json=/tmp/osv-repositories.json
           lockfiles=/tmp/osv-lockfiles.tsv
           configurations=/tmp/osv-configurations.txt
@@ -64,13 +72,18 @@ jobs:
             "orgs/$ORG/repos?type=all&per_page=100" > "$repositories_json"
           jq -r '
             flatten[]
-            | select(.archived == false and .disabled == false)
+            | select(
+                .archived == false
+                and .disabled == false
+                and .visibility == "public"
+                and .private == false
+              )
             | [.name, .default_branch]
             | @tsv
-          ' "$repositories_json" | tr -d '\r' > "$active_repositories"
-          repository_count=$(wc -l < "$active_repositories")
-          if [ "$repository_count" -lt "$MIN_ACTIVE_REPOSITORIES" ]; then
-            echo "::error::Expected at least $MIN_ACTIVE_REPOSITORIES active repositories, found $repository_count."
+          ' "$repositories_json" | tr -d '\r' > "$public_repositories"
+          repository_count=$(wc -l < "$public_repositories")
+          if [ "$repository_count" -lt "$MIN_PUBLIC_REPOSITORIES" ]; then
+            echo "::error::Expected at least $MIN_PUBLIC_REPOSITORIES active public repositories, found $repository_count."
             exit 1
           fi
 
@@ -118,7 +131,7 @@ jobs:
               | [$repository, $commit_sha, $path]
               | @tsv
             ' "$tree_file" | tr -d '\r' >> "$lockfiles"
-          done < "$active_repositories"
+          done < "$public_repositories"
           sort -u -o "$lockfiles" "$lockfiles"
 
           lockfile_count=$(wc -l < "$lockfiles")
@@ -187,11 +200,11 @@ jobs:
             echo "lockfile_count=$lockfile_count"
             echo "config_count=$config_count"
           } >> "$GITHUB_OUTPUT"
-          echo "Prepared $lockfile_count lockfiles and $config_count adjacent OSV configuration(s) from $repository_count active repositories."
+          echo "Prepared $lockfile_count lockfiles and $config_count adjacent OSV configuration(s) from $repository_count active public repositories."
 
       - name: Install the verified official OSV-Scanner release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           OSV_SCANNER_ASSET: osv-scanner_linux_amd64
           OSV_SCANNER_SHA256: edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c
           OSV_SCANNER_VERSION: "2.5.0"
@@ -315,14 +328,46 @@ jobs:
             echo "finding_count=$finding_count"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare the bounded reconciliation artifact
+        run: |
+          set -euo pipefail
+          install -d -m 0700 /tmp/osv-reconciliation
+          install -m 0600 /tmp/osv-report.json /tmp/osv-reconciliation/osv-report.json
+          install -m 0600 /tmp/osv-issue.md /tmp/osv-reconciliation/osv-issue.md
+
+      - name: Upload the reconciliation artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oss-advisory-watch-${{ github.run_id }}
+          path: /tmp/osv-reconciliation
+          if-no-files-found: error
+          retention-days: 1
+
+  reconcile:
+    name: Reconcile the OSS Advisory Watch issue
+    if: github.ref == 'refs/heads/main'
+    needs: audit
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write # Reconciles the single repository-local advisory issue.
+    timeout-minutes: 5
+    steps:
+      - name: Download the trusted audit result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: oss-advisory-watch-${{ github.run_id }}
+          path: /tmp/osv-reconciliation
+
       - name: Reconcile the OSS Advisory Watch issue
         id: issue
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          finding_count=$(jq -er '.count' /tmp/osv-report.json)
-          title=$(jq -er '.title' /tmp/osv-report.json)
+          report=/tmp/osv-reconciliation/osv-report.json
+          issue_body=/tmp/osv-reconciliation/osv-issue.md
+          finding_count=$(jq -er '.count' "$report")
+          title=$(jq -er '.title' "$report")
           mapfile -t open_issues < <(
             gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 \
               --json number,title \
@@ -337,17 +382,17 @@ jobs:
           if [ "$finding_count" -gt 0 ]; then
             if [ -n "$existing" ]; then
               gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" \
-                --title "$title" --body-file /tmp/osv-issue.md
+                --title "$title" --body-file "$issue_body"
               action=updated
               issue_number="$existing"
             else
               issue_url=$(gh issue create --repo "$GITHUB_REPOSITORY" \
-                --title "$title" --body-file /tmp/osv-issue.md)
+                --title "$title" --body-file "$issue_body")
               action=created
               issue_number="${issue_url##*/}"
             fi
           elif [ -n "$existing" ]; then
-            resolution=$(jq -er '.resolutionComment' /tmp/osv-report.json)
+            resolution=$(jq -er '.resolutionComment' "$report")
             gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
               --comment "$resolution"
             action=closed
@@ -363,19 +408,19 @@ jobs:
 
       - name: Summary
         env:
-          CONFIG_COUNT: ${{ steps.sources.outputs.config_count }}
-          FINDING_COUNT: ${{ steps.scan.outputs.finding_count }}
+          CONFIG_COUNT: ${{ needs.audit.outputs.config_count }}
+          FINDING_COUNT: ${{ needs.audit.outputs.finding_count }}
           ISSUE_ACTION: ${{ steps.issue.outputs.action }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
-          LOCKFILE_COUNT: ${{ steps.sources.outputs.lockfile_count }}
-          REPOSITORY_COUNT: ${{ steps.sources.outputs.repository_count }}
-          SCANNER_EXIT_CODE: ${{ steps.scan.outputs.exit_code }}
+          LOCKFILE_COUNT: ${{ needs.audit.outputs.lockfile_count }}
+          REPOSITORY_COUNT: ${{ needs.audit.outputs.repository_count }}
+          SCANNER_EXIT_CODE: ${{ needs.audit.outputs.scanner_exit_code }}
         run: |
           set -euo pipefail
           {
             echo "## OSS Advisory Watch"
             echo
-            echo "- Repositórios ativos e não arquivados: $REPOSITORY_COUNT"
+            echo "- Repositórios públicos ativos e não arquivados: $REPOSITORY_COUNT"
             echo "- Lockfiles auditados: $LOCKFILE_COUNT"
             echo "- Configurações OSV adjacentes aplicadas: $CONFIG_COUNT"
             echo "- Código de resultado do OSV-Scanner: $SCANNER_EXIT_CODE"
