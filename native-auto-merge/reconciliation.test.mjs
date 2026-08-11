@@ -2072,6 +2072,11 @@ test("Copilot's no-reviewable-files verdict counts as a completed review", () =>
     HEAD_SHA,
   );
   assert.equal(withSuppressed.latestExactHeadCopilotState, "reviewed");
+  // Assert the count itself, not only the state: a branch that silently returned 0 would
+  // still look "reviewed" here while dropping the very feedback this path must preserve.
+  assert.equal(withSuppressed.suppressedCommentCount, 2);
+  // A counted block must hold reconciliation, which is what makes preserving it matter.
+  assert.equal(withSuppressed.status, "blocked");
 
   assert.throws(
     () =>
