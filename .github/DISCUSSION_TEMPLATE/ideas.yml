@@ -4,8 +4,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Este espaço é público. Use placeholders em vez de nomes, contas ou identificadores
-        reais de infraestrutura.
+        Este espaço é público. Não publique segredos, credenciais, URLs privadas nem
+        identificadores reais de contas ou infraestrutura.
   - type: textarea
     id: problem
     attributes:
