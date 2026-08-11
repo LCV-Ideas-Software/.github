@@ -1,18 +1,21 @@
 # Changelog
 
-Notable changes to this repository are recorded here **from 2026-08-11 onward**. Earlier work is not
+Notable changes to this repository are recorded here **a partir de 11/08/2026**. Earlier work is not
 summarized in this file; see [Earlier history](#earlier-history) for where it is verifiable.
 
 This repository is **not versioned**: it publishes the organization profile, the static
 organization site, the sponsor page, the GitHub-to-Slack relay and the shared community-health
-defaults, none of which carry a release number. Entries are therefore grouped by date rather than
+defaults, and none of them is released under a number. The one manifest that carries a `version`
+field, `workers/github-slack-relay/package.json` at `0.1.0`, is `private: true` and is never
+published to any registry — the Worker is deployed from this repository's source by
+`wrangler deploy`, and that field does not gate, tag or name any deployment. Entries are therefore grouped by date rather than
 by semantic version, and each one names the pull request that carried it so the full diff, its
 reviews and its checks stay reachable.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) as far as it applies to
 an unversioned repository.
 
-## 2026-08-11 — GitHub Actions governance sanitation
+## 11/08/2026 — GitHub Actions governance sanitation
 
 First repository of the enterprise-wide governance rollout described in
 [Discussion #150](https://github.com/orgs/LCV-Ideas-Software/discussions/150) and executed under
@@ -111,7 +114,7 @@ evidence is the execution trail recorded in
   the gap is that nothing stops one line from removing each guarantee. Tracked in
   [#170](https://github.com/LCV-Ideas-Software/.github/issues/170), to be remediated in its own pull
   request rather than mixed into documentation work.
-- A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. On 2026-08-11
+- A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. Em 11/08/2026
   the trigger endpoint answered `{"ok":true}`, D1 stored `accepted_by_slack`, and the asynchronous
   workflow execution then ended in `TIMEOUT`; that message does not exist in the channel. Terminal
   states are not retried, and GitHub webhook redelivery cannot repair it because the same

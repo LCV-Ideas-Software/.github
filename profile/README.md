@@ -28,7 +28,7 @@ LCV Ideas &amp; Software is an independent vibe-coding studio. It builds AI-assi
 
 **Status.** Active organization profile. Current release: **not versioned** — it publishes a surface rather than a numbered artifact.
 
-Changes to this profile are recorded, from 2026-08-11 onward, in the [`CHANGELOG.md`](https://github.com/LCV-Ideas-Software/.github/blob/main/CHANGELOG.md) of the `.github` repository that hosts it. Earlier work is not summarized there; the commit history remains its record.
+Changes to this profile are recorded, from 11/08/2026 onward, in the [`CHANGELOG.md`](https://github.com/LCV-Ideas-Software/.github/blob/main/CHANGELOG.md) of the `.github` repository that hosts it. Earlier work is not summarized there; the commit history remains its record.
 
 ---
 
