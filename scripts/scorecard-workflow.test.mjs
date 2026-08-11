@@ -90,7 +90,7 @@ test("the publishing job satisfies OpenSSF's OIDC workflow restrictions", async 
     "only the publishing job may request an OIDC token",
   );
   assert.doesNotMatch(workflow, /publish_results:\s*false/);
-  assert.doesNotMatch(workflow, /ghcr\.io\/ossf\/scorecard-action/);
+  assert.doesNotMatch(workflow, /^.*ghcr\.io\/ossf\/scorecard-action.*$/m);
 });
 
 test("policy enforcement is isolated from the OIDC publisher", async () => {
