@@ -11,15 +11,67 @@ const zizmorWorkflow = await readFile(
   "utf8",
 );
 
-function zizmorJobPermissions(source) {
+function workflowJobNames(source) {
   const lines = source.replaceAll("\r\n", "\n").split("\n");
-  const start = lines.indexOf("    permissions:");
-  assert.notEqual(start, -1, "Zizmor job permissions must be present");
-  let end = start + 1;
-  while (end < lines.length && lines[end].startsWith("      ")) {
-    end += 1;
+  const jobsStart = lines.indexOf("jobs:");
+  assert.notEqual(jobsStart, -1, "jobs mapping must be present");
+  const names = [];
+  for (const line of lines.slice(jobsStart + 1)) {
+    const visible = line.trim();
+    if (visible === "" || visible.startsWith("#")) {
+      continue;
+    }
+    const indentation = line.length - line.trimStart().length;
+    if (indentation === 0) {
+      break;
+    }
+    if (indentation === 2 && visible.endsWith(":")) {
+      names.push(visible.slice(0, -1));
+    }
   }
-  return lines.slice(start, end).join("\n");
+  return names;
+}
+
+function zizmorJobBlock(source) {
+  const lines = source.replaceAll("\r\n", "\n").split("\n");
+  const jobsStart = lines.indexOf("jobs:");
+  assert.notEqual(jobsStart, -1, "Zizmor jobs mapping must be present");
+  const jobStart = lines.indexOf("  zizmor:", jobsStart + 1);
+  assert.notEqual(jobStart, -1, "Zizmor job must be present");
+  const block = [lines[jobStart]];
+  for (const line of lines.slice(jobStart + 1)) {
+    const visible = line.trim();
+    if (visible === "" || visible.startsWith("#")) {
+      continue;
+    }
+    const indentation = line.length - line.trimStart().length;
+    if (indentation <= 2) {
+      break;
+    }
+    block.push(line);
+  }
+  return block;
+}
+
+function zizmorJobPermissions(source) {
+  const job = zizmorJobBlock(source);
+  const starts = job.flatMap((line, index) =>
+    line === "    permissions:" ? [index] : [],
+  );
+  assert.deepEqual(
+    starts,
+    [2],
+    "Zizmor must have one permission map immediately after its name",
+  );
+  const block = [job[starts[0]]];
+  for (const line of job.slice(starts[0] + 1)) {
+    const indentation = line.length - line.trimStart().length;
+    if (indentation <= 4) {
+      break;
+    }
+    block.push(line);
+  }
+  return block.join("\n");
 }
 
 test("Dependency Review scans same-repository and fork pull requests", () => {
@@ -53,13 +105,35 @@ test("Dependency Review validates the GitHub Actions pin auditor", () => {
 test("reusable Zizmor grants the minimum metadata access required by SARIF upload", () => {
   assert.match(zizmorWorkflow, /^permissions:\s*\{\}\s*$/m);
   assert.doesNotMatch(zizmorWorkflow, /permissions:\s*write-all/);
+  assert.deepEqual(workflowJobNames(zizmorWorkflow), ["zizmor"]);
   assert.equal(
-    zizmorJobPermissions(zizmorWorkflow),
-    [
-      "    permissions:",
-      "      actions: read # CodeQL upload-sarif reads workflow-run metadata.",
-      "      contents: read",
-      "      security-events: write # Upload the SARIF to GitHub code scanning.",
-    ].join("\n"),
+    zizmorJobBlock(zizmorWorkflow)[0],
+    "  zizmor:",
+    "the permission contract must stay anchored to the named Zizmor job",
+  );
+  const expectedPermissions = [
+    "    permissions:",
+    "      actions: read # CodeQL upload-sarif reads workflow-run metadata.",
+    "      contents: read",
+    "      security-events: write # Upload the SARIF to GitHub code scanning.",
+  ].join("\n");
+  assert.equal(zizmorJobPermissions(zizmorWorkflow), expectedPermissions);
+  const overprivilegedAfterBlankLine = zizmorWorkflow.replace(
+    "      security-events: write # Upload the SARIF to GitHub code scanning.\n",
+    "      security-events: write # Upload the SARIF to GitHub code scanning.\n\n      id-token: write\n",
+  );
+  assert.notEqual(
+    zizmorJobPermissions(overprivilegedAfterBlankLine),
+    expectedPermissions,
+    "a blank line must not hide an extra permission",
+  );
+  const precedingJob = zizmorWorkflow.replace(
+    "jobs:\n  zizmor:",
+    "jobs:\n  impostor:\n    permissions:\n      actions: read\n  zizmor:",
+  );
+  assert.notDeepEqual(
+    workflowJobNames(precedingJob),
+    ["zizmor"],
+    "a preceding job must violate the exact job inventory",
   );
 });
