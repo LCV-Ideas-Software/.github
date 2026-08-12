@@ -160,8 +160,11 @@ CREATE TABLE slack_delivery_recovery_audit (
   absence_proof_reference TEXT NOT NULL
     CHECK (
       length(absence_proof_reference) BETWEEN 71 AND 500
-      AND absence_proof_reference GLOB
-        'https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-[0-9]*'
+      AND substr(
+        absence_proof_reference,
+        1,
+        length('https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-')
+      ) = 'https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-'
       AND substr(
         absence_proof_reference,
         length('https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-') + 1
@@ -170,8 +173,11 @@ CREATE TABLE slack_delivery_recovery_audit (
   authorization_reference TEXT NOT NULL
     CHECK (
       length(authorization_reference) BETWEEN 71 AND 500
-      AND authorization_reference GLOB
-        'https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-[0-9]*'
+      AND substr(
+        authorization_reference,
+        1,
+        length('https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-')
+      ) = 'https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-'
       AND substr(
         authorization_reference,
         length('https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-') + 1
@@ -209,7 +215,7 @@ CREATE TABLE slack_delivery_recovery_audit (
 CREATE TRIGGER validate_known_slack_delivery_recovery
 BEFORE INSERT ON slack_delivery_recovery_audit
 BEGIN
-  SELECT CASE WHEN NOT EXISTS (
+  SELECT (CASE WHEN NOT EXISTS (
     SELECT 1
     FROM deliveries
     WHERE delivery_id = NEW.delivery_id
@@ -217,7 +223,7 @@ BEGIN
       AND status = 'manual_review'
       AND last_error = 'known_slack_workflow_timeout_message_absent'
       AND legacy_unverified = 1
-  ) THEN RAISE(ABORT, 'known_loss_recovery_precondition_failed') END;
+  ) THEN RAISE(ABORT, 'known_loss_recovery_precondition_failed') END);
 END;
 
 CREATE TRIGGER release_known_slack_delivery_recovery
@@ -235,8 +241,8 @@ BEGIN
     AND last_error = 'known_slack_workflow_timeout_message_absent'
     AND legacy_unverified = 1;
 
-  SELECT CASE WHEN changes() != 1
-    THEN RAISE(ABORT, 'known_loss_recovery_compare_and_swap_failed') END;
+  SELECT (CASE WHEN changes() != 1
+    THEN RAISE(ABORT, 'known_loss_recovery_compare_and_swap_failed') END);
 END;
 
 ALTER TABLE relay_state

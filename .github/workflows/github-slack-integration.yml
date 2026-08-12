@@ -18,7 +18,9 @@ on:
       - "scripts/provision-slack-relay-secret.mjs"
       - "scripts/slack-delivery-protocol-preflight.mjs"
       - "scripts/slack-delivery-protocol-preflight.test.mjs"
+      - "scripts/slack-relay-d1-remote-proof.test.mjs"
       - "scripts/slack-relay-secret-rollout.test.mjs"
+      - "scripts/verify-slack-relay-d1-remote.mjs"
       - "slack/github-integration/**"
       - "workers/github-slack-relay/**"
   pull_request:
@@ -91,6 +93,7 @@ jobs:
           scripts/slack-workflow-monitor.test.mjs
           scripts/slack-relay-secret-rollout.test.mjs
           scripts/slack-delivery-protocol-preflight.test.mjs
+          scripts/slack-relay-d1-remote-proof.test.mjs
 
       - name: Verify Cloudflare relay
         working-directory: workers/github-slack-relay
@@ -153,6 +156,12 @@ jobs:
           npm audit --prefix workers/github-slack-relay --audit-level=low
           expected_wrangler="$(node -p "require('./workers/github-slack-relay/package.json').devDependencies.wrangler")"
           test "$(workers/github-slack-relay/node_modules/.bin/wrangler --version)" = "$expected_wrangler"
+
+      - name: Prove durable inbox migration in disposable remote D1
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/verify-slack-relay-d1-remote.mjs
 
       - name: Apply durable inbox migrations
         env:

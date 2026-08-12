@@ -72,6 +72,16 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
+    "      - name: Prove durable inbox migration in disposable remote D1",
+    "      - name: Skip the disposable remote D1 proof",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "        run: node scripts/verify-slack-relay-d1-remote.mjs",
+    "        run: echo skipped",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
     "      - name: Refuse to replace an already activated relay revision",
     "      - name: Skip the activated relay revision preflight",
   );
