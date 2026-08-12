@@ -124,7 +124,8 @@ evidence is the execution trail recorded in
   policy remains governed by external rulesets and review rather than authenticated by this
   contract. Full immutable Action references are inside the digest, while the pin auditor
   independently validates their release provenance
-  ([#170](https://github.com/LCV-Ideas-Software/.github/issues/170)).
+  ([#170](https://github.com/LCV-Ideas-Software/.github/issues/170),
+  [#177](https://github.com/LCV-Ideas-Software/.github/pull/177)).
 - Aligned the documentation and the public surface with the repository's real state: the Dependabot
   cooldown wording in `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `profile/README.md` and the
   explanatory comment in `.github/zizmor.yml`; the
