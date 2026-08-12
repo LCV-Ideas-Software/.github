@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const ACTIVITY_API_URL = "https://slack.com/api/apps.activities.list";
@@ -11,9 +11,28 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_RETRY_AFTER_SECONDS = 30;
 const MAX_PAGES = 100;
 const REPORT_TRACE_LIMIT = 100;
+const MAX_RELAY_AGE_SECONDS = 300;
+const MAX_RELAY_CLOCK_SKEW_SECONDS = 60;
 const SAFE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const DELIVERY_ID_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
 const TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/;
+const SIGNATURE_PATTERN = /^[a-f0-9]{64}$/;
+const RELAY_SIGNED_FIELDS = [
+  "source",
+  "severity",
+  "repository",
+  "title",
+  "details",
+  "actor",
+  "branch",
+  "url",
+  "occurred_at",
+  "delivery_id",
+  "event",
+  "action",
+  "destination",
+  "relay_timestamp",
+];
 const EXECUTION_EVENT_TYPES = new Set([
   "workflow_execution_started",
   "workflow_execution_result",
@@ -32,7 +51,7 @@ export function readSlackMonitorConfiguration(environment = process.env) {
   const rawCurrent = environment.SLACK_RELAY_SIGNING_SECRET;
   const currentRelaySigningSecret =
     typeof rawCurrent === "string" && rawCurrent.trim() !== ""
-      ? rawCurrent.trim()
+      ? rawCurrent
       : null;
   if (
     currentRelaySigningSecret !== null &&
@@ -44,9 +63,7 @@ export function readSlackMonitorConfiguration(environment = process.env) {
   }
   const rawNext = environment.SLACK_RELAY_SIGNING_SECRET_NEXT;
   const nextRelaySigningSecret =
-    typeof rawNext === "string" && rawNext.trim() !== ""
-      ? rawNext.trim()
-      : null;
+    typeof rawNext === "string" && rawNext.trim() !== "" ? rawNext : null;
   if (
     nextRelaySigningSecret !== null &&
     (Buffer.byteLength(nextRelaySigningSecret, "utf8") < 32 ||
@@ -256,7 +273,89 @@ function recordFor(value) {
     : null;
 }
 
-export function reconcileSlackActivities(activities) {
+function verifiedHmac(secrets, canonical, candidate) {
+  if (typeof candidate !== "string" || !SIGNATURE_PATTERN.test(candidate)) {
+    return false;
+  }
+  const actual = Buffer.from(candidate, "hex");
+  return secrets.slice(0, 2).some((secret) => {
+    if (typeof secret !== "string" || Buffer.byteLength(secret, "utf8") < 32) {
+      return false;
+    }
+    const expected = createHmac("sha256", secret)
+      .update(canonical, "utf8")
+      .digest();
+    return timingSafeEqual(actual, expected);
+  });
+}
+
+function authenticatedStepEvidence(
+  inputs,
+  stepOutcome,
+  secrets,
+  activityCreatedUs,
+) {
+  if (inputs === null) return null;
+  const deliveryId = inputs.delivery_id;
+  if (typeof deliveryId !== "string" || !DELIVERY_ID_PATTERN.test(deliveryId)) {
+    return null;
+  }
+  const relayTimestamp = inputs.relay_timestamp;
+  if (typeof relayTimestamp !== "string" || !/^\d{10}$/u.test(relayTimestamp)) {
+    return null;
+  }
+  const relayTimestampSeconds = Number.parseInt(relayTimestamp, 10);
+  const activityCreatedSeconds = Math.floor(activityCreatedUs / 1_000_000);
+  if (
+    relayTimestampSeconds < activityCreatedSeconds - MAX_RELAY_AGE_SECONDS ||
+    relayTimestampSeconds >
+      activityCreatedSeconds + MAX_RELAY_CLOCK_SKEW_SECONDS
+  ) {
+    return null;
+  }
+
+  const phase = inputs.phase;
+  if (phase === "send_started" || phase === "delivered") {
+    const destination = inputs.destination;
+    if (destination !== "alerts" && destination !== "activity") {
+      return null;
+    }
+    const canonical = JSON.stringify([
+      "slack_progress_authorization_v1",
+      deliveryId,
+      destination,
+      relayTimestamp,
+    ]);
+    if (!verifiedHmac(secrets, canonical, inputs.progress_token)) return null;
+    return {
+      deliveryId,
+      sendBoundaryReached:
+        phase === "delivered" ||
+        (phase === "send_started" && stepOutcome === "Success"),
+      preSendFailureProven: phase === "send_started" && stepOutcome === "Error",
+    };
+  }
+
+  const expectedDestination = inputs.expected_destination;
+  if (
+    (expectedDestination !== "alerts" && expectedDestination !== "activity") ||
+    inputs.destination !== expectedDestination ||
+    !RELAY_SIGNED_FIELDS.every((name) => typeof inputs[name] === "string")
+  ) {
+    return null;
+  }
+  const canonical = JSON.stringify(
+    RELAY_SIGNED_FIELDS.map((name) => inputs[name]),
+  );
+  if (!verifiedHmac(secrets, canonical, inputs.relay_signature)) return null;
+  return {
+    deliveryId,
+    sendBoundaryReached: false,
+    preSendFailureProven: stepOutcome === "Error",
+  };
+}
+
+export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
   const traces = new Map();
   let errors = 0;
   let maximumCreated = 0;
@@ -336,32 +435,23 @@ export function reconcileSlackActivities(activities) {
     }
     if (eventType === "workflow_step_execution_result") {
       const inputs = recordFor(payload?.inputs);
-      const deliveryId = inputs?.delivery_id;
-      const correlatedDelivery =
-        typeof deliveryId === "string" && DELIVERY_ID_PATTERN.test(deliveryId);
-      if (correlatedDelivery) {
+      const stepOutcome = payload?.exec_outcome;
+      const evidence = authenticatedStepEvidence(
+        inputs,
+        stepOutcome,
+        relaySigningSecrets,
+        created,
+      );
+      if (evidence !== null) {
+        const deliveryId = evidence.deliveryId;
         if (trace.deliveryId !== null && trace.deliveryId !== deliveryId) {
           throw new Error("Slack trace contains conflicting delivery IDs.");
         }
         trace.deliveryId = deliveryId;
-      }
-      const phase = inputs?.phase;
-      const stepOutcome = payload?.exec_outcome;
-      if (
-        phase === "delivered" ||
-        (phase === "send_started" && stepOutcome === "Success")
-      ) {
-        trace.sendBoundaryReached = true;
-      }
-      const expectedDestination = inputs?.expected_destination;
-      if (
-        correlatedDelivery &&
-        stepOutcome === "Error" &&
-        (phase === "send_started" ||
-          expectedDestination === "alerts" ||
-          expectedDestination === "activity")
-      ) {
-        trace.preSendFailureProven = true;
+        trace.sendBoundaryReached ||= evidence.sendBoundaryReached;
+        trace.preSendFailureProven ||=
+          evidence.preSendFailureProven && !trace.sendBoundaryReached;
+        if (trace.sendBoundaryReached) trace.preSendFailureProven = false;
       }
     }
   }
@@ -494,7 +584,10 @@ export async function monitorSlackWorkflow({
     cursor = page.nextCursor;
   }
 
-  const reconciliation = reconcileSlackActivities(activities);
+  const reconciliation = reconcileSlackActivities(
+    activities,
+    configuration.relaySigningSecrets,
+  );
   const evidenceCheckpointUs =
     reconciliation.maximumCreated === 0
       ? previousCheckpointUs === 0

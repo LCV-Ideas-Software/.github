@@ -86,6 +86,7 @@ jobs:
           node --test
           scripts/github-slack-hook-audit.test.mjs
           scripts/github-slack-webhook-redelivery.test.mjs
+          scripts/slack-workflow-monitor.test.mjs
           scripts/slack-relay-secret-rollout.test.mjs
 
       - name: Verify Cloudflare relay

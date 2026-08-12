@@ -99,7 +99,7 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Verify GitHub Slack relay"],
     policyRunner: false,
     nodeOptions: "--no-deprecation",
-    digest: "606a6033f647fe12592eefcd9c98e155b5abb407d624a66129823f23cc4489b8",
+    digest: "a1818910caa099d5d1716c7299e2526872ffb4d95ade2834df52307e5e839d86",
     privilegedJobIds: ["deploy", "deploy_slack"],
     privilegedDigest:
       "9afa596ce9d6e91b407f0a0f5d2d5e9c8766f603dfaf0c2bb8eb245dc80c95fb",

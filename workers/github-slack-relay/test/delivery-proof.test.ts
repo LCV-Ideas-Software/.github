@@ -594,6 +594,86 @@ describe("fail-closed Slack trace reconciliation", () => {
     });
   });
 
+  it("merges late pre-send proof for the same applied trace in the memory store", async () => {
+    const store = new MemoryDeliveryStore();
+    const queue = new FakeQueue();
+    const env = makeEnv(queue);
+    const deliveryId = "trace-late-memory-proof";
+    store.seed(deliveryId, "accepted_by_trigger", NOW);
+    const baseTrace = {
+      trace_id: "TrMemoryLateProof1",
+      delivery_id: deliveryId,
+      outcome: "error" as const,
+      send_boundary_reached: false,
+      started_at_us: NOW * 1_000 - 1,
+      completed_at_us: NOW * 1_000,
+    };
+
+    const first = await handleFetch(
+      await reconciliationRequest({
+        checkpoint_us: NOW * 1_000,
+        report_timestamp: NOW_SECONDS,
+        traces: [{ ...baseTrace, pre_send_failure_proven: false }],
+      }),
+      env,
+      { store, now: () => NOW },
+    );
+    expect(first.status).toBe(200);
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "manual_review",
+      lastError: "slack_workflow_failed_without_pre_send_proof",
+      slackTraceId: baseTrace.trace_id,
+    });
+
+    const second = await handleFetch(
+      await reconciliationRequest({
+        checkpoint_us: NOW * 1_000,
+        report_timestamp: NOW_SECONDS,
+        traces: [{ ...baseTrace, pre_send_failure_proven: true }],
+      }),
+      env,
+      { store, now: () => NOW + 1 },
+    );
+    expect(second.status).toBe(200);
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "pending",
+      lastError: "slack_workflow_failed_before_send_boundary",
+      slackTraceId: baseTrace.trace_id,
+    });
+  });
+
+  it("keeps the memory checkpoint behind a live accepted retry with an old trace", async () => {
+    const store = new MemoryDeliveryStore();
+    store.seed("trace-memory-checkpoint", "accepted_by_trigger", NOW, {
+      slackTraceId: "TrEarlierAttempt1",
+    });
+
+    await expect(
+      store.advanceSlackActivityCheckpoint((NOW + 60 * 60 * 1_000) * 1_000),
+    ).resolves.toBe(NOW * 1_000);
+  });
+
+  it("does not attach an error trace without a send boundary to a delivered memory row", async () => {
+    const store = new MemoryDeliveryStore();
+    const deliveryId = "trace-delivered-unrelated-error";
+    store.seed(deliveryId, "delivered", NOW);
+
+    await store.recordSlackTrace(
+      {
+        traceId: "TrDeliveredError1",
+        deliveryId,
+        outcome: "error",
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000 - 1,
+        completedAtUs: NOW * 1_000,
+      },
+      NOW + 1,
+    );
+
+    expect(store.deliveries.get(deliveryId)?.slackTraceId).toBeNull();
+  });
+
   it("keeps the durable checkpoint unchanged when any trace is invalid", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();

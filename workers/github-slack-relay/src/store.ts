@@ -575,8 +575,7 @@ export class D1DeliveryStore implements DeliveryStore {
     const row = await this.#database
       .prepare(
         `UPDATE deliveries
-         SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?,
-             slack_trace_id = NULL
+         SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?
          WHERE delivery_id = ?
            AND status IN ('pending', 'enqueueing', 'queued', 'dead_letter')
            AND next_attempt_at <= ?
@@ -680,7 +679,8 @@ export class D1DeliveryStore implements DeliveryStore {
         .prepare(
           `UPDATE deliveries
            SET status = 'send_started', updated_at = ?, send_started_at = ?,
-               next_attempt_at = ?, last_error = NULL, legacy_unverified = 0
+               next_attempt_at = ?, last_error = NULL, legacy_unverified = 0,
+               slack_trace_id = NULL
            WHERE delivery_id = ? AND destination = ?
              AND (
                status IN ('sending', 'accepted_by_slack', 'accepted_by_trigger')
@@ -759,7 +759,7 @@ export class D1DeliveryStore implements DeliveryStore {
           `UPDATE deliveries
            SET status = 'delivered', updated_at = ?, delivered_at = ?,
                slack_message_ts = ?, next_attempt_at = ?, last_error = NULL,
-               legacy_unverified = 0
+               legacy_unverified = 0, slack_trace_id = NULL
            WHERE delivery_id = ? AND destination = ?
              AND status IN (
                'sending', 'accepted_by_slack', 'accepted_by_trigger',
@@ -926,7 +926,8 @@ export class D1DeliveryStore implements DeliveryStore {
 
     const existingTrace = await this.#database
       .prepare(
-        `SELECT delivery_id, outcome, applied_at
+        `SELECT delivery_id, outcome, send_boundary_reached,
+                pre_send_failure_proven, applied_at
          FROM slack_workflow_traces
          WHERE trace_id = ?`,
       )
@@ -934,6 +935,8 @@ export class D1DeliveryStore implements DeliveryStore {
       .first<{
         delivery_id: string;
         outcome: SlackTraceOutcome;
+        send_boundary_reached: number;
+        pre_send_failure_proven: number;
         applied_at: number | null;
       }>();
     if (
@@ -1005,12 +1008,13 @@ export class D1DeliveryStore implements DeliveryStore {
 
     const effectiveTrace = await this.#database
       .prepare(
-        `SELECT send_boundary_reached, pre_send_failure_proven
+        `SELECT outcome, send_boundary_reached, pre_send_failure_proven
          FROM slack_workflow_traces
          WHERE trace_id = ?`,
       )
       .bind(trace.traceId)
       .first<{
+        outcome: SlackTraceOutcome;
         send_boundary_reached: number;
         pre_send_failure_proven: number;
       }>();
@@ -1019,6 +1023,19 @@ export class D1DeliveryStore implements DeliveryStore {
     }
     const sendBoundaryReached = effectiveTrace.send_boundary_reached === 1;
     const preSendFailureProven = effectiveTrace.pre_send_failure_proven === 1;
+    const appliedTraceGainedEvidence =
+      existingTrace !== null &&
+      ((existingTrace.outcome === "pending" &&
+        effectiveTrace.outcome !== "pending") ||
+        (existingTrace.send_boundary_reached === 0 && sendBoundaryReached) ||
+        (existingTrace.pre_send_failure_proven === 0 && preSendFailureProven));
+    if (
+      existingTrace !== null &&
+      existingTrace.applied_at !== null &&
+      !appliedTraceGainedEvidence
+    ) {
+      return;
+    }
 
     const current = await this.get(trace.deliveryId);
     if (current === null) {
@@ -1050,6 +1067,40 @@ export class D1DeliveryStore implements DeliveryStore {
           )
           .bind(trace.traceId, now, trace.deliveryId)
           .run();
+      }
+      await this.#markSlackTraceApplied(trace.traceId, now);
+      return;
+    }
+
+    if (
+      trace.outcome === "success" &&
+      current.status === "accepted_by_slack" &&
+      current.legacyUnverified
+    ) {
+      const attached = await this.#database
+        .prepare(
+          `UPDATE deliveries
+           SET slack_trace_id = ?, updated_at = ?
+           WHERE delivery_id = ?
+             AND status = 'accepted_by_slack'
+             AND legacy_unverified = 1
+             AND (slack_trace_id IS NULL OR slack_trace_id = ?)`,
+        )
+        .bind(trace.traceId, now, trace.deliveryId, trace.traceId)
+        .run();
+      if (!changed(attached)) {
+        const latest = await this.get(trace.deliveryId);
+        if (
+          latest?.status !== "accepted_by_slack" ||
+          !latest.legacyUnverified ||
+          latest.slackTraceId !== trace.traceId
+        ) {
+          await this.markManualReview(
+            trace.deliveryId,
+            now,
+            "slack_legacy_trace_conflict",
+          );
+        }
       }
       await this.#markSlackTraceApplied(trace.traceId, now);
       return;
@@ -1139,11 +1190,18 @@ export class D1DeliveryStore implements DeliveryStore {
       .bind(now, now, trace.traceId, trace.deliveryId, trace.traceId)
       .run();
     if (!changed(retry)) {
-      await this.markManualReview(
-        trace.deliveryId,
-        now,
-        "slack_reconciliation_state_conflict",
-      );
+      const latest = await this.get(trace.deliveryId);
+      if (
+        latest?.status !== "pending" ||
+        latest.slackTraceId !== trace.traceId ||
+        latest.lastError !== "slack_workflow_failed_before_send_boundary"
+      ) {
+        await this.markManualReview(
+          trace.deliveryId,
+          now,
+          "slack_reconciliation_state_conflict",
+        );
+      }
     }
     await this.#markSlackTraceApplied(trace.traceId, now);
   }
@@ -1194,7 +1252,10 @@ export class D1DeliveryStore implements DeliveryStore {
                  FROM deliveries
                  WHERE legacy_unverified = 0
                    AND (
-                     status IN ('pending', 'enqueueing', 'queued', 'sending')
+                      status IN (
+                        'pending', 'enqueueing', 'queued', 'sending',
+                        'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+                      )
                      OR slack_trace_id IS NULL
                    )
                ),

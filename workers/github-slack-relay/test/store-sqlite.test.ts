@@ -621,9 +621,14 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
 
     await store.markQueued(deliveryId, NOW + 4);
     await store.claimForSlack(deliveryId, NOW + 5);
+    await store.markAcceptedByTrigger(
+      deliveryId,
+      NOW + 6,
+      NOW + 20 * 60 * 1_000,
+    );
     await expect(
       store.advanceSlackActivityCheckpoint((NOW + 60 * 60 * 1_000) * 1_000),
-    ).resolves.toBe((NOW + 5) * 1_000);
+    ).resolves.toBe((NOW + 6) * 1_000);
   });
 
   it("recognizes the migrated schema only after protocol activation", async () => {
@@ -893,6 +898,124 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         )
         .get(trace.traceId),
     ).toEqual({ applied_at: NOW + 1 });
+  });
+
+  it("does not reapply an unchanged terminal trace after the next attempt starts", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-applied-trace-next-attempt";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    const trace = {
+      traceId: "TrAppliedNextAttempt1",
+      deliveryId,
+      outcome: "error" as const,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      startedAtUs: NOW * 1_000,
+      completedAtUs: NOW * 1_000 + 1,
+    };
+
+    await store.recordSlackTrace(trace, NOW + 1);
+    await store.markQueued(deliveryId, NOW + 2);
+    await store.claimForSlack(deliveryId, NOW + 3);
+    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
+    await store.recordSlackTrace(trace, NOW + 4);
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "accepted_by_trigger",
+      slackTraceId: trace.traceId,
+      attemptCount: 2,
+    });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      now: NOW + 5,
+      reconcileAt: NOW + 5_000,
+    });
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "send_started",
+      slackTraceId: null,
+      attemptCount: 2,
+    });
+  });
+
+  it("does not reapply a terminal trace after its delivery mutation commits without the applied marker", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-unmarked-trace-next-attempt";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    const trace = {
+      traceId: "TrUnmarkedNextAttempt1",
+      deliveryId,
+      outcome: "error" as const,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      startedAtUs: NOW * 1_000,
+      completedAtUs: NOW * 1_000 + 1,
+    };
+
+    await store.recordSlackTrace(trace, NOW + 1);
+    database
+      .prepare(
+        "UPDATE slack_workflow_traces SET applied_at = NULL WHERE trace_id = ?",
+      )
+      .run(trace.traceId);
+    await store.markQueued(deliveryId, NOW + 2);
+    await store.claimForSlack(deliveryId, NOW + 3);
+    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
+    await store.recordSlackTrace(trace, NOW + 4);
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "accepted_by_trigger",
+      slackTraceId: trace.traceId,
+      attemptCount: 2,
+    });
+  });
+
+  it("keeps a successful legacy acceptance quarantined outside readiness", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-legacy-success-quarantine";
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'accepted_by_slack', legacy_unverified = 1,
+             trigger_accepted_at = ?, next_attempt_at = ?
+         WHERE delivery_id = ?`,
+      )
+      .run(NOW, NOW + 1_000, deliveryId);
+
+    await store.recordSlackTrace(
+      {
+        traceId: "TrLegacySuccess1",
+        deliveryId,
+        outcome: "success",
+        sendBoundaryReached: false,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 1,
+    );
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "accepted_by_slack",
+      legacyUnverified: true,
+      slackTraceId: "TrLegacySuccess1",
+    });
+    await store.activateSlackDeliveryProtocol(
+      protocolActivation(TEST_REVISION),
+    );
+    await expect(store.healthcheck(NOW + 2, TEST_REVISION)).resolves.toBe(true);
   });
 
   it("preserves an earlier send boundary when a later trace page omits it", async () => {

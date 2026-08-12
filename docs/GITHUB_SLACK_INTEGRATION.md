@@ -101,7 +101,10 @@ posts an idempotent HMAC receipt containing the GitHub `delivery_id`, fixed
 destination, and Slack `message_timestamp`. Trigger acceptance remains
 `accepted_by_trigger`; only the post-message receipt creates `delivered`.
 The activity monitor later attaches Slack's actual `trace_id` without sending
-raw workflow inputs to Cloudflare.
+raw workflow inputs to Cloudflare. It accepts signed validator or progress
+inputs only when their original `relay_timestamp` is also inside the same
+five-minute/60-second window around that Slack step activity's own timestamp;
+an old valid HMAC cannot be replayed into a later trace.
 
 The validator emits a domain-separated progress token bound to the validated
 `delivery_id`, destination and original timestamp. Both progress steps must
@@ -624,12 +627,16 @@ Monitoring and recovery are layered:
   overlap. An empty scan retains the prior evidence watermark, or the initial
   lower-bound anchor, rather than advancing to wall clock. D1 atomically clamps
   each proposed watermark behind the earliest nonlegacy live attempt until a
-  trace is correlated; a retry clears its old trace binding. Incomplete
+  trace is correlated. A retry retains its old trace binding until authenticated
+  progress or trace evidence proves the next Slack execution; incomplete
   correlated traces are persisted before the watermark advances, so an
   arbitrarily late-indexed terminal observation cannot be skipped and cannot forget an earlier
-  successful send-boundary step. A terminal error is retryable only when the
-  trace also contains an explicit failed validator or pre-send step; absence of
-  a boundary event alone remains ambiguous;
+  successful send-boundary step. The monitor correlates a delivery only from a
+  validator input whose 14-field relay HMAC verifies, or from a progress input
+  whose authorization token verifies, under current/`NEXT`; rejected or
+  unauthenticated trigger inputs are ignored. A terminal error is retryable only
+  when that authenticated trace also contains an explicit failed validator or
+  pre-send step; absence of a boundary event alone remains ambiguous;
 - only bounded `delivery_id`, `trace_id`, outcome, send-boundary flag,
   explicit pre-send-failure proof bit and microsecond timestamps leave the
   monitor. The complete activities
@@ -714,6 +721,11 @@ schema revision, and server activation time. Concurrent identical requests
 produce one mutation and `applied`/`already_applied` responses; no divergent
 tuple can reuse the latch. A reviewed contract can only close confirmation, and
 there is no downgrade or reopening path.
+An observed successful Slack trace for one of the ordinary legacy rows may
+attach its trace ID, but it remains `accepted_by_slack` with
+`legacy_unverified = 1`; it does not become readiness-blocking
+`manual_review` and is not promoted to `delivered` without the actual channel
+message and timestamp.
 The confirmed missing delivery
 `de345e40-95b1-11f1-8d38-fac15f0bb4cd` becomes `manual_review` with the bounded
 reason `known_slack_workflow_timeout_message_absent`.

@@ -52,6 +52,11 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
     "          workers/github-slack-relay/node_modules/.bin/wrangler deploy \\",
     "          echo skipped \\",
   );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          scripts/slack-workflow-monitor.test.mjs\n",
+    "",
+  );
 });
 
 test("every required workflow keeps pull_request and merge_group exact", () => {

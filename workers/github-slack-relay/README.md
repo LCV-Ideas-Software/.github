@@ -366,15 +366,22 @@ at `info` level, follows every `response_metadata.next_cursor`, and starts from
 an authenticated D1 checkpoint with a 20-minute overlap. An empty query keeps
 its previous evidence boundary (or anchors the initial lower bound); it never
 advances to wall-clock time. D1 additionally clamps every proposed advance
-behind the earliest nonlegacy live attempt until a trace is correlated. It persists correlated
-incomplete traces before advancing the checkpoint and extracts only bounded
-`delivery_id`, `trace_id`, outcome, timestamps, the send-boundary flag and the
-explicit pre-send-failure proof bit; raw activities and private workflow inputs
-are never sent to D1 or logged. The checkpoint advances only after all pages and
-every normalized trace are durably accepted. A terminal error with an explicit
-failed validator or pre-send step and no send boundary is the sole automatic
-resend case. Success without a receipt, any post-boundary failure, missing proof,
-incomplete evidence or a conflicting trace fails closed.
+behind the earliest nonlegacy live attempt until a trace is correlated. It
+retains an earlier trace binding across a retry until authenticated progress
+proves the next Slack execution, while every live attempt continues clamping
+the watermark. It persists correlated incomplete traces before advancing the checkpoint and
+extracts only bounded `delivery_id`, `trace_id`, outcome, timestamps, the
+send-boundary flag and the explicit pre-send-failure proof bit. A delivery is
+correlated only after the 14-field relay signature or the derived progress
+authorization verifies under current/`NEXT`, and the signed relay timestamp is
+within the validator's five-minute/60-second window around the Slack step
+activity itself. Rejected or replayed trigger inputs are ignored. Raw activities
+and private workflow inputs are never sent to D1 or logged. The checkpoint
+advances only after all pages and every normalized trace are durably accepted. A
+terminal error with an authenticated explicit failed validator or pre-send step
+and no send boundary is the sole automatic resend case. Success without a
+receipt, any post-boundary failure, missing proof, incomplete evidence or a
+conflicting trace fails closed.
 
 Migration `0004_confirm_slack_delivery.sql` is expand-only: it retains the old
 `accepted_at` column and `accepted_by_slack` value so the previously deployed
@@ -390,6 +397,10 @@ orchestrator activates the exact deployed revision and persists its immutable
 activation ID and schema revision. While the confirmation window remains open,
 only the identical tuple may be confirmed read-only; a contract migration closes
 that window irreversibly.
+If a successful Slack trace is observed for an ordinary legacy row, D1 may
+attach that trace ID but preserves `accepted_by_slack` and
+`legacy_unverified = 1`; the trace alone is neither delivery proof nor a reason
+to create readiness-blocking manual debt.
 The migration places the known missing delivery
 `de345e40-95b1-11f1-8d38-fac15f0bb4cd` in `manual_review`. Legacy backfill may
 set `delivered` only from positive evidence of exactly one matching channel

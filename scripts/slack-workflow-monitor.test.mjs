@@ -52,6 +52,73 @@ function hmac(canonical) {
     .digest("hex");
 }
 
+function signedProgressInputs(
+  deliveryId,
+  phase = "send_started",
+  destination = "alerts",
+  relayTimestamp = "1785830400",
+) {
+  return {
+    delivery_id: deliveryId,
+    destination,
+    phase,
+    relay_timestamp: relayTimestamp,
+    progress_token: hmac(
+      JSON.stringify([
+        "slack_progress_authorization_v1",
+        deliveryId,
+        destination,
+        relayTimestamp,
+      ]),
+    ),
+  };
+}
+
+function signedValidatorInputs(
+  deliveryId,
+  destination = "alerts",
+  relayTimestamp = "1785830400",
+) {
+  const inputs = {
+    source: "github",
+    severity: "high",
+    repository: "LCV-Ideas-Software/.github",
+    title: "test",
+    details: "test",
+    actor: "lcv-leo",
+    branch: "main",
+    url: "https://github.com/LCV-Ideas-Software/.github",
+    occurred_at: "2026-08-04T08:00:00.000Z",
+    delivery_id: deliveryId,
+    event: "workflow_run",
+    action: "completed",
+    destination,
+    relay_timestamp: relayTimestamp,
+    expected_destination: destination,
+  };
+  return {
+    ...inputs,
+    relay_signature: hmac(
+      JSON.stringify([
+        inputs.source,
+        inputs.severity,
+        inputs.repository,
+        inputs.title,
+        inputs.details,
+        inputs.actor,
+        inputs.branch,
+        inputs.url,
+        inputs.occurred_at,
+        inputs.delivery_id,
+        inputs.event,
+        inputs.action,
+        inputs.destination,
+        inputs.relay_timestamp,
+      ]),
+    ),
+  };
+}
+
 function assertCheckpointRequest(init) {
   const body = JSON.parse(String(init.body));
   assert.equal(
@@ -216,6 +283,11 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     /- name: Audit Slack workflow app dependencies/,
   );
   assert.match(requiredVerifyJob, /run: deno task --frozen audit/);
+  assert.match(
+    requiredVerifyJob,
+    /scripts\/slack-workflow-monitor\.test\.mjs/,
+    "the privileged deploy predecessor must run the monitor candidate tests",
+  );
 });
 
 test("expanded Worker selects staged NEXT while retaining current as a verifier", () => {
@@ -307,6 +379,20 @@ test("configuration can stage both verifier keys while selecting one signer", ()
   });
   assert.equal(promoted.relaySigningSecret, next);
   assert.equal(promoted.relaySigningActiveSlot, "next");
+});
+
+test("configuration preserves the exact HMAC secret bytes", () => {
+  const current = ` ${"c".repeat(32)} `;
+  const next = `\t${"n".repeat(32)}\n`;
+  const configured = readSlackMonitorConfiguration({
+    ...environment,
+    SLACK_RELAY_SIGNING_SECRET: current,
+    SLACK_RELAY_SIGNING_SECRET_NEXT: next,
+    SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
+  });
+
+  assert.equal(configured.relaySigningSecret, next);
+  assert.deepEqual(configured.relaySigningSecrets, [current, next]);
 });
 
 test("monitor can sign with the staged NEXT key without storing old current in GitHub", () => {
@@ -463,8 +549,7 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
               payload: {
                 exec_outcome: "Success",
                 inputs: {
-                  delivery_id: "delivery-paged-1",
-                  phase: "send_started",
+                  ...signedProgressInputs("delivery-paged-1"),
                   private_value: "must-not-leak",
                 },
               },
@@ -509,29 +594,31 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
 
 test("persists an incomplete trace so later pages cannot forget its send boundary", () => {
   const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
-  const result = reconcileSlackActivities([
-    {
-      level: "info",
-      event_type: "workflow_execution_started",
-      created,
-      trace_id: "TrPendingBoundary1",
-      payload: {},
-    },
-    {
-      level: "info",
-      event_type: "workflow_step_execution_result",
-      created: created + 1,
-      trace_id: "TrPendingBoundary1",
-      payload: {
-        exec_outcome: "Success",
-        inputs: {
-          delivery_id: "delivery-pending-boundary-1",
-          phase: "send_started",
-          private_value: "must-not-leak",
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created,
+        trace_id: "TrPendingBoundary1",
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 1,
+        trace_id: "TrPendingBoundary1",
+        payload: {
+          exec_outcome: "Success",
+          inputs: {
+            ...signedProgressInputs("delivery-pending-boundary-1"),
+            private_value: "must-not-leak",
+          },
         },
       },
-    },
-  ]);
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
 
   assert.deepEqual(result.traces, [
     {
@@ -549,28 +636,28 @@ test("persists an incomplete trace so later pages cannot forget its send boundar
 
 test("persists explicit pre-send failure proof before the terminal result arrives", () => {
   const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
-  const result = reconcileSlackActivities([
-    {
-      level: "info",
-      event_type: "workflow_execution_started",
-      created,
-      trace_id: "TrPendingPreSend1",
-      payload: {},
-    },
-    {
-      level: "error",
-      event_type: "workflow_step_execution_result",
-      created: created + 1,
-      trace_id: "TrPendingPreSend1",
-      payload: {
-        exec_outcome: "Error",
-        inputs: {
-          delivery_id: "delivery-pending-pre-send-1",
-          phase: "send_started",
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created,
+        trace_id: "TrPendingPreSend1",
+        payload: {},
+      },
+      {
+        level: "error",
+        event_type: "workflow_step_execution_result",
+        created: created + 1,
+        trace_id: "TrPendingPreSend1",
+        payload: {
+          exec_outcome: "Error",
+          inputs: signedProgressInputs("delivery-pending-pre-send-1"),
         },
       },
-    },
-  ]);
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
 
   assert.deepEqual(result.traces, [
     {
@@ -583,6 +670,200 @@ test("persists explicit pre-send failure proof before the terminal result arrive
       completed_at_us: null,
     },
   ]);
+});
+
+test("does not trust an unauthenticated failed validator input as retry proof", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created,
+        trace_id: "TrForgedValidator1",
+        payload: {},
+      },
+      {
+        level: "error",
+        event_type: "workflow_step_execution_result",
+        created: created + 1,
+        trace_id: "TrForgedValidator1",
+        payload: {
+          exec_outcome: "Error",
+          inputs: {
+            ...signedValidatorInputs("existing-real-delivery-id"),
+            relay_signature: "0".repeat(64),
+          },
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_execution_result",
+        created: created + 2,
+        trace_id: "TrForgedValidator1",
+        payload: { exec_outcome: "Error" },
+      },
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
+
+  assert.deepEqual(result.traces, []);
+});
+
+test("does not trust replayed authenticated step inputs outside their activity window", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const staleRelayTimestamp = String(created / 1_000_000 - 301);
+  const futureRelayTimestamp = String(created / 1_000_000 + 61);
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created: created - 1,
+        trace_id: "TrReplayedValidator1",
+        payload: {},
+      },
+      {
+        level: "error",
+        event_type: "workflow_step_execution_result",
+        created,
+        trace_id: "TrReplayedValidator1",
+        payload: {
+          exec_outcome: "Error",
+          inputs: signedValidatorInputs(
+            "existing-real-delivery-id",
+            "alerts",
+            staleRelayTimestamp,
+          ),
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_execution_result",
+        created: created + 1,
+        trace_id: "TrReplayedValidator1",
+        payload: { exec_outcome: "Error" },
+      },
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created: created - 1,
+        trace_id: "TrReplayedProgress1",
+        payload: {},
+      },
+      {
+        level: "error",
+        event_type: "workflow_step_execution_result",
+        created,
+        trace_id: "TrReplayedProgress1",
+        payload: {
+          exec_outcome: "Error",
+          inputs: signedProgressInputs(
+            "existing-real-delivery-id",
+            "send_started",
+            "alerts",
+            futureRelayTimestamp,
+          ),
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_execution_result",
+        created: created + 1,
+        trace_id: "TrReplayedProgress1",
+        payload: { exec_outcome: "Error" },
+      },
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
+
+  assert.deepEqual(result.traces, []);
+});
+
+test("accepts authenticated step inputs at the exact activity freshness boundaries", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created: created - 1,
+        trace_id: "TrBoundaryValidator1",
+        payload: {},
+      },
+      {
+        level: "error",
+        event_type: "workflow_step_execution_result",
+        created,
+        trace_id: "TrBoundaryValidator1",
+        payload: {
+          exec_outcome: "Error",
+          inputs: signedValidatorInputs(
+            "delivery-boundary-validator",
+            "alerts",
+            String(created / 1_000_000 - 300),
+          ),
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_execution_result",
+        created: created + 1,
+        trace_id: "TrBoundaryValidator1",
+        payload: { exec_outcome: "Error" },
+      },
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created: created - 1,
+        trace_id: "TrBoundaryProgress1",
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created,
+        trace_id: "TrBoundaryProgress1",
+        payload: {
+          exec_outcome: "Success",
+          inputs: signedProgressInputs(
+            "delivery-boundary-progress",
+            "send_started",
+            "alerts",
+            String(created / 1_000_000 + 60),
+          ),
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_execution_result",
+        created: created + 1,
+        trace_id: "TrBoundaryProgress1",
+        payload: { exec_outcome: "Success" },
+      },
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
+
+  assert.deepEqual(
+    result.traces.map((trace) => ({
+      delivery_id: trace.delivery_id,
+      pre_send_failure_proven: trace.pre_send_failure_proven,
+      send_boundary_reached: trace.send_boundary_reached,
+    })),
+    [
+      {
+        delivery_id: "delivery-boundary-progress",
+        pre_send_failure_proven: false,
+        send_boundary_reached: true,
+      },
+      {
+        delivery_id: "delivery-boundary-validator",
+        pre_send_failure_proven: true,
+        send_boundary_reached: false,
+      },
+    ],
+  );
 });
 
 test("a complete pre-send failure is reconciled before the sanitized monitor failure", async () => {
@@ -618,10 +899,7 @@ test("a complete pre-send failure is reconciled before the sanitized monitor fai
               trace_id: "TrPreSend1",
               payload: {
                 exec_outcome: "Error",
-                inputs: {
-                  delivery_id: "delivery-pre-send-1",
-                  expected_destination: "alerts",
-                },
+                inputs: signedValidatorInputs("delivery-pre-send-1"),
               },
             },
             {
@@ -682,24 +960,40 @@ test("repeated pagination cursors fail before advancing the checkpoint", async (
 });
 
 test("pure reconciliation refuses conflicting delivery IDs without exposing inputs", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
   assert.throws(
     () =>
-      reconcileSlackActivities([
-        {
-          level: "info",
-          event_type: "workflow_step_execution_result",
-          created: 1,
-          trace_id: "TrConflict1",
-          payload: { inputs: { delivery_id: "delivery-one", secret: "one" } },
-        },
-        {
-          level: "error",
-          event_type: "workflow_step_execution_result",
-          created: 2,
-          trace_id: "TrConflict1",
-          payload: { inputs: { delivery_id: "delivery-two", secret: "two" } },
-        },
-      ]),
+      reconcileSlackActivities(
+        [
+          {
+            level: "info",
+            event_type: "workflow_step_execution_result",
+            created,
+            trace_id: "TrConflict1",
+            payload: {
+              exec_outcome: "Success",
+              inputs: {
+                ...signedProgressInputs("delivery-one"),
+                secret: "one",
+              },
+            },
+          },
+          {
+            level: "error",
+            event_type: "workflow_step_execution_result",
+            created: created + 1,
+            trace_id: "TrConflict1",
+            payload: {
+              exec_outcome: "Error",
+              inputs: {
+                ...signedProgressInputs("delivery-two"),
+                secret: "two",
+              },
+            },
+          },
+        ],
+        [environment.SLACK_RELAY_SIGNING_SECRET],
+      ),
     (error) =>
       /conflicting delivery IDs/.test(error.message) &&
       !/secret|one|two/.test(error.message),
@@ -746,10 +1040,7 @@ test("contradictory terminal outcomes abort before any relay mutation", async ()
               trace_id: "TrContradictory1",
               payload: {
                 exec_outcome: "Error",
-                inputs: {
-                  delivery_id: "delivery-contradictory-1",
-                  phase: "send_started",
-                },
+                inputs: signedProgressInputs("delivery-contradictory-1"),
               },
             },
             {

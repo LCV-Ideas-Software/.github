@@ -28,9 +28,17 @@ function cloneDelivery(delivery: StoredDelivery): StoredDelivery {
   return structuredClone(delivery);
 }
 
+type MemorySlackTrace = {
+  deliveryId: string;
+  outcome: SlackTraceReconciliation["outcome"];
+  sendBoundaryReached: boolean;
+  preSendFailureProven: boolean;
+  applied: boolean;
+};
+
 export class MemoryDeliveryStore implements DeliveryStore {
   readonly deliveries = new Map<string, StoredDelivery>();
-  readonly appliedSlackTraces = new Set<string>();
+  readonly slackTraces = new Map<string, MemorySlackTrace>();
   nextSlackAt = 0;
   slackActivityCheckpoint = 0;
   slackDeliveryProtocolActive = true;
@@ -41,7 +49,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
   slackDeliveryProtocolConfirmationOpen = true;
   healthy = true;
 
-  async isSlackDeliveryProtocolActive(expectedRevision: string): Promise<boolean> {
+  async isSlackDeliveryProtocolActive(
+    expectedRevision: string,
+  ): Promise<boolean> {
     return (
       this.slackDeliveryProtocolActive &&
       (this.slackDeliveryProtocolRevision ?? expectedRevision) ===
@@ -207,7 +217,6 @@ export class MemoryDeliveryStore implements DeliveryStore {
     delivery.status = "sending";
     delivery.attemptCount += 1;
     delivery.updatedAt = now;
-    delivery.slackTraceId = null;
     return cloneDelivery(delivery);
   }
 
@@ -291,6 +300,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
       delivery.nextAttemptAt = input.reconcileAt;
       delivery.lastError = null;
       delivery.legacyUnverified = false;
+      delivery.slackTraceId = null;
       return "recorded";
     }
     if (input.messageTs === null) {
@@ -306,9 +316,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
     }
     if (delivery.status === "delivered") {
       if (delivery.slackMessageTs === input.messageTs) return "duplicate";
-      throw new SlackProgressConflictError(
-        "slack_message_timestamp_conflict",
-      );
+      throw new SlackProgressConflictError("slack_message_timestamp_conflict");
     }
     for (const other of this.deliveries.values()) {
       if (
@@ -341,6 +349,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
     delivery.nextAttemptAt = input.now;
     delivery.lastError = null;
     delivery.legacyUnverified = false;
+    delivery.slackTraceId = null;
     return "recorded";
   }
 
@@ -431,38 +440,93 @@ export class MemoryDeliveryStore implements DeliveryStore {
     now: number,
   ): Promise<void> {
     const delivery = this.require(trace.deliveryId);
+    const previous = this.slackTraces.get(trace.traceId);
+    if (previous !== undefined && previous.deliveryId !== trace.deliveryId) {
+      throw new Error("slack_trace_delivery_conflict");
+    }
+    if (
+      previous !== undefined &&
+      previous.outcome !== "pending" &&
+      previous.outcome !== trace.outcome
+    ) {
+      throw new Error("slack_trace_outcome_conflict");
+    }
+    const sendBoundaryReached =
+      (previous?.sendBoundaryReached ?? false) || trace.sendBoundaryReached;
+    const preSendFailureProven =
+      !sendBoundaryReached &&
+      ((previous?.preSendFailureProven ?? false) || trace.preSendFailureProven);
+    const gainedEvidence =
+      previous !== undefined &&
+      ((previous.outcome === "pending" && trace.outcome !== "pending") ||
+        (!previous.sendBoundaryReached && sendBoundaryReached) ||
+        (!previous.preSendFailureProven && preSendFailureProven));
+    const effectiveTrace: MemorySlackTrace = {
+      deliveryId: trace.deliveryId,
+      outcome: trace.outcome,
+      sendBoundaryReached,
+      preSendFailureProven,
+      applied: previous?.applied ?? false,
+    };
+    this.slackTraces.set(trace.traceId, effectiveTrace);
     if (trace.outcome === "pending") return;
-    if (this.appliedSlackTraces.has(trace.traceId)) return;
-    this.appliedSlackTraces.add(trace.traceId);
+    if (previous?.applied && !gainedEvidence) return;
+    const markApplied = () => {
+      effectiveTrace.applied = true;
+    };
     if (delivery.status === "delivered") {
-      delivery.slackTraceId = trace.traceId;
-      delivery.updatedAt = now;
+      if (effectiveTrace.outcome === "success" || sendBoundaryReached) {
+        delivery.slackTraceId = trace.traceId;
+        delivery.updatedAt = now;
+      }
+      markApplied();
       return;
     }
-    if (trace.outcome === "success") {
+    if (
+      effectiveTrace.outcome === "success" &&
+      delivery.status === "accepted_by_slack" &&
+      delivery.legacyUnverified
+    ) {
+      if (
+        delivery.slackTraceId !== null &&
+        delivery.slackTraceId !== trace.traceId
+      ) {
+        delivery.status = "manual_review";
+        delivery.lastError = "slack_legacy_trace_conflict";
+      } else {
+        delivery.slackTraceId = trace.traceId;
+      }
+      delivery.updatedAt = now;
+      markApplied();
+      return;
+    }
+    if (effectiveTrace.outcome === "success") {
       delivery.status = "manual_review";
       delivery.lastError =
         "slack_workflow_succeeded_without_authenticated_receipt";
       delivery.slackTraceId = trace.traceId;
       delivery.updatedAt = now;
+      markApplied();
       return;
     }
     if (
-      trace.sendBoundaryReached ||
+      effectiveTrace.sendBoundaryReached ||
       delivery.status === "send_started" ||
-      (delivery.legacyUnverified && !trace.preSendFailureProven)
+      (delivery.legacyUnverified && !effectiveTrace.preSendFailureProven)
     ) {
       delivery.status = "manual_review";
       delivery.lastError = "slack_workflow_failed_after_send_boundary";
       delivery.slackTraceId = trace.traceId;
       delivery.updatedAt = now;
+      markApplied();
       return;
     }
-    if (!trace.preSendFailureProven) {
+    if (!effectiveTrace.preSendFailureProven) {
       delivery.status = "manual_review";
       delivery.lastError = "slack_workflow_failed_without_pre_send_proof";
       delivery.slackTraceId = trace.traceId;
       delivery.updatedAt = now;
+      markApplied();
       return;
     }
     const retryableManualAmbiguity =
@@ -477,10 +541,16 @@ export class MemoryDeliveryStore implements DeliveryStore {
         "dead_letter_slack_trigger_attempt_ambiguous",
       ].includes(delivery.lastError) ||
         /^slack_trigger_http_5\d\d_ambiguous$/u.test(delivery.lastError));
+    const sameTraceMayReleaseMissingProof =
+      delivery.status === "manual_review" &&
+      delivery.lastError === "slack_workflow_failed_without_pre_send_proof" &&
+      delivery.slackTraceId === trace.traceId &&
+      effectiveTrace.preSendFailureProven;
     if (
       delivery.status === "accepted_by_trigger" ||
       delivery.status === "accepted_by_slack" ||
-      retryableManualAmbiguity
+      retryableManualAmbiguity ||
+      sameTraceMayReleaseMissingProof
     ) {
       delivery.status = "pending";
       delivery.nextAttemptAt = now;
@@ -488,11 +558,13 @@ export class MemoryDeliveryStore implements DeliveryStore {
       delivery.slackTraceId = trace.traceId;
       delivery.legacyUnverified = false;
       delivery.updatedAt = now;
+      markApplied();
       return;
     }
     delivery.status = "manual_review";
     delivery.lastError = "slack_reconciliation_state_conflict";
     delivery.updatedAt = now;
+    markApplied();
   }
 
   async getSlackActivityCheckpoint(): Promise<number> {
@@ -504,9 +576,15 @@ export class MemoryDeliveryStore implements DeliveryStore {
       .filter(
         (delivery) =>
           !delivery.legacyUnverified &&
-          (["pending", "enqueueing", "queued", "sending"].includes(
-            delivery.status,
-          ) ||
+          ([
+            "pending",
+            "enqueueing",
+            "queued",
+            "sending",
+            "accepted_by_slack",
+            "accepted_by_trigger",
+            "send_started",
+          ].includes(delivery.status) ||
             delivery.slackTraceId === null),
       )
       .reduce(
@@ -646,9 +724,8 @@ export function makeEnv(
       TEST_SLACK_URL) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET: (options.relaySigningSecret ??
       TEST_RELAY_SIGNING_SECRET) as unknown as SecretsStoreSecret,
-    SLACK_RELAY_SIGNING_SECRET_NEXT:
-      (options.relaySigningSecretNext ??
-        TEST_RELAY_SIGNING_SECRET_NEXT) as unknown as SecretsStoreSecret,
+    SLACK_RELAY_SIGNING_SECRET_NEXT: (options.relaySigningSecretNext ??
+      TEST_RELAY_SIGNING_SECRET_NEXT) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
     WORKER_VERSION: {
       id: "test-worker-version",
