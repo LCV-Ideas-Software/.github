@@ -39,13 +39,15 @@ const DATABASE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const PRODUCTION_DATABASE_ID = "cf070eb0-32d9-4ee0-9516-d469833cdc77";
-const API_TIMEOUT_MS = 15_000;
+export const API_TIMEOUT_MS = 15_000;
 export const MAX_CLOUDFLARE_JSON_BYTES = 4_000_000;
-const WRANGLER_TIMEOUT_MS = 120_000;
+export const WRANGLER_TIMEOUT_MS = 120_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
 const CREATE_RECONCILIATION_ATTEMPTS = 5;
 const CREATION_CLOCK_SKEW_MS = 5 * 60_000;
-export const STALE_DATABASE_AGE_MS = 60 * 60_000;
+export const REMOTE_PROOF_WORKFLOW_TIMEOUT_MS = 40 * 60_000;
+export const REMOTE_PROOF_MINIMUM_MARGIN_MS = 10 * 60_000;
+export const STALE_DATABASE_AGE_MS = 3 * REMOTE_PROOF_WORKFLOW_TIMEOUT_MS;
 // Cloudflare documents 50,000 D1 databases for Workers Paid accounts and a
 // maximum list page size of 10,000. Keep these values coupled to the bounded
 // workflow budget and its focused contract test.
@@ -56,19 +58,44 @@ export const REAPER_DATABASE_LIST_PAGE_CAP = Math.ceil(
 );
 export const REAPER_MAX_DATABASES_PER_RUN = 1;
 export const REAPER_WORKFLOW_TIMEOUT_MS = 10 * 60_000;
+const DISPOSABLE_DATABASE_DELETE_API_REQUEST_CAP =
+  2 * DELETE_CONFIRMATION_ATTEMPTS + 1 + 2 * DELETE_CONFIRMATION_ATTEMPTS;
 const REAPER_API_REQUESTS_PER_DATABASE =
-  1 + 2 * DELETE_CONFIRMATION_ATTEMPTS + 1 + 2 * DELETE_CONFIRMATION_ATTEMPTS;
+  1 + DISPOSABLE_DATABASE_DELETE_API_REQUEST_CAP;
 const REAPER_RETRY_DELAY_BUDGET_MS =
   2 *
   Array.from(
     { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
     (_, attempt) => 250 * 2 ** attempt,
   ).reduce((total, delay) => total + delay, 0);
+export const REAPER_API_REQUEST_CAP =
+  REAPER_DATABASE_LIST_PAGE_CAP +
+  REAPER_MAX_DATABASES_PER_RUN * REAPER_API_REQUESTS_PER_DATABASE;
 export const REAPER_WORST_CASE_RUNTIME_MS =
-  (REAPER_DATABASE_LIST_PAGE_CAP +
-    REAPER_MAX_DATABASES_PER_RUN * REAPER_API_REQUESTS_PER_DATABASE) *
-    API_TIMEOUT_MS +
+  REAPER_API_REQUEST_CAP * API_TIMEOUT_MS +
   REAPER_MAX_DATABASES_PER_RUN * REAPER_RETRY_DELAY_BUDGET_MS;
+const REMOTE_PROOF_OWNERSHIP_BARRIERS = 4;
+// Successful proof path: one absence preflight, one create, 25 seed/assertion
+// queries, four ownership barriers, and one bounded deletion. Wrangler's own
+// remote calls stay inside its two separately bounded subprocesses.
+const REMOTE_PROOF_SQL_API_REQUESTS = 25;
+const OWNERSHIP_RETRY_DELAY_BUDGET_MS = Array.from(
+  { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
+  (_, attempt) => 250 * 2 ** attempt,
+).reduce((total, delay) => total + delay, 0);
+export const REMOTE_PROOF_API_REQUEST_CAP =
+  2 +
+  REMOTE_PROOF_OWNERSHIP_BARRIERS * DELETE_CONFIRMATION_ATTEMPTS * 2 +
+  REMOTE_PROOF_SQL_API_REQUESTS +
+  DISPOSABLE_DATABASE_DELETE_API_REQUEST_CAP;
+export const REMOTE_PROOF_WRANGLER_CALL_CAP = 2;
+export const REMOTE_PROOF_RETRY_DELAY_BUDGET_MS =
+  REMOTE_PROOF_OWNERSHIP_BARRIERS * OWNERSHIP_RETRY_DELAY_BUDGET_MS +
+  REAPER_RETRY_DELAY_BUDGET_MS;
+export const REMOTE_PROOF_WORST_CASE_RUNTIME_MS =
+  REMOTE_PROOF_API_REQUEST_CAP * API_TIMEOUT_MS +
+  REMOTE_PROOF_WRANGLER_CALL_CAP * WRANGLER_TIMEOUT_MS +
+  REMOTE_PROOF_RETRY_DELAY_BUDGET_MS;
 const WRANGLER_ENV_KEYS = Object.freeze([
   "APPDATA",
   "FORCE_COLOR",
@@ -94,6 +121,42 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function startCloudflareRequestBudget(configuration, limit, label) {
+  invariant(
+    configuration.requestBudget === undefined,
+    "Cloudflare request budget was initialized more than once.",
+  );
+  configuration.requestBudget = { label, limit, used: 0 };
+}
+
+function consumeCloudflareRequestBudget(configuration) {
+  const budget = configuration.requestBudget;
+  if (budget === undefined) return;
+  invariant(
+    budget.used < budget.limit,
+    `${budget.label} exceeded its bounded Cloudflare request budget.`,
+  );
+  budget.used += 1;
+}
+
+function startWranglerCallBudget(configuration, limit) {
+  invariant(
+    configuration.wranglerBudget === undefined,
+    "Wrangler call budget was initialized more than once.",
+  );
+  configuration.wranglerBudget = { limit, used: 0 };
+}
+
+function consumeWranglerCallBudget(configuration) {
+  const budget = configuration.wranglerBudget;
+  if (budget === undefined) return;
+  invariant(
+    budget.used < budget.limit,
+    "Remote D1 migration proof exceeded its bounded Wrangler call budget.",
+  );
+  budget.used += 1;
+}
+
 function readConfiguration(environment) {
   const accountId = environment.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = environment.CLOUDFLARE_API_TOKEN;
@@ -113,13 +176,48 @@ function readConfiguration(environment) {
 }
 
 export async function readJsonResponse(response) {
-  const bytes = await response.arrayBuffer();
-  invariant(
-    bytes.byteLength <= MAX_CLOUDFLARE_JSON_BYTES,
-    "Cloudflare returned an oversized response.",
-  );
+  const reader = response.body?.getReader();
+  if (reader === undefined) {
+    throw new Error(`Cloudflare returned non-JSON HTTP ${response.status}.`);
+  }
+  let bytes = new Uint8Array(0);
+  let received = 0;
   try {
-    return JSON.parse(new TextDecoder().decode(bytes));
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      invariant(
+        value instanceof Uint8Array,
+        "Cloudflare returned a non-byte response body.",
+      );
+      if (value.byteLength > MAX_CLOUDFLARE_JSON_BYTES - received) {
+        const error = new Error("Cloudflare returned an oversized response.");
+        try {
+          await reader.cancel(error);
+        } catch {
+          // The bounded response error remains authoritative if cancellation
+          // itself races with the remote stream closing.
+        }
+        throw error;
+      }
+      const required = received + value.byteLength;
+      if (required > bytes.byteLength) {
+        let capacity = Math.max(bytes.byteLength, 64 * 1024);
+        while (capacity < required) {
+          capacity = Math.min(MAX_CLOUDFLARE_JSON_BYTES, capacity * 2);
+        }
+        const expanded = new Uint8Array(capacity);
+        expanded.set(bytes.subarray(0, received));
+        bytes = expanded;
+      }
+      bytes.set(value, received);
+      received = required;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes.subarray(0, received)));
   } catch {
     throw new Error(`Cloudflare returned non-JSON HTTP ${response.status}.`);
   }
@@ -140,6 +238,7 @@ function cloudflareErrors(payload) {
 }
 
 async function cloudflareRequest(configuration, path, init) {
+  consumeCloudflareRequestBudget(configuration);
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${configuration.accountId}${path}`,
     {
@@ -539,6 +638,11 @@ export async function reapStaleDisposableDatabases(
   configuration,
   nowMs = Date.now(),
 ) {
+  startCloudflareRequestBudget(
+    configuration,
+    REAPER_API_REQUEST_CAP,
+    "Disposable D1 reaper",
+  );
   const stale = selectStaleDisposableDatabases(
     await listAllD1Databases(configuration),
     nowMs,
@@ -614,6 +718,49 @@ export async function waitForDisposableDatabaseOwnership(
   );
 }
 
+export async function waitForExpectedDisposableDatabaseOwnership(
+  lookup,
+  expectedDatabaseId,
+  delay = (milliseconds) =>
+    new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+) {
+  for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    const presence = await lookup();
+    if (presence !== undefined && presence.pendingConsistency !== true) {
+      invariant(
+        presence.id === expectedDatabaseId,
+        "Disposable D1 ownership resolved to a different UUID.",
+      );
+      return presence;
+    }
+    if (attempt + 1 < DELETE_CONFIRMATION_ATTEMPTS) {
+      await delay(250 * 2 ** attempt);
+    }
+  }
+  throw new Error(
+    "Disposable D1 ownership did not converge before remote migration.",
+  );
+}
+
+export async function runWithDisposableDatabaseOwnershipBarriers(
+  lookup,
+  expectedDatabaseId,
+  operation,
+  delay,
+) {
+  await waitForExpectedDisposableDatabaseOwnership(
+    lookup,
+    expectedDatabaseId,
+    delay,
+  );
+  await operation();
+  await waitForExpectedDisposableDatabaseOwnership(
+    lookup,
+    expectedDatabaseId,
+    delay,
+  );
+}
+
 async function d1Query(configuration, databaseId, sql, params = []) {
   const { payload, response } = await cloudflareRequest(
     configuration,
@@ -667,6 +814,7 @@ function wranglerOutput(result, configuration) {
 }
 
 function runWrangler(configuration, args) {
+  consumeWranglerCallBudget(configuration);
   const inheritedEnvironment = Object.fromEntries(
     WRANGLER_ENV_KEYS.filter((key) => process.env[key] !== undefined).map(
       (key) => [key, process.env[key]],
@@ -806,14 +954,10 @@ async function applyMigrationsToOwnedDatabase(
   databaseId,
   configPath,
 ) {
-  invariant(
-    (await findDisposableDatabase(configuration)) === databaseId,
-    "Disposable D1 name no longer resolves to the created UUID before migration.",
-  );
-  applyMigrations(configuration, configPath);
-  invariant(
-    (await findDisposableDatabase(configuration)) === databaseId,
-    "Disposable D1 name no longer resolves to the created UUID after migration.",
+  await runWithDisposableDatabaseOwnershipBarriers(
+    () => disposableDatabasePresence(configuration, databaseId),
+    databaseId,
+    () => applyMigrations(configuration, configPath),
   );
 }
 
@@ -1296,7 +1440,12 @@ async function proveOneWayProtocol(configuration, databaseId) {
 
 export async function runRemoteMigrationProof(environment = process.env) {
   const configuration = readConfiguration(environment);
-  await reapStaleDisposableDatabases(configuration);
+  startCloudflareRequestBudget(
+    configuration,
+    REMOTE_PROOF_API_REQUEST_CAP,
+    "Remote D1 migration proof",
+  );
+  startWranglerCallBudget(configuration, REMOTE_PROOF_WRANGLER_CALL_CAP);
   const plan = await migrationPlan();
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lcv-slack-d1-proof-"));
   let databaseId;

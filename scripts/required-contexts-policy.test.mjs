@@ -226,7 +226,7 @@ test("job-level and critical-step continue-on-error are forbidden", () => {
     [".github/workflows/pages.yml", "    timeout-minutes: 15"],
     [
       ".github/workflows/github-slack-integration.yml",
-      "    timeout-minutes: 20",
+      "    timeout-minutes: 40",
     ],
     [
       ".github/workflows/slack-github-integration.yml",

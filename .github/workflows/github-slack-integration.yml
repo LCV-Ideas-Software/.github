@@ -131,7 +131,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     environment: cloudflare-production
     steps:
       - name: Checkout verified revision without persisted credentials

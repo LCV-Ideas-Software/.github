@@ -13,14 +13,23 @@ import {
   readJsonResponse,
   reconcileAmbiguousDatabaseCreation,
   reapSelectedStaleDatabases,
+  REMOTE_PROOF_API_REQUEST_CAP,
+  REMOTE_PROOF_MINIMUM_MARGIN_MS,
+  REMOTE_PROOF_RETRY_DELAY_BUDGET_MS,
+  REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,
+  REMOTE_PROOF_WORST_CASE_RUNTIME_MS,
+  REMOTE_PROOF_WRANGLER_CALL_CAP,
+  runWithDisposableDatabaseOwnershipBarriers,
   REAPER_DATABASE_LIST_PAGE_CAP,
   REAPER_DATABASE_LIST_PAGE_SIZE,
+  REAPER_API_REQUEST_CAP,
   REAPER_MAX_DATABASES_PER_RUN,
   REAPER_WORKFLOW_TIMEOUT_MS,
   REAPER_WORST_CASE_RUNTIME_MS,
   selectStaleDisposableDatabases,
   STALE_DATABASE_AGE_MS,
   waitForDisposableDatabaseDeletion,
+  waitForExpectedDisposableDatabaseOwnership,
   waitForDisposableDatabaseOwnership,
 } from "./verify-slack-relay-d1-remote.mjs";
 
@@ -226,9 +235,58 @@ test("the bounded JSON reader accepts one maximum-size official-shaped D1 list p
   assert.ok(Buffer.byteLength(source, "utf8") < MAX_CLOUDFLARE_JSON_BYTES);
   const payload = await readJsonResponse(new Response(source));
   assert.equal(payload.result.length, REAPER_DATABASE_LIST_PAGE_SIZE);
+});
+
+test("the bounded JSON reader cancels an oversized body before consuming it", async () => {
+  const chunk = new Uint8Array(64 * 1024).fill(0x61);
+  let cancelReason;
+  let pulls = 0;
+  const body = new ReadableStream(
+    {
+      cancel(reason) {
+        cancelReason = reason;
+      },
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(chunk);
+        if (pulls === 10_000) controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
   await assert.rejects(
-    readJsonResponse(new Response("x".repeat(MAX_CLOUDFLARE_JSON_BYTES + 1))),
+    readJsonResponse(new Response(body)),
     /oversized response/,
+  );
+  assert.equal(pulls, 62);
+  assert.match(cancelReason?.message ?? "", /oversized response/);
+});
+
+test("the bounded JSON reader preserves exact-byte and JSON semantics", async () => {
+  const exact = `["${"a".repeat(MAX_CLOUDFLARE_JSON_BYTES - 4)}"]`;
+  assert.equal(Buffer.byteLength(exact, "utf8"), MAX_CLOUDFLARE_JSON_BYTES);
+  const exactPayload = await readJsonResponse(new Response(exact));
+  assert.equal(exactPayload[0].length, MAX_CLOUDFLARE_JSON_BYTES - 4);
+
+  const encoded = new TextEncoder().encode('{"value":"💡"}');
+  const emojiStart = encoded.indexOf(0xf0);
+  const splitBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoded.subarray(0, emojiStart + 1));
+      controller.enqueue(encoded.subarray(emojiStart + 1));
+      controller.close();
+    },
+  });
+  assert.deepEqual(await readJsonResponse(new Response(splitBody)), {
+    value: "💡",
+  });
+  await assert.rejects(
+    readJsonResponse(new Response("{", { status: 502 })),
+    /Cloudflare returned non-JSON HTTP 502\./,
+  );
+  await assert.rejects(
+    readJsonResponse(new Response(null, { status: 204 })),
+    /Cloudflare returned non-JSON HTTP 204\./,
   );
 });
 
@@ -241,9 +299,57 @@ test("the reaper worst-case API budget fits the workflow timeout", () => {
     D1_DATABASE_ACCOUNT_LIMIT,
   );
   assert.equal(REAPER_MAX_DATABASES_PER_RUN, 1);
+  assert.equal(REAPER_API_REQUEST_CAP, 23);
   assert.equal(REAPER_WORST_CASE_RUNTIME_MS, 348_500);
   assert.ok(
     REAPER_WORST_CASE_RUNTIME_MS <= REAPER_WORKFLOW_TIMEOUT_MS - 4 * 60_000,
+  );
+});
+
+test("the deploy proof never runs the account-wide stale reaper", () => {
+  const source = readFileSync(proofPath, "utf8");
+  const proof = source.slice(
+    source.indexOf("export async function runRemoteMigrationProof"),
+    source.indexOf("if (process.argv[1] === fileURLToPath(import.meta.url))"),
+  );
+  assert.ok(proof.length > 0);
+  assert.doesNotMatch(proof, /reapStaleDisposableDatabases/u);
+});
+
+test("the remote proof worst-case budget preserves the workflow margin", () => {
+  const workflow = readFileSync(workflowPath, "utf8");
+  const proofSource = readFileSync(proofPath, "utf8");
+  const document = parseDocument(workflow, {
+    schema: "core",
+    uniqueKeys: true,
+  });
+  assert.deepEqual(document.errors, []);
+  const deploy = document.toJS({ maxAliasCount: 0 }).jobs.deploy;
+
+  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 76);
+  assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 2);
+  assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 10_500);
+  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_390_500);
+  assert.equal(
+    deploy["timeout-minutes"] * 60_000,
+    REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,
+  );
+  assert.ok(
+    REMOTE_PROOF_WORST_CASE_RUNTIME_MS <=
+      REMOTE_PROOF_WORKFLOW_TIMEOUT_MS - REMOTE_PROOF_MINIMUM_MARGIN_MS,
+  );
+  assert.equal(STALE_DATABASE_AGE_MS, 3 * REMOTE_PROOF_WORKFLOW_TIMEOUT_MS);
+  assert.match(
+    proofSource,
+    /async function cloudflareRequest[\s\S]*?consumeCloudflareRequestBudget\(configuration\)[\s\S]*?await fetch/u,
+  );
+  assert.match(
+    proofSource,
+    /function runWrangler[\s\S]*?consumeWranglerCallBudget\(configuration\)[\s\S]*?spawnSync/u,
+  );
+  assert.match(
+    proofSource,
+    /startWranglerCallBudget\(configuration, REMOTE_PROOF_WRANGLER_CALL_CAP\)/u,
   );
 });
 
@@ -287,7 +393,7 @@ test("a default-branch schedule reaps stale proof databases out of process", () 
     step.env.CLOUDFLARE_API_TOKEN,
     "${{ secrets.CLOUDFLARE_API_TOKEN }}",
   );
-  assert.ok(STALE_DATABASE_AGE_MS >= 3 * 20 * 60_000);
+  assert.equal(STALE_DATABASE_AGE_MS, 3 * REMOTE_PROOF_WORKFLOW_TIMEOUT_MS);
 });
 
 test("the production migration is preceded by the disposable remote D1 proof", () => {
@@ -366,6 +472,88 @@ test("disposable D1 cleanup waits through an eventually consistent UUID read", a
   );
   assert.deepEqual(result, owned);
   assert.equal(delays, 1);
+});
+
+test("remote migration ownership tolerates only bounded absence and partial visibility", async () => {
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const pending = { id: databaseId, pendingConsistency: true };
+  const owned = { id: databaseId, name: "tmp-slack-relay-171-proof" };
+  const sequence = [undefined, pending, owned];
+  let delays = 0;
+  assert.deepEqual(
+    await waitForExpectedDisposableDatabaseOwnership(
+      async () => sequence.shift(),
+      databaseId,
+      async () => {
+        delays += 1;
+      },
+    ),
+    owned,
+  );
+  assert.equal(delays, 2);
+
+  let mismatchDelays = 0;
+  await assert.rejects(
+    waitForExpectedDisposableDatabaseOwnership(
+      async () => ({ id: "22222222-3333-4444-8555-666666666666" }),
+      databaseId,
+      async () => {
+        mismatchDelays += 1;
+      },
+    ),
+    /different UUID/,
+  );
+  assert.equal(mismatchDelays, 0);
+
+  let absentLookups = 0;
+  let absentDelays = 0;
+  await assert.rejects(
+    waitForExpectedDisposableDatabaseOwnership(
+      async () => {
+        absentLookups += 1;
+        return undefined;
+      },
+      databaseId,
+      async () => {
+        absentDelays += 1;
+      },
+    ),
+    /did not converge before remote migration/,
+  );
+  assert.equal(absentLookups, 4);
+  assert.equal(absentDelays, 3);
+});
+
+test("remote migration runs exactly once between independent ownership barriers", async () => {
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const pending = { id: databaseId, pendingConsistency: true };
+  const owned = { id: databaseId, name: "tmp-slack-relay-171-proof" };
+  const sequence = [undefined, owned, pending, owned];
+  let operations = 0;
+  await runWithDisposableDatabaseOwnershipBarriers(
+    async () => sequence.shift(),
+    databaseId,
+    async () => {
+      operations += 1;
+    },
+    async () => {},
+  );
+  assert.equal(operations, 1);
+  assert.equal(sequence.length, 0);
+
+  operations = 0;
+  await assert.rejects(
+    runWithDisposableDatabaseOwnershipBarriers(
+      async () => undefined,
+      databaseId,
+      async () => {
+        operations += 1;
+      },
+      async () => {},
+    ),
+    /did not converge before remote migration/,
+  );
+  assert.equal(operations, 0);
 });
 
 test("ambiguous D1 creation reconciles an eventually visible exact-name database", async () => {
