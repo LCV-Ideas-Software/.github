@@ -3,7 +3,10 @@ import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { validateSlackDeliveryProtocolPreflight } from "./slack-delivery-protocol-preflight.mjs";
+import {
+  SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+  validateSlackDeliveryProtocolPreflight,
+} from "./slack-delivery-protocol-preflight.mjs";
 
 const REVISION = "a".repeat(40);
 const SECRET = "preflight-test-only-relay-signing-secret";
@@ -224,4 +227,8 @@ test("checks both execution-owner inventories before applying migrations", () =>
     workflow,
     /FROM slack_workflow_traces WHERE send_execution_id IS NOT NULL GROUP BY send_execution_id HAVING COUNT\(\*\) > 1\)\) AS duplicate_slack_trace_execution_id_groups/,
   );
+  const command = workflow.match(
+    /--command "(SELECT slack_delivery_protocol_active[^"\r\n]+)"/u,
+  );
+  assert.equal(command?.[1], SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL);
 });

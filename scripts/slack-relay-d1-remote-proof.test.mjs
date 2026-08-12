@@ -43,6 +43,9 @@ import {
   waitForDisposableDatabaseOwnership,
   verifyRemoteProofDeadline,
 } from "./verify-slack-relay-d1-remote.mjs";
+import {
+  SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+} from "./slack-delivery-protocol-preflight.mjs";
 
 const expandMigrationPath =
   "workers/github-slack-relay/migrations/0004_confirm_slack_delivery.sql";
@@ -111,6 +114,28 @@ test("the disposable proof dynamically includes every production migration", () 
   );
   assert.ok(!plan.preNames.includes(futureName));
   assert.ok(!plan.sourceNames.includes(futureName));
+});
+
+test("the disposable proof validates the exact production preflight row", () => {
+  const source = readFileSync(proofPath, "utf8");
+  const migratedState = source.slice(
+    source.indexOf("async function proveMigratedState"),
+    source.indexOf("async function proveSchemaInventory"),
+  );
+
+  assert.match(migratedState, /SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL/u);
+  assert.doesNotMatch(
+    migratedState,
+    /validateSlackDeliveryProtocolPreflight\([\s\S]*?state\.results/u,
+  );
+  assert.match(
+    SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+    /duplicate_delivery_execution_id_groups/u,
+  );
+  assert.match(
+    SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+    /duplicate_slack_trace_execution_id_groups/u,
+  );
 });
 
 test("the disposable Wrangler config binds the locally generated name to the verified UUID", () => {
@@ -978,13 +1003,13 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
   assert.deepEqual(document.errors, []);
   const proofJob = document.toJS({ maxAliasCount: 0 }).jobs.prove_remote_d1;
 
-  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 94);
+  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 95);
   assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 3);
   assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 14_000);
-  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_784_000);
+  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_799_000);
   assert.equal(REMOTE_PROOF_WORKFLOW_TIMEOUT_MS, 3_600_000);
   assert.equal(REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS, 60_000);
-  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_384_000);
+  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_399_000);
   assert.equal(
     proofJob["timeout-minutes"] * 60_000,
     REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,

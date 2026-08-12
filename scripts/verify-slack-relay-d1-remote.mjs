@@ -12,7 +12,10 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { validateSlackDeliveryProtocolPreflight } from "./slack-delivery-protocol-preflight.mjs";
+import {
+  SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+  validateSlackDeliveryProtocolPreflight,
+} from "./slack-delivery-protocol-preflight.mjs";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RELAY_ROOT = join(REPOSITORY_ROOT, "workers", "github-slack-relay");
@@ -112,10 +115,10 @@ export const REAPER_WORST_CASE_RUNTIME_MS =
   REAPER_API_REQUEST_CAP * API_TIMEOUT_MS +
   REAPER_MAX_DATABASES_PER_RUN * REAPER_RETRY_DELAY_BUDGET_MS;
 const REMOTE_PROOF_OWNERSHIP_BARRIERS = 6;
-// Successful proof path: one absence preflight, one create, 27 seed/assertion
+// Successful proof path: one absence preflight, one create, 28 seed/assertion
 // queries, six ownership barriers, and one bounded deletion. Wrangler's own
 // remote calls stay inside its three separately bounded subprocesses.
-const REMOTE_PROOF_SQL_API_REQUESTS = 27;
+const REMOTE_PROOF_SQL_API_REQUESTS = 28;
 const OWNERSHIP_RETRY_DELAY_BUDGET_MS = Array.from(
   { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
   (_, attempt) => 250 * 2 ** attempt,
@@ -1673,9 +1676,14 @@ async function proveMigratedState(configuration, databaseId, names) {
     ],
     "Production-parity bridge source state",
   );
+  const preflight = await d1Query(
+    configuration,
+    databaseId,
+    SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+  );
   invariant(
     validateSlackDeliveryProtocolPreflight(
-      JSON.stringify([{ success: true, results: state.results }]),
+      JSON.stringify([{ success: true, results: preflight.results }]),
       PROTOCOL_TARGET_REVISION,
       PROTOCOL_PROOF_SIGNING_SECRET,
     ).state === "active_bridge_source",
