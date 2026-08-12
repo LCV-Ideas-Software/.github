@@ -115,6 +115,17 @@ evidence is the execution trail recorded in
 
 ### Fixed
 
+- Closed the one-line structural regression escape shared by all seven repository-local required contexts. A single
+  YAML-parsed contract now fixes the exact `pull_request` and `merge_group` triggers, context names
+  and conditions, complete required-job structures, critical Actions, commands, inputs and paths,
+  and the sole approved Zizmor configuration. Dependency Review and both CodeQL matrix jobs execute
+  the contract and its in-memory mutation suite independently, so a regression confined to either
+  runner is detected by the other. A coordinated rewrite of both runners and the candidate-head
+  policy remains governed by external rulesets and review rather than authenticated by this
+  contract. Full immutable Action references are inside the digest, while the pin auditor
+  independently validates their release provenance
+  ([#170](https://github.com/LCV-Ideas-Software/.github/issues/170),
+  [#177](https://github.com/LCV-Ideas-Software/.github/pull/177)).
 - Aligned the documentation and the public surface with the repository's real state: the Dependabot
   cooldown wording in `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `profile/README.md` and the
   explanatory comment in `.github/zizmor.yml`; the
@@ -150,21 +161,6 @@ evidence is the execution trail recorded in
   reachable from the two deploy jobs that declare `cloudflare-production` without using it. Both run
   only on `main`, so the exposure is contained, but the credential is segregated by provider rather
   than by purpose. Tracked in [#175](https://github.com/LCV-Ideas-Software/.github/issues/175).
-- No required status-check context is **fully** protected against structural regression. Coverage is
-  partial and uneven rather than absent: #173 gave `Run zizmor` assertions over its caller's
-  permissions and job list, and `scripts/codeql-sarif-policy.test.mjs`, `scripts/dependency-review-workflow.test.mjs`
-  and `scripts/scorecard-workflow.test.mjs` each pin part of their own workflow. What none of them closes is
-  the same escape in every context. A job disabled with `if: false` reports **Success** and does not
-  block the merge, so a workflow that only tests itself stops protecting anything the moment its own
-  job is skipped; `continue-on-error` is unguarded on the enforcement steps; `.github/workflows/pages.yml` is pinned
-  only through the Scorecard policy suite, not as a required context of its own; and in
-  `.github/zizmor.yml` a `rules.<id>.disable: true` entry would be a real bypass even under
-  `--no-ignores`, which suppresses ignores without making the configuration inert — the file carries
-  no such entry today, and nothing would fail if one were added. No active defect exists in the
-  current YAML; the gap is that nothing stops one line from removing each guarantee. The coverage
-  table per context is in
-  [#170](https://github.com/LCV-Ideas-Software/.github/issues/170), to be remediated in its own pull
-  request rather than mixed into documentation work.
 - A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. On 11/08/2026
   the trigger endpoint answered `{"ok":true}`, D1 stored `accepted_by_slack`, and the asynchronous
   workflow execution then ended in `TIMEOUT`; that message does not exist in the channel. Terminal

@@ -7,6 +7,7 @@
   },
   "devDependencies": {
     "prettier": "^3.9.6",
-    "wrangler": "4.120.1"
+    "wrangler": "4.120.1",
+    "yaml": "2.9.0"
   }
 }

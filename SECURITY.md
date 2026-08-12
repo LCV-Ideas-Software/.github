@@ -39,6 +39,7 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - versioned CodeQL Advanced Setup workflows in public repositories containing code;
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
+- a YAML-parsed canonical contract over all seven repository-local required contexts, run independently by Dependency Review and CodeQL on pull requests and merge groups. It fixes the exact triggers, check names and conditions, complete required-job structures, immutable Action references, commands, inputs and paths, and the sole approved Zizmor configuration. This closes single-runner structural regressions; coordinated rewrites of both runners and the candidate-head policy remain inside the external ruleset and review trust boundary;
 - external credential isolation is **partial today**, and the two gaps are stated rather than
   implied. `SLACK_SERVICE_TOKEN` is held in the protected environment `slack-production` and
   `SLACK_REDELIVERY_APP_PRIVATE_KEY` in `cloudflare-production`, both restricted to `main` — but an
