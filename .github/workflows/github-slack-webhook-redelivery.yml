@@ -35,7 +35,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: cloudflare-production
+    environment: webhook-recovery
     env:
       HOOK_ID: ${{ vars['SLACK_RELAY_ORG_HOOK_ID'] }}
     steps:
@@ -49,6 +49,13 @@ jobs:
         with:
           node-version: 24
           check-latest: true
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install governance policy dependencies
+        run: |
+          test "$(npm config get registry)" = "https://registry.npmjs.org/"
+          npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test webhook liveness and redelivery controllers
         run: >-

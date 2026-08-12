@@ -341,7 +341,7 @@ The controller reads the hook ID from repository variable
 `SLACK_RELAY_ORG_HOOK_ID` and authenticates through the private,
 organization-owned `lcv-slack-webhook-recovery` GitHub App. The workflow
 validates the exact App slug and a positive installation ID before use. The
-protected `cloudflare-production` environment provides
+protected `webhook-recovery` environment provides
 `SLACK_REDELIVERY_APP_CLIENT_ID` and the
 `SLACK_REDELIVERY_APP_PRIVATE_KEY` PEM to this controller. Its only optional
 permission is organization `Webhooks: read and write`; GitHub's mandatory
