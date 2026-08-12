@@ -35,7 +35,7 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: cloudflare-production
+    environment: webhook-recovery
     env:
       HOOK_ID: ${{ vars['SLACK_RELAY_ORG_HOOK_ID'] }}
     steps:

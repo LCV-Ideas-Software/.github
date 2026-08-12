@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
+import { parseDocument } from "yaml";
 
 import {
   API_VERSION,
@@ -25,6 +26,10 @@ const REDELIVERY_WORKFLOW_URL = new URL(
   "../.github/workflows/github-slack-webhook-redelivery.yml",
   import.meta.url,
 );
+const WORKFLOWS_DIRECTORY_URL = new URL(
+  "../.github/workflows/",
+  import.meta.url,
+);
 const RELAY_WORKFLOW_URL = new URL(
   "../.github/workflows/github-slack-integration.yml",
   import.meta.url,
@@ -42,6 +47,7 @@ const RELAY_README_URL = new URL(
   "../workers/github-slack-relay/README.md",
   import.meta.url,
 );
+const SECURITY_POLICY_URL = new URL("../SECURITY.md", import.meta.url);
 const APP_TOKEN_ACTION =
   "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0";
 
@@ -51,6 +57,103 @@ function workflowStep(source, name) {
   assert.notEqual(start, -1, `workflow step not found: ${name}`);
   const next = source.indexOf("\n      - name:", start + marker.length);
   return source.slice(start, next === -1 ? source.length : next);
+}
+
+async function workflowSources() {
+  const names = (await readdir(WORKFLOWS_DIRECTORY_URL))
+    .filter((name) => /\.ya?ml$/u.test(name))
+    .sort();
+  return new Map(
+    await Promise.all(
+      names.map(async (name) => [
+        name,
+        await readFile(new URL(name, WORKFLOWS_DIRECTORY_URL), "utf8"),
+      ]),
+    ),
+  );
+}
+
+function assertRecoveryEnvironmentIsolation(workflows) {
+  const environmentDeclarations = [];
+  const credentialReferences = [];
+  const parsedWorkflows = new Map();
+  for (const [name, source] of workflows) {
+    const document = parseDocument(source, {
+      prettyErrors: true,
+      schema: "core",
+      uniqueKeys: true,
+    });
+    assert.deepEqual(document.errors, [], `${name} must be valid YAML`);
+    assert.deepEqual(document.warnings, [], `${name} must be unambiguous YAML`);
+    const workflow = document.toJS({ maxAliasCount: 0 });
+    assert.equal(
+      workflow !== null &&
+        typeof workflow === "object" &&
+        !Array.isArray(workflow),
+      true,
+      `${name} must contain a workflow mapping`,
+    );
+    assert.equal(
+      workflow.jobs !== null &&
+        typeof workflow.jobs === "object" &&
+        !Array.isArray(workflow.jobs),
+      true,
+      `${name} must contain a jobs mapping`,
+    );
+    parsedWorkflows.set(name, workflow);
+    for (const [jobId, job] of Object.entries(workflow.jobs)) {
+      assert.equal(
+        job !== null && typeof job === "object" && !Array.isArray(job),
+        true,
+        `${name}.${jobId} must contain a job mapping`,
+      );
+      if (job.environment !== undefined) {
+        const environmentName =
+          typeof job.environment === "string"
+            ? job.environment
+            : job.environment?.name;
+        assert.match(
+          environmentName ?? "",
+          /^[a-z0-9-]+$/u,
+          `${name}.${jobId} must use a literal approved environment name`,
+        );
+        environmentDeclarations.push([name, jobId, environmentName]);
+      }
+      const serializedJob = JSON.stringify(job);
+      for (const credential of [
+        "SLACK_REDELIVERY_APP_CLIENT_ID",
+        "SLACK_REDELIVERY_APP_PRIVATE_KEY",
+      ]) {
+        if (serializedJob.includes(credential)) {
+          credentialReferences.push([name, jobId, credential]);
+        }
+      }
+    }
+  }
+  assert.deepEqual(environmentDeclarations, [
+    ["cloudflare-pages.yml", "deploy", "cloudflare-production"],
+    ["github-slack-integration.yml", "deploy", "cloudflare-production"],
+    ["github-slack-webhook-redelivery.yml", "redeliver", "webhook-recovery"],
+    ["pages.yml", "deploy", "github-pages"],
+    ["slack-github-integration.yml", "deploy", "slack-production"],
+    ["slack-github-integration.yml", "monitor", "slack-production"],
+  ]);
+  assert.deepEqual(credentialReferences, [
+    [
+      "github-slack-webhook-redelivery.yml",
+      "redeliver",
+      "SLACK_REDELIVERY_APP_CLIENT_ID",
+    ],
+    [
+      "github-slack-webhook-redelivery.yml",
+      "redeliver",
+      "SLACK_REDELIVERY_APP_PRIVATE_KEY",
+    ],
+  ]);
+
+  const redelivery = parsedWorkflows.get("github-slack-webhook-redelivery.yml");
+  assert.deepEqual(Object.keys(redelivery.jobs), ["redeliver"]);
+  assert.equal(redelivery.jobs.redeliver.environment, "webhook-recovery");
 }
 
 function responseJson(body, { status = 200, headers = {} } = {}) {
@@ -125,15 +228,38 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
     code: "ENOENT",
   });
 
-  const [redelivery, relay, auditor] = await Promise.all([
+  const [redelivery, relay, auditor, workflows] = await Promise.all([
     readFile(REDELIVERY_WORKFLOW_URL, "utf8"),
     readFile(RELAY_WORKFLOW_URL, "utf8"),
     readFile(AUDITOR_URL, "utf8"),
+    workflowSources(),
   ]);
   assert.match(redelivery, /^permissions: \{\}$/m);
   assert.match(
     redelivery,
     /jobs:\n  redeliver:\n    name: Redeliver failed organization webhook deliveries/,
+  );
+  assertRecoveryEnvironmentIsolation(workflows);
+  for (const rogueSource of [
+    "jobs:\n  rogue:\n    environment: webhook-recovery\n",
+    "jobs:\n  rogue:\n    environment: ${{ vars.RECOVERY_ENVIRONMENT }}\n",
+    "jobs:\n  rogue:\n    env:\n      KEY: ${{ secrets.SLACK_REDELIVERY_APP_PRIVATE_KEY }}\n",
+    "jobs:\n  rogue:\n    env:\n      CLIENT: ${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}\n",
+    "jobs: { rogue: { runs-on: ubuntu-latest, environment: webhook-recovery, steps: [] } }\n",
+    'jobs: { rogue: { runs-on: ubuntu-latest, environment: "${{ vars.RECOVERY_ENVIRONMENT }}", steps: [] } }\n',
+  ]) {
+    const mutant = new Map(workflows);
+    mutant.set("rogue.yml", rogueSource);
+    assert.throws(() => assertRecoveryEnvironmentIsolation(mutant));
+  }
+  const extraJob = new Map(workflows);
+  extraJob.set(
+    "github-slack-webhook-redelivery.yml",
+    `${redelivery}\n  rogue:\n    runs-on: ubuntu-latest\n    environment: webhook-recovery\n`,
+  );
+  assert.throws(
+    () => assertRecoveryEnvironmentIsolation(extraJob),
+    /Expected values to be strictly deep-equal/,
   );
   assert.match(
     redelivery,
@@ -243,9 +369,10 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
 });
 
 test("recovery documentation states exact token grants and control-flow boundary", async () => {
-  const [integrationDocs, relayReadme] = await Promise.all([
+  const [integrationDocs, relayReadme, securityPolicy] = await Promise.all([
     readFile(INTEGRATION_DOC_URL, "utf8"),
     readFile(RELAY_README_URL, "utf8"),
+    readFile(SECURITY_POLICY_URL, "utf8"),
   ]);
 
   for (const documentation of [integrationDocs, relayReadme]) {
@@ -257,9 +384,44 @@ test("recovery documentation states exact token grants and control-flow boundary
       documentation,
       /Before any hook read|Before reading the hook/,
     );
+    assert.match(
+      documentation,
+      /protected\s+`webhook-recovery` environment provides[\s\S]*`SLACK_REDELIVERY_APP_CLIENT_ID`[\s\S]*`SLACK_REDELIVERY_APP_PRIVATE_KEY`/,
+    );
+    const compactDocumentation = documentation.replaceAll(/\s+/gu, " ");
+    assert.doesNotMatch(
+      compactDocumentation,
+      /(?:`cloudflare-production`.{0,240}`SLACK_REDELIVERY_APP_(?:CLIENT_ID|PRIVATE_KEY)`|`SLACK_REDELIVERY_APP_(?:CLIENT_ID|PRIVATE_KEY)`.{0,240}`cloudflare-production`)/u,
+    );
   }
   assert.match(integrationDocs, /Before the controller's delivery scan/);
   assert.match(relayReadme, /Before scanning deliveries/);
+  assert.match(
+    securityPolicy,
+    /`SLACK_REDELIVERY_APP_PRIVATE_KEY`[^.]*`webhook-recovery`/,
+  );
+  assert.match(
+    securityPolicy,
+    /`cloudflare-production`[^.]*`CLOUDFLARE_API_TOKEN`/,
+  );
+  assert.match(
+    securityPolicy,
+    /At steady state,[\s\S]*migration artifacts and must be removed before[\s\S]*#175/u,
+  );
+  assert.match(securityPolicy, /`github-dotgithub-production`/u);
+  for (const permission of [
+    "Pages Write",
+    "Workers Scripts Write",
+    "D1 Write",
+    "Secrets Store Write",
+  ]) {
+    assert.ok(securityPolicy.includes(`\`${permission}\``));
+  }
+  assert.doesNotMatch(securityPolicy, /`Queues Write`/);
+  assert.doesNotMatch(
+    securityPolicy,
+    /external credential isolation is \*\*partial today\*\*|SLACK_REDELIVERY_APP_PRIVATE_KEY` in `cloudflare-production`|Cloudflare deployment credentials are not in an environment/,
+  );
 });
 
 test("configuration fails closed before API access", () => {

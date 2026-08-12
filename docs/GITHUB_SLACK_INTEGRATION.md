@@ -350,11 +350,12 @@ channel paths.
     authorization, and grant only organization `Webhooks: read and write`.
     Leave every optional repository permission at `No access`; GitHub's
     mandatory `Metadata: read` remains. Install the App on
-    `LCV-Ideas-Software`, restricted to the `.github` repository, and store its
-    Client ID as environment variable `SLACK_REDELIVERY_APP_CLIENT_ID` plus its
-    generated PEM as environment secret `SLACK_REDELIVERY_APP_PRIVATE_KEY` in
-    protected environment `cloudflare-production`. No App ID or client secret
-    is used. The workflow restricts the installation token to the current
+    `LCV-Ideas-Software`, restricted to the `.github` repository. The protected
+    `webhook-recovery` environment provides environment variable
+    `SLACK_REDELIVERY_APP_CLIENT_ID` and environment secret
+    `SLACK_REDELIVERY_APP_PRIVATE_KEY` only to the redelivery controller. No App
+    ID or client secret is used. The workflow
+    restricts the installation token to the current
     repository and validates the exact App slug and a positive installation ID
     before use.
 11. Under an explicitly authorized human maintenance window, configure exactly
