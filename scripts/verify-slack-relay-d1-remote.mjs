@@ -33,6 +33,8 @@ const KNOWN_LOSS_ID = "de345e40-95b1-11f1-8d38-fac15f0bb4cd";
 const ISSUE_COMMENT_PREFIX =
   "https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-";
 const DATABASE_NAME_PREFIX = "tmp-slack-relay-171-";
+const DISPOSABLE_DATABASE_NAME_PATTERN =
+  /^tmp-slack-relay-171-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DATABASE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -42,6 +44,9 @@ const WRANGLER_TIMEOUT_MS = 120_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
 const CREATE_RECONCILIATION_ATTEMPTS = 5;
 const CREATION_CLOCK_SKEW_MS = 5 * 60_000;
+export const STALE_DATABASE_AGE_MS = 60 * 60_000;
+const DATABASE_LIST_PAGE_SIZE = 1_000;
+const DATABASE_LIST_PAGE_CAP = 100;
 const WRANGLER_ENV_KEYS = Object.freeze([
   "APPDATA",
   "FORCE_COLOR",
@@ -303,6 +308,64 @@ async function findDisposableDatabase(configuration, ownershipWindow) {
   return owned.id;
 }
 
+function validateCompleteD1Inventory(databases, expectedTotal) {
+  invariant(
+    databases.length === expectedTotal,
+    "D1 inventory did not converge to its advertised total.",
+  );
+  const ids = databases.map((database) => database?.uuid);
+  invariant(
+    ids.every((id) => typeof id === "string" && DATABASE_ID_PATTERN.test(id)) &&
+      new Set(ids).size === ids.length,
+    "D1 inventory contains missing, malformed, or duplicate UUIDs.",
+  );
+  return databases;
+}
+
+async function listAllD1Databases(configuration) {
+  const databases = [];
+  let expectedTotal;
+  for (let page = 1; page <= DATABASE_LIST_PAGE_CAP; page += 1) {
+    const search = new URLSearchParams({
+      page: String(page),
+      per_page: String(DATABASE_LIST_PAGE_SIZE),
+    });
+    const { payload, response } = await cloudflareRequest(
+      configuration,
+      `/d1/database?${search.toString()}`,
+      { method: "GET" },
+    );
+    invariant(
+      response.ok && payload.success === true && Array.isArray(payload.result),
+      `D1 inventory failed: ${cloudflareErrors(payload)}`,
+    );
+    const info = payload.result_info;
+    invariant(
+      Number.isSafeInteger(info?.count) &&
+        info.count === payload.result.length &&
+        Number.isSafeInteger(info.page) &&
+        info.page === page &&
+        Number.isSafeInteger(info.total_count) &&
+        info.total_count >= 0,
+      "D1 inventory returned inconsistent pagination metadata.",
+    );
+    if (expectedTotal === undefined) expectedTotal = info.total_count;
+    invariant(
+      info.total_count === expectedTotal,
+      "D1 inventory total changed during pagination.",
+    );
+    databases.push(...payload.result);
+    if (databases.length === expectedTotal) {
+      return validateCompleteD1Inventory(databases, expectedTotal);
+    }
+    invariant(
+      databases.length < expectedTotal && payload.result.length > 0,
+      "D1 inventory pagination did not converge exactly.",
+    );
+  }
+  throw new Error("D1 inventory exceeded its bounded page cap.");
+}
+
 async function getDisposableDatabase(
   configuration,
   databaseId,
@@ -404,6 +467,52 @@ async function deleteDisposableDatabase(configuration, databaseId) {
       "Disposable D1 deletion and confirmation both failed.",
     );
   }
+}
+
+export function selectStaleDisposableDatabases(databases, nowMs) {
+  invariant(Number.isSafeInteger(nowMs), "Reaper time must be a safe integer.");
+  const cutoff = nowMs - STALE_DATABASE_AGE_MS;
+  return databases
+    .filter((database) => {
+      if (
+        typeof database?.name !== "string" ||
+        !DISPOSABLE_DATABASE_NAME_PATTERN.test(database.name) ||
+        typeof database.uuid !== "string" ||
+        !DATABASE_ID_PATTERN.test(database.uuid) ||
+        database.uuid === PRODUCTION_DATABASE_ID
+      ) {
+        return false;
+      }
+      const createdAt = Date.parse(database.created_at);
+      return Number.isFinite(createdAt) && createdAt <= cutoff;
+    })
+    .map((database) => ({
+      createdAt: Date.parse(database.created_at),
+      id: database.uuid,
+      name: database.name,
+    }));
+}
+
+export async function reapStaleDisposableDatabases(
+  configuration,
+  nowMs = Date.now(),
+) {
+  const stale = selectStaleDisposableDatabases(
+    await listAllD1Databases(configuration),
+    nowMs,
+  );
+  for (const database of stale) {
+    const target = { ...configuration, databaseName: database.name };
+    const owned = await getDisposableDatabase(target, database.id);
+    invariant(
+      owned !== undefined &&
+        owned.createdAt === database.createdAt &&
+        owned.createdAt <= nowMs - STALE_DATABASE_AGE_MS,
+      "Stale disposable D1 ownership changed before reaping.",
+    );
+    await deleteDisposableDatabase(target, database.id);
+  }
+  return stale.length;
 }
 
 async function disposableDatabasePresence(configuration, databaseId) {
@@ -1121,6 +1230,7 @@ async function proveOneWayProtocol(configuration, databaseId) {
 
 export async function runRemoteMigrationProof(environment = process.env) {
   const configuration = readConfiguration(environment);
+  await reapStaleDisposableDatabases(configuration);
   const plan = await migrationPlan();
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lcv-slack-d1-proof-"));
   let databaseId;
@@ -1180,5 +1290,18 @@ export async function runRemoteMigrationProof(environment = process.env) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  await runRemoteMigrationProof();
+  if (process.argv[2] === "--reap-stale" && process.argv.length === 3) {
+    const count = await reapStaleDisposableDatabases(
+      readConfiguration(process.env),
+    );
+    console.log(
+      `Disposable D1 reaper passed: ${count} stale database(s) removed.`,
+    );
+  } else {
+    invariant(
+      process.argv.length === 2,
+      "Usage: verify-slack-relay-d1-remote.mjs [--reap-stale]",
+    );
+    await runRemoteMigrationProof();
+  }
 }
