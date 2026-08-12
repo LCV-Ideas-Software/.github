@@ -2398,6 +2398,71 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     });
   });
 
+  it("treats a pending replay of an existing terminal trace as a duplicate", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-terminal-pending-replay";
+    const traceId = "TrTerminalPendingReplay1";
+    const store = new D1DeliveryStore(d1);
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(
+      deliveryId,
+      NOW,
+      NOW + 20 * 60 * 1_000,
+    );
+
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId,
+          deliveryId,
+          outcome: "error",
+          ...TRACE_ATTEMPT_ONE,
+          sendBoundaryReached: false,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 1,
+      ),
+    ).resolves.toBe("changed");
+
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId,
+          deliveryId,
+          outcome: "pending",
+          ...TRACE_ATTEMPT_ONE,
+          sendBoundaryReached: false,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: null,
+        },
+        NOW + 2,
+      ),
+    ).resolves.toBe("duplicate");
+
+    expect(
+      database
+        .prepare(
+          `SELECT outcome, completed_at_us, applied_at
+           FROM slack_workflow_traces WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({
+      outcome: "error",
+      completed_at_us: NOW * 1_000 + 1,
+      applied_at: NOW + 1,
+    });
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "manual_review",
+      lastError: "slack_workflow_failed_without_pre_send_proof",
+      slackTraceId: traceId,
+    });
+  });
+
   it("does not let a concurrent trace ID rebind proof to another delivery", async () => {
     const { d1 } = databaseWithMigrations(true);
     const firstStore = new D1DeliveryStore(d1);

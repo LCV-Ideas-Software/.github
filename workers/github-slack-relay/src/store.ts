@@ -1280,6 +1280,7 @@ export class D1DeliveryStore implements DeliveryStore {
     if (
       existingTrace !== null &&
       existingTrace.outcome !== "pending" &&
+      trace.outcome !== "pending" &&
       existingTrace.outcome !== trace.outcome
     ) {
       throw new SlackReconciliationConflictError(
