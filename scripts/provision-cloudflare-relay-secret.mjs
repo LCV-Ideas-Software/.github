@@ -62,16 +62,29 @@ function validSecretMetadata(secret, storeId) {
     secret !== null &&
     typeof secret === "object" &&
     !Array.isArray(secret) &&
-    /^[0-9a-f]{32}$/u.test(secret.id) &&
+    typeof secret.id === "string" &&
+    secret.id.length <= 32 &&
     typeof secret.name === "string" &&
     secret.store_id === storeId &&
     (secret.status === "pending" ||
       secret.status === "active" ||
       secret.status === "deleted") &&
+    (secret.scopes === undefined ||
+      (Array.isArray(secret.scopes) &&
+        secret.scopes.every((scope) => typeof scope === "string"))) &&
+    (secret.comment === undefined ||
+      secret.comment === null ||
+      typeof secret.comment === "string")
+  );
+}
+
+function validRelaySecretMetadata(secret, storeId) {
+  return (
+    validSecretMetadata(secret, storeId) &&
+    /^[0-9a-f]{32}$/u.test(secret.id) &&
     Array.isArray(secret.scopes) &&
     secret.scopes.length === 1 &&
-    secret.scopes[0] === "workers" &&
-    (secret.comment === undefined || typeof secret.comment === "string")
+    secret.scopes[0] === "workers"
   );
 }
 
@@ -145,16 +158,23 @@ async function inventory({ accountId, apiToken, fetchImpl, storeId }) {
   return secrets;
 }
 
-function assertCurrent(secrets, expectedId) {
+function assertCurrent(secrets, expectedId, storeId) {
   const current = secrets.find(({ name }) => name === CURRENT_NAME);
-  if (current?.id !== expectedId || current.status !== "active") {
+  if (
+    !validRelaySecretMetadata(current, storeId) ||
+    current.id !== expectedId ||
+    current.status !== "active"
+  ) {
     throw new Error("Cloudflare current relay secret metadata is invalid.");
   }
 }
 
-function findNext(secrets, fingerprint) {
+function findNext(secrets, fingerprint, storeId) {
   const next = secrets.find(({ name }) => name === NEXT_NAME);
   if (next === undefined) return null;
+  if (!validRelaySecretMetadata(next, storeId)) {
+    throw new Error("Cloudflare staged relay secret metadata conflicts.");
+  }
   if (next.comment !== `sha256:${fingerprint}`) {
     throw new Error("Cloudflare staged relay secret metadata conflicts.");
   }
@@ -193,8 +213,8 @@ export async function provisionCloudflareNextSecret({
   );
   const fingerprint = createHash("sha256").update(secret, "utf8").digest("hex");
   const before = await inventory({ accountId, apiToken, fetchImpl, storeId });
-  assertCurrent(before, currentId);
-  const existingNext = findNext(before, fingerprint);
+  assertCurrent(before, currentId, storeId);
+  const existingNext = findNext(before, fingerprint, storeId);
 
   const collectionUrl = `${API_BASE}/accounts/${accountId}/secrets_store/stores/${storeId}/secrets`;
   if (existingNext === null) {
@@ -235,8 +255,8 @@ export async function provisionCloudflareNextSecret({
       fetchImpl,
       storeId,
     });
-    assertCurrent(observed, currentId);
-    next = findNext(observed, fingerprint);
+    assertCurrent(observed, currentId, storeId);
+    next = findNext(observed, fingerprint, storeId);
     if (next !== null) break;
     if (attempt < 3) await sleep(1_000);
   }
@@ -265,7 +285,7 @@ export async function provisionCloudflareNextSecret({
       );
       if (
         payload?.success !== true ||
-        !validSecretMetadata(payload.result, storeId) ||
+        !validRelaySecretMetadata(payload.result, storeId) ||
         payload.result.id !== next.id ||
         payload.result.name !== NEXT_NAME ||
         (payload.result.status !== "pending" &&
@@ -285,8 +305,8 @@ export async function provisionCloudflareNextSecret({
   }
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     const after = await inventory({ accountId, apiToken, fetchImpl, storeId });
-    assertCurrent(after, currentId);
-    const confirmed = findNext(after, fingerprint);
+    assertCurrent(after, currentId, storeId);
+    const confirmed = findNext(after, fingerprint, storeId);
     if (confirmed?.id !== next.id) {
       throw new Error("Cloudflare staged relay secret metadata changed.");
     }
