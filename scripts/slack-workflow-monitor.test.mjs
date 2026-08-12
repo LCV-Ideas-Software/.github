@@ -265,6 +265,13 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     relayWorkflowSource.indexOf("  deploy_slack:"),
   );
   assert.match(relayDeployJob, /needs: verify/);
+  assert.match(relayDeployJob, /slack_delivery_protocol_activated_at/);
+  assert.match(relayDeployJob, /slack_delivery_protocol_activation_id/);
+  assert.match(relayDeployJob, /slack_delivery_protocol_schema_revision/);
+  assert.match(
+    relayDeployJob,
+    /SLACK_RELAY_SIGNING_SECRET: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
+  );
   assert.match(deployJob, /needs: deploy/);
   assert.match(deployJob, /environment: slack-production/);
   assert.match(deployJob, /github\.event_name == 'push'/);

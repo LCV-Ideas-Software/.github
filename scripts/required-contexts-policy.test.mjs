@@ -77,8 +77,13 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
-    "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1",
+    "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1",
     "SELECT 0",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}\n",
+    "",
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",

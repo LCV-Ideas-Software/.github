@@ -168,13 +168,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           EXPECTED_REVISION: ${{ github.sha }}
+          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
         shell: bash
         run: |
           set -euo pipefail
           workers/github-slack-relay/node_modules/.bin/wrangler d1 execute github-slack-alerts-db \
             --remote \
             --config workers/github-slack-relay/wrangler.jsonc \
-            --command "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1" \
+            --command "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1" \
             --json \
             | node scripts/slack-delivery-protocol-preflight.mjs
 

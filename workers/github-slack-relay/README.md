@@ -255,10 +255,13 @@ delivery state untouched. Old-Worker writes to `accepted_by_slack` remain
 schema-compatible but an expand trigger immediately quarantines them with
 `legacy_unverified = 1`.
 
-The activation-tuple preflight accepts only the initial inactive state or an
-already activated exact revision. It therefore permits an exact-SHA rerun but
-blocks any later SHA before secret staging or Worker replacement. The separate
-contract must remove this expand-only guard together with the activation path.
+The activation-tuple preflight reads all six persisted fields and accepts only
+the initial inactive state with all activation metadata null or an active tuple whose SHA, schema revision
+and deterministic HMAC activation ID exactly match the staged signer. It
+therefore permits an exact-SHA rerun but blocks partial state, a different
+signer or any later SHA before secret staging or Worker replacement. The
+separate contract must remove this expand-only guard together with the
+activation path.
 
 After the Worker deploy succeeds, the dependent protected Slack job uses the
 same checkout and SHA, stages Slack `NEXT`, deploys the app, and verifies the

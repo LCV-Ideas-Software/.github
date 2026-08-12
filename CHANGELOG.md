@@ -181,9 +181,11 @@ evidence is the execution trail recorded in
   admitted by either Slack verifier receives progress authorization and
   callbacks only under `NEXT`, so the monitor correlates it without recovering
   old current into GitHub. Before either hosted deploy, the activation-tuple
-  preflight permits only the initial inactive state or the already activated
-  exact SHA, preventing a later revision from replacing the live Worker until a
-  reviewed contract removes the expand latch. A
+  preflight reads all six persisted activation fields and permits only the
+  initial inactive tuple with all activation metadata null or an active tuple whose SHA, schema and
+  deterministic HMAC activation ID exactly match the staged signer. A partial
+  tuple or later revision cannot replace the live Worker until a reviewed
+  contract removes the expand latch. A
   `NEXT`-key HMAC binds the exact main
   SHA to the Worker's immutable version tag, proves the expanded schema, and
   performs a one-way activation CAS that persists an activation ID derived from

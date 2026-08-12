@@ -504,10 +504,12 @@ ingestion therefore requires an intentional webhook action as well.
   check succeeds does it apply the expand-only D1 migration, stage Cloudflare
   runtime `NEXT`, and deploy the relay from `main` with `--tag "$GITHUB_SHA"`
   when the gate is `true`. After migration and before either hosted deploy, it
-  reads the D1 activation tuple and permits only the initial inactive state or
-  the already activated exact SHA. A later SHA therefore fails before secret
-  staging or Worker replacement until the reviewed contract removes this
-  expand-only preflight. Its dependent `deploy_slack` job then stages Slack
+  reads all six persisted fields in the D1 activation tuple. It permits only
+  the initial inactive state with all activation metadata null or an active tuple whose SHA, schema revision
+  and deterministic HMAC activation ID exactly match the staged signer. A
+  partial tuple or later SHA therefore fails before secret staging or Worker
+  replacement until the reviewed contract removes this expand-only preflight.
+  Its dependent `deploy_slack` job then stages Slack
   runtime `NEXT`, deploys the same checked-out SHA with an explicitly addressed,
   checksum-verified Slack CLI, then updates the existing activity and alert
   trigger IDs in place from their respective versioned definitions. It captures
@@ -565,9 +567,11 @@ return read-only `already_applied` while confirmation is open. That is
 idempotent confirmation of the original CAS, not replay of activation; it
 cannot change time, attempts, or any delivery. A new ID, changed tuple, wrong
 key/SHA/schema, incomplete schema, downgrade, or missing activation record fails
-closed. The deployment preflight independently refuses to replace an already
-activated revision with any other SHA; an exact-SHA workflow rerun remains
-allowed. Once rollout evidence is complete, a separately reviewed contract
+closed. The deployment preflight independently requires all six persisted
+fields to represent either the initial inactive tuple with null activation metadata or the exact active
+SHA/schema/HMAC tuple. It refuses partial state, a different signer or any
+other revision; an exact-SHA workflow rerun remains allowed. Once rollout
+evidence is complete, a separately reviewed contract
 change must irreversibly close confirmation and remove the workflow preflight,
 activation step, and endpoint before any later integration-path deploy. After
 contract, even the original activation tuple is rejected; there is no public

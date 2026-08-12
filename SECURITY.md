@@ -52,9 +52,11 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   `NEXT`; both hosted stores retain the old current key during expand, but only the Slack validator
   accepts it for inbound relay compatibility. Slack issues every new progress authorization and
   callback only with `NEXT`, so current never has to be recovered into GitHub. After migration and
-  before either hosted deploy, a D1 preflight permits only the initial inactive tuple or the already
-  activated exact SHA; a later revision cannot replace the Worker until the reviewed contract removes
-  that expand guard. After the Slack deploy, the workflow updates both fixed protected trigger IDs
+  before either hosted deploy, a D1 preflight reads all six persisted activation fields. It permits
+  only the initial inactive tuple with all activation metadata null or an active tuple whose SHA,
+  schema and deterministic HMAC
+  activation ID exactly match the staged signer; a later or partially written revision cannot replace
+  the Worker until the reviewed contract removes that expand guard. After the Slack deploy, the workflow updates both fixed protected trigger IDs
   from their versioned definitions while suppressing the CLI response because it can contain bearer
   URLs. Only after the exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack
   revision, and expanded
