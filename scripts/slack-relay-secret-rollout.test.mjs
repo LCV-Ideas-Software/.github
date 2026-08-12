@@ -18,13 +18,19 @@ function json(body, status = 200) {
   });
 }
 
-function cloudflareSecret({ id, name, comment = "", status = "active" }) {
+function cloudflareSecret({
+  id,
+  name,
+  comment = "",
+  scopes = ["workers"],
+  status = "active",
+}) {
   return {
     id,
     name,
     status,
     store_id: STORE_ID,
-    scopes: ["workers"],
+    scopes,
     comment,
   };
 }
@@ -35,6 +41,284 @@ const cloudflareEnvironment = Object.freeze({
   SLACK_RELAY_SECRET_STORE_ID: STORE_ID,
   SLACK_RELAY_CURRENT_SECRET_ID: CURRENT_ID,
   SLACK_RELAY_SIGNING_SECRET: SECRET,
+});
+
+test("Cloudflare inventory accepts live nullable comments on unrelated secrets", async () => {
+  let created = false;
+  const result = await provisionCloudflareNextSecret({
+    environment: cloudflareEnvironment,
+    fetchImpl: async (_url, init = {}) => {
+      if (init.method === "POST") {
+        created = true;
+        return json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: NEXT_ID,
+              name: "github-slack-relay-signing-secret-next",
+              comment: `sha256:${FINGERPRINT}`,
+            }),
+          ],
+        });
+      }
+      if (init.method === "PATCH") {
+        return json({
+          success: true,
+          result: cloudflareSecret({
+            id: NEXT_ID,
+            name: "github-slack-relay-signing-secret-next",
+            comment: `sha256:${FINGERPRINT}`,
+          }),
+        });
+      }
+      return json({
+        success: true,
+        result: [
+          cloudflareSecret({
+            id: "a".repeat(32),
+            name: "unrelated-null-comment",
+            comment: null,
+          }),
+          cloudflareSecret({
+            id: CURRENT_ID,
+            name: "github-slack-relay-signing-secret",
+          }),
+          ...(created
+            ? [
+                cloudflareSecret({
+                  id: NEXT_ID,
+                  name: "github-slack-relay-signing-secret-next",
+                  comment: `sha256:${FINGERPRINT}`,
+                }),
+              ]
+            : []),
+        ],
+        result_info: {
+          page: 1,
+          per_page: 100,
+          count: created ? 3 : 2,
+          total_count: created ? 3 : 2,
+        },
+      });
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(result.status, "staged");
+});
+
+test("Cloudflare inventory accepts official multi-scope unrelated secrets", async () => {
+  let created = false;
+  const result = await provisionCloudflareNextSecret({
+    environment: cloudflareEnvironment,
+    fetchImpl: async (_url, init = {}) => {
+      if (init.method === "POST") {
+        created = true;
+        return json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: NEXT_ID,
+              name: "github-slack-relay-signing-secret-next",
+              comment: `sha256:${FINGERPRINT}`,
+            }),
+          ],
+        });
+      }
+      if (init.method === "PATCH") {
+        return json({
+          success: true,
+          result: cloudflareSecret({
+            id: NEXT_ID,
+            name: "github-slack-relay-signing-secret-next",
+            comment: `sha256:${FINGERPRINT}`,
+          }),
+        });
+      }
+      return json({
+        success: true,
+        result: [
+          cloudflareSecret({
+            id: "b".repeat(32),
+            name: "unrelated-multi-scope",
+            scopes: ["ai_gateway", "workers"],
+          }),
+          cloudflareSecret({
+            id: CURRENT_ID,
+            name: "github-slack-relay-signing-secret",
+          }),
+          ...(created
+            ? [
+                cloudflareSecret({
+                  id: NEXT_ID,
+                  name: "github-slack-relay-signing-secret-next",
+                  comment: `sha256:${FINGERPRINT}`,
+                }),
+              ]
+            : []),
+        ],
+        result_info: {
+          page: 1,
+          per_page: 100,
+          count: created ? 3 : 2,
+          total_count: created ? 3 : 2,
+        },
+      });
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(result.status, "staged");
+});
+
+test("Cloudflare refuses a multi-scope CURRENT before any write", async () => {
+  let writes = 0;
+  await assert.rejects(
+    provisionCloudflareNextSecret({
+      environment: cloudflareEnvironment,
+      fetchImpl: async (_url, init = {}) => {
+        if (init.method === "POST" || init.method === "PATCH") writes += 1;
+        return json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: CURRENT_ID,
+              name: "github-slack-relay-signing-secret",
+              scopes: ["workers", "ai_gateway"],
+            }),
+          ],
+          result_info: { page: 1, per_page: 100, count: 1, total_count: 1 },
+        });
+      },
+      sleep: async () => {},
+    }),
+    /current relay secret metadata is invalid/,
+  );
+  assert.equal(writes, 0);
+});
+
+test("Cloudflare refuses a CURRENT with a null comment before any write", async () => {
+  let writes = 0;
+  await assert.rejects(
+    provisionCloudflareNextSecret({
+      environment: cloudflareEnvironment,
+      fetchImpl: async (_url, init = {}) => {
+        if (init.method === "POST" || init.method === "PATCH") writes += 1;
+        return json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: CURRENT_ID,
+              name: "github-slack-relay-signing-secret",
+              comment: null,
+            }),
+          ],
+          result_info: { page: 1, per_page: 100, count: 1, total_count: 1 },
+        });
+      },
+      sleep: async () => {},
+    }),
+    /current relay secret metadata is invalid/,
+  );
+  assert.equal(writes, 0);
+});
+
+test("Cloudflare refuses a multi-scope NEXT even with the exact fingerprint", async () => {
+  let writes = 0;
+  await assert.rejects(
+    provisionCloudflareNextSecret({
+      environment: cloudflareEnvironment,
+      fetchImpl: async (_url, init = {}) => {
+        if (init.method === "POST" || init.method === "PATCH") writes += 1;
+        return json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: CURRENT_ID,
+              name: "github-slack-relay-signing-secret",
+            }),
+            cloudflareSecret({
+              id: NEXT_ID,
+              name: "github-slack-relay-signing-secret-next",
+              comment: `sha256:${FINGERPRINT}`,
+              scopes: ["workers", "ai_gateway"],
+            }),
+          ],
+          result_info: { page: 1, per_page: 100, count: 2, total_count: 2 },
+        });
+      },
+      sleep: async () => {},
+    }),
+    /staged relay secret metadata conflicts/,
+  );
+  assert.equal(writes, 0);
+});
+
+test("Cloudflare does not confirm a multi-scope PATCH response", async () => {
+  let patches = 0;
+  await assert.rejects(
+    provisionCloudflareNextSecret({
+      environment: cloudflareEnvironment,
+      fetchImpl: async (_url, init = {}) => {
+        if (init.method === "PATCH") {
+          patches += 1;
+          return json({
+            success: true,
+            result: cloudflareSecret({
+              id: NEXT_ID,
+              name: "github-slack-relay-signing-secret-next",
+              comment: `sha256:${FINGERPRINT}`,
+              scopes: ["workers", "ai_gateway"],
+            }),
+          });
+        }
+        return json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: CURRENT_ID,
+              name: "github-slack-relay-signing-secret",
+            }),
+            cloudflareSecret({
+              id: NEXT_ID,
+              name: "github-slack-relay-signing-secret-next",
+              comment: `sha256:${FINGERPRINT}`,
+            }),
+          ],
+          result_info: { page: 1, per_page: 100, count: 2, total_count: 2 },
+        });
+      },
+      sleep: async () => {},
+    }),
+    /rewrite is unconfirmed/,
+  );
+  assert.equal(patches, 2);
+});
+
+test("Cloudflare refuses a NEXT with a null fingerprint comment", async () => {
+  await assert.rejects(
+    provisionCloudflareNextSecret({
+      environment: cloudflareEnvironment,
+      fetchImpl: async () =>
+        json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: CURRENT_ID,
+              name: "github-slack-relay-signing-secret",
+            }),
+            cloudflareSecret({
+              id: NEXT_ID,
+              name: "github-slack-relay-signing-secret-next",
+              comment: null,
+            }),
+          ],
+          result_info: { page: 1, per_page: 100, count: 2, total_count: 2 },
+        }),
+      sleep: async () => {},
+    }),
+    /staged relay secret metadata conflicts/,
+  );
 });
 
 test("Cloudflare inventory paginates, stages NEXT by body, and verifies metadata", async () => {
