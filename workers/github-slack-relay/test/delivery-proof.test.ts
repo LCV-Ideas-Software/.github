@@ -455,6 +455,7 @@ describe("authenticated Slack delivery proof", () => {
     expect(store.deliveries.get("receipt-delivery-1")).toMatchObject({
       status: "delivered",
       slackMessageTs: "1785758400.000001",
+      slackTraceId: null,
       deliveredAt: NOW,
     });
 
@@ -473,6 +474,173 @@ describe("authenticated Slack delivery proof", () => {
     expect(store.deliveries.get("receipt-delivery-1")?.status).toBe(
       "delivered",
     );
+    const checkpointUs =
+      NOW * 1_000 + RECONCILIATION_RETRY_DELAY_MS * 1_000 + 2_000;
+    await expect(
+      store.advanceSlackActivityCheckpoint(checkpointUs),
+    ).resolves.toBe(NOW * 1_000);
+    await expect(store.purgeDeliveredBefore(NOW + 1)).resolves.toBe(0);
+    expect(store.deliveries.has("receipt-delivery-1")).toBe(true);
+  });
+
+  it("keeps a terminal trace linked when its authenticated receipt arrives late", async () => {
+    const store = new MemoryDeliveryStore();
+    const deliveryId = "receipt-delivery-1";
+    const traceId = "TrMemoryLateReceipt1";
+    store.seed(deliveryId, "send_started", NOW, {
+      attemptCount: 1,
+      nextAttemptAt: NOW + RECONCILIATION_RETRY_DELAY_MS,
+      slackSendExecutionId: "FxDeliveryProofSend1",
+      triggerAcceptedAt: NOW,
+    });
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId,
+          deliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: "FxDeliveryProofSend1",
+          destination: null,
+          slackChannelId: null,
+          messageTs: null,
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 1,
+      ),
+    ).resolves.toBe("changed");
+
+    const response = await handleFetch(
+      await progressRequest(),
+      makeEnv(new FakeQueue()),
+      { store, now: () => NOW + 2 },
+    );
+    expect(response.status).toBe(200);
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "delivered",
+      slackMessageTs: "1785758400.000001",
+      slackTraceId: traceId,
+      slackSendExecutionId: "FxDeliveryProofSend1",
+      lastError: null,
+    });
+
+    const checkpointUs =
+      NOW * 1_000 + RECONCILIATION_RETRY_DELAY_MS * 1_000 + 2_000;
+    await expect(
+      store.advanceSlackActivityCheckpoint(checkpointUs),
+    ).resolves.toBe(checkpointUs);
+    await expect(store.purgeDeliveredBefore(NOW + 3)).resolves.toBe(1);
+    expect(store.deliveries.has(deliveryId)).toBe(false);
+    expect(store.slackTraces.has(traceId)).toBe(false);
+  });
+
+  it("does not retain a pre-send-only trace after a late authenticated receipt", async () => {
+    const store = new MemoryDeliveryStore();
+    const deliveryId = "receipt-delivery-1";
+    const traceId = "TrMemoryLateReceiptPreSend1";
+    store.seed(deliveryId, "send_started", NOW, {
+      attemptCount: 1,
+      nextAttemptAt: NOW + RECONCILIATION_RETRY_DELAY_MS,
+      slackSendExecutionId: "FxDeliveryProofSend1",
+      triggerAcceptedAt: NOW,
+    });
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId,
+          deliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: "FxDeliveryProofSend1",
+          destination: null,
+          slackChannelId: null,
+          messageTs: null,
+          sendBoundaryReached: false,
+          preSendFailureProven: true,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 1,
+      ),
+    ).resolves.toBe("changed");
+
+    const response = await handleFetch(
+      await progressRequest(),
+      makeEnv(new FakeQueue()),
+      { store, now: () => NOW + 2 },
+    );
+    expect(response.status).toBe(200);
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "delivered",
+      slackMessageTs: "1785758400.000001",
+      slackTraceId: null,
+      slackSendExecutionId: "FxDeliveryProofSend1",
+      lastError: null,
+    });
+
+    const checkpointUs =
+      NOW * 1_000 + RECONCILIATION_RETRY_DELAY_MS * 1_000 + 2_000;
+    await expect(
+      store.advanceSlackActivityCheckpoint(checkpointUs),
+    ).resolves.toBe((NOW + 2) * 1_000);
+    await expect(store.purgeDeliveredBefore(NOW + 3)).resolves.toBe(0);
+    expect(store.deliveries.has(deliveryId)).toBe(true);
+  });
+
+  it("rejects delivery-owned message evidence before persisting a memory trace", async () => {
+    const store = new MemoryDeliveryStore();
+    const messageTs = "1785758400.000002";
+    store.seed("memory-delivery-message-owner", "send_started", NOW, {
+      attemptCount: 1,
+      slackSendExecutionId: "FxMemoryDeliveryMessageOwner1",
+    });
+    await store.recordSlackProgress({
+      deliveryId: "memory-delivery-message-owner",
+      destination: "alerts",
+      phase: "delivered",
+      messageTs,
+      attemptCount: 1,
+      functionExecutionId: "FxMemoryDeliveryMessageReceipt1",
+      now: NOW + 1,
+      reconcileAt: NOW + RECONCILIATION_RETRY_DELAY_MS,
+    });
+    store.seed("memory-delivery-message-contender", "send_started", NOW + 2, {
+      attemptCount: 1,
+      slackSendExecutionId: "FxMemoryDeliveryMessageContender1",
+    });
+
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId: "TrMemoryDeliveryMessageContender1",
+          deliveryId: "memory-delivery-message-contender",
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: "FxMemoryDeliveryMessageContender1",
+          destination: "alerts",
+          slackChannelId: "C0BMUK793NV",
+          messageTs,
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000 + 2,
+          completedAtUs: NOW * 1_000 + 3,
+        },
+        NOW + 3,
+      ),
+    ).rejects.toThrow("slack_message_timestamp_conflict");
+    expect(store.slackTraces.has("TrMemoryDeliveryMessageContender1")).toBe(
+      false,
+    );
+    expect(
+      store.deliveries.get("memory-delivery-message-contender"),
+    ).toMatchObject({
+      status: "send_started",
+      slackMessageTs: null,
+      slackTraceId: null,
+    });
   });
 
   it("retries a receipt whose D1 CAS response was lost without another delivery mutation", async () => {

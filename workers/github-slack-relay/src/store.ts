@@ -1035,7 +1035,29 @@ export class D1DeliveryStore implements DeliveryStore {
           `UPDATE deliveries
            SET status = 'delivered', updated_at = ?, delivered_at = ?,
                slack_message_ts = ?, next_attempt_at = ?, last_error = NULL,
-               slack_trace_id = NULL, legacy_unverified = 0
+               slack_trace_id = CASE
+                 WHEN slack_trace_id IS NOT NULL
+                   AND EXISTS (
+                     SELECT 1
+                     FROM slack_workflow_traces AS receipt_trace
+                     WHERE receipt_trace.trace_id = deliveries.slack_trace_id
+                       AND receipt_trace.delivery_id = deliveries.delivery_id
+                       AND receipt_trace.relay_attempt = deliveries.attempt_count
+                       AND receipt_trace.send_execution_id =
+                         deliveries.slack_send_execution_id
+                       AND receipt_trace.applied_at IS NOT NULL
+                       AND (
+                         receipt_trace.outcome = 'success'
+                         OR (
+                           receipt_trace.outcome = 'error'
+                           AND receipt_trace.send_boundary_reached = 1
+                         )
+                       )
+                   )
+                   THEN slack_trace_id
+                 ELSE NULL
+               END,
+               legacy_unverified = 0
            WHERE delivery_id = ? AND destination = ?
               AND attempt_count = ?
               AND slack_send_execution_id = ?
@@ -1348,6 +1370,13 @@ export class D1DeliveryStore implements DeliveryStore {
       }
     };
     await assertUniqueTraceOwners();
+    if (destination !== null && messageTs !== null) {
+      await this.#assertUniqueDeliveryMessageOwner(
+        trace.deliveryId,
+        destination,
+        messageTs,
+      );
+    }
     const traceWrite = this.#database
       .prepare(
         `INSERT INTO slack_workflow_traces (
@@ -2138,16 +2167,52 @@ export class D1DeliveryStore implements DeliveryStore {
         messageTs,
         trace.traceId,
       );
-    const [resolution, applied] = await this.#database.batch([
-      mutation,
-      appliedStatement,
-    ]);
+    let resolution: D1Result<unknown> | undefined;
+    let applied: D1Result<unknown> | undefined;
+    try {
+      [resolution, applied] = await this.#database.batch([
+        mutation,
+        appliedStatement,
+      ]);
+    } catch (error) {
+      await this.#assertUniqueDeliveryMessageOwner(
+        trace.deliveryId,
+        destination,
+        messageTs,
+      );
+      throw error;
+    }
     if (resolution === undefined || applied === undefined) {
       throw new Error("slack_trace_resolution_batch_result_missing");
     }
     if (!changed(applied)) {
       throw new SlackReconciliationConflictError(
         "slack_trace_message_resolution_conflict",
+      );
+    }
+  }
+
+  async #assertUniqueDeliveryMessageOwner(
+    deliveryId: string,
+    destination: RelayDestination,
+    messageTs: string,
+  ): Promise<void> {
+    const owners = await this.#database
+      .prepare(
+        `SELECT delivery_id
+         FROM deliveries
+         WHERE destination = ? AND slack_message_ts = ?
+         LIMIT 2`,
+      )
+      .bind(destination, messageTs)
+      .all<{ delivery_id: string }>();
+    if (
+      owners.results.length > 1 ||
+      (owners.results.length === 1 &&
+        owners.results[0]?.delivery_id !== deliveryId)
+    ) {
+      throw new SlackReconciliationConflictError(
+        "slack_message_timestamp_conflict",
       );
     }
   }

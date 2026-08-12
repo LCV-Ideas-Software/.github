@@ -467,10 +467,24 @@ export class MemoryDeliveryStore implements DeliveryStore {
         "delivery_not_awaiting_slack_progress",
       );
     }
+    const linkedTrace =
+      delivery.slackTraceId === null
+        ? undefined
+        : this.slackTraces.get(delivery.slackTraceId);
+    const retainedTraceId =
+      linkedTrace?.deliveryId === delivery.deliveryId &&
+        linkedTrace.attemptCount === delivery.attemptCount &&
+        linkedTrace.sendExecutionId === delivery.slackSendExecutionId &&
+        linkedTrace.applied &&
+        (linkedTrace.outcome === "success" ||
+          (linkedTrace.outcome === "error" &&
+            linkedTrace.sendBoundaryReached))
+        ? delivery.slackTraceId
+        : null;
     delivery.status = "delivered";
     delivery.deliveredAt = input.now;
     delivery.slackMessageTs = input.messageTs;
-    delivery.slackTraceId = null;
+    delivery.slackTraceId = retainedTraceId;
     delivery.updatedAt = input.now;
     delivery.nextAttemptAt = input.now;
     delivery.lastError = null;
@@ -713,6 +727,19 @@ export class MemoryDeliveryStore implements DeliveryStore {
         "slack_trace_message_owner_conflict",
       );
     }
+    if (effectiveTrace.messageTs !== null) {
+      for (const other of this.deliveries.values()) {
+        if (
+          other.deliveryId !== delivery.deliveryId &&
+          other.destination === delivery.destination &&
+          other.slackMessageTs === effectiveTrace.messageTs
+        ) {
+          throw new SlackReconciliationConflictError(
+            "slack_message_timestamp_conflict",
+          );
+        }
+      }
+    }
     const observationResult: SlackTraceRecordResult =
       trace.outcome === "pending" && effectiveTrace.outcome !== "pending"
         ? "duplicate"
@@ -735,17 +762,6 @@ export class MemoryDeliveryStore implements DeliveryStore {
         throw new SlackReconciliationConflictError(
           "slack_trace_owner_conflict",
         );
-      }
-      for (const other of this.deliveries.values()) {
-        if (
-          other.deliveryId !== delivery.deliveryId &&
-          other.destination === delivery.destination &&
-          other.slackMessageTs === effectiveTrace.messageTs
-        ) {
-          throw new SlackReconciliationConflictError(
-            "slack_message_timestamp_conflict",
-          );
-        }
       }
       if (
         delivery.status === "delivered" &&
