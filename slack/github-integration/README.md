@@ -69,17 +69,19 @@ only after D1 migration, Cloudflare `NEXT` staging, and Worker deployment
 succeed, so it cannot race them. The separate Slack workflow is verification and
 monitor only; manual dispatch there is monitor-only. The expanded Worker keeps
 delivery closed and applies only bounded Queue backoff until this job has
-deployed the Slack app and verified the exact protected trigger inventory. A
-final fixed-purpose script derives an immutable pseudorandom `activation_id`
-from the exact SHA and schema revision under the staged `NEXT` key, then
-HMAC-authenticates that exact tuple with `NEXT`. The Worker requires the SHA to
-equal `WORKER_VERSION.tag`, proves the expanded D1 schema, and allows its sole
-false-to-true protocol transition. If the response is lost after that CAS, the
-script repeats the byte-identical request once and accepts only
-`already_applied` for the same persisted tuple. This is idempotent confirmation,
-not a second activation or replay. A different ID, revision, schema, key, or a
-request after the reviewed contract closes confirmation fails closed. The
-activation path cannot select or recover a delivery.
+deployed the Slack app, updated both existing protected trigger IDs in place
+from their versioned definitions without printing the CLI response, and verified
+the exact protected trigger inventory. A final fixed-purpose script derives an
+immutable pseudorandom `activation_id` from the exact SHA and schema revision
+under the staged `NEXT` key, then HMAC-authenticates that exact tuple with
+`NEXT`. The Worker requires the SHA to equal `WORKER_VERSION.tag`, proves the
+expanded D1 schema, and allows its sole false-to-true protocol transition. If
+the response is lost after that CAS, the script repeats the byte-identical
+request once and accepts only `already_applied` for the same persisted tuple.
+This is idempotent confirmation, not a second activation or replay. A different
+ID, revision, schema, key, or a request after the reviewed contract closes
+confirmation fails closed. The activation path cannot select or recover a
+delivery.
 
 The manifest therefore allows outbound HTTPS only to
 `github-slack-alerts.lcv.workers.dev`. The progress function retries the same

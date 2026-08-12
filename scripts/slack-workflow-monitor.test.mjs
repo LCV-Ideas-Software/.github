@@ -7,6 +7,7 @@ import {
   monitorSlackWorkflow,
   readSlackMonitorConfiguration,
   reconcileSlackActivities,
+  SLACK_MONITOR_WORST_CASE_NETWORK_MS,
 } from "./slack-workflow-monitor.mjs";
 
 const manifestSource = await readFile(
@@ -201,6 +202,57 @@ test("deployment verifies both protected triggers without logging their details"
   assert.match(relayWorkflowSource, /rm -f "\$inventory_error"/);
 });
 
+test("deployment updates both protected trigger definitions before inventory and activation", () => {
+  const deployJob = relayWorkflowSource.slice(
+    relayWorkflowSource.indexOf("  deploy_slack:"),
+  );
+  const deploySlack = deployJob.indexOf('bin/slack" deploy');
+  const updateStepStart = deployJob.indexOf(
+    "      - name: Update the two protected production webhook triggers",
+  );
+  const verifyTriggers = deployJob.indexOf(
+    "scripts/verify_trigger_inventory.ts",
+  );
+  const activateProtocol = deployJob.indexOf(
+    "scripts/activate_delivery_protocol.ts",
+  );
+
+  assert.ok(
+    deploySlack >= 0 &&
+      updateStepStart > deploySlack &&
+      verifyTriggers > updateStepStart &&
+      activateProtocol > verifyTriggers,
+  );
+
+  const updateStepEnd = deployJob.indexOf(
+    "\n      - name:",
+    updateStepStart + 1,
+  );
+  const updateStep = deployJob.slice(updateStepStart, updateStepEnd);
+  assert.match(
+    updateStep,
+    /trigger update \\\n\s+--trigger-id "\$ACTIVITY_TRIGGER_ID" \\\n\s+--trigger-def triggers\/github_activity_webhook\.ts/,
+  );
+  assert.match(
+    updateStep,
+    /trigger update \\\n\s+--trigger-id "\$ALERT_TRIGGER_ID" \\\n\s+--trigger-def triggers\/github_alert_webhook\.ts/,
+  );
+  assert.equal(updateStep.match(/\n\s+trigger update \\/g)?.length, 2);
+  assert.match(updateStep, /umask 077/);
+  assert.match(
+    updateStep,
+    /mktemp "\$\{RUNNER_TEMP\}\/slack-trigger-update\.XXXXXX"/,
+  );
+  assert.match(updateStep, /trap 'rm -f "\$update_log"' EXIT/);
+  assert.equal(
+    updateStep.match(/>"\$update_log" 2>&1/g)?.length,
+    2,
+    "both CLI responses must be captured instead of exposing webhook URLs",
+  );
+  assert.doesNotMatch(updateStep, /(?:cat|tee).*\$update_log/);
+  assert.doesNotMatch(updateStep, /\|\|\s*true/);
+});
+
 test("Slack deployment is serialized behind the exact successful relay rollout", () => {
   assert.doesNotMatch(workflowSource, /workflow_run:/);
   assert.doesNotMatch(workflowSource, /github\.event\.workflow_run/);
@@ -299,6 +351,20 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     requiredVerifyJob,
     /scripts\/slack-workflow-monitor\.test\.mjs/,
     "the privileged deploy predecessor must run the monitor candidate tests",
+  );
+});
+
+test("the monitor job can finish its bounded worst-case network plan", () => {
+  const monitorJob = workflowSource.slice(workflowSource.indexOf("  monitor:"));
+  const timeout = monitorJob.match(/timeout-minutes:\s*(\d+)/);
+  assert.notEqual(timeout, null);
+  const timeoutMs = Number.parseInt(timeout[1], 10) * 60_000;
+  const setupAndProcessingMarginMs = 30 * 60_000;
+  assert.equal(SLACK_MONITOR_WORST_CASE_NETWORK_MS, 12_030_000);
+  assert.ok(
+    timeoutMs >=
+      SLACK_MONITOR_WORST_CASE_NETWORK_MS + setupAndProcessingMarginMs,
+    "the job timeout must cover every bounded page/retry/report plus setup margin",
   );
 });
 
@@ -605,6 +671,77 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
     },
   ]);
   assert.ok(!JSON.stringify(reports).includes("must-not-leak"));
+});
+
+test("refreshes the authenticated report timestamp after long pagination and between chunks", async () => {
+  let clock = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = clock * 1_000 - 1_000;
+  const activities = Array.from({ length: 101 }, (_, index) => {
+    const suffix = String(index + 1).padStart(3, "0");
+    const deliveryId = `delivery-fresh-report-${suffix}`;
+    const traceId = `TrFreshReport${suffix}`;
+    return [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        component_type: "workflows",
+        created,
+        trace_id: traceId,
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        component_type: "workflows",
+        created: created + 1,
+        trace_id: traceId,
+        payload: {
+          exec_outcome: "Success",
+          function_execution_id: `FxFreshReport${suffix}`,
+          inputs: signedProgressInputs(deliveryId),
+        },
+      },
+    ];
+  }).flat();
+  const pages = [
+    activities.slice(0, 100),
+    activities.slice(100, 200),
+    activities.slice(200),
+  ];
+  const reportTimestamps = [];
+  let page = 0;
+
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => clock,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        assertCheckpointRequest(init);
+        return jsonResponse({ checkpoint_us: created - 10_000 });
+      }
+      if (input === SLACK_URL) {
+        const currentPage = page;
+        page += 1;
+        if (page === pages.length) clock += 301_000;
+        return jsonResponse({
+          ok: true,
+          activities: pages[currentPage],
+          response_metadata: {
+            next_cursor: page < pages.length ? `cursor-${page + 1}` : "",
+          },
+        });
+      }
+      assert.equal(input, RECONCILIATION_URL);
+      const report = assertReconciliationRequest(init);
+      reportTimestamps.push(report.report_timestamp);
+      assert.equal(report.report_timestamp, String(Math.floor(clock / 1_000)));
+      if (reportTimestamps.length === 1) clock += 301_000;
+      return jsonResponse({ ok: true, traces: report.traces.length });
+    },
+  });
+
+  assert.deepEqual(result, { errors: 0, pages: 3, traces: 101 });
+  assert.deepEqual(reportTimestamps, ["1785830701", "1785831002"]);
 });
 
 test("persists an incomplete trace so later pages cannot forget its send boundary", () => {
@@ -1049,6 +1186,31 @@ test("repeated pagination cursors fail before advancing the checkpoint", async (
     /repeated a cursor/,
   );
   assert.equal(reports, 0);
+});
+
+test("rejects an oversized Slack page before it can exceed the job budget", async () => {
+  let reconciliationPosts = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      fetchImpl: async (input) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        if (input === RECONCILIATION_URL) {
+          reconciliationPosts += 1;
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({
+          ok: true,
+          activities: Array.from({ length: 101 }, () => ({})),
+          response_metadata: { next_cursor: "" },
+        });
+      },
+    }),
+    /exceeded its requested page size/,
+  );
+  assert.equal(reconciliationPosts, 0);
 });
 
 test("pure reconciliation refuses conflicting delivery IDs without exposing inputs", () => {

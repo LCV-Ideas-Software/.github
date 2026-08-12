@@ -290,6 +290,71 @@ jobs:
             --hide-triggers \
             --skip-update
 
+      - name: Update the two protected production webhook triggers
+        working-directory: slack/github-integration
+        env:
+          ACTIVITY_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ACTIVITY_TRIGGER_ID }}
+          ALERT_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ALERT_TRIGGER_ID }}
+          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
+          SLACK_CLI_VERSION: 4.6.0
+          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
+          SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
+          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
+          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
+          for trigger_id in "$ACTIVITY_TRIGGER_ID" "$ALERT_TRIGGER_ID"; do
+            if [[ ! "$trigger_id" =~ ^Ft[A-Z0-9]{8,}$ ]]; then
+              echo "::error::A protected Slack webhook trigger ID is missing or malformed."
+              exit 1
+            fi
+          done
+          if [[ "$ACTIVITY_TRIGGER_ID" == "$ALERT_TRIGGER_ID" ]]; then
+            echo "::error::The activity and alert trigger IDs must be distinct."
+            exit 1
+          fi
+          if [[ ! "$SLACK_APP_ID" =~ ^A[A-Z0-9]{8,}$ ]]; then
+            echo "::error::The protected Slack app ID is malformed."
+            exit 1
+          fi
+
+          update_log="$(mktemp "${RUNNER_TEMP}/slack-trigger-update.XXXXXX")"
+          trap 'rm -f "$update_log"' EXIT
+          if ! "${RUNNER_TEMP}/slack-cli-${SLACK_CLI_VERSION}/bin/slack" \
+            trigger update \
+            --trigger-id "$ACTIVITY_TRIGGER_ID" \
+            --trigger-def triggers/github_activity_webhook.ts \
+            --app "$SLACK_APP_ID" \
+            --team "$SLACK_TEAM_ID" \
+            --token "$SLACK_SERVICE_TOKEN" \
+            --no-color \
+            --skip-update \
+            >"$update_log" 2>&1; then
+            rm -f "$update_log"
+            echo "::error::The protected Slack activity trigger update failed."
+            exit 1
+          fi
+          : >"$update_log"
+          if ! "${RUNNER_TEMP}/slack-cli-${SLACK_CLI_VERSION}/bin/slack" \
+            trigger update \
+            --trigger-id "$ALERT_TRIGGER_ID" \
+            --trigger-def triggers/github_alert_webhook.ts \
+            --app "$SLACK_APP_ID" \
+            --team "$SLACK_TEAM_ID" \
+            --token "$SLACK_SERVICE_TOKEN" \
+            --no-color \
+            --skip-update \
+            >"$update_log" 2>&1; then
+            rm -f "$update_log"
+            echo "::error::The protected Slack alert trigger update failed."
+            exit 1
+          fi
+          rm -f "$update_log"
+          trap - EXIT
+
       - name: Verify the exact protected production trigger inventory
         working-directory: slack/github-integration
         env:

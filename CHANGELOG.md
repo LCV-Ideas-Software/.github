@@ -190,7 +190,10 @@ evidence is the execution trail recorded in
   that SHA and schema. One byte-identical retry can confirm a response lost after
   CAS without another mutation, while a new ID, changed tuple, post-contract
   request, partial deploy, wrong key/SHA, or downgrade remains closed without a
-  Slack POST or D1 delivery attempt. Deterministic reconciliation conflicts
+  Slack POST or D1 delivery attempt. After the app deploy, both protected
+  trigger IDs are updated in place from their versioned definitions with all
+  CLI output suppressed, then the exact mapping inventory must pass before
+  activation. Deterministic reconciliation conflicts
   return 409 while persistence failure or a response lost after a write returns
   retryable 503. Competing receipt/progress writes converge only after an exact
   reread. Each dispatch attempt is signed into the Slack workflow, and a durable
@@ -209,7 +212,10 @@ evidence is the execution trail recorded in
   trace is success or a boundary-confirmed error caused by a lost receipt reply.
   Terminally contradictory traces are rejected before any reconciliation
   mutation; empty activity scans cannot advance to wall clock; D1 causally clamps
-  the monitor checkpoint behind uncorrelated live attempts; and the known ID has
+  the monitor checkpoint behind uncorrelated live attempts; the scheduled job's
+  timeout covers the full bounded 100-page retry/report plan plus setup margin,
+  so throttling cannot force the same uncommitted window to restart forever;
+  and the known ID has
   a fixed one-time audited release requiring separate absence proof and explicit
   ID/destination authorization before its normal receipt path. The former
   `workflow_run` checkout and `GITHUB_PATH` mutation were removed from this

@@ -13,6 +13,7 @@ const MAX_PAGES = 100;
 const REPORT_TRACE_LIMIT = 100;
 const MAX_RELAY_AGE_SECONDS = 300;
 const MAX_RELAY_CLOCK_SKEW_SECONDS = 60;
+const MAX_ACTIVITIES_PER_PAGE = 100;
 const SAFE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const DELIVERY_ID_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
 const TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/;
@@ -39,6 +40,12 @@ const EXECUTION_EVENT_TYPES = new Set([
   "workflow_execution_result",
   "workflow_step_execution_result",
 ]);
+
+export const SLACK_MONITOR_WORST_CASE_NETWORK_MS =
+  REQUEST_TIMEOUT_MS +
+  MAX_PAGES * (REQUEST_TIMEOUT_MS * 2 + MAX_RETRY_AFTER_SECONDS * 1_000) +
+  Math.ceil((MAX_PAGES * MAX_ACTIVITIES_PER_PAGE) / REPORT_TRACE_LIMIT) *
+    REQUEST_TIMEOUT_MS;
 
 function requiredEnvironmentValue(environment, name) {
   const value = environment[name];
@@ -260,6 +267,9 @@ async function fetchSlackPage({ body, configuration, fetchImpl, sleepImpl }) {
     throw new Error(
       "Slack activity API returned a malformed activities collection.",
     );
+  }
+  if (responseBody.activities.length > MAX_ACTIVITIES_PER_PAGE) {
+    throw new Error("Slack activity API exceeded its requested page size.");
   }
   const nextCursor = responseBody.response_metadata?.next_cursor ?? "";
   if (typeof nextCursor !== "string" || nextCursor.length > 2_048) {
@@ -539,10 +549,10 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
 async function postReconciliation({
   checkpointUs,
   previousCheckpointUs,
-  reportTimestamp,
   traces,
   configuration,
   fetchImpl,
+  now,
 }) {
   const chunks = [];
   for (let index = 0; index < traces.length; index += REPORT_TRACE_LIMIT) {
@@ -552,6 +562,11 @@ async function postReconciliation({
 
   for (let index = 0; index < chunks.length; index += 1) {
     const final = index === chunks.length - 1;
+    const currentTime = now();
+    if (!Number.isSafeInteger(currentTime) || currentTime <= 0) {
+      throw new Error("The monitor clock returned an invalid timestamp.");
+    }
+    const reportTimestamp = String(Math.floor(currentTime / 1_000));
     const unsigned = {
       checkpoint_us: final ? checkpointUs : previousCheckpointUs,
       report_timestamp: reportTimestamp,
@@ -621,7 +636,7 @@ export async function monitorSlackWorkflow({
       min_date_created: String(minDateCreated),
       max_date_created: String(currentTimeUs),
       sort_direction: "asc",
-      limit: "100",
+      limit: String(MAX_ACTIVITIES_PER_PAGE),
     });
     if (cursor !== "") body.set("cursor", cursor);
     const page = await fetchSlackPage({
@@ -652,10 +667,10 @@ export async function monitorSlackWorkflow({
   await postReconciliation({
     checkpointUs: evidenceCheckpointUs,
     previousCheckpointUs,
-    reportTimestamp,
     traces: reconciliation.traces,
     configuration,
     fetchImpl,
+    now,
   });
 
   if (reconciliation.errors > 0) {

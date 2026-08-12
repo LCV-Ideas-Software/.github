@@ -302,11 +302,16 @@ write the returned URLs directly to the corresponding Secrets Store entries.
 The non-secret IDs are retained in repository variables
 `SLACK_GITHUB_ACTIVITY_TRIGGER_ID` and `SLACK_GITHUB_ALERT_TRIGGER_ID`; the
 bearer URLs never belong in GitHub variables.
-Routine Slack app deployments use `--hide-triggers` and must not create,
-update, delete or display triggers. In particular, do not run
-`slack trigger update` during every deployment.
+Routine Slack app deployments use `--hide-triggers` and must not implicitly
+create, delete or display triggers. The protected workflow then updates each
+existing fixed trigger ID from its corresponding versioned definition. It
+captures and deletes the CLI response without displaying it because that output
+can contain the bearer webhook URL, and it requires the exact two-trigger
+inventory before activation.
 
-Rotate a trigger only through a controlled overlap:
+Compatible input-mapping changes use that protected in-place update. Rotate a
+trigger only for exposure, a Slack requirement, or a change that cannot safely
+preserve its ID, and only through a controlled overlap:
 
 1. Create the replacement without deleting the old trigger.
 2. Atomically update the existing Secrets Store entry by secret ID through an

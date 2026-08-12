@@ -302,16 +302,21 @@ The production policy is therefore:
 5. Verify a signed event through each destination before activation is
    considered complete.
 
-Normal `slack deploy` runs must not create, update, delete or print triggers.
-The workflow uses `--hide-triggers`, so source deployment updates function and
-workflow code while the two production URLs remain stable. Do not run
-`slack trigger update` on every deployment.
+Normal `slack deploy` runs must not implicitly create, update, delete or print
+triggers. The workflow uses `--hide-triggers`, so source deployment updates
+function and workflow code without replacing the two production triggers. It
+then updates each existing protected trigger ID in place from its corresponding
+versioned definition. The CLI response is captured and deleted without being
+printed because it can contain the bearer webhook URL. The exact inventory must
+still pass before activation, so a missing, swapped, partial or stale mapping
+fails closed.
 
 ### Controlled trigger rotation
 
 Rotate a trigger only for suspected exposure, an explicit Slack requirement,
-or an intentional incompatible trigger-definition change. Rotate one
-destination at a time:
+or a definition change that cannot safely preserve the existing trigger ID.
+Compatible input-mapping changes use the protected in-place update above.
+Rotate one destination at a time:
 
 1. Create the replacement trigger while the old trigger remains valid.
 2. Locate the existing Cloudflare secret ID with a metadata-only Secrets Store
@@ -504,11 +509,14 @@ ingestion therefore requires an intentional webhook action as well.
   staging or Worker replacement until the reviewed contract removes this
   expand-only preflight. Its dependent `deploy_slack` job then stages Slack
   runtime `NEXT`, deploys the same checked-out SHA with an explicitly addressed,
-  checksum-verified Slack CLI, and verifies both protected trigger IDs against
-  the exact app and workspace. It streams the structured
+  checksum-verified Slack CLI, then updates the existing activity and alert
+  trigger IDs in place from their respective versioned definitions. It captures
+  and deletes both CLI responses without displaying them. The job then verifies
+  both protected trigger IDs against the exact app and workspace. It streams the
+  structured
   `workflows.triggers.list` response directly into a bounded fail-closed
   validator, which requires exactly the two protected IDs, webhook types,
-  workflow callback IDs, app ownership, names and 15 input mappings. The
+  workflow callback IDs, app ownership, names and 16 input mappings. The
   response is never logged or stored because it contains bearer URLs. Only
   after that proof, a Deno script derives a stable pseudorandom activation ID
   from the exact `github.sha` and schema revision under the `NEXT` key, then
@@ -518,6 +526,11 @@ ingestion therefore requires an intentional webhook action as well.
   condition bypasses deploy failure. The same new protected GitHub secret is
   supplied to both jobs only as the source for runtime `NEXT`; the old hosted
   current value is never available to Actions.
+  The monitor job has a four-hour bound: this covers the calculated worst case
+  for its 100 pages, one bounded `Retry-After` retry per page, checkpoint and 100
+  bounded reconciliation chunks, plus 30 minutes for setup and local processing.
+  It normally completes in seconds; the larger cap prevents Slack throttling from
+  killing every run before any durable reconciliation can be posted.
   The migration flag defaults false. Until authenticated activation, valid
   Queue messages receive bounded backoff without a Slack POST, a D1 dispatch
   attempt, a manual-review transition or scheduled recovery mutation. Slack-source

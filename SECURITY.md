@@ -54,8 +54,10 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   callback only with `NEXT`, so current never has to be recovered into GitHub. After migration and
   before either hosted deploy, a D1 preflight permits only the initial inactive tuple or the already
   activated exact SHA; a later revision cannot replace the Worker until the reviewed contract removes
-  that expand guard. Only after the Slack deploy
-  and exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack revision, and expanded
+  that expand guard. After the Slack deploy, the workflow updates both fixed protected trigger IDs
+  from their versioned definitions while suppressing the CLI response because it can contain bearer
+  URLs. Only after the exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack
+  revision, and expanded
   schema and perform the only permitted false-to-true CAS while persisting an immutable activation
   ID, revision, and schema. One byte-identical retry may confirm the same CAS read-only after a lost
   response; a new ID, changed tuple, post-contract request, downgrade, wrong revision, wrong key,
@@ -68,7 +70,9 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   the report must bind that proof to the same relay attempt and Slack send-function execution that owns
   the durable lease; a competing or stale trace cannot release or attach to another attempt. The
   delivered rows remain retained until their applied terminal success or boundary-error trace is older
-  than both retention cutoff and the durable activity-checkpoint overlap;
+  than both retention cutoff and the durable activity-checkpoint overlap. The monitor timeout covers
+  its bounded 100-page request, retry and reconciliation-report budget plus setup margin, preventing
+  allowed throttling from starving every durable checkpoint update;
 - external credentials assigned by purpose to protected environments restricted to `main`.
   `SLACK_SERVICE_TOKEN` and the production relay signer are held in `slack-production`. Before the
   receipt-protocol expand rollout, the same newly generated signer must be provisioned under the
