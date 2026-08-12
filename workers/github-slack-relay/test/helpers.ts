@@ -7,6 +7,11 @@ import type {
   DeliveryStore,
   QueueJob,
   RecoveryClaim,
+  SlackDeliveryProtocolActivation,
+  SlackDeliveryProtocolActivationResult,
+  SlackProgressInput,
+  SlackProgressResult,
+  SlackTraceReconciliation,
   StoredDelivery,
 } from "../src/store";
 
@@ -21,8 +26,61 @@ function cloneDelivery(delivery: StoredDelivery): StoredDelivery {
 
 export class MemoryDeliveryStore implements DeliveryStore {
   readonly deliveries = new Map<string, StoredDelivery>();
+  readonly appliedSlackTraces = new Set<string>();
   nextSlackAt = 0;
+  slackActivityCheckpoint = 0;
+  slackDeliveryProtocolActive = true;
+  slackDeliveryProtocolRevision: string | null = null;
+  slackDeliveryProtocolActivatedAt: number | null = null;
+  slackDeliveryProtocolActivationId: string | null = null;
+  slackDeliveryProtocolSchemaRevision: string | null = null;
+  slackDeliveryProtocolConfirmationOpen = true;
   healthy = true;
+
+  async isSlackDeliveryProtocolActive(): Promise<boolean> {
+    return this.slackDeliveryProtocolActive;
+  }
+
+  async activateSlackDeliveryProtocol(
+    activation: SlackDeliveryProtocolActivation,
+  ): Promise<SlackDeliveryProtocolActivationResult> {
+    const valid =
+      /^[0-9a-f]{64}$/u.test(activation.activationId) &&
+      /^[0-9a-f]{40}$/u.test(activation.revision) &&
+      activation.schemaRevision === "0004_confirm_slack_delivery" &&
+      Number.isSafeInteger(activation.now) &&
+      activation.now > 0;
+    if (!valid) {
+      throw new Error("slack_delivery_protocol_activation_conflict");
+    }
+    if (!this.slackDeliveryProtocolActive) {
+      if (
+        this.slackDeliveryProtocolRevision !== null ||
+        this.slackDeliveryProtocolActivatedAt !== null ||
+        this.slackDeliveryProtocolActivationId !== null ||
+        this.slackDeliveryProtocolSchemaRevision !== null ||
+        !this.slackDeliveryProtocolConfirmationOpen
+      ) {
+        throw new Error("slack_delivery_protocol_activation_conflict");
+      }
+      this.slackDeliveryProtocolActive = true;
+      this.slackDeliveryProtocolRevision = activation.revision;
+      this.slackDeliveryProtocolActivatedAt = activation.now;
+      this.slackDeliveryProtocolActivationId = activation.activationId;
+      this.slackDeliveryProtocolSchemaRevision = activation.schemaRevision;
+      return "applied";
+    }
+
+    if (
+      this.slackDeliveryProtocolConfirmationOpen &&
+      this.slackDeliveryProtocolRevision === activation.revision &&
+      this.slackDeliveryProtocolActivationId === activation.activationId &&
+      this.slackDeliveryProtocolSchemaRevision === activation.schemaRevision
+    ) {
+      return "already_applied";
+    }
+    throw new Error("slack_delivery_protocol_activation_conflict");
+  }
 
   async insert(input: DeliveryInput): Promise<boolean> {
     if (this.deliveries.has(input.deliveryId)) {
@@ -42,7 +100,12 @@ export class MemoryDeliveryStore implements DeliveryStore {
       lastError: null,
       createdAt: input.now,
       updatedAt: input.now,
-      acceptedAt: null,
+      triggerAcceptedAt: null,
+      sendStartedAt: null,
+      deliveredAt: null,
+      slackMessageTs: null,
+      slackTraceId: null,
+      legacyUnverified: false,
     });
     return true;
   }
@@ -69,7 +132,10 @@ export class MemoryDeliveryStore implements DeliveryStore {
   ): Promise<void> {
     const delivery = this.require(deliveryId);
     if (
+      delivery.status !== "accepted_by_trigger" &&
       delivery.status !== "accepted_by_slack" &&
+      delivery.status !== "send_started" &&
+      delivery.status !== "delivered" &&
       delivery.status !== "manual_review"
     ) {
       delivery.status = "pending";
@@ -127,6 +193,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
     delivery.status = "sending";
     delivery.attemptCount += 1;
     delivery.updatedAt = now;
+    delivery.slackTraceId = null;
     return cloneDelivery(delivery);
   }
 
@@ -145,16 +212,112 @@ export class MemoryDeliveryStore implements DeliveryStore {
     }
   }
 
-  async markAcceptedBySlack(deliveryId: string, now: number): Promise<void> {
+  async markAcceptedByTrigger(
+    deliveryId: string,
+    now: number,
+    reconcileAt: number,
+  ): Promise<void> {
     const delivery = this.require(deliveryId);
-    if (delivery.status !== "sending") {
-      throw new Error("delivery_state_changed_before_completion");
+    if (delivery.status === "send_started" || delivery.status === "delivered") {
+      delivery.triggerAcceptedAt ??= now;
+      if (delivery.status === "send_started") {
+        delivery.nextAttemptAt = Math.max(delivery.nextAttemptAt, reconcileAt);
+      }
+      return;
     }
-    delivery.status = "accepted_by_slack";
+    if (delivery.status !== "sending") {
+      throw new Error("delivery_state_changed_before_trigger_acceptance");
+    }
+    delivery.status = "accepted_by_trigger";
     delivery.updatedAt = now;
-    delivery.acceptedAt = now;
-    delivery.nextAttemptAt = now;
+    delivery.triggerAcceptedAt = now;
+    delivery.nextAttemptAt = reconcileAt;
     delivery.lastError = null;
+  }
+
+  async recordSlackProgress(
+    input: SlackProgressInput,
+  ): Promise<SlackProgressResult> {
+    const delivery = this.require(input.deliveryId);
+    if (delivery.destination !== input.destination) {
+      throw new Error("delivery_destination_mismatch");
+    }
+    if (input.phase === "send_started") {
+      if (
+        delivery.status === "send_started" ||
+        delivery.status === "delivered"
+      ) {
+        return "duplicate";
+      }
+      if (
+        delivery.status !== "sending" &&
+        delivery.status !== "accepted_by_slack" &&
+        delivery.status !== "accepted_by_trigger" &&
+        !(
+          delivery.status === "manual_review" &&
+          delivery.lastError !== null &&
+          ([
+            "slack_trigger_request_outcome_ambiguous",
+            "slack_trigger_success_confirmation_ambiguous",
+            "slack_trigger_http_408_ambiguous",
+            "replayed_slack_trigger_attempt_ambiguous",
+            "stale_slack_trigger_attempt_ambiguous",
+            "dead_letter_slack_trigger_attempt_ambiguous",
+          ].includes(delivery.lastError) ||
+            /^slack_trigger_http_5\d\d_ambiguous$/u.test(delivery.lastError))
+        )
+      ) {
+        throw new Error("delivery_not_awaiting_slack_progress");
+      }
+      delivery.status = "send_started";
+      delivery.sendStartedAt = input.now;
+      delivery.updatedAt = input.now;
+      delivery.nextAttemptAt = input.reconcileAt;
+      delivery.lastError = null;
+      delivery.legacyUnverified = false;
+      return "recorded";
+    }
+    if (input.messageTs === null) {
+      throw new Error("slack_message_timestamp_missing");
+    }
+    if (
+      delivery.status === "manual_review" &&
+      delivery.lastError === "known_slack_workflow_timeout_message_absent"
+    ) {
+      throw new Error("known_loss_recovery_authorization_required");
+    }
+    if (delivery.status === "delivered") {
+      if (delivery.slackMessageTs === input.messageTs) return "duplicate";
+      throw new Error("slack_message_timestamp_conflict");
+    }
+    for (const other of this.deliveries.values()) {
+      if (
+        other.deliveryId !== input.deliveryId &&
+        other.destination === input.destination &&
+        other.slackMessageTs === input.messageTs
+      ) {
+        throw new Error("slack_message_timestamp_conflict");
+      }
+    }
+    if (
+      ![
+        "accepted_by_slack",
+        "sending",
+        "accepted_by_trigger",
+        "send_started",
+        "manual_review",
+      ].includes(delivery.status)
+    ) {
+      throw new Error("delivery_not_awaiting_slack_progress");
+    }
+    delivery.status = "delivered";
+    delivery.deliveredAt = input.now;
+    delivery.slackMessageTs = input.messageTs;
+    delivery.updatedAt = input.now;
+    delivery.nextAttemptAt = input.now;
+    delivery.lastError = null;
+    delivery.legacyUnverified = false;
+    return "recorded";
   }
 
   async markDeadLetter(
@@ -165,7 +328,10 @@ export class MemoryDeliveryStore implements DeliveryStore {
   ): Promise<void> {
     const delivery = this.require(deliveryId);
     if (
+      delivery.status !== "accepted_by_trigger" &&
       delivery.status !== "accepted_by_slack" &&
+      delivery.status !== "send_started" &&
+      delivery.status !== "delivered" &&
       delivery.status !== "manual_review"
     ) {
       delivery.status = "dead_letter";
@@ -181,7 +347,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
     reason: string,
   ): Promise<void> {
     const delivery = this.require(deliveryId);
-    if (delivery.status !== "accepted_by_slack") {
+    if (delivery.status !== "delivered") {
       delivery.status = "manual_review";
       delivery.updatedAt = now;
       delivery.lastError = reason;
@@ -215,7 +381,11 @@ export class MemoryDeliveryStore implements DeliveryStore {
 
     const claimed: RecoveryClaim[] = [];
     for (const delivery of candidates) {
-      if (delivery.attemptCount >= maximumAttempts) {
+      if (delivery.status === "sending") {
+        delivery.status = "manual_review";
+        delivery.updatedAt = now;
+        delivery.lastError = "stale_slack_trigger_attempt_ambiguous";
+      } else if (delivery.attemptCount >= maximumAttempts) {
         delivery.status = "manual_review";
         delivery.updatedAt = now;
         delivery.lastError = "maximum_delivery_attempts_reached";
@@ -232,13 +402,107 @@ export class MemoryDeliveryStore implements DeliveryStore {
     return claimed;
   }
 
-  async purgeAcceptedBefore(cutoff: number): Promise<number> {
+  async recordSlackTrace(
+    trace: SlackTraceReconciliation,
+    now: number,
+  ): Promise<void> {
+    const delivery = this.require(trace.deliveryId);
+    if (trace.outcome === "pending") return;
+    if (this.appliedSlackTraces.has(trace.traceId)) return;
+    this.appliedSlackTraces.add(trace.traceId);
+    if (delivery.status === "delivered") {
+      delivery.slackTraceId = trace.traceId;
+      delivery.updatedAt = now;
+      return;
+    }
+    if (trace.outcome === "success") {
+      delivery.status = "manual_review";
+      delivery.lastError =
+        "slack_workflow_succeeded_without_authenticated_receipt";
+      delivery.slackTraceId = trace.traceId;
+      delivery.updatedAt = now;
+      return;
+    }
+    if (
+      trace.sendBoundaryReached ||
+      delivery.status === "send_started" ||
+      (delivery.legacyUnverified && !trace.preSendFailureProven)
+    ) {
+      delivery.status = "manual_review";
+      delivery.lastError = "slack_workflow_failed_after_send_boundary";
+      delivery.slackTraceId = trace.traceId;
+      delivery.updatedAt = now;
+      return;
+    }
+    if (!trace.preSendFailureProven) {
+      delivery.status = "manual_review";
+      delivery.lastError = "slack_workflow_failed_without_pre_send_proof";
+      delivery.slackTraceId = trace.traceId;
+      delivery.updatedAt = now;
+      return;
+    }
+    const retryableManualAmbiguity =
+      delivery.status === "manual_review" &&
+      delivery.lastError !== null &&
+      ([
+        "slack_trigger_request_outcome_ambiguous",
+        "slack_trigger_success_confirmation_ambiguous",
+        "slack_trigger_http_408_ambiguous",
+        "replayed_slack_trigger_attempt_ambiguous",
+        "stale_slack_trigger_attempt_ambiguous",
+        "dead_letter_slack_trigger_attempt_ambiguous",
+      ].includes(delivery.lastError) ||
+        /^slack_trigger_http_5\d\d_ambiguous$/u.test(delivery.lastError));
+    if (
+      delivery.status === "accepted_by_trigger" ||
+      delivery.status === "accepted_by_slack" ||
+      retryableManualAmbiguity
+    ) {
+      delivery.status = "pending";
+      delivery.nextAttemptAt = now;
+      delivery.lastError = "slack_workflow_failed_before_send_boundary";
+      delivery.slackTraceId = trace.traceId;
+      delivery.legacyUnverified = false;
+      delivery.updatedAt = now;
+      return;
+    }
+    delivery.status = "manual_review";
+    delivery.lastError = "slack_reconciliation_state_conflict";
+    delivery.updatedAt = now;
+  }
+
+  async getSlackActivityCheckpoint(): Promise<number> {
+    return this.slackActivityCheckpoint;
+  }
+
+  async advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number> {
+    const unresolved = [...this.deliveries.values()]
+      .filter(
+        (delivery) =>
+          !delivery.legacyUnverified &&
+          (["pending", "enqueueing", "queued", "sending"].includes(
+            delivery.status,
+          ) ||
+            delivery.slackTraceId === null),
+      )
+      .reduce(
+        (minimum, delivery) => Math.min(minimum, delivery.updatedAt * 1_000),
+        checkpointUs,
+      );
+    this.slackActivityCheckpoint = Math.max(
+      this.slackActivityCheckpoint,
+      Math.min(checkpointUs, unresolved),
+    );
+    return this.slackActivityCheckpoint;
+  }
+
+  async purgeDeliveredBefore(cutoff: number): Promise<number> {
     let purged = 0;
     for (const [deliveryId, delivery] of this.deliveries) {
       if (
-        delivery.status === "accepted_by_slack" &&
-        delivery.acceptedAt !== null &&
-        delivery.acceptedAt < cutoff
+        delivery.status === "delivered" &&
+        delivery.deliveredAt !== null &&
+        delivery.deliveredAt < cutoff
       ) {
         this.deliveries.delete(deliveryId);
         purged += 1;
@@ -247,12 +511,28 @@ export class MemoryDeliveryStore implements DeliveryStore {
     return purged;
   }
 
-  async healthcheck(): Promise<boolean> {
+  async healthcheck(now: number): Promise<boolean> {
     return (
       this.healthy &&
+      this.slackDeliveryProtocolActive &&
       ![...this.deliveries.values()].some(
-        (delivery) => delivery.status === "manual_review",
+        (delivery) =>
+          delivery.status === "manual_review" ||
+          delivery.status === "dead_letter" ||
+          (!delivery.legacyUnverified &&
+            [
+              "accepted_by_slack",
+              "accepted_by_trigger",
+              "send_started",
+            ].includes(delivery.status) &&
+            delivery.nextAttemptAt <= now),
       )
+    );
+  }
+
+  async hasLegacyUnverifiedDebt(): Promise<boolean> {
+    return [...this.deliveries.values()].some(
+      (delivery) => delivery.legacyUnverified,
     );
   }
 
@@ -276,7 +556,15 @@ export class MemoryDeliveryStore implements DeliveryStore {
       lastError: null,
       createdAt: now,
       updatedAt: now,
-      acceptedAt: status === "accepted_by_slack" ? now : null,
+      triggerAcceptedAt:
+        status === "accepted_by_trigger" || status === "accepted_by_slack"
+          ? now
+          : null,
+      sendStartedAt: status === "send_started" ? now : null,
+      deliveredAt: status === "delivered" ? now : null,
+      slackMessageTs: status === "delivered" ? "1785758400.000001" : null,
+      slackTraceId: null,
+      legacyUnverified: false,
       ...overrides,
     };
     this.deliveries.set(deliveryId, delivery);
@@ -313,6 +601,8 @@ export function makeEnv(
     activitySlackUrl?: string;
     activityQueue?: FakeQueue;
     relaySigningSecret?: string;
+    relaySigningSecretNext?: string;
+    workerRevision?: string;
   } = {},
 ): Env {
   return {
@@ -329,6 +619,14 @@ export function makeEnv(
       TEST_SLACK_URL) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET: (options.relaySigningSecret ??
       TEST_RELAY_SIGNING_SECRET) as unknown as SecretsStoreSecret,
+    SLACK_RELAY_SIGNING_SECRET_NEXT:
+      options.relaySigningSecretNext as unknown as SecretsStoreSecret,
+    SLACK_RELAY_SIGNING_ACTIVE_SLOT: "current",
+    WORKER_VERSION: {
+      id: "test-worker-version",
+      tag: options.workerRevision ?? "a".repeat(40),
+      timestamp: "2026-08-03T12:00:00.000Z",
+    },
   };
 }
 

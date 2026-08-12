@@ -7,7 +7,35 @@ export type DeliveryStatus =
   | "sending"
   | "dead_letter"
   | "manual_review"
-  | "accepted_by_slack";
+  | "accepted_by_slack"
+  | "accepted_by_trigger"
+  | "send_started"
+  | "delivered";
+
+export type SlackProgressPhase = "send_started" | "delivered";
+
+export interface SlackProgressInput {
+  deliveryId: string;
+  destination: RelayDestination;
+  phase: SlackProgressPhase;
+  messageTs: string | null;
+  now: number;
+  reconcileAt: number;
+}
+
+export type SlackProgressResult = "recorded" | "duplicate";
+
+export type SlackTraceOutcome = "pending" | "success" | "error";
+
+export interface SlackTraceReconciliation {
+  traceId: string;
+  deliveryId: string;
+  outcome: SlackTraceOutcome;
+  sendBoundaryReached: boolean;
+  preSendFailureProven: boolean;
+  startedAtUs: number;
+  completedAtUs: number | null;
+}
 
 export interface QueueJob {
   deliveryId: string;
@@ -40,10 +68,31 @@ export interface StoredDelivery {
   lastError: string | null;
   createdAt: number;
   updatedAt: number;
-  acceptedAt: number | null;
+  triggerAcceptedAt: number | null;
+  sendStartedAt: number | null;
+  deliveredAt: number | null;
+  slackMessageTs: string | null;
+  slackTraceId: string | null;
+  legacyUnverified: boolean;
+}
+
+export const SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION =
+  "0004_confirm_slack_delivery";
+export type SlackDeliveryProtocolActivationResult =
+  "applied" | "already_applied";
+
+export interface SlackDeliveryProtocolActivation {
+  activationId: string;
+  revision: string;
+  schemaRevision: string;
+  now: number;
 }
 
 export interface DeliveryStore {
+  isSlackDeliveryProtocolActive(): Promise<boolean>;
+  activateSlackDeliveryProtocol(
+    activation: SlackDeliveryProtocolActivation,
+  ): Promise<SlackDeliveryProtocolActivationResult>;
   insert(input: DeliveryInput): Promise<boolean>;
   get(deliveryId: string): Promise<StoredDelivery | null>;
   markQueued(deliveryId: string, now: number): Promise<void>;
@@ -69,7 +118,12 @@ export interface DeliveryStore {
     nextAttemptAt: number,
     reason: string,
   ): Promise<void>;
-  markAcceptedBySlack(deliveryId: string, now: number): Promise<void>;
+  markAcceptedByTrigger(
+    deliveryId: string,
+    now: number,
+    reconcileAt: number,
+  ): Promise<void>;
+  recordSlackProgress(input: SlackProgressInput): Promise<SlackProgressResult>;
   markDeadLetter(
     deliveryId: string,
     now: number,
@@ -87,8 +141,12 @@ export interface DeliveryStore {
     maximumAttempts: number,
     limit: number,
   ): Promise<RecoveryClaim[]>;
-  purgeAcceptedBefore(cutoff: number): Promise<number>;
-  healthcheck(): Promise<boolean>;
+  recordSlackTrace(trace: SlackTraceReconciliation, now: number): Promise<void>;
+  getSlackActivityCheckpoint(): Promise<number>;
+  advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number>;
+  purgeDeliveredBefore(cutoff: number): Promise<number>;
+  healthcheck(now: number): Promise<boolean>;
+  hasLegacyUnverifiedDebt(): Promise<boolean>;
 }
 
 interface DeliveryRow {
@@ -105,6 +163,12 @@ interface DeliveryRow {
   created_at: number;
   updated_at: number;
   accepted_at: number | null;
+  trigger_accepted_at: number | null;
+  send_started_at: number | null;
+  delivered_at: number | null;
+  slack_message_ts: string | null;
+  slack_trace_id: string | null;
+  legacy_unverified: number;
 }
 
 interface RecoveryRow {
@@ -115,6 +179,19 @@ interface RecoveryRow {
   updated_at: number;
 }
 
+interface SlackDeliveryProtocolRow {
+  slack_delivery_protocol_active: number;
+  slack_delivery_protocol_revision: string | null;
+  slack_delivery_protocol_activated_at: number | null;
+  slack_delivery_protocol_activation_id: string | null;
+  slack_delivery_protocol_schema_revision: string | null;
+  slack_delivery_protocol_confirmation_open: number;
+}
+
+const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const ACTIVATION_ID_PATTERN = /^[0-9a-f]{64}$/u;
+const REQUIRED_PROTOCOL_SCHEMA_ARTIFACTS = 7;
+
 function changed(result: D1Result<unknown>): boolean {
   return (result.meta.changes ?? 0) > 0;
 }
@@ -122,6 +199,21 @@ function changed(result: D1Result<unknown>): boolean {
 function safeFailureReason(reason: string): string {
   const compact = reason.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").trim();
   return compact.slice(0, 200) || "unspecified_failure";
+}
+
+function retryableTriggerAmbiguityReason(reason: string | null): boolean {
+  return (
+    reason !== null &&
+    ([
+      "slack_trigger_request_outcome_ambiguous",
+      "slack_trigger_success_confirmation_ambiguous",
+      "slack_trigger_http_408_ambiguous",
+      "replayed_slack_trigger_attempt_ambiguous",
+      "stale_slack_trigger_attempt_ambiguous",
+      "dead_letter_slack_trigger_attempt_ambiguous",
+    ].includes(reason) ||
+      /^slack_trigger_http_5\d\d_ambiguous$/u.test(reason))
+  );
 }
 
 function fromRow(row: DeliveryRow): StoredDelivery {
@@ -138,7 +230,12 @@ function fromRow(row: DeliveryRow): StoredDelivery {
     lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    acceptedAt: row.accepted_at,
+    triggerAcceptedAt: row.trigger_accepted_at ?? row.accepted_at,
+    sendStartedAt: row.send_started_at,
+    deliveredAt: row.delivered_at,
+    slackMessageTs: row.slack_message_ts,
+    slackTraceId: row.slack_trace_id,
+    legacyUnverified: row.legacy_unverified === 1,
   };
 }
 
@@ -147,6 +244,169 @@ export class D1DeliveryStore implements DeliveryStore {
 
   constructor(database: D1Database) {
     this.#database = database;
+  }
+
+  async isSlackDeliveryProtocolActive(): Promise<boolean> {
+    const state = await this.#database
+      .prepare(
+        `SELECT slack_delivery_protocol_active,
+                slack_delivery_protocol_revision,
+                slack_delivery_protocol_activated_at,
+                slack_delivery_protocol_activation_id,
+                slack_delivery_protocol_schema_revision,
+                slack_delivery_protocol_confirmation_open
+         FROM relay_state
+         WHERE singleton_id = 1`,
+      )
+      .first<SlackDeliveryProtocolRow>();
+    if (state === null) {
+      throw new Error("slack_delivery_protocol_state_missing");
+    }
+
+    if (state.slack_delivery_protocol_active === 0) {
+      if (
+        state.slack_delivery_protocol_revision !== null ||
+        state.slack_delivery_protocol_activated_at !== null ||
+        state.slack_delivery_protocol_activation_id !== null ||
+        state.slack_delivery_protocol_schema_revision !== null ||
+        state.slack_delivery_protocol_confirmation_open !== 1
+      ) {
+        throw new Error("slack_delivery_protocol_state_inconsistent");
+      }
+      return false;
+    }
+
+    if (
+      state.slack_delivery_protocol_active !== 1 ||
+      state.slack_delivery_protocol_revision === null ||
+      !WORKER_REVISION_PATTERN.test(state.slack_delivery_protocol_revision) ||
+      !Number.isSafeInteger(state.slack_delivery_protocol_activated_at) ||
+      (state.slack_delivery_protocol_activated_at as number) <= 0 ||
+      state.slack_delivery_protocol_activation_id === null ||
+      !ACTIVATION_ID_PATTERN.test(
+        state.slack_delivery_protocol_activation_id,
+      ) ||
+      state.slack_delivery_protocol_schema_revision !==
+        SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION ||
+      (state.slack_delivery_protocol_confirmation_open !== 0 &&
+        state.slack_delivery_protocol_confirmation_open !== 1)
+    ) {
+      throw new Error("slack_delivery_protocol_state_inconsistent");
+    }
+    return true;
+  }
+
+  async activateSlackDeliveryProtocol(
+    activation: SlackDeliveryProtocolActivation,
+  ): Promise<SlackDeliveryProtocolActivationResult> {
+    if (
+      !ACTIVATION_ID_PATTERN.test(activation.activationId) ||
+      !WORKER_REVISION_PATTERN.test(activation.revision) ||
+      activation.schemaRevision !== SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION ||
+      !Number.isSafeInteger(activation.now) ||
+      activation.now <= 0
+    ) {
+      throw new Error("invalid_slack_delivery_protocol_activation");
+    }
+
+    const schema = await this.#database
+      .prepare(
+        `SELECT COUNT(*) AS artifact_count
+         FROM sqlite_master
+         WHERE (
+           type = 'table'
+           AND name IN (
+             'slack_workflow_traces',
+             'slack_delivery_recovery_audit'
+           )
+         ) OR (
+           type = 'trigger'
+           AND name IN (
+             'quarantine_old_worker_acceptance',
+             'validate_known_slack_delivery_recovery',
+             'release_known_slack_delivery_recovery',
+             'enforce_one_way_slack_delivery_protocol_activation',
+             'enforce_one_way_slack_delivery_protocol_confirmation'
+           )
+         )`,
+      )
+      .first<{ artifact_count: number }>();
+    if (schema?.artifact_count !== REQUIRED_PROTOCOL_SCHEMA_ARTIFACTS) {
+      throw new Error("slack_delivery_protocol_schema_incomplete");
+    }
+
+    const activated = await this.#database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_delivery_protocol_active = 1,
+             slack_delivery_protocol_revision = ?,
+             slack_delivery_protocol_activated_at = ?,
+             slack_delivery_protocol_activation_id = ?,
+             slack_delivery_protocol_schema_revision = ?
+         WHERE singleton_id = 1
+           AND slack_delivery_protocol_active = 0
+           AND slack_delivery_protocol_revision IS NULL
+           AND slack_delivery_protocol_activated_at IS NULL
+           AND slack_delivery_protocol_activation_id IS NULL
+           AND slack_delivery_protocol_schema_revision IS NULL
+           AND slack_delivery_protocol_confirmation_open = 1
+         RETURNING slack_delivery_protocol_active,
+                   slack_delivery_protocol_revision,
+                   slack_delivery_protocol_activated_at,
+                   slack_delivery_protocol_activation_id,
+                   slack_delivery_protocol_schema_revision,
+                   slack_delivery_protocol_confirmation_open`,
+      )
+      .bind(
+        activation.revision,
+        activation.now,
+        activation.activationId,
+        activation.schemaRevision,
+      )
+      .first<SlackDeliveryProtocolRow>();
+    if (activated !== null) {
+      if (
+        activated.slack_delivery_protocol_active !== 1 ||
+        activated.slack_delivery_protocol_revision !== activation.revision ||
+        activated.slack_delivery_protocol_activated_at !== activation.now ||
+        activated.slack_delivery_protocol_activation_id !==
+          activation.activationId ||
+        activated.slack_delivery_protocol_schema_revision !==
+          activation.schemaRevision ||
+        activated.slack_delivery_protocol_confirmation_open !== 1
+      ) {
+        throw new Error("slack_delivery_protocol_activation_conflict");
+      }
+      return "applied";
+    }
+
+    const existing = await this.#database
+      .prepare(
+        `SELECT slack_delivery_protocol_active,
+                slack_delivery_protocol_revision,
+                slack_delivery_protocol_activated_at,
+                slack_delivery_protocol_activation_id,
+                slack_delivery_protocol_schema_revision,
+                slack_delivery_protocol_confirmation_open
+         FROM relay_state
+         WHERE singleton_id = 1`,
+      )
+      .first<SlackDeliveryProtocolRow>();
+    if (
+      existing === null ||
+      existing.slack_delivery_protocol_active !== 1 ||
+      existing.slack_delivery_protocol_revision !== activation.revision ||
+      existing.slack_delivery_protocol_activation_id !==
+        activation.activationId ||
+      existing.slack_delivery_protocol_schema_revision !==
+        activation.schemaRevision ||
+      existing.slack_delivery_protocol_confirmation_open !== 1 ||
+      !Number.isSafeInteger(existing.slack_delivery_protocol_activated_at) ||
+      (existing.slack_delivery_protocol_activated_at as number) <= 0
+    ) {
+      throw new Error("slack_delivery_protocol_activation_conflict");
+    }
+    return "already_applied";
   }
 
   async insert(input: DeliveryInput): Promise<boolean> {
@@ -213,7 +473,11 @@ export class D1DeliveryStore implements DeliveryStore {
       .prepare(
         `UPDATE deliveries
          SET status = 'pending', updated_at = ?, next_attempt_at = ?, last_error = ?
-         WHERE delivery_id = ? AND status NOT IN ('accepted_by_slack', 'manual_review')`,
+         WHERE delivery_id = ?
+           AND status NOT IN (
+             'accepted_by_slack', 'accepted_by_trigger', 'send_started',
+             'delivered', 'manual_review'
+           )`,
       )
       .bind(now, nextAttemptAt, safeFailureReason(reason), deliveryId)
       .run();
@@ -284,7 +548,8 @@ export class D1DeliveryStore implements DeliveryStore {
     const row = await this.#database
       .prepare(
         `UPDATE deliveries
-         SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?
+         SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?,
+             slack_trace_id = NULL
          WHERE delivery_id = ?
            AND status IN ('pending', 'enqueueing', 'queued', 'dead_letter')
            AND next_attempt_at <= ?
@@ -312,20 +577,169 @@ export class D1DeliveryStore implements DeliveryStore {
       .run();
   }
 
-  async markAcceptedBySlack(deliveryId: string, now: number): Promise<void> {
+  async markAcceptedByTrigger(
+    deliveryId: string,
+    now: number,
+    reconcileAt: number,
+  ): Promise<void> {
     const result = await this.#database
       .prepare(
         `UPDATE deliveries
-         SET status = 'accepted_by_slack', updated_at = ?, accepted_at = ?,
-             next_attempt_at = ?, last_error = NULL
+         SET status = 'accepted_by_trigger', updated_at = ?,
+             trigger_accepted_at = ?, next_attempt_at = ?, last_error = NULL
          WHERE delivery_id = ? AND status = 'sending'`,
       )
-      .bind(now, now, now, deliveryId)
+      .bind(now, now, reconcileAt, deliveryId)
       .run();
 
     if (!changed(result)) {
-      throw new Error("delivery_state_changed_before_completion");
+      const existing = await this.get(deliveryId);
+      if (
+        existing?.status !== "accepted_by_slack" &&
+        existing?.status !== "send_started" &&
+        existing?.status !== "delivered"
+      ) {
+        throw new Error("delivery_state_changed_before_trigger_acceptance");
+      }
+      await this.#database
+        .prepare(
+          `UPDATE deliveries
+           SET trigger_accepted_at = COALESCE(trigger_accepted_at, ?),
+               next_attempt_at = CASE
+                 WHEN status = 'send_started'
+                   THEN MAX(next_attempt_at, ?)
+                 ELSE next_attempt_at
+               END
+           WHERE delivery_id = ? AND status IN ('send_started', 'delivered')`,
+        )
+        .bind(now, reconcileAt, deliveryId)
+        .run();
     }
+  }
+
+  async recordSlackProgress(
+    input: SlackProgressInput,
+  ): Promise<SlackProgressResult> {
+    const existing = await this.get(input.deliveryId);
+    if (existing === null) {
+      throw new Error("delivery_not_found");
+    }
+    if (existing.destination !== input.destination) {
+      throw new Error("delivery_destination_mismatch");
+    }
+
+    if (input.phase === "send_started") {
+      if (
+        existing.status === "send_started" ||
+        existing.status === "delivered"
+      ) {
+        return "duplicate";
+      }
+      if (
+        existing.status !== "sending" &&
+        existing.status !== "accepted_by_slack" &&
+        existing.status !== "accepted_by_trigger" &&
+        !(
+          existing.status === "manual_review" &&
+          retryableTriggerAmbiguityReason(existing.lastError)
+        )
+      ) {
+        throw new Error("delivery_not_awaiting_slack_progress");
+      }
+
+      const result = await this.#database
+        .prepare(
+          `UPDATE deliveries
+           SET status = 'send_started', updated_at = ?, send_started_at = ?,
+               next_attempt_at = ?, last_error = NULL, legacy_unverified = 0
+           WHERE delivery_id = ? AND destination = ?
+             AND (
+               status IN ('sending', 'accepted_by_slack', 'accepted_by_trigger')
+               OR (
+                 status = 'manual_review'
+                 AND (
+                   last_error IN (
+                     'slack_trigger_request_outcome_ambiguous',
+                     'slack_trigger_success_confirmation_ambiguous',
+                     'slack_trigger_http_408_ambiguous',
+                     'replayed_slack_trigger_attempt_ambiguous',
+                     'stale_slack_trigger_attempt_ambiguous',
+                     'dead_letter_slack_trigger_attempt_ambiguous'
+                   )
+                   OR last_error GLOB 'slack_trigger_http_5[0-9][0-9]_ambiguous'
+                 )
+               )
+             )`,
+        )
+        .bind(
+          input.now,
+          input.now,
+          input.reconcileAt,
+          input.deliveryId,
+          input.destination,
+        )
+        .run();
+      if (!changed(result)) {
+        throw new Error("delivery_state_changed_before_progress_recorded");
+      }
+      return "recorded";
+    }
+
+    if (input.messageTs === null) {
+      throw new Error("slack_message_timestamp_missing");
+    }
+    if (
+      existing.status === "manual_review" &&
+      existing.lastError === "known_slack_workflow_timeout_message_absent"
+    ) {
+      throw new Error("known_loss_recovery_authorization_required");
+    }
+    if (existing.status === "delivered") {
+      if (existing.slackMessageTs === input.messageTs) {
+        return "duplicate";
+      }
+      throw new Error("slack_message_timestamp_conflict");
+    }
+    if (
+      existing.status !== "sending" &&
+      existing.status !== "accepted_by_slack" &&
+      existing.status !== "accepted_by_trigger" &&
+      existing.status !== "send_started" &&
+      existing.status !== "manual_review"
+    ) {
+      throw new Error("delivery_not_awaiting_slack_progress");
+    }
+
+    let result: D1Result<unknown>;
+    try {
+      result = await this.#database
+        .prepare(
+          `UPDATE deliveries
+           SET status = 'delivered', updated_at = ?, delivered_at = ?,
+               slack_message_ts = ?, next_attempt_at = ?, last_error = NULL,
+               legacy_unverified = 0
+           WHERE delivery_id = ? AND destination = ?
+             AND status IN (
+               'sending', 'accepted_by_slack', 'accepted_by_trigger',
+               'send_started', 'manual_review'
+             )`,
+        )
+        .bind(
+          input.now,
+          input.now,
+          input.messageTs,
+          input.now,
+          input.deliveryId,
+          input.destination,
+        )
+        .run();
+    } catch {
+      throw new Error("slack_message_timestamp_conflict");
+    }
+    if (!changed(result)) {
+      throw new Error("delivery_state_changed_before_progress_recorded");
+    }
+    return "recorded";
   }
 
   async markDeadLetter(
@@ -338,7 +752,11 @@ export class D1DeliveryStore implements DeliveryStore {
       .prepare(
         `UPDATE deliveries
          SET status = 'dead_letter', updated_at = ?, next_attempt_at = ?, last_error = ?
-         WHERE delivery_id = ? AND status NOT IN ('accepted_by_slack', 'manual_review')`,
+         WHERE delivery_id = ?
+           AND status NOT IN (
+             'accepted_by_slack', 'accepted_by_trigger', 'send_started',
+             'delivered', 'manual_review'
+           )`,
       )
       .bind(now, nextAttemptAt, safeFailureReason(reason), deliveryId)
       .run();
@@ -353,7 +771,7 @@ export class D1DeliveryStore implements DeliveryStore {
       .prepare(
         `UPDATE deliveries
          SET status = 'manual_review', updated_at = ?, last_error = ?
-         WHERE delivery_id = ? AND status != 'accepted_by_slack'`,
+         WHERE delivery_id = ? AND status != 'delivered'`,
       )
       .bind(now, safeFailureReason(reason), deliveryId)
       .run();
@@ -382,6 +800,14 @@ export class D1DeliveryStore implements DeliveryStore {
     const claimed: RecoveryClaim[] = [];
 
     for (const row of result.results) {
+      if (row.status === "sending") {
+        await this.markManualReview(
+          row.delivery_id,
+          now,
+          "stale_slack_trigger_attempt_ambiguous",
+        );
+        continue;
+      }
       if (row.attempt_count >= maximumAttempts) {
         await this.markManualReview(
           row.delivery_id,
@@ -411,11 +837,309 @@ export class D1DeliveryStore implements DeliveryStore {
     return claimed;
   }
 
-  async purgeAcceptedBefore(cutoff: number): Promise<number> {
+  async recordSlackTrace(
+    trace: SlackTraceReconciliation,
+    now: number,
+  ): Promise<void> {
+    if (trace.outcome !== "pending" && trace.completedAtUs === null) {
+      throw new Error("terminal_slack_trace_missing_completion");
+    }
+
+    const delivery = await this.get(trace.deliveryId);
+    if (delivery === null) {
+      throw new Error("delivery_not_found");
+    }
+
+    const existingTrace = await this.#database
+      .prepare(
+        `SELECT delivery_id, outcome, applied_at
+         FROM slack_workflow_traces
+         WHERE trace_id = ?`,
+      )
+      .bind(trace.traceId)
+      .first<{
+        delivery_id: string;
+        outcome: SlackTraceOutcome;
+        applied_at: number | null;
+      }>();
+    if (
+      existingTrace !== null &&
+      existingTrace.delivery_id !== trace.deliveryId
+    ) {
+      throw new Error("slack_trace_delivery_conflict");
+    }
+    if (
+      existingTrace !== null &&
+      existingTrace.outcome !== "pending" &&
+      existingTrace.outcome !== trace.outcome
+    ) {
+      throw new Error("slack_trace_outcome_conflict");
+    }
+    if (existingTrace !== null && existingTrace.applied_at !== null) {
+      return;
+    }
+
+    await this.#database
+      .prepare(
+        `INSERT INTO slack_workflow_traces (
+           trace_id,
+           delivery_id,
+           outcome,
+           send_boundary_reached,
+           pre_send_failure_proven,
+           started_at_us,
+           completed_at_us,
+           updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(trace_id) DO UPDATE SET
+           outcome = excluded.outcome,
+           send_boundary_reached = MAX(
+             slack_workflow_traces.send_boundary_reached,
+             excluded.send_boundary_reached
+           ),
+           pre_send_failure_proven = CASE
+             WHEN MAX(
+               slack_workflow_traces.send_boundary_reached,
+               excluded.send_boundary_reached
+             ) = 1 THEN 0
+             ELSE MAX(
+               slack_workflow_traces.pre_send_failure_proven,
+               excluded.pre_send_failure_proven
+             )
+           END,
+           started_at_us = MIN(
+             slack_workflow_traces.started_at_us,
+             excluded.started_at_us
+           ),
+           completed_at_us = COALESCE(
+             excluded.completed_at_us,
+             slack_workflow_traces.completed_at_us
+           ),
+           updated_at = excluded.updated_at`,
+      )
+      .bind(
+        trace.traceId,
+        trace.deliveryId,
+        trace.outcome,
+        trace.sendBoundaryReached ? 1 : 0,
+        trace.preSendFailureProven ? 1 : 0,
+        trace.startedAtUs,
+        trace.completedAtUs,
+        now,
+      )
+      .run();
+
+    if (trace.outcome === "pending") {
+      return;
+    }
+
+    const effectiveTrace = await this.#database
+      .prepare(
+        `SELECT send_boundary_reached, pre_send_failure_proven
+         FROM slack_workflow_traces
+         WHERE trace_id = ?`,
+      )
+      .bind(trace.traceId)
+      .first<{
+        send_boundary_reached: number;
+        pre_send_failure_proven: number;
+      }>();
+    if (effectiveTrace === null) {
+      throw new Error("slack_trace_persistence_failed");
+    }
+    const sendBoundaryReached = effectiveTrace.send_boundary_reached === 1;
+    const preSendFailureProven = effectiveTrace.pre_send_failure_proven === 1;
+
+    const current = await this.get(trace.deliveryId);
+    if (current === null) {
+      throw new Error("delivery_not_found");
+    }
+
+    if (current.slackTraceId === trace.traceId) {
+      await this.#markSlackTraceApplied(trace.traceId, now);
+      return;
+    }
+
+    if (current.status === "delivered") {
+      if (trace.outcome === "success" || sendBoundaryReached) {
+        await this.#database
+          .prepare(
+            `UPDATE deliveries
+             SET slack_trace_id = ?, updated_at = ?
+             WHERE delivery_id = ? AND status = 'delivered'`,
+          )
+          .bind(trace.traceId, now, trace.deliveryId)
+          .run();
+      }
+      await this.#markSlackTraceApplied(trace.traceId, now);
+      return;
+    }
+
+    if (trace.outcome === "success") {
+      await this.markManualReview(
+        trace.deliveryId,
+        now,
+        "slack_workflow_succeeded_without_authenticated_receipt",
+      );
+      await this.#database
+        .prepare(
+          "UPDATE deliveries SET slack_trace_id = ? WHERE delivery_id = ?",
+        )
+        .bind(trace.traceId, trace.deliveryId)
+        .run();
+      await this.#markSlackTraceApplied(trace.traceId, now);
+      return;
+    }
+
+    const mayHaveSent =
+      sendBoundaryReached ||
+      current.status === "send_started" ||
+      (current.legacyUnverified && !preSendFailureProven);
+    if (mayHaveSent) {
+      await this.markManualReview(
+        trace.deliveryId,
+        now,
+        "slack_workflow_failed_after_send_boundary",
+      );
+      await this.#database
+        .prepare(
+          "UPDATE deliveries SET slack_trace_id = ? WHERE delivery_id = ?",
+        )
+        .bind(trace.traceId, trace.deliveryId)
+        .run();
+      await this.#markSlackTraceApplied(trace.traceId, now);
+      return;
+    }
+
+    if (!preSendFailureProven) {
+      await this.markManualReview(
+        trace.deliveryId,
+        now,
+        "slack_workflow_failed_without_pre_send_proof",
+      );
+      await this.#database
+        .prepare(
+          "UPDATE deliveries SET slack_trace_id = ? WHERE delivery_id = ?",
+        )
+        .bind(trace.traceId, trace.deliveryId)
+        .run();
+      await this.#markSlackTraceApplied(trace.traceId, now);
+      return;
+    }
+
+    const retry = await this.#database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'pending', updated_at = ?, next_attempt_at = ?,
+             last_error = 'slack_workflow_failed_before_send_boundary',
+             slack_trace_id = ?, legacy_unverified = 0
+         WHERE delivery_id = ?
+           AND (
+             status IN ('accepted_by_slack', 'accepted_by_trigger')
+             OR (
+               status = 'manual_review'
+               AND (
+                 last_error IN (
+                   'slack_trigger_request_outcome_ambiguous',
+                   'slack_trigger_success_confirmation_ambiguous',
+                   'slack_trigger_http_408_ambiguous',
+                   'replayed_slack_trigger_attempt_ambiguous',
+                   'stale_slack_trigger_attempt_ambiguous',
+                   'dead_letter_slack_trigger_attempt_ambiguous'
+                 )
+                 OR last_error GLOB 'slack_trigger_http_5[0-9][0-9]_ambiguous'
+               )
+             )
+           )`,
+      )
+      .bind(now, now, trace.traceId, trace.deliveryId)
+      .run();
+    if (!changed(retry)) {
+      await this.markManualReview(
+        trace.deliveryId,
+        now,
+        "slack_reconciliation_state_conflict",
+      );
+    }
+    await this.#markSlackTraceApplied(trace.traceId, now);
+  }
+
+  async #markSlackTraceApplied(traceId: string, now: number): Promise<void> {
+    await this.#database
+      .prepare(
+        `UPDATE slack_workflow_traces
+         SET applied_at = COALESCE(applied_at, ?), updated_at = ?
+         WHERE trace_id = ?`,
+      )
+      .bind(now, now, traceId)
+      .run();
+  }
+
+  async getSlackActivityCheckpoint(): Promise<number> {
+    const state = await this.#database
+      .prepare(
+        `SELECT slack_activity_checkpoint_us
+         FROM relay_state
+         WHERE singleton_id = 1`,
+      )
+      .first<{ slack_activity_checkpoint_us: number }>();
+    if (
+      state === null ||
+      !Number.isSafeInteger(state.slack_activity_checkpoint_us) ||
+      state.slack_activity_checkpoint_us < 0
+    ) {
+      throw new Error("slack_activity_checkpoint_unavailable");
+    }
+    return state.slack_activity_checkpoint_us;
+  }
+
+  async advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number> {
+    if (!Number.isSafeInteger(checkpointUs) || checkpointUs < 0) {
+      throw new Error("invalid_slack_activity_checkpoint");
+    }
+    const state = await this.#database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_activity_checkpoint_us = MAX(
+           slack_activity_checkpoint_us,
+           MIN(
+             ?,
+             COALESCE(
+               (
+                 SELECT MIN(updated_at * 1000)
+                 FROM deliveries
+                 WHERE legacy_unverified = 0
+                   AND (
+                     status IN ('pending', 'enqueueing', 'queued', 'sending')
+                     OR slack_trace_id IS NULL
+                   )
+               ),
+               ?
+             )
+           )
+         )
+         WHERE singleton_id = 1
+         RETURNING slack_activity_checkpoint_us`,
+      )
+      .bind(checkpointUs, checkpointUs)
+      .first<{ slack_activity_checkpoint_us: number }>();
+    if (
+      state === null ||
+      !Number.isSafeInteger(state.slack_activity_checkpoint_us) ||
+      state.slack_activity_checkpoint_us < 0
+    ) {
+      throw new Error("slack_activity_checkpoint_unavailable");
+    }
+    return state.slack_activity_checkpoint_us;
+  }
+
+  async purgeDeliveredBefore(cutoff: number): Promise<number> {
     const result = await this.#database
       .prepare(
         `DELETE FROM deliveries
-         WHERE status = 'accepted_by_slack' AND accepted_at IS NOT NULL AND accepted_at < ?`,
+         WHERE status = 'delivered'
+           AND delivered_at IS NOT NULL
+           AND delivered_at < ?`,
       )
       .bind(cutoff)
       .run();
@@ -423,7 +1147,7 @@ export class D1DeliveryStore implements DeliveryStore {
     return result.meta.changes ?? 0;
   }
 
-  async healthcheck(): Promise<boolean> {
+  async healthcheck(now: number): Promise<boolean> {
     await this.#database
       .prepare(
         `SELECT
@@ -439,7 +1163,13 @@ export class D1DeliveryStore implements DeliveryStore {
            last_error,
            created_at,
            updated_at,
-           accepted_at
+           accepted_at,
+           trigger_accepted_at,
+           send_started_at,
+           delivered_at,
+           slack_message_ts,
+           slack_trace_id,
+           legacy_unverified
          FROM deliveries
          WHERE 0 = 1`,
       )
@@ -447,22 +1177,75 @@ export class D1DeliveryStore implements DeliveryStore {
 
     const state = await this.#database
       .prepare(
-        `SELECT next_slack_at
+        `SELECT next_slack_at, slack_activity_checkpoint_us,
+                slack_delivery_protocol_active,
+                slack_delivery_protocol_revision,
+                slack_delivery_protocol_activated_at,
+                slack_delivery_protocol_activation_id,
+                slack_delivery_protocol_schema_revision,
+                slack_delivery_protocol_confirmation_open
          FROM relay_state
-         WHERE singleton_id = 1 AND typeof(next_slack_at) = 'integer'`,
+         WHERE singleton_id = 1
+           AND typeof(next_slack_at) = 'integer'
+           AND typeof(slack_activity_checkpoint_us) = 'integer'
+           AND slack_delivery_protocol_active = 1
+           AND typeof(slack_delivery_protocol_revision) = 'text'
+           AND length(slack_delivery_protocol_revision) = 40
+           AND slack_delivery_protocol_revision NOT GLOB '*[^0-9a-f]*'
+           AND typeof(slack_delivery_protocol_activated_at) = 'integer'
+           AND slack_delivery_protocol_activated_at > 0
+           AND typeof(slack_delivery_protocol_activation_id) = 'text'
+           AND length(slack_delivery_protocol_activation_id) = 64
+           AND slack_delivery_protocol_activation_id NOT GLOB '*[^0-9a-f]*'
+           AND slack_delivery_protocol_schema_revision =
+             '0004_confirm_slack_delivery'
+           AND slack_delivery_protocol_confirmation_open IN (0, 1)`,
       )
-      .first<{ next_slack_at: number }>();
+      .first<{
+        next_slack_at: number;
+        slack_activity_checkpoint_us: number;
+        slack_delivery_protocol_active: number;
+        slack_delivery_protocol_revision: string;
+        slack_delivery_protocol_activated_at: number;
+        slack_delivery_protocol_activation_id: string;
+        slack_delivery_protocol_schema_revision: string;
+        slack_delivery_protocol_confirmation_open: number;
+      }>();
 
-    const manualReview = await this.#database
+    const unresolved = await this.#database
       .prepare(
-        "SELECT 1 AS present FROM deliveries WHERE status = 'manual_review' LIMIT 1",
+        `SELECT 1 AS present
+         FROM deliveries
+         WHERE status IN ('manual_review', 'dead_letter')
+           OR (
+             legacy_unverified = 0
+             AND status IN (
+               'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+             )
+             AND next_attempt_at <= ?
+           )
+         LIMIT 1`,
       )
+      .bind(now)
       .first<{ present: number }>();
 
     return (
       state !== null &&
       Number.isSafeInteger(state.next_slack_at) &&
-      manualReview === null
+      Number.isSafeInteger(state.slack_activity_checkpoint_us) &&
+      unresolved === null
     );
+  }
+
+  async hasLegacyUnverifiedDebt(): Promise<boolean> {
+    const legacy = await this.#database
+      .prepare(
+        `SELECT 1 AS present
+         FROM deliveries
+         WHERE legacy_unverified = 1
+         LIMIT 1`,
+      )
+      .first<{ present: number }>();
+    return legacy !== null;
   }
 }

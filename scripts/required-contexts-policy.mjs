@@ -11,7 +11,7 @@ const POLICY_TEST_STEP_NAME = "Test required context policy";
 const POLICY_TEST_COMMAND =
   "node --test scripts/required-contexts-policy.test.mjs";
 const SLACK_VERIFY_CONDITION =
-  "github.event_name != 'schedule' || github.event.schedule == '17 7 * * *'";
+  "(github.event_name != 'schedule' || github.event.schedule == '17 7 * * *') && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))";
 const ZIZMOR_CONFIG_PATH = ".github/zizmor.yml";
 
 // Each digest covers the YAML-parsed workflow env, defaults, and complete
@@ -107,6 +107,7 @@ const WORKFLOW_SPECS = Object.freeze([
     jobIds: ["verify", "deploy", "monitor"],
     jobName: "Verify Slack workflow app",
     eventIds: [
+      "workflow_run",
       "push",
       "pull_request",
       "merge_group",
@@ -118,7 +119,7 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Verify Slack workflow app"],
     policyRunner: false,
     nodeOptions: undefined,
-    digest: "990bea33cb0d23d2714a5c19a88c9e87a60a352bb1b6e5dbbc6e680313f67fc7",
+    digest: "43565640752341c65468d1cc9453ec393fef8c82cf57190c52663b55842d2511",
   },
 ]);
 

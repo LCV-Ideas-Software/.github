@@ -23,7 +23,62 @@ function successResponse(): Response {
 }
 
 describe("Slack queue delivery", () => {
-  it("acks and marks accepted only after HTTP 2xx with JSON ok:true", async () => {
+  it("defers a primary message before protocol activation without crossing a boundary", async () => {
+    const store = new MemoryDeliveryStore();
+    (
+      store as MemoryDeliveryStore & {
+        slackDeliveryProtocolActive: boolean;
+      }
+    ).slackDeliveryProtocolActive = false;
+    const queue = new FakeQueue();
+    const deliveryId = "protocol-window-primary";
+    store.seed(deliveryId, "queued", NOW, { attemptCount: 4 });
+    const { message, ack, retry } = fakeMessage(deliveryId);
+    const fetchMock = vi.fn<typeof fetch>();
+
+    await processPrimaryMessage(message, makeEnv(queue), {
+      store,
+      now: () => NOW,
+      fetch: fetchMock,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "queued",
+      attemptCount: 4,
+      lastError: null,
+    });
+  });
+
+  it("defers a DLQ message before protocol activation without creating debt", async () => {
+    const store = new MemoryDeliveryStore();
+    (
+      store as MemoryDeliveryStore & {
+        slackDeliveryProtocolActive: boolean;
+      }
+    ).slackDeliveryProtocolActive = false;
+    const queue = new FakeQueue();
+    const deliveryId = "protocol-window-dlq";
+    store.seed(deliveryId, "queued", NOW, { attemptCount: 4 });
+    const { message, ack, retry } = fakeMessage(deliveryId);
+
+    await processDeadLetterMessage(message, makeEnv(queue), {
+      store,
+      now: () => NOW,
+    });
+
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "queued",
+      attemptCount: 4,
+      lastError: null,
+    });
+  });
+
+  it("acks the Queue but keeps Slack trigger acceptance nonterminal", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const deliveryId = "00000000-0000-4000-8000-000000000030";
@@ -58,10 +113,14 @@ describe("Slack queue delivery", () => {
     );
     expect(ack).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
-    expect(store.deliveries.get(deliveryId)?.status).toBe("accepted_by_slack");
+    expect(store.deliveries.get(deliveryId)?.status).toBe(
+      "accepted_by_trigger",
+    );
+    expect(store.deliveries.get(deliveryId)?.deliveredAt).toBeNull();
+    expect(store.deliveries.get(deliveryId)?.slackMessageTs).toBeNull();
   });
 
-  it("does not ack a 2xx response without the exact ok:true confirmation", async () => {
+  it("fails closed on a 2xx response without exact trigger confirmation", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const deliveryId = "00000000-0000-4000-8000-000000000031";
@@ -76,11 +135,11 @@ describe("Slack queue delivery", () => {
         .mockResolvedValue(Response.json({ ok: false })),
     });
 
-    expect(ack).not.toHaveBeenCalled();
-    expect(retry).toHaveBeenCalledOnce();
-    expect(store.deliveries.get(deliveryId)?.status).toBe("pending");
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(store.deliveries.get(deliveryId)?.status).toBe("manual_review");
     expect(store.deliveries.get(deliveryId)?.lastError).toBe(
-      "slack_success_confirmation_invalid",
+      "slack_trigger_success_confirmation_ambiguous",
     );
   });
 
@@ -96,8 +155,7 @@ describe("Slack queue delivery", () => {
         operations.push("cancel_body");
       },
     });
-    const originalExtendSlackCooldown =
-      store.extendSlackCooldown.bind(store);
+    const originalExtendSlackCooldown = store.extendSlackCooldown.bind(store);
     const originalRecordFailure = store.recordFailure.bind(store);
     store.extendSlackCooldown = vi.fn(async (until: number) => {
       operations.push("extend_cooldown");
@@ -147,7 +205,7 @@ describe("Slack queue delivery", () => {
     ]);
   });
 
-  it("continues retry handling when canceling a non-2xx body rejects", async () => {
+  it("keeps a 5xx trigger result for manual review even if body cleanup rejects", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const deliveryId = "00000000-0000-4000-8000-000000000044";
@@ -158,16 +216,20 @@ describe("Slack queue delivery", () => {
     await processPrimaryMessage(message, makeEnv(queue), {
       store,
       now: () => NOW,
-      fetch: vi.fn<typeof fetch>().mockResolvedValue(
-        new Response(new ReadableStream({ cancel }), { status: 503 }),
-      ),
+      fetch: vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          new Response(new ReadableStream({ cancel }), { status: 503 }),
+        ),
     });
 
     expect(cancel).toHaveBeenCalledOnce();
-    expect(ack).not.toHaveBeenCalled();
-    expect(retry).toHaveBeenCalledOnce();
-    expect(store.deliveries.get(deliveryId)?.status).toBe("pending");
-    expect(store.deliveries.get(deliveryId)?.lastError).toBe("slack_http_503");
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(store.deliveries.get(deliveryId)?.status).toBe("manual_review");
+    expect(store.deliveries.get(deliveryId)?.lastError).toBe(
+      "slack_trigger_http_503_ambiguous",
+    );
   });
 
   it("treats redirects as a controlled Slack failure without following them", async () => {
@@ -223,7 +285,9 @@ describe("Slack queue delivery", () => {
 
     expect(receiverAwareFetch).toHaveBeenCalledOnce();
     expect(ack).toHaveBeenCalledOnce();
-    expect(store.deliveries.get(deliveryId)?.status).toBe("accepted_by_slack");
+    expect(store.deliveries.get(deliveryId)?.status).toBe(
+      "accepted_by_trigger",
+    );
   });
 
   it("waits for the strict 6.1 second slot without consuming a queue retry", async () => {
@@ -308,8 +372,10 @@ describe("Slack queue delivery", () => {
     expect(activity.retry).not.toHaveBeenCalled();
     expect(alert.ack).toHaveBeenCalledOnce();
     expect(activity.ack).toHaveBeenCalledOnce();
-    expect(store.deliveries.get(alertId)?.status).toBe("accepted_by_slack");
-    expect(store.deliveries.get(activityId)?.status).toBe("accepted_by_slack");
+    expect(store.deliveries.get(alertId)?.status).toBe("accepted_by_trigger");
+    expect(store.deliveries.get(activityId)?.status).toBe(
+      "accepted_by_trigger",
+    );
   });
 
   it("rejects Slack URLs containing a port, query, fragment, or userinfo", async () => {
@@ -401,10 +467,12 @@ describe("Slack queue delivery", () => {
     expect(due.ack).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(store.deliveries.get(deliveryId)?.attemptCount).toBe(5);
-    expect(store.deliveries.get(deliveryId)?.status).toBe("accepted_by_slack");
+    expect(store.deliveries.get(deliveryId)?.status).toBe(
+      "accepted_by_trigger",
+    );
   });
 
-  it("retries a network failure without acknowledging it", async () => {
+  it("never resends after an ambiguous trigger network failure", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const deliveryId = "00000000-0000-4000-8000-000000000035";
@@ -419,11 +487,11 @@ describe("Slack queue delivery", () => {
         .mockRejectedValue(new Error("network unavailable")),
     });
 
-    expect(ack).not.toHaveBeenCalled();
-    expect(retry).toHaveBeenCalledOnce();
-    expect(store.deliveries.get(deliveryId)?.status).toBe("pending");
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(store.deliveries.get(deliveryId)?.status).toBe("manual_review");
     expect(store.deliveries.get(deliveryId)?.lastError).toBe(
-      "slack_request_failed",
+      "slack_trigger_request_outcome_ambiguous",
     );
   });
 
@@ -446,9 +514,57 @@ describe("Slack queue delivery", () => {
     expect(ack).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
   });
+
+  it("never turns an ambiguous sending state into a retryable dead letter", async () => {
+    const store = new MemoryDeliveryStore();
+    const queue = new FakeQueue();
+    const deliveryId = "ambiguous-sending-dlq";
+    store.seed(deliveryId, "sending", NOW);
+    const { message, ack, retry } = fakeMessage(deliveryId);
+
+    await processDeadLetterMessage(message, makeEnv(queue), {
+      store,
+      now: () => NOW,
+    });
+
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "manual_review",
+      lastError: "dead_letter_slack_trigger_attempt_ambiguous",
+    });
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+  });
 });
 
 describe("scheduled recovery and retention", () => {
+  it("leaves durable state untouched while the delivery protocol is inactive", async () => {
+    const store = new MemoryDeliveryStore();
+    store.slackDeliveryProtocolActive = false;
+    const queue = new FakeQueue();
+    const deliveryId = "inactive-protocol-stale-sending";
+    store.seed(deliveryId, "sending", NOW - 20 * 60 * 1_000, {
+      attemptCount: 4,
+      updatedAt: NOW - 20 * 60 * 1_000,
+    });
+
+    await expect(
+      runScheduledRecovery(makeEnv(queue), {
+        store,
+        now: () => NOW,
+      }),
+    ).resolves.toEqual({
+      purged: 0,
+      recovered: 0,
+      enqueueFailures: 0,
+    });
+    expect(queue.sent).toEqual([]);
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "sending",
+      attemptCount: 4,
+      lastError: null,
+    });
+  });
+
   it("recovers a stale queued record whose queue message was lost", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
@@ -468,15 +584,39 @@ describe("scheduled recovery and retention", () => {
     expect(store.deliveries.get(deliveryId)?.status).toBe("queued");
   });
 
-  it("purges only Slack-accepted payloads older than 30 days", async () => {
+  it("moves a stale sending record to manual review without another trigger POST", async () => {
+    const store = new MemoryDeliveryStore();
+    const queue = new FakeQueue();
+    const deliveryId = "stale-sending-ambiguous";
+    store.seed(deliveryId, "sending", NOW - 20 * 60 * 1_000, {
+      updatedAt: NOW - 20 * 60 * 1_000,
+    });
+
+    const result = await runScheduledRecovery(makeEnv(queue), {
+      store,
+      now: () => NOW,
+    });
+
+    expect(result.recovered).toBe(0);
+    expect(queue.sent).toHaveLength(0);
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "manual_review",
+      lastError: "stale_slack_trigger_attempt_ambiguous",
+    });
+  });
+
+  it("purges only receipt-confirmed Slack deliveries older than 30 days", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const day = 24 * 60 * 60 * 1_000;
-    store.seed("old-accepted", "accepted_by_slack", NOW - 31 * day, {
-      acceptedAt: NOW - 31 * day,
+    store.seed("old-delivered", "delivered", NOW - 31 * day, {
+      deliveredAt: NOW - 31 * day,
     });
-    store.seed("recent-accepted", "accepted_by_slack", NOW - 29 * day, {
-      acceptedAt: NOW - 29 * day,
+    store.seed("recent-delivered", "delivered", NOW - 29 * day, {
+      deliveredAt: NOW - 29 * day,
+    });
+    store.seed("old-trigger-accepted", "accepted_by_trigger", NOW - 60 * day, {
+      legacyUnverified: true,
     });
     store.seed("old-pending", "pending", NOW - 60 * day, {
       nextAttemptAt: NOW + day,
@@ -492,8 +632,9 @@ describe("scheduled recovery and retention", () => {
     });
 
     expect(result.purged).toBe(1);
-    expect(store.deliveries.has("old-accepted")).toBe(false);
-    expect(store.deliveries.has("recent-accepted")).toBe(true);
+    expect(store.deliveries.has("old-delivered")).toBe(false);
+    expect(store.deliveries.has("recent-delivered")).toBe(true);
+    expect(store.deliveries.has("old-trigger-accepted")).toBe(true);
     expect(store.deliveries.has("old-pending")).toBe(true);
     expect(store.deliveries.has("old-dead-letter")).toBe(true);
     expect(store.deliveries.has("old-manual-review")).toBe(true);

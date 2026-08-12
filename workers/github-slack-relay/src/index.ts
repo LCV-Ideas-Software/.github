@@ -10,10 +10,19 @@ import {
 import {
   readSecret,
   signSlackRelayPayload,
+  type SignedSlackCheckpointRequest,
+  type SignedSlackProgress,
+  type SignedSlackProtocolActivation,
+  type SignedSlackReconciliation,
+  verifySlackCheckpointRequest,
+  verifySlackProgress,
+  verifySlackProtocolActivation,
+  verifySlackReconciliation,
   verifyGitHubSignature,
 } from "./security";
 import {
   D1DeliveryStore,
+  SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION,
   type DeliveryStore,
   type QueueJob,
   type StoredDelivery,
@@ -21,6 +30,10 @@ import {
 
 const WEBHOOK_PATH = "/github/webhook";
 const HEALTH_PATH = "/healthz";
+const SLACK_PROGRESS_PATH = "/slack/progress";
+const SLACK_RECONCILIATION_PATH = "/slack/reconciliation";
+const SLACK_CHECKPOINT_PATH = "/slack/reconciliation/checkpoint";
+const SLACK_PROTOCOL_ACTIVATION_PATH = "/slack/protocol/activate";
 const ALERT_QUEUE_NAME = "github-slack-alerts";
 const ALERT_DEAD_LETTER_QUEUE = "github-slack-alerts-dlq";
 const ACTIVITY_QUEUE_NAME = "github-slack-activity";
@@ -30,10 +43,19 @@ const MINIMUM_SLACK_INTERVAL_MS = 6_100;
 const MAXIMUM_DELIVERY_ATTEMPTS = 25;
 const RECOVERY_LIMIT = 50;
 const STALE_AFTER_MS = 15 * 60 * 1_000;
+const SLACK_RECONCILIATION_GRACE_MS = 20 * 60 * 1_000;
 const DELIVERED_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const DELIVERY_ID_PATTERN = /^[A-Za-z0-9-]{1,128}$/u;
 const EVENT_NAME_PATTERN = /^[a-z0-9_]{1,64}$/u;
 const MINIMUM_SECRET_BYTES = 32;
+const MAXIMUM_CONTROL_BODY_BYTES = 128_000;
+const AUTHENTICATED_REQUEST_MAX_AGE_SECONDS = 300;
+const AUTHENTICATED_REQUEST_MAX_FUTURE_SECONDS = 60;
+const SLACK_MESSAGE_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
+const SLACK_TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/u;
+const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const ACTIVATION_ID_PATTERN = /^[0-9a-f]{64}$/u;
+const SCHEMA_REVISION_PATTERN = /^[a-z0-9_]{1,64}$/u;
 
 export interface RuntimeOverrides {
   store?: DeliveryStore;
@@ -46,6 +68,11 @@ interface SchedulerResult {
   purged: number;
   recovered: number;
   enqueueFailures: number;
+}
+
+interface RelaySigningConfiguration {
+  active: string;
+  secrets: readonly string[];
 }
 
 function jsonResponse(body: Record<string, unknown>, status: number): Response {
@@ -67,10 +94,10 @@ function safeFailureSummary(error: unknown): {
   const cause = candidate?.cause;
   const code =
     typeof cause === "object" &&
-      cause !== null &&
-      "code" in cause &&
-      typeof cause.code === "string" &&
-      /^[A-Z0-9_]{1,64}$/u.test(cause.code)
+    cause !== null &&
+    "code" in cause &&
+    typeof cause.code === "string" &&
+    /^[A-Z0-9_]{1,64}$/u.test(cause.code)
       ? cause.code
       : undefined;
   const message = (candidate?.message ?? "non_error_failure")
@@ -91,9 +118,7 @@ function runtime(
   return {
     store: overrides?.store ?? new D1DeliveryStore(env.DB),
     now: overrides?.now ?? Date.now,
-    fetch:
-      overrides?.fetch ??
-      ((input, init) => globalThis.fetch(input, init)),
+    fetch: overrides?.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     sleep: overrides?.sleep ?? ((milliseconds) => scheduler.wait(milliseconds)),
   };
 }
@@ -153,6 +178,7 @@ function hasSafeSecretLength(value: string): boolean {
 
 async function readBodyWithLimit(
   request: Request,
+  maximumBytes = MAX_BODY_BYTES,
 ): Promise<{ kind: "ok"; body: ArrayBuffer } | { kind: "too_large" }> {
   if (request.body === null) {
     return { kind: "ok", body: new ArrayBuffer(0) };
@@ -170,7 +196,7 @@ async function readBodyWithLimit(
       }
 
       total += result.value.byteLength;
-      if (total > MAX_BODY_BYTES) {
+      if (total > maximumBytes) {
         await reader.cancel("payload_too_large");
         return { kind: "too_large" };
       }
@@ -191,6 +217,424 @@ async function readBodyWithLimit(
   return { kind: "ok", body: combined.buffer };
 }
 
+function exactKeys(record: Record<string, unknown>, names: string[]): boolean {
+  const actual = Object.keys(record).sort();
+  const expected = [...names].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((name, index) => name === expected[index])
+  );
+}
+
+async function readControlRecord(
+  request: Request,
+): Promise<Record<string, unknown> | null> {
+  if (contentLengthTooLarge(request)) return null;
+  const body = await readBodyWithLimit(request, MAXIMUM_CONTROL_BODY_BYTES);
+  if (body.kind !== "ok") return null;
+  try {
+    const decoded = new TextDecoder("utf-8", {
+      fatal: true,
+      ignoreBOM: false,
+    }).decode(body.body);
+    return asRecord(JSON.parse(decoded) as unknown) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function authenticatedTimestampIsFresh(value: string, now: number): boolean {
+  if (!/^\d{10}$/u.test(value)) return false;
+  const timestamp = Number.parseInt(value, 10);
+  const nowSeconds = Math.floor(now / 1_000);
+  return (
+    timestamp >= nowSeconds - AUTHENTICATED_REQUEST_MAX_AGE_SECONDS &&
+    timestamp <= nowSeconds + AUTHENTICATED_REQUEST_MAX_FUTURE_SECONDS
+  );
+}
+
+function parseSlackProgress(
+  record: Record<string, unknown>,
+  now: number,
+): SignedSlackProgress | null {
+  if (
+    !exactKeys(record, [
+      "delivery_id",
+      "destination",
+      "phase",
+      "message_ts",
+      "receipt_timestamp",
+      "receipt_signature",
+    ])
+  ) {
+    return null;
+  }
+  const deliveryId = record.delivery_id;
+  const destination = record.destination;
+  const phase = record.phase;
+  const messageTs = record.message_ts;
+  const receiptTimestamp = record.receipt_timestamp;
+  const receiptSignature = record.receipt_signature;
+  if (
+    !validDeliveryId(deliveryId) ||
+    (destination !== "alerts" && destination !== "activity") ||
+    (phase !== "send_started" && phase !== "delivered") ||
+    typeof messageTs !== "string" ||
+    typeof receiptTimestamp !== "string" ||
+    !authenticatedTimestampIsFresh(receiptTimestamp, now) ||
+    typeof receiptSignature !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receiptSignature) ||
+    (phase === "send_started" && messageTs !== "") ||
+    (phase === "delivered" && !SLACK_MESSAGE_TS_PATTERN.test(messageTs))
+  ) {
+    return null;
+  }
+  return {
+    delivery_id: deliveryId,
+    destination,
+    phase,
+    message_ts: messageTs,
+    receipt_timestamp: receiptTimestamp,
+    receipt_signature: receiptSignature,
+  };
+}
+
+function parseSlackCheckpointRequest(
+  record: Record<string, unknown>,
+  now: number,
+): SignedSlackCheckpointRequest | null {
+  if (!exactKeys(record, ["request_timestamp", "request_signature"])) {
+    return null;
+  }
+  const requestTimestamp = record.request_timestamp;
+  const requestSignature = record.request_signature;
+  if (
+    typeof requestTimestamp !== "string" ||
+    !authenticatedTimestampIsFresh(requestTimestamp, now) ||
+    typeof requestSignature !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(requestSignature)
+  ) {
+    return null;
+  }
+  return {
+    request_timestamp: requestTimestamp,
+    request_signature: requestSignature,
+  };
+}
+
+function parseSlackProtocolActivation(
+  record: Record<string, unknown>,
+): SignedSlackProtocolActivation | null {
+  if (
+    !exactKeys(record, [
+      "activation_id",
+      "expected_revision",
+      "schema_revision",
+      "activation_signature",
+    ])
+  ) {
+    return null;
+  }
+  const activationId = record.activation_id;
+  const expectedRevision = record.expected_revision;
+  const schemaRevision = record.schema_revision;
+  const activationSignature = record.activation_signature;
+  if (
+    typeof activationId !== "string" ||
+    !ACTIVATION_ID_PATTERN.test(activationId) ||
+    typeof expectedRevision !== "string" ||
+    !WORKER_REVISION_PATTERN.test(expectedRevision) ||
+    typeof schemaRevision !== "string" ||
+    !SCHEMA_REVISION_PATTERN.test(schemaRevision) ||
+    typeof activationSignature !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(activationSignature)
+  ) {
+    return null;
+  }
+  return {
+    activation_id: activationId,
+    expected_revision: expectedRevision,
+    schema_revision: schemaRevision,
+    activation_signature: activationSignature,
+  };
+}
+
+function parseSlackReconciliation(
+  record: Record<string, unknown>,
+  now: number,
+): SignedSlackReconciliation | null {
+  if (
+    !exactKeys(record, [
+      "checkpoint_us",
+      "report_timestamp",
+      "traces",
+      "report_signature",
+    ]) ||
+    !Number.isSafeInteger(record.checkpoint_us) ||
+    (record.checkpoint_us as number) < 0 ||
+    typeof record.report_timestamp !== "string" ||
+    !authenticatedTimestampIsFresh(record.report_timestamp, now) ||
+    !Array.isArray(record.traces) ||
+    record.traces.length > 200 ||
+    typeof record.report_signature !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(record.report_signature)
+  ) {
+    return null;
+  }
+
+  const traces: SignedSlackReconciliation["traces"] = [];
+  const traceIds = new Set<string>();
+  for (const candidate of record.traces) {
+    const trace = asRecord(candidate);
+    if (
+      trace === undefined ||
+      !exactKeys(trace, [
+        "trace_id",
+        "delivery_id",
+        "outcome",
+        "send_boundary_reached",
+        "pre_send_failure_proven",
+        "started_at_us",
+        "completed_at_us",
+      ]) ||
+      typeof trace.trace_id !== "string" ||
+      !SLACK_TRACE_ID_PATTERN.test(trace.trace_id) ||
+      traceIds.has(trace.trace_id) ||
+      !validDeliveryId(trace.delivery_id) ||
+      (trace.outcome !== "pending" &&
+        trace.outcome !== "success" &&
+        trace.outcome !== "error") ||
+      typeof trace.send_boundary_reached !== "boolean" ||
+      typeof trace.pre_send_failure_proven !== "boolean" ||
+      (trace.pre_send_failure_proven === true &&
+        (trace.outcome === "success" ||
+          trace.send_boundary_reached === true)) ||
+      !Number.isSafeInteger(trace.started_at_us) ||
+      (trace.started_at_us as number) < 0 ||
+      (trace.completed_at_us !== null &&
+        (!Number.isSafeInteger(trace.completed_at_us) ||
+          (trace.completed_at_us as number) <
+            (trace.started_at_us as number))) ||
+      (trace.outcome === "pending" && trace.completed_at_us !== null) ||
+      (trace.outcome !== "pending" && trace.completed_at_us === null)
+    ) {
+      return null;
+    }
+    traceIds.add(trace.trace_id);
+    traces.push({
+      trace_id: trace.trace_id,
+      delivery_id: trace.delivery_id,
+      outcome: trace.outcome,
+      send_boundary_reached: trace.send_boundary_reached,
+      pre_send_failure_proven: trace.pre_send_failure_proven,
+      started_at_us: trace.started_at_us as number,
+      completed_at_us: trace.completed_at_us as number | null,
+    });
+  }
+
+  return {
+    checkpoint_us: record.checkpoint_us as number,
+    report_timestamp: record.report_timestamp,
+    traces,
+    report_signature: record.report_signature,
+  };
+}
+
+async function relaySigningConfiguration(
+  env: Env,
+): Promise<RelaySigningConfiguration | null> {
+  try {
+    const current = await readSecret(env.SLACK_RELAY_SIGNING_SECRET);
+    if (!hasSafeSecretLength(current)) return null;
+
+    let next: string | null = null;
+    try {
+      const candidate = await readSecret(env.SLACK_RELAY_SIGNING_SECRET_NEXT);
+      if (!hasSafeSecretLength(candidate) || candidate === current) return null;
+      next = candidate;
+    } catch {
+      // NEXT is optional outside an explicitly staged rotation.
+    }
+
+    const slot = String(env.SLACK_RELAY_SIGNING_ACTIVE_SLOT);
+    if (slot !== "current" && slot !== "next") return null;
+    if (slot === "next" && next === null) return null;
+    return {
+      active: slot === "next" ? (next as string) : current,
+      secrets: next === null ? [current] : [current, next],
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function verifyWithAnyRelayKey(
+  secrets: readonly string[],
+  verifier: (secret: string) => Promise<boolean>,
+): Promise<boolean> {
+  const results = await Promise.all(secrets.map((secret) => verifier(secret)));
+  return results.some(Boolean);
+}
+
+async function handleSlackControlRequest(
+  request: Request,
+  path: string,
+  env: Env,
+  dependencies: Required<RuntimeOverrides>,
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonResponse({ error: "method_not_allowed" }, 405);
+  }
+  const record = await readControlRecord(request);
+  if (record === null) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+  const now = dependencies.now();
+  const signing = await relaySigningConfiguration(env);
+  if (signing === null) {
+    return jsonResponse({ error: "authentication_unavailable" }, 503);
+  }
+
+  if (path === SLACK_PROTOCOL_ACTIVATION_PATH) {
+    const activation = parseSlackProtocolActivation(record);
+    if (activation === null) {
+      return jsonResponse({ error: "invalid_request" }, 400);
+    }
+    if (!(await verifySlackProtocolActivation(activation, signing.active))) {
+      return jsonResponse({ error: "invalid_signature" }, 401);
+    }
+
+    const deployedRevision = env.WORKER_VERSION?.tag;
+    if (
+      typeof deployedRevision !== "string" ||
+      !WORKER_REVISION_PATTERN.test(deployedRevision) ||
+      deployedRevision !== activation.expected_revision
+    ) {
+      return jsonResponse({ error: "deployed_revision_mismatch" }, 409);
+    }
+    if (
+      activation.schema_revision !== SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION
+    ) {
+      return jsonResponse({ error: "schema_revision_mismatch" }, 409);
+    }
+
+    try {
+      const activationStatus =
+        await dependencies.store.activateSlackDeliveryProtocol({
+          activationId: activation.activation_id,
+          revision: activation.expected_revision,
+          schemaRevision: activation.schema_revision,
+          now,
+        });
+      return jsonResponse(
+        {
+          ok: true,
+          activation_status: activationStatus,
+          activation_id: activation.activation_id,
+          activated_revision: activation.expected_revision,
+          schema_revision: activation.schema_revision,
+        },
+        200,
+      );
+    } catch {
+      return jsonResponse({ error: "protocol_activation_conflict" }, 409);
+    }
+  }
+
+  if (path === SLACK_PROGRESS_PATH) {
+    const receipt = parseSlackProgress(record, now);
+    if (receipt === null) {
+      return jsonResponse({ error: "invalid_request" }, 400);
+    }
+    if (
+      !(await verifyWithAnyRelayKey(signing.secrets, (secret) =>
+        verifySlackProgress(receipt, secret),
+      ))
+    ) {
+      return jsonResponse({ error: "invalid_signature" }, 401);
+    }
+    try {
+      const result = await dependencies.store.recordSlackProgress({
+        deliveryId: receipt.delivery_id,
+        destination: receipt.destination,
+        phase: receipt.phase,
+        messageTs: receipt.message_ts === "" ? null : receipt.message_ts,
+        now,
+        reconcileAt: now + SLACK_RECONCILIATION_GRACE_MS,
+      });
+      return jsonResponse({ ok: true, duplicate: result === "duplicate" }, 200);
+    } catch {
+      return jsonResponse({ error: "delivery_state_conflict" }, 409);
+    }
+  }
+
+  if (path === SLACK_CHECKPOINT_PATH) {
+    const checkpointRequest = parseSlackCheckpointRequest(record, now);
+    if (checkpointRequest === null) {
+      return jsonResponse({ error: "invalid_request" }, 400);
+    }
+    if (
+      !(await verifyWithAnyRelayKey(signing.secrets, (secret) =>
+        verifySlackCheckpointRequest(checkpointRequest, secret),
+      ))
+    ) {
+      return jsonResponse({ error: "invalid_signature" }, 401);
+    }
+    try {
+      return jsonResponse(
+        {
+          checkpoint_us: await dependencies.store.getSlackActivityCheckpoint(),
+        },
+        200,
+      );
+    } catch {
+      return jsonResponse({ error: "persistence_unavailable" }, 503);
+    }
+  }
+
+  const report = parseSlackReconciliation(record, now);
+  if (report === null) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+  if (
+    !(await verifyWithAnyRelayKey(signing.secrets, (secret) =>
+      verifySlackReconciliation(report, secret),
+    ))
+  ) {
+    return jsonResponse({ error: "invalid_signature" }, 401);
+  }
+  try {
+    for (const trace of report.traces) {
+      await dependencies.store.recordSlackTrace(
+        {
+          traceId: trace.trace_id,
+          deliveryId: trace.delivery_id,
+          outcome: trace.outcome,
+          sendBoundaryReached: trace.send_boundary_reached,
+          preSendFailureProven: trace.pre_send_failure_proven,
+          startedAtUs: trace.started_at_us,
+          completedAtUs: trace.completed_at_us,
+        },
+        now,
+      );
+    }
+    const checkpointUs =
+      await dependencies.store.advanceSlackActivityCheckpoint(
+        report.checkpoint_us,
+      );
+    return jsonResponse(
+      {
+        ok: true,
+        traces: report.traces.length,
+        checkpoint_us: checkpointUs,
+      },
+      200,
+    );
+  } catch {
+    return jsonResponse({ error: "reconciliation_conflict" }, 409);
+  }
+}
+
 export async function handleFetch(
   request: Request,
   env: Env,
@@ -199,29 +643,43 @@ export async function handleFetch(
   const url = new URL(request.url);
   const dependencies = runtime(env, overrides);
 
+  if (
+    url.pathname === SLACK_PROGRESS_PATH ||
+    url.pathname === SLACK_RECONCILIATION_PATH ||
+    url.pathname === SLACK_CHECKPOINT_PATH ||
+    url.pathname === SLACK_PROTOCOL_ACTIVATION_PATH
+  ) {
+    return handleSlackControlRequest(request, url.pathname, env, dependencies);
+  }
+
   if (url.pathname === HEALTH_PATH && request.method === "GET") {
+    const now = dependencies.now();
     try {
       const [
         healthy,
         githubSecret,
         alertsUrl,
         activityUrl,
-        relaySigningSecret,
+        relaySigning,
+        legacyUnverified,
       ] = await Promise.all([
-        dependencies.store.healthcheck(),
+        dependencies.store.healthcheck(now),
         readSecret(env.GITHUB_WEBHOOK_SECRET),
         readSecret(env.SLACK_ALERTS_WORKFLOW_WEBHOOK_URL),
         readSecret(env.SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL),
-        readSecret(env.SLACK_RELAY_SIGNING_SECRET),
+        relaySigningConfiguration(env),
+        dependencies.store.hasLegacyUnverifiedDebt(),
       ]);
       const ready =
         healthy &&
         hasSafeSecretLength(githubSecret) &&
-        hasSafeSecretLength(relaySigningSecret) &&
+        relaySigning !== null &&
         slackWorkflowUrl(alertsUrl) !== null &&
         slackWorkflowUrl(activityUrl) !== null;
       return jsonResponse(
-        { status: ready ? "ready" : "unavailable" },
+        ready
+          ? { status: "ready", legacy_unverified: legacyUnverified }
+          : { status: "unavailable" },
         ready ? 200 : 503,
       );
     } catch {
@@ -455,6 +913,20 @@ function retryMessage(message: Message<QueueJob>, delaySeconds: number): void {
   message.retry({ delaySeconds: Math.max(2, Math.ceil(delaySeconds)) });
 }
 
+function protocolActivationRetrySeconds(attempts: number): number {
+  return Math.min(3_600, 60 * 2 ** Math.min(Math.max(attempts - 1, 0), 6));
+}
+
+async function slackDeliveryProtocolIsActive(
+  store: DeliveryStore,
+): Promise<boolean> {
+  try {
+    return await store.isSlackDeliveryProtocolActive();
+  } catch {
+    return false;
+  }
+}
+
 async function cancelUnreadResponseBody(response: Response): Promise<void> {
   if (response.body === null || response.bodyUsed) {
     return;
@@ -485,6 +957,21 @@ async function recordSlackFailure(
   retryMessage(message, boundedDelay);
 }
 
+async function recordAmbiguousSlackTrigger(
+  store: DeliveryStore,
+  deliveryId: string,
+  message: Message<QueueJob>,
+  now: number,
+  reason: string,
+): Promise<void> {
+  await store.markManualReview(deliveryId, now, reason);
+  message.ack();
+}
+
+function triggerResponseIsDefiniteRejection(status: number): boolean {
+  return status === 429 || (status >= 300 && status < 500 && status !== 408);
+}
+
 export async function processPrimaryMessage(
   message: Message<QueueJob>,
   env: Env,
@@ -497,10 +984,28 @@ export async function processPrimaryMessage(
     return;
   }
 
+  if (!(await slackDeliveryProtocolIsActive(dependencies.store))) {
+    retryMessage(message, protocolActivationRetrySeconds(message.attempts));
+    return;
+  }
+
   const existing = await dependencies.store.get(job.deliveryId);
+  if (existing?.status === "sending") {
+    await recordAmbiguousSlackTrigger(
+      dependencies.store,
+      existing.deliveryId,
+      message,
+      dependencies.now(),
+      "replayed_slack_trigger_attempt_ambiguous",
+    );
+    return;
+  }
   if (
     existing === null ||
     existing.status === "accepted_by_slack" ||
+    existing.status === "accepted_by_trigger" ||
+    existing.status === "send_started" ||
+    existing.status === "delivered" ||
     existing.status === "manual_review"
   ) {
     message.ack();
@@ -557,23 +1062,20 @@ export async function processPrimaryMessage(
   }
 
   let webhookUrl: string | null;
-  let relaySigningSecret: string | null;
+  let relaySigning: RelaySigningConfiguration | null;
   try {
     const destinationBinding =
       delivery.destination === "alerts"
         ? env.SLACK_ALERTS_WORKFLOW_WEBHOOK_URL
         : env.SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL;
     webhookUrl = slackWorkflowUrl(await readSecret(destinationBinding));
-    relaySigningSecret = await readSecret(env.SLACK_RELAY_SIGNING_SECRET);
-    if (!hasSafeSecretLength(relaySigningSecret)) {
-      relaySigningSecret = null;
-    }
+    relaySigning = await relaySigningConfiguration(env);
   } catch {
     webhookUrl = null;
-    relaySigningSecret = null;
+    relaySigning = null;
   }
 
-  if (webhookUrl === null || relaySigningSecret === null) {
+  if (webhookUrl === null || relaySigning === null) {
     await recordSlackFailure(
       dependencies.store,
       delivery,
@@ -594,7 +1096,7 @@ export async function processPrimaryMessage(
   try {
     outboundPayload.relay_signature = await signSlackRelayPayload(
       outboundPayload,
-      relaySigningSecret,
+      relaySigning.active,
     );
   } catch {
     await recordSlackFailure(
@@ -624,13 +1126,12 @@ export async function processPrimaryMessage(
         ...safeFailureSummary(error),
       }),
     );
-    await recordSlackFailure(
+    await recordAmbiguousSlackTrigger(
       dependencies.store,
-      delivery,
+      delivery.deliveryId,
       message,
       now,
-      "slack_request_failed",
-      defaultRetrySeconds(delivery.attemptCount),
+      "slack_trigger_request_outcome_ambiguous",
     );
     return;
   }
@@ -644,23 +1145,37 @@ export async function processPrimaryMessage(
     }
 
     if (confirmation?.ok !== true) {
-      await recordSlackFailure(
+      await recordAmbiguousSlackTrigger(
         dependencies.store,
-        delivery,
+        delivery.deliveryId,
         message,
         now,
-        "slack_success_confirmation_invalid",
-        defaultRetrySeconds(delivery.attemptCount),
+        "slack_trigger_success_confirmation_ambiguous",
       );
       return;
     }
 
-    await dependencies.store.markAcceptedBySlack(delivery.deliveryId, now);
+    await dependencies.store.markAcceptedByTrigger(
+      delivery.deliveryId,
+      now,
+      now + SLACK_RECONCILIATION_GRACE_MS,
+    );
     message.ack();
     return;
   }
 
   await cancelUnreadResponseBody(response);
+
+  if (!triggerResponseIsDefiniteRejection(response.status)) {
+    await recordAmbiguousSlackTrigger(
+      dependencies.store,
+      delivery.deliveryId,
+      message,
+      now,
+      `slack_trigger_http_${response.status}_ambiguous`,
+    );
+    return;
+  }
 
   const retryDelay =
     retryAfterSeconds(response.headers.get("retry-after"), now) ??
@@ -699,10 +1214,27 @@ export async function processDeadLetterMessage(
     return;
   }
 
+  if (!(await slackDeliveryProtocolIsActive(dependencies.store))) {
+    retryMessage(message, protocolActivationRetrySeconds(message.attempts));
+    return;
+  }
+
   const delivery = await dependencies.store.get(job.deliveryId);
+  if (delivery?.status === "sending") {
+    await dependencies.store.markManualReview(
+      delivery.deliveryId,
+      dependencies.now(),
+      "dead_letter_slack_trigger_attempt_ambiguous",
+    );
+    message.ack();
+    return;
+  }
   if (
     delivery === null ||
     delivery.status === "accepted_by_slack" ||
+    delivery.status === "accepted_by_trigger" ||
+    delivery.status === "send_started" ||
+    delivery.status === "delivered" ||
     delivery.status === "manual_review"
   ) {
     message.ack();
@@ -757,7 +1289,16 @@ export async function runScheduledRecovery(
 ): Promise<SchedulerResult> {
   const dependencies = runtime(env, overrides);
   const now = dependencies.now();
-  const purged = await dependencies.store.purgeAcceptedBefore(
+  if (!(await slackDeliveryProtocolIsActive(dependencies.store))) {
+    console.info(
+      JSON.stringify({
+        event: "scheduled_recovery_deferred",
+        reason: "slack_delivery_protocol_inactive",
+      }),
+    );
+    return { purged: 0, recovered: 0, enqueueFailures: 0 };
+  }
+  const purged = await dependencies.store.purgeDeliveredBefore(
     now - DELIVERED_RETENTION_MS,
   );
   const recoverable = await dependencies.store.claimRecoverable(

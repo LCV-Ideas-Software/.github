@@ -1,6 +1,8 @@
 import {
   formatRelayMessage,
   RelayMessageInputs,
+  relayMessageSigningSecret,
+  signProgressAuthorization,
   signRelayMessage,
   verifyRelayMessage,
   verifyRelayMessageWithSecrets,
@@ -78,7 +80,7 @@ Deno.test("rejects stale signed messages, cross-channel routing, and malformed s
   );
 });
 
-Deno.test("accepts the current or staged next secret during a zero-loss rotation", async () => {
+Deno.test("accepts the current or staged next secret during verifier overlap", async () => {
   const current = inputs();
   current.relay_signature = await signRelayMessage(TEST_KEY, current);
   const nextTestKey = testKey(0x02);
@@ -103,6 +105,16 @@ Deno.test("accepts the current or staged next secret during a zero-loss rotation
       NOW,
     )),
     "unknown secret was accepted during rotation",
+  );
+  assert(
+    await relayMessageSigningSecret([TEST_KEY, nextTestKey], next, NOW) ===
+      nextTestKey,
+    "validator did not retain the key that authenticated the relay",
+  );
+  const progressToken = await signProgressAuthorization(nextTestKey, next);
+  assert(
+    /^[0-9a-f]{64}$/.test(progressToken),
+    "validator did not issue a bounded progress authorization",
   );
 });
 

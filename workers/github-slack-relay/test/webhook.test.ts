@@ -6,6 +6,7 @@ import {
   makeEnv,
   MemoryDeliveryStore,
   signedRequest,
+  TEST_RELAY_SIGNING_SECRET,
   workflowPayload,
 } from "./helpers";
 
@@ -236,7 +237,7 @@ describe("GitHub webhook ingress", () => {
     expect(await response.json()).toEqual({ error: "payload_too_large" });
   });
 
-  it("reports ready only after D1 and all four secret bindings validate", async () => {
+  it("reports ready only after D1 and required live bindings validate", async () => {
     const queue = new FakeQueue();
     const store = new MemoryDeliveryStore();
     const fetchMock = vi.fn<typeof fetch>();
@@ -247,8 +248,31 @@ describe("GitHub webhook ingress", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "ready" });
+    expect(await response.json()).toEqual({
+      status: "ready",
+      legacy_unverified: false,
+    });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports quarantined legacy debt without failing readiness", async () => {
+    const queue = new FakeQueue();
+    const store = new MemoryDeliveryStore();
+    store.seed("legacy-quarantine", "accepted_by_slack", NOW, {
+      legacyUnverified: true,
+    });
+
+    const response = await handleFetch(
+      new Request("https://relay.example/healthz"),
+      makeEnv(queue),
+      { store },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      status: "ready",
+      legacy_unverified: true,
+    });
   });
 
   it.each([
@@ -263,6 +287,8 @@ describe("GitHub webhook ingress", () => {
     ],
     ["SLACK_RELAY_SIGNING_SECRET", null],
     ["SLACK_RELAY_SIGNING_SECRET", "short"],
+    ["SLACK_RELAY_SIGNING_SECRET_NEXT", "short"],
+    ["SLACK_RELAY_SIGNING_SECRET_NEXT", TEST_RELAY_SIGNING_SECRET],
   ])(
     "returns the same generic 503 for invalid binding %s",
     async (binding, value) => {

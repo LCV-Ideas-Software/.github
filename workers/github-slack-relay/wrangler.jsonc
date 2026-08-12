@@ -8,6 +8,12 @@
   "preview_urls": false,
   "minify": true,
   "upload_source_maps": true,
+  "vars": {
+    "SLACK_RELAY_SIGNING_ACTIVE_SLOT": "current",
+  },
+  "version_metadata": {
+    "binding": "WORKER_VERSION",
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
@@ -45,6 +51,11 @@
       "binding": "SLACK_RELAY_SIGNING_SECRET",
       "store_id": "df90c0935ba1460899c3c2c457548a90",
       "secret_name": "github-slack-relay-signing-secret",
+    },
+    {
+      "binding": "SLACK_RELAY_SIGNING_SECRET_NEXT",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-relay-signing-secret-next",
     },
   ],
   "queues": {

@@ -154,6 +154,33 @@ evidence is the execution trail recorded in
   `.github/ISSUE_TEMPLATE/engineering_task.md` but absent from the repository, so every issue opened
   through that form was silently created unlabelled. Labels are not versioned here, so this change
   has no file diff ([#167](https://github.com/LCV-Ideas-Software/.github/issues/167)).
+- Corrected the GitHub-to-Slack delivery model exposed by the missing
+  `de345e40-95b1-11f1-8d38-fac15f0bb4cd` message: trigger `ok: true` is now the
+  nonterminal `accepted_by_trigger`; the Slack workflow authenticates a
+  pre-`SendMessage` boundary and an idempotent post-message receipt carrying
+  Slack's timestamp; and the fully paginated monitor durably correlates the
+  actual Slack trace. Only a complete error trace with an explicit failed
+  validator or pre-send step and no send boundary can be retried; ambiguous
+  trigger network/5xx outcomes and stale
+  `sending` rows are also never resent. Historical trigger acceptances remain
+  explicitly unverified, and the known loss migrates to `manual_review` instead
+  of being relabelled as delivered. The migration remains compatible with the
+  previously deployed Worker; its in-window acceptances are trigger-quarantined;
+  production rollout is serialized Worker-first and begins with the receipt-aware
+  consumers closed. Only after the exact Slack revision and protected trigger
+  inventory are deployed does a current-key HMAC bind the expected main SHA to
+  the Worker's immutable version tag, prove the expanded schema, and perform a
+  one-way activation CAS that persists an immutable activation ID, SHA and
+  schema revision; one byte-identical retry can confirm a response lost after
+  CAS without another mutation, while a new ID, changed tuple, post-contract
+  request, partial deploy, wrong key/SHA, or downgrade remains closed without a
+  Slack POST or D1 delivery attempt;
+  current and staged HMAC slots verify across Worker, Slack, and monitor without
+  performing a cutover; empty activity scans cannot advance to wall clock; D1
+  causally clamps the monitor checkpoint behind uncorrelated live attempts; and
+  the known ID has a fixed one-time audited release requiring separate absence
+  proof and explicit ID/destination authorization before its normal receipt path
+  ([#171](https://github.com/LCV-Ideas-Software/.github/issues/171)).
 
 ### Issues discovered during this audit
 

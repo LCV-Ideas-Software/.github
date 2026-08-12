@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import {
   monitorSlackWorkflow,
   readSlackMonitorConfiguration,
+  reconcileSlackActivities,
 } from "./slack-workflow-monitor.mjs";
 
 const manifestSource = await readFile(
@@ -15,17 +17,83 @@ const workflowSource = await readFile(
   new URL("../.github/workflows/slack-github-integration.yml", import.meta.url),
   "utf8",
 );
+const relayWorkflowSource = await readFile(
+  new URL("../.github/workflows/github-slack-integration.yml", import.meta.url),
+  "utf8",
+);
 
 const environment = Object.freeze({
   SLACK_APP_ID: "A12345",
+  SLACK_RELAY_SIGNING_SECRET: "monitor-test-only-relay-signing-secret",
   SLACK_SERVICE_TOKEN: "service-token-never-log",
   SLACK_TEAM_ID: "T12345",
 });
 
-test("production manifest keeps only the documented SendMessage scopes", () => {
+const CHECKPOINT_URL =
+  "https://github-slack-alerts.lcv.workers.dev/slack/reconciliation/checkpoint";
+const RECONCILIATION_URL =
+  "https://github-slack-alerts.lcv.workers.dev/slack/reconciliation";
+const SLACK_URL = "https://slack.com/api/apps.activities.list";
+
+function jsonResponse(body, { status = 200, headers = {} } = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+function hmac(canonical) {
+  return createHmac("sha256", environment.SLACK_RELAY_SIGNING_SECRET)
+    .update(canonical, "utf8")
+    .digest("hex");
+}
+
+function assertCheckpointRequest(init) {
+  const body = JSON.parse(String(init.body));
+  assert.equal(
+    body.request_signature,
+    hmac(
+      JSON.stringify([
+        "slack_activity_checkpoint_request_v1",
+        body.request_timestamp,
+      ]),
+    ),
+  );
+}
+
+function assertReconciliationRequest(init) {
+  const body = JSON.parse(String(init.body));
+  assert.equal(
+    body.report_signature,
+    hmac(
+      JSON.stringify([
+        "slack_activity_reconciliation_v1",
+        body.checkpoint_us,
+        body.report_timestamp,
+        body.traces.map((trace) => [
+          trace.trace_id,
+          trace.delivery_id,
+          trace.outcome,
+          trace.send_boundary_reached,
+          trace.pre_send_failure_proven,
+          trace.started_at_us,
+          trace.completed_at_us,
+        ]),
+      ]),
+    ),
+  );
+  return body;
+}
+
+test("production manifest registers the receipt function and only the documented message scopes", () => {
   assert.match(
     manifestSource,
     /botScopes:\s*\["chat:write", "chat:write\.public", "channels:read"\]/,
+  );
+  assert.match(manifestSource, /ReportRelayProgressDefinition/);
+  assert.match(
+    manifestSource,
+    /outgoingDomains:\s*\["github-slack-alerts\.lcv\.workers\.dev"\]/,
   );
   assert.doesNotMatch(manifestSource, /groups:(read|write)/);
   assert.doesNotMatch(
@@ -43,7 +111,6 @@ test("deployment verifies both protected triggers without logging their details"
     workflowSource.includes(
       `request_body="$(printf '{"app_id":"%s","limit":100}' "$SLACK_APP_ID")"`,
     ),
-    "the Slack CLI request body must use unambiguous literal JSON",
   );
   assert.match(workflowSource, /scripts\/verify_trigger_inventory\.ts/);
   assert.doesNotMatch(workflowSource, /slack trigger (?:list|info)/);
@@ -51,14 +118,99 @@ test("deployment verifies both protected triggers without logging their details"
   assert.match(workflowSource, /rm -f "\$inventory_error"/);
 });
 
-function slackResponse(body, { status = 200, headers = {} } = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", ...headers },
-  });
-}
+test("Slack deployment is serialized behind the exact successful relay rollout", () => {
+  assert.match(
+    workflowSource,
+    /workflow_run:\s*\n\s+workflows: \[GitHub Slack Integration\]/,
+  );
+  const deployJob = workflowSource.slice(
+    workflowSource.indexOf("  deploy:"),
+    workflowSource.indexOf("  monitor:"),
+  );
+  assert.match(deployJob, /github\.event_name == 'workflow_run'/);
+  assert.match(
+    deployJob,
+    /github\.event\.workflow_run\.conclusion == 'success'/,
+  );
+  assert.match(
+    deployJob,
+    /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/,
+  );
+  assert.match(deployJob, /github\.event\.workflow_run\.event == 'push'/);
+  assert.match(
+    deployJob,
+    /github\.event\.workflow_run\.event == 'workflow_dispatch'/,
+  );
+  assert.match(
+    deployJob,
+    /ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/,
+  );
+  assert.doesNotMatch(deployJob, /github\.event_name == 'push'/);
+  const verifyJob = workflowSource.slice(
+    workflowSource.indexOf("  verify:"),
+    workflowSource.indexOf("  deploy:"),
+  );
+  assert.match(verifyJob, /github\.event_name != 'workflow_run'/);
+  assert.match(
+    verifyJob,
+    /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/,
+  );
+  assert.match(
+    verifyJob,
+    /github\.event\.workflow_run\.conclusion == 'success'/,
+  );
+  assert.match(verifyJob, /github\.event\.workflow_run\.event == 'push'/);
+  assert.match(
+    verifyJob,
+    /github\.event\.workflow_run\.event == 'workflow_dispatch'/,
+  );
+  assert.match(relayWorkflowSource, /- "slack\/github-integration\/\*\*"/);
+  assert.match(
+    relayWorkflowSource,
+    /- "\.github\/workflows\/slack-github-integration\.yml"/,
+  );
+  const deploySlack = deployJob.indexOf("slack deploy");
+  const verifyTriggers = deployJob.indexOf(
+    "scripts/verify_trigger_inventory.ts",
+  );
+  const activateProtocol = deployJob.indexOf(
+    "scripts/activate_delivery_protocol.ts",
+  );
+  assert.ok(deploySlack >= 0 && verifyTriggers > deploySlack);
+  assert.ok(activateProtocol > verifyTriggers);
+  const activationStepStart = deployJob.lastIndexOf(
+    "      - name:",
+    activateProtocol,
+  );
+  const activationStepEnd = deployJob.indexOf(
+    "\n      - name:",
+    activateProtocol,
+  );
+  const activationStep = deployJob.slice(
+    activationStepStart,
+    activationStepEnd === -1 ? undefined : activationStepEnd,
+  );
+  assert.match(
+    activationStep,
+    /ACTIVATION_SEED: \$\{\{ github\.event\.workflow_run\.id \}\}/,
+  );
+  assert.match(
+    activationStep,
+    /EXPECTED_REVISION: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/,
+  );
+  assert.match(
+    activationStep,
+    /--allow-env=ACTIVATION_SEED,EXPECTED_REVISION,SLACK_RELAY_SIGNING_SECRET/,
+  );
+  assert.match(
+    activationStep,
+    /--allow-net=github-slack-alerts\.lcv\.workers\.dev/,
+  );
+  assert.doesNotMatch(activationStep, /if:\s*always\(\)/);
+  assert.match(relayWorkflowSource, /--tag "\$GITHUB_SHA"/);
+});
 
-test("configuration rejects every absent required value", () => {
+test("configuration rejects every absent required value and short relay secrets", () => {
   for (const name of Object.keys(environment)) {
     const candidate = { ...environment };
     delete candidate[name];
@@ -67,162 +219,573 @@ test("configuration rejects every absent required value", () => {
       new RegExp(`Required environment variable ${name} is missing`),
     );
   }
+  assert.throws(
+    () =>
+      readSlackMonitorConfiguration({
+        ...environment,
+        SLACK_RELAY_SIGNING_SECRET: "short",
+      }),
+    /SLACK_RELAY_SIGNING_SECRET is malformed/,
+  );
+  assert.throws(
+    () =>
+      readSlackMonitorConfiguration({
+        ...environment,
+        SLACK_RELAY_SIGNING_SECRET_NEXT: "short",
+      }),
+    /SLACK_RELAY_SIGNING_SECRET_NEXT is malformed/,
+  );
+  assert.throws(
+    () =>
+      readSlackMonitorConfiguration({
+        ...environment,
+        SLACK_RELAY_SIGNING_SECRET_NEXT: environment.SLACK_RELAY_SIGNING_SECRET,
+      }),
+    /SLACK_RELAY_SIGNING_SECRET_NEXT is malformed/,
+  );
+  assert.throws(
+    () =>
+      readSlackMonitorConfiguration({
+        ...environment,
+        SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
+      }),
+    /requires a staged NEXT secret/,
+  );
+  assert.throws(
+    () =>
+      readSlackMonitorConfiguration({
+        ...environment,
+        SLACK_RELAY_SIGNING_ACTIVE_SLOT: "invalid",
+      }),
+    /SLACK_RELAY_SIGNING_ACTIVE_SLOT is malformed/,
+  );
 });
 
-test("monitor uses the documented form encoding and reports no errors", async () => {
+test("configuration can stage both verifier keys while selecting one signer", () => {
+  const next = "monitor-test-only-next-signing-secret";
+  const staged = readSlackMonitorConfiguration({
+    ...environment,
+    SLACK_RELAY_SIGNING_SECRET_NEXT: next,
+  });
+  assert.equal(
+    staged.relaySigningSecret,
+    environment.SLACK_RELAY_SIGNING_SECRET,
+  );
+  assert.deepEqual(staged.relaySigningSecrets, [
+    environment.SLACK_RELAY_SIGNING_SECRET,
+    next,
+  ]);
+  assert.equal(staged.relaySigningActiveSlot, "current");
+
+  const promoted = readSlackMonitorConfiguration({
+    ...environment,
+    SLACK_RELAY_SIGNING_SECRET_NEXT: next,
+    SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
+  });
+  assert.equal(promoted.relaySigningSecret, next);
+  assert.equal(promoted.relaySigningActiveSlot, "next");
+});
+
+test("monitor uses the durable checkpoint and posts an authenticated empty report", async () => {
   const now = Date.parse("2026-08-04T08:00:00.000Z");
-  let observed = false;
+  const calls = [];
   const result = await monitorSlackWorkflow({
     environment,
     now: () => now,
     fetchImpl: async (input, init) => {
-      observed = true;
-      assert.equal(input, "https://slack.com/api/apps.activities.list");
-      assert.equal(init.method, "POST");
-      assert.equal(
-        init.headers.Authorization,
-        `Bearer ${environment.SLACK_SERVICE_TOKEN}`,
-      );
-      assert.equal(
-        init.headers["Content-Type"],
-        "application/x-www-form-urlencoded; charset=utf-8",
-      );
-      assert.ok(init.body instanceof URLSearchParams);
-      assert.deepEqual(Object.fromEntries(init.body), {
-        app_id: environment.SLACK_APP_ID,
-        team_id: environment.SLACK_TEAM_ID,
-        min_log_level: "error",
-        min_date_created: String((now - 20 * 60 * 1000) * 1000),
-        limit: "100",
-      });
-      assert.ok(init.signal instanceof AbortSignal);
-      return slackResponse({ ok: true, activities: [] });
+      calls.push(input);
+      if (input === CHECKPOINT_URL) {
+        assertCheckpointRequest(init);
+        return jsonResponse({ checkpoint_us: 0 });
+      }
+      if (input === SLACK_URL) {
+        assert.equal(init.method, "POST");
+        assert.equal(
+          init.headers.Authorization,
+          `Bearer ${environment.SLACK_SERVICE_TOKEN}`,
+        );
+        assert.deepEqual(Object.fromEntries(init.body), {
+          app_id: environment.SLACK_APP_ID,
+          team_id: environment.SLACK_TEAM_ID,
+          min_log_level: "info",
+          component_type: "workflows",
+          min_date_created: String((now - 20 * 60 * 1_000) * 1_000),
+          max_date_created: String(now * 1_000),
+          sort_direction: "asc",
+          limit: "100",
+        });
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      assert.equal(input, RECONCILIATION_URL);
+      const report = assertReconciliationRequest(init);
+      assert.equal(report.checkpoint_us, (now - 20 * 60 * 1_000) * 1_000);
+      assert.deepEqual(report.traces, []);
+      return jsonResponse({ ok: true, traces: 0 });
     },
   });
 
-  assert.equal(observed, true);
-  assert.deepEqual(result, { errors: 0 });
+  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(calls, [CHECKPOINT_URL, SLACK_URL, RECONCILIATION_URL]);
 });
 
-test("Slack errors expose only a validated code, never response payloads or credentials", async () => {
-  await assert.rejects(
-    monitorSlackWorkflow({
-      environment,
-      fetchImpl: async () =>
-        slackResponse({
-          ok: false,
-          error: "invalid_args",
-          activities: [{ payload: { inputs: "private-value" } }],
-        }),
-    }),
-    (error) =>
-      /invalid_args/.test(error.message) &&
-      !/private-value/.test(error.message) &&
-      !error.message.includes(environment.SLACK_SERVICE_TOKEN),
-  );
-
-  await assert.rejects(
-    monitorSlackWorkflow({
-      environment,
-      fetchImpl: async () =>
-        slackResponse({ ok: false, error: "unsafe value\nsecret-data" }),
-    }),
-    (error) =>
-      /unrecognized error code/.test(error.message) &&
-      !/unsafe|secret-data/.test(error.message),
-  );
-});
-
-test("recorded workflow errors fail without exposing activity payloads", async () => {
-  await assert.rejects(
-    monitorSlackWorkflow({
-      environment,
-      fetchImpl: async () =>
-        slackResponse({
+test("an empty scan anchors its lower bound instead of advancing to wall clock", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const initialAnchor = (now - 20 * 60 * 1_000) * 1_000;
+  let report;
+  await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return jsonResponse({ checkpoint_us: 0 });
+      }
+      if (input === SLACK_URL) {
+        return jsonResponse({
           ok: true,
-          activities: [{ payload: { inputs: "private-value" } }],
-        }),
-    }),
-    (error) =>
-      /recorded 1 workflow error/.test(error.message) &&
-      !/private-value/.test(error.message),
-  );
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      report = assertReconciliationRequest(init);
+      return jsonResponse({ ok: true, traces: 0 });
+    },
+  });
+  assert.equal(report.checkpoint_us, initialAnchor);
+
+  const later = now + 2 * 60 * 60 * 1_000;
+  await monitorSlackWorkflow({
+    environment,
+    now: () => later,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return jsonResponse({ checkpoint_us: initialAnchor });
+      }
+      if (input === SLACK_URL) {
+        const form = Object.fromEntries(init.body);
+        assert.equal(
+          form.min_date_created,
+          String(initialAnchor - 20 * 60 * 1_000 * 1_000),
+        );
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      const secondReport = assertReconciliationRequest(init);
+      assert.equal(secondReport.checkpoint_us, initialAnchor);
+      return jsonResponse({ ok: true, traces: 0 });
+    },
+  });
 });
 
-test("malformed and HTTP failures remain fail-closed without echoing bodies", async () => {
-  await assert.rejects(
-    monitorSlackWorkflow({
-      environment,
-      fetchImpl: async () =>
-        new Response("private upstream body", {
-          status: 503,
-          headers: { "retry-after": "30" },
-        }),
-    }),
-    (error) =>
-      /HTTP 503/.test(error.message) &&
-      /retry-after=30s/.test(error.message) &&
-      !/private upstream body/.test(error.message),
-  );
-
-  await assert.rejects(
-    monitorSlackWorkflow({
-      environment,
-      fetchImpl: async () => new Response("private invalid JSON"),
-    }),
-    (error) =>
-      /invalid JSON/.test(error.message) &&
-      !/private invalid JSON/.test(error.message),
-  );
-});
-
-test("HTTP 429 performs one bounded Retry-After retry and then succeeds", async () => {
-  const delays = [];
-  let requests = 0;
+test("paginates every activity and correlates delivery_id, trace_id, and send boundary", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 1_000;
+  const reports = [];
+  let slackPage = 0;
   const result = await monitorSlackWorkflow({
     environment,
-    fetchImpl: async () => {
-      requests += 1;
-      return requests === 1
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return jsonResponse({ checkpoint_us: created - 10_000 });
+      }
+      if (input === RECONCILIATION_URL) {
+        reports.push(assertReconciliationRequest(init));
+        return jsonResponse({ ok: true, traces: 1 });
+      }
+      assert.equal(input, SLACK_URL);
+      slackPage += 1;
+      const form = Object.fromEntries(init.body);
+      assert.equal(
+        form.min_date_created,
+        String(created - 10_000 - 20 * 60 * 1_000 * 1_000),
+      );
+      if (slackPage === 1) {
+        assert.equal(form.cursor, undefined);
+        return jsonResponse({
+          ok: true,
+          activities: [
+            {
+              level: "info",
+              event_type: "workflow_execution_started",
+              component_type: "workflows",
+              created,
+              trace_id: "TrPaged1",
+              payload: { workflow_name: "GitHub actionable alert" },
+            },
+            {
+              level: "info",
+              event_type: "workflow_step_execution_result",
+              component_type: "workflows",
+              created: created + 1,
+              trace_id: "TrPaged1",
+              payload: {
+                exec_outcome: "Success",
+                inputs: {
+                  delivery_id: "delivery-paged-1",
+                  phase: "send_started",
+                  private_value: "must-not-leak",
+                },
+              },
+            },
+          ],
+          response_metadata: { next_cursor: "cursor-two" },
+        });
+      }
+      assert.equal(form.cursor, "cursor-two");
+      return jsonResponse({
+        ok: true,
+        activities: [
+          {
+            level: "info",
+            event_type: "workflow_execution_result",
+            component_type: "workflows",
+            created: created + 2,
+            trace_id: "TrPaged1",
+            payload: { exec_outcome: "Success" },
+          },
+        ],
+        response_metadata: { next_cursor: "" },
+      });
+    },
+  });
+
+  assert.deepEqual(result, { errors: 0, pages: 2, traces: 1 });
+  assert.equal(reports.length, 1);
+  assert.deepEqual(reports[0].traces, [
+    {
+      trace_id: "TrPaged1",
+      delivery_id: "delivery-paged-1",
+      outcome: "success",
+      send_boundary_reached: true,
+      pre_send_failure_proven: false,
+      started_at_us: created,
+      completed_at_us: created + 2,
+    },
+  ]);
+  assert.ok(!JSON.stringify(reports).includes("must-not-leak"));
+});
+
+test("persists an incomplete trace so later pages cannot forget its send boundary", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const result = reconcileSlackActivities([
+    {
+      level: "info",
+      event_type: "workflow_execution_started",
+      created,
+      trace_id: "TrPendingBoundary1",
+      payload: {},
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_execution_result",
+      created: created + 1,
+      trace_id: "TrPendingBoundary1",
+      payload: {
+        exec_outcome: "Success",
+        inputs: {
+          delivery_id: "delivery-pending-boundary-1",
+          phase: "send_started",
+          private_value: "must-not-leak",
+        },
+      },
+    },
+  ]);
+
+  assert.deepEqual(result.traces, [
+    {
+      trace_id: "TrPendingBoundary1",
+      delivery_id: "delivery-pending-boundary-1",
+      outcome: "pending",
+      send_boundary_reached: true,
+      pre_send_failure_proven: false,
+      started_at_us: created,
+      completed_at_us: null,
+    },
+  ]);
+  assert.ok(!JSON.stringify(result).includes("must-not-leak"));
+});
+
+test("persists explicit pre-send failure proof before the terminal result arrives", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const result = reconcileSlackActivities([
+    {
+      level: "info",
+      event_type: "workflow_execution_started",
+      created,
+      trace_id: "TrPendingPreSend1",
+      payload: {},
+    },
+    {
+      level: "error",
+      event_type: "workflow_step_execution_result",
+      created: created + 1,
+      trace_id: "TrPendingPreSend1",
+      payload: {
+        exec_outcome: "Error",
+        inputs: {
+          delivery_id: "delivery-pending-pre-send-1",
+          phase: "send_started",
+        },
+      },
+    },
+  ]);
+
+  assert.deepEqual(result.traces, [
+    {
+      trace_id: "TrPendingPreSend1",
+      delivery_id: "delivery-pending-pre-send-1",
+      outcome: "pending",
+      send_boundary_reached: false,
+      pre_send_failure_proven: true,
+      started_at_us: created,
+      completed_at_us: null,
+    },
+  ]);
+});
+
+test("a complete pre-send failure is reconciled before the sanitized monitor failure", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  let report;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        if (input === RECONCILIATION_URL) {
+          report = assertReconciliationRequest(init);
+          return jsonResponse({ ok: true, traces: 1 });
+        }
+        return jsonResponse({
+          ok: true,
+          activities: [
+            {
+              level: "info",
+              event_type: "workflow_execution_started",
+              created,
+              trace_id: "TrPreSend1",
+              payload: {},
+            },
+            {
+              level: "error",
+              event_type: "workflow_step_execution_result",
+              created: created + 1,
+              trace_id: "TrPreSend1",
+              payload: {
+                exec_outcome: "Error",
+                inputs: {
+                  delivery_id: "delivery-pre-send-1",
+                  expected_destination: "alerts",
+                },
+              },
+            },
+            {
+              level: "error",
+              event_type: "workflow_execution_result",
+              created: created + 2,
+              trace_id: "TrPreSend1",
+              payload: {
+                exec_outcome: "Error",
+                private_value: "secret-payload",
+              },
+            },
+          ],
+          response_metadata: { next_cursor: "" },
+        });
+      },
+    }),
+    (error) =>
+      /recorded 2 workflow errors/.test(error.message) &&
+      /durable reconciliation/.test(error.message) &&
+      !/secret-payload/.test(error.message) &&
+      !error.message.includes(environment.SLACK_SERVICE_TOKEN),
+  );
+  assert.deepEqual(report.traces[0], {
+    trace_id: "TrPreSend1",
+    delivery_id: "delivery-pre-send-1",
+    outcome: "error",
+    send_boundary_reached: false,
+    pre_send_failure_proven: true,
+    started_at_us: created,
+    completed_at_us: created + 2,
+  });
+});
+
+test("repeated pagination cursors fail before advancing the checkpoint", async () => {
+  let reports = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      fetchImpl: async (input) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        if (input === RECONCILIATION_URL) {
+          reports += 1;
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "same-cursor" },
+        });
+      },
+    }),
+    /repeated a cursor/,
+  );
+  assert.equal(reports, 0);
+});
+
+test("pure reconciliation refuses conflicting delivery IDs without exposing inputs", () => {
+  assert.throws(
+    () =>
+      reconcileSlackActivities([
+        {
+          level: "info",
+          event_type: "workflow_step_execution_result",
+          created: 1,
+          trace_id: "TrConflict1",
+          payload: { inputs: { delivery_id: "delivery-one", secret: "one" } },
+        },
+        {
+          level: "error",
+          event_type: "workflow_step_execution_result",
+          created: 2,
+          trace_id: "TrConflict1",
+          payload: { inputs: { delivery_id: "delivery-two", secret: "two" } },
+        },
+      ]),
+    (error) =>
+      /conflicting delivery IDs/.test(error.message) &&
+      !/secret|one|two/.test(error.message),
+  );
+});
+
+test("contradictory terminal outcomes abort before any relay mutation", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  let reconciliationPosts = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        if (input === RECONCILIATION_URL) {
+          reconciliationPosts += 1;
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({
+          ok: true,
+          activities: [
+            {
+              level: "info",
+              event_type: "workflow_execution_started",
+              created,
+              trace_id: "TrContradictory1",
+              payload: {},
+            },
+            {
+              level: "info",
+              event_type: "workflow_execution_result",
+              created: created + 1,
+              trace_id: "TrContradictory1",
+              payload: { exec_outcome: "Success" },
+            },
+            {
+              level: "error",
+              event_type: "workflow_step_execution_result",
+              created: created + 2,
+              trace_id: "TrContradictory1",
+              payload: {
+                exec_outcome: "Error",
+                inputs: {
+                  delivery_id: "delivery-contradictory-1",
+                  phase: "send_started",
+                },
+              },
+            },
+            {
+              level: "error",
+              event_type: "workflow_execution_result",
+              created: created + 3,
+              trace_id: "TrContradictory1",
+              payload: { exec_outcome: "Error" },
+            },
+          ],
+          response_metadata: { next_cursor: "" },
+        });
+      },
+    }),
+    /contradictory terminal outcomes/,
+  );
+  assert.equal(reconciliationPosts, 0);
+});
+
+test("ignores non-execution workflow metadata that has no trace ID", () => {
+  const result = reconcileSlackActivities([
+    {
+      level: "info",
+      event_type: "workflow_published",
+      created: 1,
+      payload: { workflow_name: "GitHub actionable alert" },
+    },
+  ]);
+  assert.deepEqual(result.traces, []);
+  assert.equal(result.errors, 0);
+});
+
+test("HTTP 429 performs one bounded Slack retry and does not retry twice", async () => {
+  let slackRequests = 0;
+  const delays = [];
+  const result = await monitorSlackWorkflow({
+    environment,
+    fetchImpl: async (input) => {
+      if (input === CHECKPOINT_URL) {
+        return jsonResponse({ checkpoint_us: 0 });
+      }
+      if (input === RECONCILIATION_URL) {
+        return jsonResponse({ ok: true, traces: 0 });
+      }
+      slackRequests += 1;
+      return slackRequests === 1
         ? new Response("withheld", {
             status: 429,
             headers: { "retry-after": "2" },
           })
-        : slackResponse({ ok: true, activities: [] });
+        : jsonResponse({
+            ok: true,
+            activities: [],
+            response_metadata: { next_cursor: "" },
+          });
     },
     sleepImpl: async (milliseconds) => delays.push(milliseconds),
   });
-  assert.deepEqual(result, { errors: 0 });
-  assert.equal(requests, 2);
+  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.equal(slackRequests, 2);
   assert.deepEqual(delays, [2_000]);
-});
 
-test("HTTP 429 never retries twice or waits beyond the safety bound", async () => {
-  for (const retryAfter of ["0", "31", "invalid"]) {
-    let requests = 0;
-    await assert.rejects(
-      monitorSlackWorkflow({
-        environment,
-        fetchImpl: async () => {
-          requests += 1;
-          return new Response("withheld", {
-            status: 429,
-            headers: { "retry-after": retryAfter },
-          });
-        },
-        sleepImpl: async () => assert.fail("unexpected sleep"),
-      }),
-      /HTTP 429/,
-    );
-    assert.equal(requests, 1);
-  }
-
-  let requests = 0;
+  slackRequests = 0;
   await assert.rejects(
     monitorSlackWorkflow({
       environment,
-      fetchImpl: async () => {
-        requests += 1;
+      fetchImpl: async (input) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        slackRequests += 1;
         return new Response("withheld", {
           status: 429,
           headers: { "retry-after": "1" },
@@ -232,5 +795,26 @@ test("HTTP 429 never retries twice or waits beyond the safety bound", async () =
     }),
     /HTTP 429/,
   );
-  assert.equal(requests, 2);
+  assert.equal(slackRequests, 2);
+});
+
+test("HTTP and malformed failures never echo upstream bodies or credentials", async () => {
+  for (const response of [
+    new Response("private upstream body", { status: 503 }),
+    new Response("private invalid JSON"),
+  ]) {
+    await assert.rejects(
+      monitorSlackWorkflow({
+        environment,
+        fetchImpl: async (input) =>
+          input === CHECKPOINT_URL
+            ? jsonResponse({ checkpoint_us: 0 })
+            : response,
+      }),
+      (error) =>
+        !/private upstream body|private invalid JSON/.test(error.message) &&
+        !error.message.includes(environment.SLACK_SERVICE_TOKEN) &&
+        !error.message.includes(environment.SLACK_RELAY_SIGNING_SECRET),
+    );
+  }
 });

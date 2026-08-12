@@ -2,5 +2,5 @@
 # Secrets Store bindings are created locally with Wrangler Secrets Store commands;
 # .dev.vars is not a substitute for GITHUB_WEBHOOK_SECRET or
 # SLACK_ALERTS_WORKFLOW_WEBHOOK_URL or
-# SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL, and SLACK_RELAY_SIGNING_SECRET in this
-# Worker.
+# SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL, SLACK_RELAY_SIGNING_SECRET, or the staged
+# SLACK_RELAY_SIGNING_SECRET_NEXT in this Worker.

@@ -6,11 +6,15 @@ on:
     paths:
       - ".github/workflows/github-slack-integration.yml"
       - ".github/workflows/github-slack-webhook-redelivery.yml"
+      - ".github/workflows/slack-github-integration.yml"
       - "docs/GITHUB_SLACK_INTEGRATION.md"
       - "scripts/github-slack-hook-audit.mjs"
       - "scripts/github-slack-hook-audit.test.mjs"
       - "scripts/github-slack-webhook-redelivery.mjs"
       - "scripts/github-slack-webhook-redelivery.test.mjs"
+      - "scripts/slack-workflow-monitor.mjs"
+      - "scripts/slack-workflow-monitor.test.mjs"
+      - "slack/github-integration/**"
       - "workers/github-slack-relay/**"
   pull_request:
     branches: [main]

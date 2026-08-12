@@ -40,6 +40,18 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
 - a YAML-parsed canonical contract over all seven repository-local required contexts, run independently by Dependency Review and CodeQL on pull requests and merge groups. It fixes the exact triggers, check names and conditions, complete required-job structures, immutable Action references, commands, inputs and paths, and the sole approved Zizmor configuration. This closes single-runner structural regressions; coordinated rewrites of both runners and the candidate-head policy remain inside the external ruleset and review trust boundary;
+- GitHub-to-Slack trigger acceptance is nonterminal: an authenticated pre-send boundary, unique
+  Slack message-timestamp receipt, and paginated trace reconciliation are required before D1 calls
+  a row delivered. Any uncertainty after the send boundary is retained for manual review and is
+  never automatically resent. Dead letters and active manual review fail readiness; quarantined
+  historical rows remain visibly `legacy_unverified` without authorizing a resend. The one known
+  lost ID stays in manual review until an exact, audited, explicitly authorized one-time recovery.
+  Expand rollout starts with delivery disabled: Queue consumers back off without D1 attempts or a
+  Slack POST until a current-key HMAC binds the exact deployed Worker tag to the exact Slack deploy,
+  proves the expanded schema, and performs the only permitted false-to-true CAS while persisting an
+  immutable activation ID, revision, and schema. One byte-identical retry may confirm the same CAS
+  read-only after a lost response; a new ID, changed tuple, post-contract request, downgrade, wrong
+  revision, wrong key, partial deploy, or incomplete schema fails closed;
 - external credentials assigned by purpose to protected environments restricted to `main`.
   `SLACK_SERVICE_TOKEN` is held in `slack-production`. The
   `SLACK_REDELIVERY_APP_PRIVATE_KEY` secret and `SLACK_REDELIVERY_APP_CLIENT_ID` variable are held

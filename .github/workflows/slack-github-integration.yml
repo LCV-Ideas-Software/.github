@@ -1,6 +1,10 @@
 name: Slack GitHub Integration
 
 on:
+  workflow_run:
+    workflows: [GitHub Slack Integration]
+    types: [completed]
+    branches: [main]
   push:
     branches: [main]
     paths:
@@ -22,10 +26,9 @@ on:
       operation:
         description: Operation to run against the production Slack app
         required: true
-        default: deploy
+        default: monitor
         type: choice
         options:
-          - deploy
           - monitor
 
 permissions: {}
@@ -40,7 +43,15 @@ concurrency:
 jobs:
   verify:
     name: Verify Slack workflow app
-    if: github.event_name != 'schedule' || github.event.schedule == '17 7 * * *'
+    if: >-
+      (github.event_name != 'schedule' ||
+      github.event.schedule == '17 7 * * *') &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' ||
+      github.event.workflow_run.event == 'workflow_dispatch')))
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -50,6 +61,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Deno 2.9.5
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
@@ -87,10 +99,12 @@ jobs:
     name: Deploy Slack workflow app
     if: >-
       vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
-      (github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' &&
-      inputs.operation == 'deploy' &&
-      github.ref == 'refs/heads/main'))
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' ||
+      github.event.workflow_run.event == 'workflow_dispatch')
     needs: verify
     permissions:
       contents: read
@@ -102,6 +116,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Setup Deno 2.9.5
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
@@ -214,6 +229,18 @@ jobs:
           fi
           rm -f "$inventory_error"
 
+      - name: Activate the exact receipt-aware delivery protocol
+        working-directory: slack/github-integration
+        env:
+          ACTIVATION_SEED: ${{ github.event.workflow_run.id }}
+          EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha }}
+          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
+        run: >-
+          deno run --frozen --no-prompt
+          --allow-env=ACTIVATION_SEED,EXPECTED_REVISION,SLACK_RELAY_SIGNING_SECRET
+          --allow-net=github-slack-alerts.lcv.workers.dev
+          scripts/activate_delivery_protocol.ts
+
   monitor:
     name: Monitor Slack workflow execution
     if: >-
@@ -246,6 +273,9 @@ jobs:
       - name: Fail closed on recent Slack workflow errors
         env:
           SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
+          SLACK_RELAY_SIGNING_ACTIVE_SLOT: current
+          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
+          SLACK_RELAY_SIGNING_SECRET_NEXT: ${{ secrets.SLACK_RELAY_SIGNING_SECRET_NEXT }}
           SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
           SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
         run: node scripts/slack-workflow-monitor.mjs

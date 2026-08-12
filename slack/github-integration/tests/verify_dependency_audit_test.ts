@@ -89,7 +89,14 @@ Deno.test("keeps candidate events tokenless and trusted events live", () => {
     );
   }
 
-  for (const eventName of ["push", "schedule", "workflow_dispatch"]) {
+  for (
+    const eventName of [
+      "push",
+      "schedule",
+      "workflow_dispatch",
+      "workflow_run",
+    ]
+  ) {
     const configuration = readVerificationConfiguration({
       GITHUB_EVENT_NAME: eventName,
       GITHUB_TOKEN: "trusted-job-token",

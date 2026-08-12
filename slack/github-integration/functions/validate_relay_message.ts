@@ -141,6 +141,52 @@ export async function verifyRelayMessageWithSecrets(
   return results.some(Boolean);
 }
 
+export async function relayMessageSigningSecret(
+  secrets: readonly string[],
+  inputs: RelayMessageInputs,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+): Promise<string | null> {
+  const candidates = secrets.slice(0, 2);
+  const results = await Promise.all(
+    candidates.map((secret) => verifyRelayMessage(secret, inputs, nowSeconds)),
+  );
+  const index = results.findIndex(Boolean);
+  return index < 0 ? null : candidates[index] ?? null;
+}
+
+export function canonicalProgressAuthorization(
+  inputs: Pick<
+    RelayMessageInputs,
+    "delivery_id" | "destination" | "relay_timestamp"
+  >,
+): string {
+  return JSON.stringify([
+    "slack_progress_authorization_v1",
+    inputs.delivery_id,
+    inputs.destination,
+    inputs.relay_timestamp,
+  ]);
+}
+
+export async function signProgressAuthorization(
+  secret: string,
+  inputs: Pick<
+    RelayMessageInputs,
+    "delivery_id" | "destination" | "relay_timestamp"
+  >,
+): Promise<string> {
+  const bytes = new Uint8Array(
+    await crypto.subtle.sign(
+      "HMAC",
+      await hmacKey(secret),
+      new TextEncoder().encode(canonicalProgressAuthorization(inputs)),
+    ),
+  );
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
 function githubUrl(value: string): string | null {
   try {
     const parsed = new URL(value);
@@ -261,8 +307,8 @@ export const ValidateRelayMessageDefinition = DefineFunction({
     ],
   },
   output_parameters: {
-    properties: { message: text },
-    required: ["message"],
+    properties: { message: text, progress_token: text },
+    required: ["message", "progress_token"],
   },
 });
 
@@ -274,7 +320,8 @@ export default SlackFunction(
       env["SLACK_RELAY_SIGNING_SECRET_NEXT"] ?? "",
     ];
     const typedInputs = inputs as RelayMessageInputs;
-    if (!(await verifyRelayMessageWithSecrets(secrets, typedInputs))) {
+    const signingSecret = await relayMessageSigningSecret(secrets, typedInputs);
+    if (signingSecret === null) {
       return { error: "GitHub relay authentication failed" };
     }
 
@@ -282,6 +329,14 @@ export default SlackFunction(
     if (message === null) {
       return { error: "GitHub relay URL validation failed" };
     }
-    return { outputs: { message } };
+    return {
+      outputs: {
+        message,
+        progress_token: await signProgressAuthorization(
+          signingSecret,
+          typedInputs,
+        ),
+      },
+    };
   },
 );
