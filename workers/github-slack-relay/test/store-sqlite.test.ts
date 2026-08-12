@@ -193,6 +193,30 @@ function pauseOnDeliveryRead(
   };
 }
 
+function failNextTraceResolutionBatch(d1: D1Database): {
+  d1: D1Database;
+  arm: () => void;
+} {
+  let armed = false;
+  return {
+    d1: {
+      prepare: d1.prepare.bind(d1),
+      async batch<T = unknown>(
+        statements: D1PreparedStatement[],
+      ): Promise<D1Result<T>[]> {
+        if (armed) {
+          armed = false;
+          throw new Error("injected_trace_resolution_failure");
+        }
+        return d1.batch<T>(statements);
+      },
+    } as unknown as D1Database,
+    arm: () => {
+      armed = true;
+    },
+  };
+}
+
 function input(deliveryId: string): DeliveryInput {
   return {
     deliveryId,
@@ -2070,6 +2094,63 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         preSendFailureProven: true,
       },
       NOW + 2,
+    );
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "pending",
+      lastError: "slack_workflow_failed_before_send_boundary",
+      slackTraceId: base.traceId,
+    });
+  });
+
+  it("reapplies late proof after its first resolution batch fails", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const injected = failNextTraceResolutionBatch(d1);
+    const store = new D1DeliveryStore(injected.d1);
+    const deliveryId = "sqlite-late-proof-resolution-retry";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    const base = {
+      traceId: "TrLateProofResolutionRetry1",
+      deliveryId,
+      outcome: "error" as const,
+      ...TRACE_ATTEMPT_ONE,
+      sendBoundaryReached: false,
+      startedAtUs: NOW * 1_000 - 1,
+      completedAtUs: NOW * 1_000,
+    };
+
+    await store.recordSlackTrace(
+      { ...base, preSendFailureProven: false },
+      NOW + 1,
+    );
+    injected.arm();
+    await expect(
+      store.recordSlackTrace(
+        {
+          ...base,
+          ...PRE_SEND_TRACE_ATTEMPT_ONE,
+          preSendFailureProven: true,
+        },
+        NOW + 2,
+      ),
+    ).rejects.toThrow("injected_trace_resolution_failure");
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get(base.traceId),
+    ).toEqual({ applied_at: null });
+
+    await store.recordSlackTrace(
+      {
+        ...base,
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
+        preSendFailureProven: true,
+      },
+      NOW + 3,
     );
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "pending",

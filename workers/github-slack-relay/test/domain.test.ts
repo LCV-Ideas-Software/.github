@@ -98,6 +98,16 @@ describe("event normalization", () => {
     );
   });
 
+  it("documents stale sending recovery as manual review without resend", () => {
+    const readme = readFileSync("README.md", "utf8");
+    expect(readme).toContain(
+      "- recovers due `pending`, `enqueueing`, `queued`, and `dead_letter` records;",
+    );
+    expect(readme).toContain(
+      "- moves stale `sending` rows to `manual_review` as ambiguous, without resending;",
+    );
+  });
+
   it("always emits the exact flat Workflow Builder contract using only strings", () => {
     const result = normalizeGitHubEvent(
       "dependabot_alert",

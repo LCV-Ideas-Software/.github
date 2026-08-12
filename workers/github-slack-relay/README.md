@@ -365,9 +365,8 @@ exception returns the same HTTP 503 `unavailable`.
 The five-minute scheduled handler:
 
 - deletes only receipt-confirmed `delivered` rows older than 30 days;
-- recovers due `pending`, `enqueueing`, `queued`, `sending`, and `dead_letter`
-  records;
-- requeues stale states older than 15 minutes;
+- recovers due `pending`, `enqueueing`, `queued`, and `dead_letter` records;
+- moves stale `sending` rows to `manual_review` as ambiguous, without resending;
 - preserves all unresolved and `manual_review` records;
 - marks the row `manual_review` after 25 successful `claimForSlack` dispatch
   claims. This is a processing-claim ceiling, not a promise of 25 Slack HTTP

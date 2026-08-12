@@ -1041,6 +1041,30 @@ export class D1DeliveryStore implements DeliveryStore {
            updated_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(trace_id) DO UPDATE SET
+           applied_at = CASE
+             WHEN (
+               slack_workflow_traces.outcome = 'pending'
+               AND excluded.outcome != 'pending'
+             )
+             OR (
+               slack_workflow_traces.send_execution_id IS NULL
+               AND excluded.send_execution_id IS NOT NULL
+             )
+             OR (
+               slack_workflow_traces.send_boundary_reached = 0
+               AND excluded.send_boundary_reached = 1
+             )
+             OR (
+               slack_workflow_traces.pre_send_failure_proven = 0
+               AND MAX(
+                 slack_workflow_traces.send_boundary_reached,
+                 excluded.send_boundary_reached
+               ) = 0
+               AND excluded.pre_send_failure_proven = 1
+             )
+             THEN NULL
+             ELSE slack_workflow_traces.applied_at
+           END,
            outcome = excluded.outcome,
            send_execution_id = COALESCE(
              slack_workflow_traces.send_execution_id,
