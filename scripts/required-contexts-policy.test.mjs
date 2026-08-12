@@ -52,7 +52,7 @@ test("the standalone D1 reaper workflow is protected as one exact privileged con
     ["permissions: {}", "permissions:\n  contents: write"],
     ["  cancel-in-progress: false", "  cancel-in-progress: true"],
     [
-      "  group: slack-d1-disposable-proof-${{ github.repository }}",
+      "  group: slack-d1-disposable-reaper-${{ github.repository }}",
       "  group: unrelated-${{ github.repository }}",
     ],
     [
@@ -71,11 +71,6 @@ test("the standalone D1 reaper workflow is protected as one exact privileged con
   ]) {
     rejectsMutation(D1_REAPER_WORKFLOW, before, after);
   }
-  rejectsMutation(
-    ".github/workflows/github-slack-integration.yml",
-    "      group: slack-d1-disposable-proof-${{ github.repository }}",
-    "      group: unrelated-${{ github.repository }}",
-  );
 });
 
 test("the privileged relay DAG cannot bypass or drift from its required predecessor", () => {

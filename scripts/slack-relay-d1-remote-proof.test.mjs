@@ -262,7 +262,7 @@ test("a default-branch schedule reaps stale proof databases out of process", () 
   assert.deepEqual(workflow.on.schedule, [{ cron: "37 * * * *" }]);
   assert.deepEqual(workflow.permissions, {});
   assert.deepEqual(workflow.concurrency, {
-    group: "slack-d1-disposable-proof-${{ github.repository }}",
+    group: "slack-d1-disposable-reaper-${{ github.repository }}",
     "cancel-in-progress": false,
   });
   assert.equal(workflow.jobs.reap.environment, "cloudflare-production");
@@ -300,6 +300,7 @@ test("the production migration is preceded by the disposable remote D1 proof", (
   const parsed = document.toJS({ maxAliasCount: 0 });
   const deploy = parsed.jobs.deploy;
   assert.equal(deploy.environment, "cloudflare-production");
+  assert.equal(deploy.concurrency, undefined);
   const proofStep = deploy.steps.findIndex(
     (step) =>
       step.name === "Prove durable inbox migration in disposable remote D1" &&

@@ -104,7 +104,7 @@ const WORKFLOW_SPECS = Object.freeze([
     digest: "6cf8e9b558e1a392b3fd771de1105c87c5d1378dfb7eb8cbb5229b7b693d04e0",
     privilegedJobIds: ["deploy", "deploy_slack"],
     privilegedDigest:
-      "83e7cd844186d7ca2f31c984c2ebfc5e7b400ad8ec3a00d3349496c04087b34d",
+      "48574abe0f3c8bd6117d7051817b657bd37da9d5fbdf07ab00c94cb0d2bcc399",
   },
   {
     path: ".github/workflows/slack-github-integration.yml",
@@ -135,7 +135,7 @@ const STANDALONE_PRIVILEGED_WORKFLOW_SPECS = Object.freeze([
   {
     path: D1_REAPER_WORKFLOW_PATH,
     jobIds: ["reap"],
-    digest: "1cff81dfba5d5c81c9b9935bb1c836b33a475857fdae0f3995fae5efd128ae63",
+    digest: "9bc6349e6e985e9bf88eb7029cc37b12ad8230fcb19c6e87a86ec1ca4a4dbabd",
   },
 ]);
 

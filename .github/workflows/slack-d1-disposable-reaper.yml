@@ -8,7 +8,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: slack-d1-disposable-proof-${{ github.repository }}
+  group: slack-d1-disposable-reaper-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
