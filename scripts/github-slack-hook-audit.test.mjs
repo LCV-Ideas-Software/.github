@@ -165,9 +165,9 @@ function assertRecoveryEnvironmentIsolation(workflows) {
   assert.deepEqual(environmentDeclarations, [
     ["cloudflare-pages.yml", "deploy", "cloudflare-production"],
     ["github-slack-integration.yml", "deploy", "cloudflare-production"],
+    ["github-slack-integration.yml", "deploy_slack", "slack-production"],
     ["github-slack-webhook-redelivery.yml", "redeliver", "webhook-recovery"],
     ["pages.yml", "deploy", "github-pages"],
-    ["slack-github-integration.yml", "deploy", "slack-production"],
     ["slack-github-integration.yml", "monitor", "slack-production"],
   ]);
   assert.deepEqual(credentialReferences, [
@@ -463,7 +463,11 @@ test("recovery documentation states exact token grants and control-flow boundary
   );
   assert.match(
     securityPolicy,
-    /At steady state,[\s\S]*migration artifacts and must be removed before[\s\S]*#175/u,
+    /Outside that reviewed HMAC transition,[\s\S]*migration artifacts and must be removed before[\s\S]*#175/u,
+  );
+  assert.match(
+    securityPolicy,
+    /same newly generated signer[\s\S]*`slack-production` and `cloudflare-production`[\s\S]*runtime `NEXT` slots/u,
   );
   assert.match(securityPolicy, /`github-dotgithub-production`/u);
   for (const permission of [

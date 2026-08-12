@@ -28,6 +28,75 @@ test("the current seven required contexts satisfy one canonical contract", () =>
   assert.doesNotThrow(() => validateRequiredContextPolicy(sources));
 });
 
+test("the relay required context pins NEXT as the expanded runtime signer", () => {
+  rejectsMutation(
+    "workers/github-slack-relay/wrangler.jsonc",
+    '"SLACK_RELAY_SIGNING_ACTIVE_SLOT": "next"',
+    '"SLACK_RELAY_SIGNING_ACTIVE_SLOT": "current"',
+  );
+});
+
+test("the privileged Slack monitor job cannot lose its bounded execution budget", () => {
+  rejectsMutation(
+    ".github/workflows/slack-github-integration.yml",
+    "    timeout-minutes: 240",
+    "    timeout-minutes: 5",
+  );
+});
+
+test("the privileged relay DAG cannot bypass or drift from its required predecessor", () => {
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "    needs: verify\n    permissions:",
+    "    permissions:",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "    needs: deploy\n    permissions:",
+    "    needs: verify\n    permissions:",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          workers/github-slack-relay/node_modules/.bin/wrangler deploy \\",
+    "          echo skipped \\",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          scripts/slack-workflow-monitor.test.mjs\n",
+    "",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          scripts/slack-delivery-protocol-preflight.test.mjs\n",
+    "",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "      - name: Refuse to replace an already activated relay revision",
+    "      - name: Skip the activated relay revision preflight",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1",
+    "SELECT 0",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}\n",
+    "",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    '            --trigger-id "$ACTIVITY_TRIGGER_ID" \\\n+            --trigger-def triggers/github_activity_webhook.ts \\',
+    '            --trigger-id "$ALERT_TRIGGER_ID" \\\n+            --trigger-def triggers/github_activity_webhook.ts \\',
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "            --trigger-def triggers/github_alert_webhook.ts \\",
+    "            --trigger-def triggers/github_activity_webhook.ts \\",
+  );
+});
+
 test("every required workflow keeps pull_request and merge_group exact", () => {
   for (const path of [
     ".github/workflows/dependency-review.yml",
@@ -182,6 +251,16 @@ test("critical actions, inputs, paths, and failure propagation stay exact", () =
       ".github/workflows/github-slack-integration.yml",
       "          npm test",
       "          npm test || true",
+    ],
+    [
+      ".github/workflows/github-slack-integration.yml",
+      "          deno task --frozen check",
+      "          deno task --frozen check || true",
+    ],
+    [
+      ".github/workflows/github-slack-integration.yml",
+      "        run: deno task --frozen audit",
+      "        run: deno task --frozen audit || true",
     ],
     [
       ".github/workflows/slack-github-integration.yml",

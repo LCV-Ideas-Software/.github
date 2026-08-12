@@ -1,4 +1,5 @@
 import { DefineWorkflow, Schema } from "deno-slack-sdk/mod.ts";
+import { ReportRelayProgressDefinition } from "../functions/report_relay_progress.ts";
 import { ValidateRelayMessageDefinition } from "../functions/validate_relay_message.ts";
 
 export const GitHubActivityWorkflow = DefineWorkflow({
@@ -21,6 +22,7 @@ export const GitHubActivityWorkflow = DefineWorkflow({
       event: { type: Schema.types.string },
       action: { type: Schema.types.string },
       destination: { type: Schema.types.string },
+      relay_attempt: { type: Schema.types.string },
       relay_timestamp: { type: Schema.types.string },
       relay_signature: { type: Schema.types.string },
     },
@@ -38,6 +40,7 @@ export const GitHubActivityWorkflow = DefineWorkflow({
       "event",
       "action",
       "destination",
+      "relay_attempt",
       "relay_timestamp",
       "relay_signature",
     ],
@@ -60,15 +63,44 @@ const validated = GitHubActivityWorkflow.addStep(
     event: GitHubActivityWorkflow.inputs.event,
     action: GitHubActivityWorkflow.inputs.action,
     destination: GitHubActivityWorkflow.inputs.destination,
+    relay_attempt: GitHubActivityWorkflow.inputs.relay_attempt,
     relay_timestamp: GitHubActivityWorkflow.inputs.relay_timestamp,
     relay_signature: GitHubActivityWorkflow.inputs.relay_signature,
     expected_destination: "activity",
   },
 );
 
-GitHubActivityWorkflow.addStep(Schema.slack.functions.SendMessage, {
-  channel_id: "C0BMQMW3L4E",
-  message: validated.outputs.message,
+const sendBoundary = GitHubActivityWorkflow.addStep(
+  ReportRelayProgressDefinition,
+  {
+    delivery_id: GitHubActivityWorkflow.inputs.delivery_id,
+    destination: GitHubActivityWorkflow.inputs.destination,
+    phase: "send_started",
+    message_ts: "",
+    message: validated.outputs.message,
+    relay_attempt: GitHubActivityWorkflow.inputs.relay_attempt,
+    relay_timestamp: GitHubActivityWorkflow.inputs.relay_timestamp,
+    progress_token: validated.outputs.progress_token,
+  },
+);
+
+const sent = GitHubActivityWorkflow.addStep(
+  Schema.slack.functions.SendMessage,
+  {
+    channel_id: "C0BMQMW3L4E",
+    message: sendBoundary.outputs.message,
+  },
+);
+
+GitHubActivityWorkflow.addStep(ReportRelayProgressDefinition, {
+  delivery_id: GitHubActivityWorkflow.inputs.delivery_id,
+  destination: GitHubActivityWorkflow.inputs.destination,
+  phase: "delivered",
+  message_ts: sent.outputs.message_timestamp,
+  message: "",
+  relay_attempt: GitHubActivityWorkflow.inputs.relay_attempt,
+  relay_timestamp: GitHubActivityWorkflow.inputs.relay_timestamp,
+  progress_token: validated.outputs.progress_token,
 });
 
 export default GitHubActivityWorkflow;

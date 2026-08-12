@@ -21,6 +21,7 @@ const GitHubAlertWebhook: Trigger<typeof GitHubAlertWorkflow.definition> = {
     event: { value: "{{data.event}}" },
     action: { value: "{{data.action}}" },
     destination: { value: "{{data.destination}}" },
+    relay_attempt: { value: "{{data.relay_attempt}}" },
     relay_timestamp: { value: "{{data.relay_timestamp}}" },
     relay_signature: { value: "{{data.relay_signature}}" },
   },

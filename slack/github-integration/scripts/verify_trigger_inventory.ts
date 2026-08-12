@@ -14,6 +14,7 @@ const INPUT_NAMES = Object.freeze([
   "event",
   "action",
   "destination",
+  "relay_attempt",
   "relay_timestamp",
   "relay_signature",
 ]);
@@ -246,10 +247,7 @@ function parseInventorySource(source: string) {
     new TextEncoder().encode(source).byteLength <= MAX_RESPONSE_BYTES,
     "Slack trigger inventory exceeded the size limit.",
   );
-  invariant(
-    source.trim() !== "",
-    "Slack returned an empty trigger inventory.",
-  );
+  invariant(source.trim() !== "", "Slack returned an empty trigger inventory.");
   try {
     return JSON.parse(source) as unknown;
   } catch {

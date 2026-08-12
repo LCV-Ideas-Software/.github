@@ -154,6 +154,75 @@ evidence is the execution trail recorded in
   `.github/ISSUE_TEMPLATE/engineering_task.md` but absent from the repository, so every issue opened
   through that form was silently created unlabelled. Labels are not versioned here, so this change
   has no file diff ([#167](https://github.com/LCV-Ideas-Software/.github/issues/167)).
+- Corrected the GitHub-to-Slack delivery model exposed by the missing
+  `de345e40-95b1-11f1-8d38-fac15f0bb4cd` message: trigger `ok: true` is now the
+  nonterminal `accepted_by_trigger`; the Slack workflow authenticates a
+  pre-`SendMessage` boundary and an idempotent post-message receipt carrying
+  Slack's timestamp; and the fully paginated monitor durably correlates the
+  actual Slack trace. Only a complete error trace with an explicit failed
+  validator or pre-send step and no send boundary can be retried; ambiguous
+  trigger network/5xx outcomes and stale
+  `sending` rows are also never resent. Historical trigger acceptances remain
+  explicitly unverified, and the known loss migrates to `manual_review` instead
+  of being relabelled as delivered. The migration remains compatible with the
+  previously deployed Worker; its in-window acceptances are trigger-quarantined.
+  Production rollout is now one same-SHA workflow. Its required predecessor
+  verifies both the Worker and the complete Slack app candidate before the
+  serialized migration, activation-tuple preflight, Cloudflare `NEXT` staging,
+  inactive Worker deploy,
+  Slack `NEXT` staging, Slack deploy, protected-trigger inventory, and
+  activation. The same newly generated
+  value must first be stored under `SLACK_RELAY_SIGNING_SECRET` in both protected
+  GitHub environments; the jobs write it only in request bodies to the two
+  external `NEXT` slots and never recover or log the old current value. The
+  Worker and monitor select `NEXT` for new traffic. Both hosted stores retain
+  current during expand, but only the Slack validator accepts it for inbound
+  relay compatibility; the Worker control plane accepts `NEXT` only. A relay
+  admitted by either Slack verifier receives progress authorization and
+  callbacks only under `NEXT`, so the monitor correlates it without recovering
+  old current into GitHub. Before either hosted deploy, the activation-tuple
+  preflight reads all six persisted activation fields and permits only the
+  initial inactive tuple with all activation metadata null or an active tuple whose SHA, schema and
+  deterministic HMAC activation ID exactly match the staged signer. A partial
+  tuple or later revision cannot replace the live Worker until a reviewed
+  contract removes the expand latch. A
+  `NEXT`-key HMAC binds the exact main
+  SHA to the Worker's immutable version tag, proves the expanded schema, and
+  performs a one-way activation CAS that persists an activation ID derived from
+  that SHA and schema. One byte-identical retry can confirm a response lost after
+  CAS without another mutation, while a new ID, changed tuple, post-contract
+  request, partial deploy, wrong key/SHA, or downgrade remains closed without a
+  Slack POST or D1 delivery attempt. After the app deploy, both protected
+  trigger IDs are updated in place from their versioned definitions with all
+  CLI output suppressed, then the exact mapping inventory must pass before
+  activation. Deterministic reconciliation conflicts
+  return 409 while persistence failure or a response lost after a write returns
+  retryable 503. Competing receipt/progress writes converge only after an exact
+  reread. Each dispatch attempt is signed into the Slack workflow, and a durable
+  lease on Slack's `function_execution_id` lets only one workflow execution
+  cross `SendMessage`; retries by that same execution remain idempotent. The
+  safe-retry delivery transition and terminal-trace marker commit in one D1
+  batch, so a lost response cannot let the old trace release a later attempt.
+  The activity monitor reports the signed attempt and Slack step
+  `function_execution_id`; D1 requires both to match the live lease before a
+  trace can release, attach to, or make purgable a delivery. Authenticated proof
+  that a failed pre-send progress step never
+  reached `SendMessage` safely releases even a locally recorded `send_started`
+  CAS. Late trace evidence is merged, delivered rows without a Slack trace are
+  retained, and purging cannot cross the durable activity checkpoint minus its
+  overlap window; a delivered row remains eligible when its applied terminal
+  trace is success or a boundary-confirmed error caused by a lost receipt reply.
+  Terminally contradictory traces are rejected before any reconciliation
+  mutation; empty activity scans cannot advance to wall clock; D1 causally clamps
+  the monitor checkpoint behind uncorrelated live attempts; the scheduled job's
+  timeout covers the full bounded 100-page retry/report plan plus setup margin,
+  so throttling cannot force the same uncommitted window to restart forever;
+  and the known ID has
+  a fixed one-time audited release requiring separate absence proof and explicit
+  ID/destination authorization before its normal receipt path. The former
+  `workflow_run` checkout and `GITHUB_PATH` mutation were removed from this
+  privileged rollout
+  ([#171](https://github.com/LCV-Ideas-Software/.github/issues/171)).
 
 ### Issues discovered during this audit
 

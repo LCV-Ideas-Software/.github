@@ -1,9 +1,29 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { normalizeGitHubEvent, sanitizeText } from "../src/domain";
+import { canonicalSlackRelayPayload } from "../src/security";
 
 const DELIVERY_ID = "00000000-0000-4000-8000-000000000020";
 const REPOSITORY = "LCV-Ideas-Software/cross-review";
+const RELAY_SIGNED_FIELD_ORDER = [
+  "source",
+  "severity",
+  "repository",
+  "title",
+  "details",
+  "actor",
+  "branch",
+  "url",
+  "occurred_at",
+  "delivery_id",
+  "event",
+  "action",
+  "destination",
+  "relay_attempt",
+  "relay_timestamp",
+] as const;
 const EXPECTED_KEYS = [
   "action",
   "actor",
@@ -13,6 +33,7 @@ const EXPECTED_KEYS = [
   "details",
   "event",
   "occurred_at",
+  "relay_attempt",
   "relay_signature",
   "relay_timestamp",
   "repository",
@@ -61,6 +82,32 @@ function codeScanningPayload(action: string): Record<string, unknown> {
 }
 
 describe("event normalization", () => {
+  it("keeps the exact documented relay HMAC input aligned with production", () => {
+    const payload = Object.fromEntries(
+      RELAY_SIGNED_FIELD_ORDER.map((field) => [field, field]),
+    );
+    const canonicalValues = JSON.parse(
+      canonicalSlackRelayPayload(payload as never),
+    );
+    expect(canonicalValues).toEqual([...RELAY_SIGNED_FIELD_ORDER]);
+
+    const readme = readFileSync("README.md", "utf8");
+    expect(readme).toContain("- the current durable D1 `relay_attempt`;");
+    expect(readme).toContain(
+      `JSON.stringify([${RELAY_SIGNED_FIELD_ORDER.join(",")}])`,
+    );
+  });
+
+  it("documents stale sending recovery as manual review without resend", () => {
+    const readme = readFileSync("README.md", "utf8");
+    expect(readme).toContain(
+      "- recovers due `pending`, `enqueueing`, `queued`, and `dead_letter` records;",
+    );
+    expect(readme).toContain(
+      "- moves stale `sending` rows to `manual_review` as ambiguous, without resending;",
+    );
+  });
+
   it("always emits the exact flat Workflow Builder contract using only strings", () => {
     const result = normalizeGitHubEvent(
       "dependabot_alert",

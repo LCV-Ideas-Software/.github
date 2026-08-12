@@ -40,11 +40,51 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
 - a YAML-parsed canonical contract over all seven repository-local required contexts, run independently by Dependency Review and CodeQL on pull requests and merge groups. It fixes the exact triggers, check names and conditions, complete required-job structures, immutable Action references, commands, inputs and paths, and the sole approved Zizmor configuration. This closes single-runner structural regressions; coordinated rewrites of both runners and the candidate-head policy remain inside the external ruleset and review trust boundary;
+- GitHub-to-Slack trigger acceptance is nonterminal: an authenticated pre-send boundary, unique
+  Slack message-timestamp receipt, and paginated trace reconciliation are required before D1 calls
+  a row delivered. Any uncertainty after the send boundary is retained for manual review and is
+  never automatically resent. Dead letters and active manual review fail readiness; quarantined
+  historical rows remain visibly `legacy_unverified` without authorizing a resend. The one known
+  lost ID stays in manual review until an exact, audited, explicitly authorized one-time recovery.
+  Expand rollout starts with delivery disabled and is serialized in one exact-SHA workflow. Queue
+  consumers back off without D1 attempts or a Slack POST while Cloudflare and Slack receive the same
+  new value only in their runtime `NEXT` slots. The new Worker control plane and monitor accept only
+  `NEXT`; both hosted stores retain the old current key during expand, but only the Slack validator
+  accepts it for inbound relay compatibility. Slack issues every new progress authorization and
+  callback only with `NEXT`, so current never has to be recovered into GitHub. After migration and
+  before either hosted deploy, a D1 preflight reads all six persisted activation fields. It permits
+  only the initial inactive tuple with all activation metadata null or an active tuple whose SHA,
+  schema and deterministic HMAC
+  activation ID exactly match the staged signer; a later or partially written revision cannot replace
+  the Worker until the reviewed contract removes that expand guard. After the Slack deploy, the workflow updates both fixed protected trigger IDs
+  from their versioned definitions while suppressing the CLI response because it can contain bearer
+  URLs. Only after the exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack
+  revision, and expanded
+  schema and perform the only permitted false-to-true CAS while persisting an immutable activation
+  ID, revision, and schema. One byte-identical retry may confirm the same CAS read-only after a lost
+  response; a new ID, changed tuple, post-contract request, downgrade, wrong revision, wrong key,
+  partial deploy, or incomplete schema fails closed. Deterministic reconciliation conflicts are 409;
+  ambiguous persistence is retryable 503. Every signed relay carries its durable attempt number;
+  D1 leases the pre-send boundary to one Slack `function_execution_id`, so only that execution may
+  release `SendMessage` while a retry of the same execution remains idempotent. The retry transition
+  and trace-applied marker are one atomic D1 batch. A retry is released only by authenticated proof that the
+  failed pre-send step did not execute `SendMessage`, even if its D1 `send_started` CAS committed, and
+  the report must bind that proof to the same relay attempt and Slack send-function execution that owns
+  the durable lease; a competing or stale trace cannot release or attach to another attempt. The
+  delivered rows remain retained until their applied terminal success or boundary-error trace is older
+  than both retention cutoff and the durable activity-checkpoint overlap. The monitor timeout covers
+  its bounded 100-page request, retry and reconciliation-report budget plus setup margin, preventing
+  allowed throttling from starving every durable checkpoint update;
 - external credentials assigned by purpose to protected environments restricted to `main`.
-  `SLACK_SERVICE_TOKEN` is held in `slack-production`. The
+  `SLACK_SERVICE_TOKEN` and the production relay signer are held in `slack-production`. Before the
+  receipt-protocol expand rollout, the same newly generated signer must be provisioned under the
+  name `SLACK_RELAY_SIGNING_SECRET` in both `slack-production` and `cloudflare-production`. The
+  workflows use it as a write-only source for the external runtime `NEXT` slots; they never read the
+  old external current value. The Cloudflare GitHub copy is a temporary rollout artifact and must be
+  removed by the separately reviewed contract phase after promotion and drain evidence. The
   `SLACK_REDELIVERY_APP_PRIVATE_KEY` secret and `SLACK_REDELIVERY_APP_CLIENT_ID` variable are held
   in `webhook-recovery`, which only the organization-webhook redelivery job declares.
-  At steady state, `cloudflare-production` contains only `CLOUDFLARE_API_TOKEN` and
+  Outside that reviewed HMAC transition, `cloudflare-production` contains only `CLOUDFLARE_API_TOKEN` and
   `CLOUDFLARE_ACCOUNT_ID`, and only the Pages and relay deployment jobs declare it. A zero-downtime
   credential migration may temporarily retain rollback copies of the App pair there until
   exact-`main` canaries succeed; those copies are migration artifacts and must be removed before
