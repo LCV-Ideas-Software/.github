@@ -1304,27 +1304,50 @@ export class D1DeliveryStore implements DeliveryStore {
         "slack_trace_send_execution_conflict",
       );
     }
-    if (trace.sendExecutionId !== null) {
-      const executionOwner = await this.#database
-        .prepare(
-          `SELECT trace_id
-           FROM slack_workflow_traces
-           WHERE send_execution_id = ?
-           LIMIT 2`,
-        )
-        .bind(trace.sendExecutionId)
-        .all<{ trace_id: string }>();
-      if (
-        executionOwner.results.length > 1 ||
-        (executionOwner.results.length === 1 &&
-          executionOwner.results[0]?.trace_id !== trace.traceId)
-      ) {
-        throw new SlackReconciliationConflictError(
-          "slack_trace_send_execution_owner_conflict",
-        );
+    const assertUniqueTraceOwners = async (): Promise<void> => {
+      if (trace.sendExecutionId !== null) {
+        const executionOwner = await this.#database
+          .prepare(
+            `SELECT trace_id
+             FROM slack_workflow_traces
+             WHERE send_execution_id = ?
+             LIMIT 2`,
+          )
+          .bind(trace.sendExecutionId)
+          .all<{ trace_id: string }>();
+        if (
+          executionOwner.results.length > 1 ||
+          (executionOwner.results.length === 1 &&
+            executionOwner.results[0]?.trace_id !== trace.traceId)
+        ) {
+          throw new SlackReconciliationConflictError(
+            "slack_trace_send_execution_owner_conflict",
+          );
+        }
       }
-    }
-    await this.#database
+      if (slackChannelId !== null && messageTs !== null) {
+        const messageOwner = await this.#database
+          .prepare(
+            `SELECT trace_id
+             FROM slack_workflow_traces
+             WHERE slack_channel_id = ? AND slack_message_ts = ?
+             LIMIT 2`,
+          )
+          .bind(slackChannelId, messageTs)
+          .all<{ trace_id: string }>();
+        if (
+          messageOwner.results.length > 1 ||
+          (messageOwner.results.length === 1 &&
+            messageOwner.results[0]?.trace_id !== trace.traceId)
+        ) {
+          throw new SlackReconciliationConflictError(
+            "slack_trace_message_owner_conflict",
+          );
+        }
+      }
+    };
+    await assertUniqueTraceOwners();
+    const traceWrite = this.#database
       .prepare(
         `INSERT INTO slack_workflow_traces (
            trace_id,
@@ -1448,8 +1471,13 @@ export class D1DeliveryStore implements DeliveryStore {
         trace.startedAtUs,
         trace.completedAtUs,
         now,
-      )
-      .run();
+      );
+    try {
+      await traceWrite.run();
+    } catch (error) {
+      await assertUniqueTraceOwners();
+      throw error;
+    }
 
     const effectiveTrace = await this.#database
       .prepare(

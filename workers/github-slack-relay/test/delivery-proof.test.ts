@@ -804,6 +804,66 @@ describe("fail-closed Slack trace reconciliation", () => {
     });
   });
 
+  it("rejects a memory trace that reuses message evidence owned only by another trace", async () => {
+    const store = new MemoryDeliveryStore();
+    const messageTs = "1785758400.000999";
+    const staleDeliveryId = "trace-memory-stale-message-owner";
+    const activeDeliveryId = "trace-memory-message-reuse";
+    store.seed(staleDeliveryId, "accepted_by_trigger", NOW, {
+      attemptCount: 1,
+    });
+
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId: "TrMemoryStaleMessageOwner1",
+          deliveryId: staleDeliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: "FxMemoryStaleMessageOwner1",
+          destination: "alerts",
+          slackChannelId: "C0BMUK793NV",
+          messageTs,
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 1,
+      ),
+    ).rejects.toThrow("slack_trace_owner_conflict");
+    expect(store.deliveries.get(staleDeliveryId)?.slackMessageTs).toBeNull();
+
+    store.seed(activeDeliveryId, "send_started", NOW + 2, {
+      attemptCount: 1,
+      slackSendExecutionId: "FxMemoryMessageReuse2",
+    });
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId: "TrMemoryMessageReuse2",
+          deliveryId: activeDeliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: "FxMemoryMessageReuse2",
+          destination: "alerts",
+          slackChannelId: "C0BMUK793NV",
+          messageTs,
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000 + 2,
+          completedAtUs: NOW * 1_000 + 3,
+        },
+        NOW + 3,
+      ),
+    ).rejects.toThrow("slack_trace_message_owner_conflict");
+    expect(store.deliveries.get(activeDeliveryId)).toMatchObject({
+      status: "send_started",
+      slackMessageTs: null,
+      slackTraceId: null,
+    });
+  });
+
   it("retries only a complete failure proven to precede the send boundary", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();

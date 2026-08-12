@@ -699,6 +699,20 @@ export class MemoryDeliveryStore implements DeliveryStore {
       completedAtUs: previous?.completedAtUs ?? trace.completedAtUs ?? null,
       applied: previous?.applied ?? false,
     };
+    if (
+      effectiveTrace.slackChannelId !== null &&
+      effectiveTrace.messageTs !== null &&
+      [...this.slackTraces.entries()].some(
+        ([traceId, candidate]) =>
+          traceId !== trace.traceId &&
+          candidate.slackChannelId === effectiveTrace.slackChannelId &&
+          candidate.messageTs === effectiveTrace.messageTs,
+      )
+    ) {
+      throw new SlackReconciliationConflictError(
+        "slack_trace_message_owner_conflict",
+      );
+    }
     const observationResult: SlackTraceRecordResult =
       trace.outcome === "pending" && effectiveTrace.outcome !== "pending"
         ? "duplicate"

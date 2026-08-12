@@ -292,6 +292,45 @@ function pauseBeforeFirstBatch(d1: D1Database): {
   };
 }
 
+function missFirstMessageOwnerRead(d1: D1Database): {
+  d1: D1Database;
+  missed: () => boolean;
+} {
+  let missed = false;
+  return {
+    d1: {
+      prepare(query: string): D1PreparedStatement {
+        const statement = d1.prepare(query);
+        if (
+          missed ||
+          !query.includes("WHERE slack_channel_id = ? AND slack_message_ts = ?")
+        ) {
+          return statement;
+        }
+        let bound = statement;
+        const staleRead = {
+          bind(...values: unknown[]): D1PreparedStatement {
+            bound = statement.bind(...values);
+            return staleRead as unknown as D1PreparedStatement;
+          },
+          first: bound.first.bind(bound),
+          run: bound.run.bind(bound),
+          async all<T = unknown>(): Promise<D1Result<T>> {
+            if (!missed) {
+              missed = true;
+              return d1Result(0, []) as D1Result<T>;
+            }
+            return bound.all<T>();
+          },
+        };
+        return staleRead as unknown as D1PreparedStatement;
+      },
+      batch: d1.batch.bind(d1),
+    } as unknown as D1Database,
+    missed: () => missed,
+  };
+}
+
 function failNextTraceResolutionBatch(d1: D1Database): {
   d1: D1Database;
   arm: () => void;
@@ -3581,6 +3620,101 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       slackTraceId: firstTraceId,
       slackSendExecutionId: SEND_EXECUTION_ID,
       lastError: "slack_workflow_failed_after_send_boundary",
+    });
+  });
+
+  it("classifies message evidence already owned only by another trace as a reconciliation conflict", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const messageTs = "1785758400.000999";
+    const staleDeliveryId = "sqlite-stale-message-owner";
+    const activeDeliveryId = "sqlite-message-reuse";
+    await store.insert(input(staleDeliveryId));
+    await store.markQueued(staleDeliveryId, NOW);
+    await store.claimForSlack(staleDeliveryId, NOW);
+    await store.markAcceptedByTrigger(staleDeliveryId, NOW, NOW + 1_000);
+
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId: "TrSqliteStaleMessageOwner1",
+          deliveryId: staleDeliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: "FxSqliteStaleMessageOwner1",
+          destination: "alerts",
+          slackChannelId: "C0BMUK793NV",
+          messageTs,
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 1,
+      ),
+    ).rejects.toThrow("slack_trace_owner_conflict");
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, slack_message_ts
+           FROM slack_workflow_traces
+           WHERE trace_id = ?`,
+        )
+        .get("TrSqliteStaleMessageOwner1"),
+    ).toEqual({
+      trace_id: "TrSqliteStaleMessageOwner1",
+      slack_message_ts: messageTs,
+    });
+
+    await store.insert(input(activeDeliveryId));
+    await store.markQueued(activeDeliveryId, NOW + 2);
+    await store.claimForSlack(activeDeliveryId, NOW + 2);
+    await store.markAcceptedByTrigger(activeDeliveryId, NOW + 2, NOW + 1_002);
+    await store.recordSlackProgress({
+      deliveryId: activeDeliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: "FxSqliteMessageReuse2",
+      now: NOW + 3,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    const staleOwnerRead = missFirstMessageOwnerRead(d1);
+    const racedStore = new D1DeliveryStore(staleOwnerRead.d1);
+    const reusedTrace = {
+      traceId: "TrSqliteMessageReuse2",
+      deliveryId: activeDeliveryId,
+      outcome: "error" as const,
+      attemptCount: 1,
+      sendExecutionId: "FxSqliteMessageReuse2",
+      destination: "alerts" as const,
+      slackChannelId: "C0BMUK793NV",
+      messageTs,
+      sendBoundaryReached: true,
+      preSendFailureProven: false,
+      startedAtUs: NOW * 1_000 + 2,
+      completedAtUs: NOW * 1_000 + 3,
+    };
+    await expect(
+      racedStore.recordSlackTrace(reusedTrace, NOW + 4),
+    ).rejects.toThrow("slack_trace_message_owner_conflict");
+    expect(staleOwnerRead.missed()).toBe(true);
+    await expect(
+      store.recordSlackTrace(
+        {
+          ...reusedTrace,
+          traceId: "TrSqliteMessageReuse3",
+          sendExecutionId: "FxSqliteMessageReuse3",
+        },
+        NOW + 5,
+      ),
+    ).rejects.toThrow("slack_trace_message_owner_conflict");
+    await expect(store.get(activeDeliveryId)).resolves.toMatchObject({
+      status: "send_started",
+      slackMessageTs: null,
+      slackTraceId: null,
     });
   });
 });
