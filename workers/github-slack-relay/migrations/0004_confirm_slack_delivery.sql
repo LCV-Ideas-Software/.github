@@ -76,17 +76,17 @@ SELECT
     WHEN delivery_id = 'de345e40-95b1-11f1-8d38-fac15f0bb4cd'
       THEN 'manual_review'
     ELSE status
-  END,
+  END ,
   attempt_count,
   next_attempt_at,
   CASE
     WHEN delivery_id = 'de345e40-95b1-11f1-8d38-fac15f0bb4cd'
       THEN 'known_slack_workflow_timeout_message_absent'
     ELSE last_error
-  END,
+  END ,
   created_at,
   updated_at,
-  CASE WHEN status = 'accepted_by_slack' THEN NULL ELSE accepted_at END,
+  CASE WHEN status = 'accepted_by_slack' THEN NULL ELSE accepted_at END ,
   accepted_at,
   CASE WHEN status = 'accepted_by_slack' THEN 1 ELSE 0 END
 FROM deliveries;

@@ -3,6 +3,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { URL as NodeUrl } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { unstable_splitSqlQuery } from "wrangler";
 
 import { handleFetch } from "../src/index";
 import {
@@ -236,6 +237,25 @@ afterEach(() => {
 });
 
 describe("D1 schema and constraint behavior on real SQLite", () => {
+  it("keeps the expand migration executable as individual Wrangler D1 statements", () => {
+    const { database } = databaseWithMigrations(false);
+    for (const migration of [
+      "0001_initial.sql",
+      "0002_add_destination.sql",
+      "0003_rename_delivery_acceptance.sql",
+    ]) {
+      database.exec(migrationSource(migration));
+    }
+
+    const statements = unstable_splitSqlQuery(
+      migrationSource("0004_confirm_slack_delivery.sql"),
+    );
+    expect(statements).toHaveLength(23);
+    for (const statement of statements) {
+      expect(() => database.prepare(statement).run()).not.toThrow();
+    }
+  });
+
   it("keeps the expand migration compatible with the previously deployed Worker", () => {
     const { database } = databaseWithMigrations(false);
     for (const migration of [
