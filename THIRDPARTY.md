@@ -17,7 +17,8 @@ audits `docker://` references declared by Docker Actions rather than `FROM` line
 Versions and licenses below were read from each package's own published manifest or from its
 upstream repository, not inferred. Versions are the ones actually resolved by the committed
 lockfiles, not the ranges declared in the manifests: the root `package.json` requests `prettier`
-as `^3.9.6` and `package-lock.json` resolves it to `3.9.6`.
+as `^3.9.6` and resolves it to `3.9.6`; the structural workflow policy parser is pinned exactly as
+`yaml@2.9.0`.
 
 ## Repository root — `package.json`
 
@@ -25,6 +26,7 @@ as `^3.9.6` and `package-lock.json` resolves it to `3.9.6`.
 | --------- | ------- | ----------------- | ----------- | -------------------------------------- |
 | prettier  | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier |
 | wrangler  | 4.120.1 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler |
+| yaml      | 2.9.0   | ISC               | development | https://www.npmjs.com/package/yaml     |
 
 ## GitHub-to-Slack relay — `workers/github-slack-relay/package.json`
 
