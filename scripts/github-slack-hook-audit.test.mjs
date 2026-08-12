@@ -48,6 +48,7 @@ const RELAY_README_URL = new URL(
   import.meta.url,
 );
 const SECURITY_POLICY_URL = new URL("../SECURITY.md", import.meta.url);
+const CHANGELOG_URL = new URL("../CHANGELOG.md", import.meta.url);
 const APP_TOKEN_ACTION =
   "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0";
 
@@ -287,7 +288,7 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
     "jobs: { rogue: { runs-on: ubuntu-latest, environment: webhook-recovery, steps: [] } }\n",
     'jobs: { rogue: { runs-on: ubuntu-latest, environment: "${{ vars.RECOVERY_ENVIRONMENT }}", steps: [] } }\n',
     "env:\n  PRIVATE_KEY: ${{ secrets.SLACK_REDELIVERY_APP_PRIVATE_KEY }}\njobs:\n  rogue:\n    runs-on: ubuntu-latest\n    steps: []\n",
-    "env: { CLIENT_ID: \"${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}\" }\njobs: { rogue: { runs-on: ubuntu-latest, steps: [] } }\n",
+    'env: { CLIENT_ID: "${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}" }\njobs: { rogue: { runs-on: ubuntu-latest, steps: [] } }\n',
   ]) {
     const mutant = new Map(workflows);
     mutant.set("rogue.yml", rogueSource);
@@ -410,11 +411,13 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
 });
 
 test("recovery documentation states exact token grants and control-flow boundary", async () => {
-  const [integrationDocs, relayReadme, securityPolicy] = await Promise.all([
-    readFile(INTEGRATION_DOC_URL, "utf8"),
-    readFile(RELAY_README_URL, "utf8"),
-    readFile(SECURITY_POLICY_URL, "utf8"),
-  ]);
+  const [integrationDocs, relayReadme, securityPolicy, changelog] =
+    await Promise.all([
+      readFile(INTEGRATION_DOC_URL, "utf8"),
+      readFile(RELAY_README_URL, "utf8"),
+      readFile(SECURITY_POLICY_URL, "utf8"),
+      readFile(CHANGELOG_URL, "utf8"),
+    ]);
 
   for (const documentation of [integrationDocs, relayReadme]) {
     assert.match(
@@ -435,6 +438,19 @@ test("recovery documentation states exact token grants and control-flow boundary
       /(?:`cloudflare-production`.{0,240}`SLACK_REDELIVERY_APP_(?:CLIENT_ID|PRIVATE_KEY)`|`SLACK_REDELIVERY_APP_(?:CLIENT_ID|PRIVATE_KEY)`.{0,240}`cloudflare-production`)/u,
     );
   }
+
+  assert.match(
+    changelog,
+    /At the snapshot that opened #169,[\s\S]*This repository has since moved the pair into the protected\n  environment and removed the repository-level copies\./u,
+  );
+  assert.match(
+    changelog,
+    /At the snapshot that opened #175,[\s\S]*rollback copies remain temporarily in the old environment until the exact-`main` canaries pass/u,
+  );
+  assert.doesNotMatch(
+    changelog,
+    /### Known issues[\s\S]*`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are repository-scoped/u,
+  );
   assert.match(integrationDocs, /Before the controller's delivery scan/);
   assert.match(relayReadme, /Before scanning deliveries/);
   assert.match(

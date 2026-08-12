@@ -155,19 +155,21 @@ evidence is the execution trail recorded in
   through that form was silently created unlabelled. Labels are not versioned here, so this change
   has no file diff ([#167](https://github.com/LCV-Ideas-Software/.github/issues/167)).
 
-### Known issues
+### Issues discovered during this audit
 
-- `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are repository-scoped secrets rather than
-  environment-scoped ones, so the `cloudflare-production` branch policy does not gate them. This
-  diverges from the protected-environment baseline of Discussion #150 §4 and no authorized exception
-  is recorded for it. The same placement is reported across the repositories that deploy to
-  Cloudflare, which makes the decision organization-wide rather than local to this repository.
-  Tracked in [#169](https://github.com/LCV-Ideas-Software/.github/issues/169).
-- A protected environment is shared by every job that declares it, so
-  `SLACK_REDELIVERY_APP_PRIVATE_KEY` — which mints tokens with `Organization webhooks: write` — is
-  reachable from the two deploy jobs that declare `cloudflare-production` without using it. Both run
-  only on `main`, so the exposure is contained, but the credential is segregated by provider rather
-  than by purpose. Tracked in [#175](https://github.com/LCV-Ideas-Software/.github/issues/175).
+- At the snapshot that opened #169, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` were
+  repository-scoped secrets rather than environment-scoped ones, so the `cloudflare-production`
+  branch policy did not gate them. This repository has since moved the pair into the protected
+  environment and removed the repository-level copies. The same original placement was found in
+  seven other deploy repositories, so the remaining organization-wide rollout stays tracked in
+  [#169](https://github.com/LCV-Ideas-Software/.github/issues/169).
+- At the snapshot that opened #175, the protected `cloudflare-production` environment was shared by
+  every job that declared it, so `SLACK_REDELIVERY_APP_PRIVATE_KEY` — which mints tokens with
+  `Organization webhooks: write` — was authorized for two deploy jobs that did not reference it.
+  The dedicated `webhook-recovery` environment now provides the App pair only to the controller;
+  rollback copies remain temporarily in the old environment until the exact-`main` canaries pass,
+  as recorded in the Fixed entry above. Tracked in
+  [#175](https://github.com/LCV-Ideas-Software/.github/issues/175).
 - A GitHub-to-Slack delivery can be recorded as accepted and never reach the channel. On 11/08/2026
   the trigger endpoint answered `{"ok":true}`, D1 stored `accepted_by_slack`, and the asynchronous
   workflow execution then ended in `TIMEOUT`; that message does not exist in the channel. Terminal
