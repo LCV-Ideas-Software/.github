@@ -451,7 +451,11 @@ export async function waitForDisposableDatabaseDeletion(
   );
 }
 
-async function deleteDisposableDatabase(configuration, databaseId) {
+async function deleteDisposableDatabase(
+  configuration,
+  databaseId,
+  expectedCreatedAt,
+) {
   invariant(
     configuration.databaseName.startsWith(DATABASE_NAME_PREFIX) &&
       DATABASE_ID_PATTERN.test(databaseId) &&
@@ -461,7 +465,13 @@ async function deleteDisposableDatabase(configuration, databaseId) {
   const ownedDatabase = await waitForDisposableDatabaseOwnership(() =>
     disposableDatabasePresence(configuration, databaseId),
   );
-  if (ownedDatabase === undefined) return;
+  if (ownedDatabase === undefined) return false;
+  if (expectedCreatedAt !== undefined) {
+    invariant(
+      ownedDatabase.createdAt === expectedCreatedAt,
+      "Stale disposable D1 ownership changed before bounded cleanup.",
+    );
+  }
   let deletionError;
   try {
     const { payload, response } = await cloudflareRequest(
@@ -489,6 +499,7 @@ async function deleteDisposableDatabase(configuration, databaseId) {
       "Disposable D1 deletion and confirmation both failed.",
     );
   }
+  return true;
 }
 
 export function selectStaleDisposableDatabases(databases, nowMs) {
@@ -496,11 +507,11 @@ export function selectStaleDisposableDatabases(databases, nowMs) {
   const cutoff = nowMs - STALE_DATABASE_AGE_MS;
   return databases
     .filter((database) => {
-      if (
-        typeof database?.name !== "string" ||
-        !database.name.startsWith(DATABASE_NAME_PREFIX)
-      )
-        return false;
+      invariant(
+        typeof database?.name === "string" && database.name.length > 0,
+        "D1 inventory item has a missing or malformed name.",
+      );
+      if (!database.name.startsWith(DATABASE_NAME_PREFIX)) return false;
       const createdAt = Date.parse(database.created_at);
       invariant(
         DISPOSABLE_DATABASE_NAME_PATTERN.test(database.name) &&
@@ -553,14 +564,19 @@ export async function reapSelectedStaleDatabases(
   for (const database of stale) {
     const target = { ...configuration, databaseName: database.name };
     const owned = await operations.inspect(target, database.id);
-    if (owned === undefined) continue;
-    invariant(
-      owned.createdAt === database.createdAt &&
-        owned.createdAt <= nowMs - STALE_DATABASE_AGE_MS,
-      "Stale disposable D1 ownership changed before reaping.",
+    if (owned !== undefined) {
+      invariant(
+        owned.createdAt === database.createdAt &&
+          owned.createdAt <= nowMs - STALE_DATABASE_AGE_MS,
+        "Stale disposable D1 ownership changed before reaping.",
+      );
+    }
+    const didRemove = await operations.remove(
+      target,
+      database.id,
+      database.createdAt,
     );
-    await operations.remove(target, database.id);
-    removed += 1;
+    if (didRemove) removed += 1;
   }
   return removed;
 }

@@ -150,7 +150,7 @@ test("the out-of-process reaper selects only stale capability names", () => {
   );
 });
 
-test("a competing cleanup after inventory is an idempotent reaper success", async () => {
+test("a competing cleanup after inventory delegates bounded absence confirmation", async () => {
   const stale = [
     {
       createdAt: Date.parse("2026-08-12T12:00:00.000Z"),
@@ -164,13 +164,15 @@ test("a competing cleanup after inventory is an idempotent reaper success", asyn
     Date.parse("2026-08-12T14:00:00.000Z"),
     {
       inspect: async () => undefined,
-      remove: async () => {
+      remove: async (_target, _id, expectedCreatedAt) => {
         deletes += 1;
+        assert.equal(expectedCreatedAt, stale[0].createdAt);
+        return false;
       },
     },
   );
   assert.equal(removed, 0);
-  assert.equal(deletes, 0);
+  assert.equal(deletes, 1);
 });
 
 test("the reaper rejects an incomplete disposable inventory item", () => {
@@ -186,6 +188,19 @@ test("the reaper rejects an incomplete disposable inventory item", () => {
         Date.parse("2026-08-12T14:00:00.000Z"),
       ),
     /incomplete or malformed/,
+  );
+  assert.throws(
+    () =>
+      selectStaleDisposableDatabases(
+        [
+          {
+            created_at: "2026-08-12T12:00:00.000Z",
+            uuid: "11111111-2222-4333-8444-555555555555",
+          },
+        ],
+        Date.parse("2026-08-12T14:00:00.000Z"),
+      ),
+    /missing or malformed name/,
   );
 });
 
