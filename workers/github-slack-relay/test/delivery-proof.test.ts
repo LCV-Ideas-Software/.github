@@ -34,10 +34,6 @@ const PRE_SEND_TRACE_REPORT_IDENTITY = Object.freeze({
   relay_attempt: "1",
   send_execution_id: "FxDeliveryProofTrace1",
 });
-const TRACE_STORE_IDENTITY = Object.freeze({
-  attemptCount: 1,
-  sendExecutionId: null,
-});
 const PRE_SEND_TRACE_STORE_IDENTITY = Object.freeze({
   attemptCount: 1,
   sendExecutionId: "FxDeliveryProofTrace1",
