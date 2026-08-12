@@ -30,21 +30,24 @@ Cloudflare Secrets Store, the encrypted Slack app environment, and the protected
 Trigger HTTP success is not delivery proof. After validation, the
 `report_github_relay_progress` function first records an authenticated
 `send_started` boundary and returns the validated message as a data dependency
-for Slack's built-in `SendMessage`. A second invocation receives
-`SendMessage.message_timestamp` and posts an idempotent delivery receipt. The
-Cloudflare row becomes `delivered` only after that receipt; the paginated
-monitor later associates Slack's actual `trace_id`. If the post-message receipt
-is unavailable, the workflow fails and the relay keeps the row for manual review
-without resending the GitHub event.
+for Slack's built-in `SendMessage`. A second invocation receives the supported
+`SendMessage.message_context.message_ts` output and posts an idempotent delivery
+receipt. The Cloudflare row becomes `delivered` only after that receipt; the
+paginated monitor later associates Slack's actual `trace_id`. If the
+post-message receipt is unavailable, the workflow fails and the relay keeps the
+row for manual review without resending the GitHub event.
 
-The relay signs its current D1 attempt into the workflow. At the pre-send
+The relay signs its current D1 attempt into the workflow. At the send-boundary
 callback, D1 atomically leases that attempt to Slack's
 `event.function_execution_id`: a retry from the same function execution can
 confirm a lost response, while a second workflow execution cannot receive the
 message output and therefore cannot reach `SendMessage`. The activity monitor
-reports the same signed relay attempt and the step's `function_execution_id`; D1
-accepts pre-send retry proof only from the execution that owns that attempt's
-lease, so a competing or stale trace cannot release the owner.
+reports the same signed relay attempt and the step's `function_execution_id`. An
+Activities `Error` from this callback is ambiguous because D1 may already have
+committed `send_started`; it is never pre-send retry proof. Only an
+authenticated failure of the signed validator step, which runs strictly before
+the callback and `SendMessage`, may authorize a retry. A competing or stale
+trace cannot release the execution owner.
 
 The validator also issues a five-minute, domain-separated progress token bound
 to `delivery_id`, destination, relay attempt, and the original relay timestamp.
@@ -75,11 +78,12 @@ the exact protected trigger inventory. A final fixed-purpose script derives an
 immutable pseudorandom `activation_id` from the exact SHA and schema revision
 under the staged `NEXT` key, then HMAC-authenticates that exact tuple with
 `NEXT`. The Worker requires the SHA to equal `WORKER_VERSION.tag`, proves the
-expanded D1 schema, and allows its sole false-to-true protocol transition. If
-the response is lost after that CAS, the script repeats the byte-identical
-request once and accepts only `already_applied` for the same persisted tuple.
-This is idempotent confirmation, not a second activation or replay. A different
-ID, revision, schema, key, or a request after the reviewed contract closes
+expanded D1 schema, and allows only an inactive-to-target activation or the
+source-pinned deployed `afe525/0004` to target/`0005` transition. If the
+response is lost after that CAS, the script repeats the byte-identical request
+once and accepts only `already_applied` for the same persisted tuple. This is
+idempotent confirmation, not a second activation or replay. A different ID,
+revision, schema, key, or a request after the reviewed contract closes
 confirmation fails closed. The activation path cannot select or recover a
 delivery.
 

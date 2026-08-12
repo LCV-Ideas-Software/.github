@@ -90,7 +90,7 @@ GitHubAlertWorkflow.addStep(ReportRelayProgressDefinition, {
   delivery_id: GitHubAlertWorkflow.inputs.delivery_id,
   destination: GitHubAlertWorkflow.inputs.destination,
   phase: "delivered",
-  message_ts: sent.outputs.message_timestamp,
+  message_ts: sent.outputs.message_context.message_ts,
   message: "",
   relay_attempt: GitHubAlertWorkflow.inputs.relay_attempt,
   relay_timestamp: GitHubAlertWorkflow.inputs.relay_timestamp,

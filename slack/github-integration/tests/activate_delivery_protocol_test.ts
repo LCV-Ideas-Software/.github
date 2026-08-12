@@ -11,7 +11,7 @@ import {
 const REVISION = "a".repeat(40);
 const SECRET = "deno-test-only-relay-signing-secret";
 const ACTIVATION_ID =
-  "999e803a62f5cdccde265327ca4895fc706730d377085203d81e5bc3f20cf085";
+  "e0cf0cb43344a158a5aed7942d8e542f1f7d8472f4d4f5fdca7e228af4e498b0";
 
 const ENVIRONMENT = Object.freeze({
   EXPECTED_REVISION: REVISION,
@@ -83,7 +83,7 @@ Deno.test("uses cross-runtime domain separation for activation ID and request", 
   );
   if (
     signature !==
-      "1f235452f23e9ec1d66a2807321176197d64f381433af2568e7ca951c8ec7991"
+      "6b86b6ae8d258d6599b4f5d9e4ba17b26e590a5be53d2d97d09746ee5083a79c"
   ) {
     throw new Error(`Activation HMAC drifted: ${signature}`);
   }

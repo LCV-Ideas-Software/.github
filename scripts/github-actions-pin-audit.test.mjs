@@ -536,6 +536,32 @@ test("runtime pin parser binds exact Deno, Slack CLI, and OSV-Scanner pins to ca
   );
 });
 
+test("a verified Slack CLI step output can be reused without duplicating the acquisition pin", () => {
+  const workflow = [
+    "steps:",
+    "  - name: Install Slack CLI",
+    "    id: install-slack-cli",
+    "    env:",
+    "      SLACK_CLI_ASSET: slack_cli_4.6.0_linux_64-bit.tar.gz",
+    `      SLACK_CLI_SHA256: ${"a".repeat(64)}`,
+    "      SLACK_CLI_VERSION: 4.6.0",
+    '    run: echo "slack_bin=$RUNNER_TEMP/slack" >> "$GITHUB_OUTPUT"',
+    "  - name: Use the verified binary",
+    "    env:",
+    "      SLACK_APP_ID: A12345678",
+    "      SLACK_BIN: ${{ steps.install-slack-cli.outputs.slack_bin }}",
+    '    run: "$SLACK_BIN" deploy',
+  ].join("\n");
+  const parsed = parseWorkflowRuntimePins(workflow, {
+    repository: "LCV-Ideas-Software/example",
+    path: ".github/workflows/ci.yml",
+  });
+
+  assert.deepEqual(parsed.findings, []);
+  assert.equal(parsed.slackCliReferences.length, 1);
+  assert.equal(parsed.slackCliReferences[0].version, "4.6.0");
+});
+
 test("runtime pin parser fails closed on ranges, expressions, and partial runtime-tool pins", () => {
   const workflow = [
     "steps:",

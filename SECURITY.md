@@ -46,31 +46,38 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   never automatically resent. Dead letters and active manual review fail readiness; quarantined
   historical rows remain visibly `legacy_unverified` without authorizing a resend. The one known
   lost ID stays in manual review until an exact, audited, explicitly authorized one-time recovery.
-  Expand rollout starts with delivery disabled and is serialized in one exact-SHA workflow. Queue
-  consumers back off without D1 attempts or a Slack POST while Cloudflare and Slack receive the same
+  Expand rollout is serialized in one exact-SHA workflow. A fresh inactive deployment starts
+  closed; in the live bridge, the source Worker remains active on `afe525/0004` and the target Worker
+  stays fail-closed until target/`0005` activation. Target Queue consumers back off without D1
+  attempts or a Slack POST while Cloudflare and Slack receive the same
   new value only in their runtime `NEXT` slots. The new Worker control plane and monitor accept only
   `NEXT`; both hosted stores retain the old current key during expand, but only the Slack validator
   accepts it for inbound relay compatibility. Slack issues every new progress authorization and
-  callback only with `NEXT`, so current never has to be recovered into GitHub. After migration and
-  before either hosted deploy, a D1 preflight reads all six persisted activation fields. It permits
-  only the initial inactive tuple with all activation metadata null or an active tuple whose SHA,
-  schema and deterministic HMAC
-  activation ID exactly match the staged signer; a later or partially written revision cannot replace
+  callback only with `NEXT`, so current never has to be recovered into GitHub. Before any production
+  migration or hosted deploy, a D1 preflight reads all six persisted activation fields and checks
+  that both delivery and trace execution IDs have zero duplicate groups. It permits
+  only the initial inactive tuple, the fixed deployed `afe525/0004` bridge source, or the exact
+  target tuple whose SHA, schema and deterministic HMAC activation ID match the staged signer; a
+  later or partially written revision cannot replace
   the Worker until the reviewed contract removes that expand guard. After the Slack deploy, the workflow updates both fixed protected trigger IDs
   from their versioned definitions while suppressing the CLI response because it can contain bearer
   URLs. Only after the exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack
   revision, and expanded
-  schema and perform the only permitted false-to-true CAS while persisting an immutable activation
+  schema and perform only an inactive-to-target activation or the source-pinned deployed
+  `afe525/0004` to target/`0005` transition while persisting an immutable activation
   ID, revision, and schema. One byte-identical retry may confirm the same CAS read-only after a lost
   response; a new ID, changed tuple, post-contract request, downgrade, wrong revision, wrong key,
   partial deploy, or incomplete schema fails closed. Deterministic reconciliation conflicts are 409;
   ambiguous persistence is retryable 503. Every signed relay carries its durable attempt number;
-  D1 leases the pre-send boundary to one Slack `function_execution_id`, so only that execution may
+  D1 leases the send boundary to one Slack `function_execution_id`, so only that execution may
   release `SendMessage` while a retry of the same execution remains idempotent. The retry transition
   and trace-applied marker are one atomic D1 batch. A retry is released only by authenticated proof that the
-  failed pre-send step did not execute `SendMessage`, even if its D1 `send_started` CAS committed, and
-  the report must bind that proof to the same relay attempt and Slack send-function execution that owns
-  the durable lease; a competing or stale trace cannot release or attach to another attempt. The
+  signed validator failed before any send boundary. The report binds that proof
+  to the same relay attempt and validator `function_execution_id`; any existing
+  send lease or `send_started` fact blocks retry and forces manual review. An
+  error from the send-boundary callback is ambiguous and never overrides that
+  persisted fact; a competing or stale trace cannot release or attach to
+  another attempt. The
   delivered rows remain retained until their applied terminal success or boundary-error trace is older
   than both retention cutoff and the durable activity-checkpoint overlap. The monitor timeout covers
   its bounded 100-page request, retry and reconciliation-report budget plus setup margin, preventing

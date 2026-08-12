@@ -14,10 +14,12 @@ export interface SignedSlackProgress {
 
 export interface SignedSlackTrace {
   trace_id: string;
-  delivery_id: string;
+  delivery_id: string | null;
   outcome: SlackTraceOutcome;
-  relay_attempt: string;
+  relay_attempt: string | null;
   send_execution_id: string | null;
+  slack_channel_id: string | null;
+  slack_message_ts: string | null;
   send_boundary_reached: boolean;
   pre_send_failure_proven: boolean;
   started_at_us: number;
@@ -252,6 +254,29 @@ export function canonicalSlackReconciliation(
   report: Omit<SignedSlackReconciliation, "report_signature">,
 ): string {
   return JSON.stringify([
+    "slack_activity_reconciliation_v3",
+    report.checkpoint_us,
+    report.report_timestamp,
+    report.traces.map((trace) => [
+      trace.trace_id,
+      trace.delivery_id,
+      trace.outcome,
+      trace.relay_attempt,
+      trace.send_execution_id,
+      trace.slack_channel_id,
+      trace.slack_message_ts,
+      trace.send_boundary_reached,
+      trace.pre_send_failure_proven,
+      trace.started_at_us,
+      trace.completed_at_us,
+    ]),
+  ]);
+}
+
+export function canonicalSlackReconciliationV2(
+  report: Omit<SignedSlackReconciliation, "report_signature">,
+): string {
+  return JSON.stringify([
     "slack_activity_reconciliation_v2",
     report.checkpoint_us,
     report.report_timestamp,
@@ -282,6 +307,24 @@ export async function verifySlackReconciliation(
 ): Promise<boolean> {
   return verifyHmacSignature(
     canonicalSlackReconciliation(report),
+    report.report_signature,
+    secret,
+  );
+}
+
+export async function signSlackReconciliationV2(
+  report: Omit<SignedSlackReconciliation, "report_signature">,
+  secret: string,
+): Promise<string> {
+  return hmacSignature(canonicalSlackReconciliationV2(report), secret);
+}
+
+export async function verifySlackReconciliationV2(
+  report: SignedSlackReconciliation,
+  secret: string,
+): Promise<boolean> {
+  return verifyHmacSignature(
+    canonicalSlackReconciliationV2(report),
     report.report_signature,
     secret,
   );
@@ -323,6 +366,41 @@ export function canonicalSlackProtocolActivation(
     request.expected_revision,
     request.schema_revision,
   ]);
+}
+
+export function canonicalSlackProtocolActivationId(
+  expectedRevision: string,
+  schemaRevision: string,
+): string {
+  return JSON.stringify([
+    "slack_delivery_protocol_activation_id_v1",
+    expectedRevision,
+    schemaRevision,
+  ]);
+}
+
+export async function deriveSlackProtocolActivationId(
+  expectedRevision: string,
+  schemaRevision: string,
+  secret: string,
+): Promise<string> {
+  return hmacSignature(
+    canonicalSlackProtocolActivationId(expectedRevision, schemaRevision),
+    secret,
+  );
+}
+
+export async function verifySlackProtocolActivationId(
+  activationId: string,
+  expectedRevision: string,
+  schemaRevision: string,
+  secret: string,
+): Promise<boolean> {
+  return verifyHmacSignature(
+    canonicalSlackProtocolActivationId(expectedRevision, schemaRevision),
+    activationId,
+    secret,
+  );
 }
 
 export async function signSlackProtocolActivation(

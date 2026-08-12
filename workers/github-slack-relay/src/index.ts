@@ -8,6 +8,7 @@ import {
   TARGET_ORGANIZATION,
 } from "./domain";
 import {
+  deriveSlackProtocolActivationId,
   readSecret,
   signSlackRelayPayload,
   type SignedSlackCheckpointRequest,
@@ -17,11 +18,15 @@ import {
   verifySlackCheckpointRequest,
   verifySlackProgress,
   verifySlackProtocolActivation,
+  verifySlackProtocolActivationId,
   verifySlackReconciliation,
+  verifySlackReconciliationV2,
   verifyGitHubSignature,
 } from "./security";
 import {
   D1DeliveryStore,
+  SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION,
+  SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION,
   SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION,
   SlackDeliveryProtocolActivationConflictError,
   SlackProgressConflictError,
@@ -408,6 +413,116 @@ function parseSlackReconciliation(
         "outcome",
         "relay_attempt",
         "send_execution_id",
+        "slack_channel_id",
+        "slack_message_ts",
+        "send_boundary_reached",
+        "pre_send_failure_proven",
+        "started_at_us",
+        "completed_at_us",
+      ]) ||
+      typeof trace.trace_id !== "string" ||
+      !SLACK_TRACE_ID_PATTERN.test(trace.trace_id) ||
+      traceIds.has(trace.trace_id) ||
+      (trace.delivery_id === null) !== (trace.relay_attempt === null) ||
+      (trace.delivery_id !== null && !validDeliveryId(trace.delivery_id)) ||
+      (trace.outcome !== "pending" &&
+        trace.outcome !== "success" &&
+        trace.outcome !== "error") ||
+      (trace.relay_attempt !== null &&
+        (typeof trace.relay_attempt !== "string" ||
+          !/^[1-9][0-9]{0,15}$/u.test(trace.relay_attempt) ||
+          !Number.isSafeInteger(Number.parseInt(trace.relay_attempt, 10)))) ||
+      (trace.send_execution_id !== null &&
+        (typeof trace.send_execution_id !== "string" ||
+          !/^Fx[A-Za-z0-9]{1,126}$/u.test(trace.send_execution_id))) ||
+      (trace.delivery_id === null && trace.send_execution_id === null) ||
+      (trace.slack_channel_id === null) !== (trace.slack_message_ts === null) ||
+      (trace.slack_channel_id !== null &&
+        trace.slack_channel_id !== "C0BMUK793NV" &&
+        trace.slack_channel_id !== "C0BMQMW3L4E") ||
+      (trace.slack_message_ts !== null &&
+        (typeof trace.slack_message_ts !== "string" ||
+          !SLACK_MESSAGE_TS_PATTERN.test(trace.slack_message_ts) ||
+          trace.send_execution_id === null ||
+          trace.send_boundary_reached !== true ||
+          trace.pre_send_failure_proven !== false)) ||
+      typeof trace.send_boundary_reached !== "boolean" ||
+      typeof trace.pre_send_failure_proven !== "boolean" ||
+      (trace.pre_send_failure_proven === true &&
+        trace.send_execution_id === null) ||
+      (trace.pre_send_failure_proven === true &&
+        (trace.outcome === "success" ||
+          trace.send_boundary_reached === true)) ||
+      !Number.isSafeInteger(trace.started_at_us) ||
+      (trace.started_at_us as number) < 0 ||
+      (trace.completed_at_us !== null &&
+        (!Number.isSafeInteger(trace.completed_at_us) ||
+          (trace.completed_at_us as number) <
+            (trace.started_at_us as number))) ||
+      (trace.outcome === "pending" && trace.completed_at_us !== null) ||
+      (trace.outcome !== "pending" && trace.completed_at_us === null)
+    ) {
+      return null;
+    }
+    traceIds.add(trace.trace_id);
+    traces.push({
+      trace_id: trace.trace_id,
+      delivery_id: trace.delivery_id,
+      outcome: trace.outcome,
+      relay_attempt: trace.relay_attempt,
+      send_execution_id: trace.send_execution_id,
+      slack_channel_id: trace.slack_channel_id,
+      slack_message_ts: trace.slack_message_ts,
+      send_boundary_reached: trace.send_boundary_reached,
+      pre_send_failure_proven: trace.pre_send_failure_proven,
+      started_at_us: trace.started_at_us as number,
+      completed_at_us: trace.completed_at_us as number | null,
+    });
+  }
+
+  return {
+    checkpoint_us: record.checkpoint_us as number,
+    report_timestamp: record.report_timestamp,
+    traces,
+    report_signature: record.report_signature,
+  };
+}
+
+function parseSlackReconciliationV2(
+  record: Record<string, unknown>,
+  now: number,
+): SignedSlackReconciliation | null {
+  if (
+    !exactKeys(record, [
+      "checkpoint_us",
+      "report_timestamp",
+      "traces",
+      "report_signature",
+    ]) ||
+    !Number.isSafeInteger(record.checkpoint_us) ||
+    (record.checkpoint_us as number) < 0 ||
+    typeof record.report_timestamp !== "string" ||
+    !authenticatedTimestampIsFresh(record.report_timestamp, now) ||
+    !Array.isArray(record.traces) ||
+    record.traces.length > 200 ||
+    typeof record.report_signature !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(record.report_signature)
+  ) {
+    return null;
+  }
+
+  const traces: SignedSlackReconciliation["traces"] = [];
+  const traceIds = new Set<string>();
+  for (const candidate of record.traces) {
+    const trace = asRecord(candidate);
+    if (
+      trace === undefined ||
+      !exactKeys(trace, [
+        "trace_id",
+        "delivery_id",
+        "outcome",
+        "relay_attempt",
+        "send_execution_id",
         "send_boundary_reached",
         "pre_send_failure_proven",
         "started_at_us",
@@ -451,6 +566,8 @@ function parseSlackReconciliation(
       outcome: trace.outcome,
       relay_attempt: trace.relay_attempt,
       send_execution_id: trace.send_execution_id,
+      slack_channel_id: null,
+      slack_message_ts: null,
       send_boundary_reached: trace.send_boundary_reached,
       pre_send_failure_proven: trace.pre_send_failure_proven,
       started_at_us: trace.started_at_us as number,
@@ -538,11 +655,27 @@ async function handleSlackControlRequest(
     ) {
       return jsonResponse({ error: "schema_revision_mismatch" }, 409);
     }
+    if (
+      !(await verifySlackProtocolActivationId(
+        activation.activation_id,
+        activation.expected_revision,
+        activation.schema_revision,
+        signing.next,
+      ))
+    ) {
+      return jsonResponse({ error: "activation_id_mismatch" }, 409);
+    }
 
     try {
+      const bridgeSourceActivationId = await deriveSlackProtocolActivationId(
+        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION,
+        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION,
+        signing.next,
+      );
       const activationStatus =
         await dependencies.store.activateSlackDeliveryProtocol({
           activationId: activation.activation_id,
+          bridgeSourceActivationId,
           revision: activation.expected_revision,
           schemaRevision: activation.schema_revision,
           now,
@@ -607,6 +740,7 @@ async function handleSlackControlRequest(
       return jsonResponse(
         {
           checkpoint_us: await dependencies.store.getSlackActivityCheckpoint(),
+          reconciliation_version: 3,
         },
         200,
       );
@@ -615,22 +749,95 @@ async function handleSlackControlRequest(
     }
   }
 
-  const report = parseSlackReconciliation(record, now);
-  if (report === null) {
+  const currentReport = parseSlackReconciliation(record, now);
+  const bridgeReport = parseSlackReconciliationV2(record, now);
+  if (currentReport === null && bridgeReport === null) {
     return jsonResponse({ error: "invalid_request" }, 400);
   }
-  if (!(await verifySlackReconciliation(report, signing.active))) {
+  let report: SignedSlackReconciliation | null = null;
+  if (
+    currentReport !== null &&
+    (await verifySlackReconciliation(currentReport, signing.active))
+  ) {
+    report = currentReport;
+  } else if (
+    bridgeReport !== null &&
+    (await verifySlackReconciliationV2(bridgeReport, signing.active))
+  ) {
+    // A monitor that started before the v3 rollout cannot observe or report
+    // authenticated Slack message evidence. Never let that in-flight process
+    // mutate delivery state or advance the checkpoint after the v3 Worker is
+    // live; the next monitor run will negotiate v3 from the checkpoint reply.
+    return jsonResponse({ error: "reconciliation_upgrade_required" }, 409);
+  }
+  if (report === null) {
     return jsonResponse({ error: "invalid_signature" }, 401);
   }
   try {
+    let changedErrorTraces = 0;
     for (const trace of report.traces) {
-      await dependencies.store.recordSlackTrace(
+      let deliveryId = trace.delivery_id;
+      let attemptCount =
+        trace.relay_attempt === null
+          ? null
+          : Number.parseInt(trace.relay_attempt, 10);
+      let destination: "alerts" | "activity" | null = null;
+      const requiresPersistedBoundaryOwner =
+        trace.delivery_id === null ||
+        trace.relay_attempt === null ||
+        trace.slack_message_ts !== null ||
+        trace.send_boundary_reached;
+      if (trace.send_execution_id !== null) {
+        const owner =
+          await dependencies.store.resolveSlackTraceIdentityBySendExecutionId(
+            trace.send_execution_id,
+          );
+        if (owner === null) {
+          if (requiresPersistedBoundaryOwner) {
+            throw new SlackReconciliationConflictError(
+              "slack_trace_send_execution_not_found",
+            );
+          }
+        } else {
+          if (
+            (deliveryId !== null && deliveryId !== owner.deliveryId) ||
+            (attemptCount !== null && attemptCount !== owner.attemptCount)
+          ) {
+            throw new SlackReconciliationConflictError(
+              "slack_trace_owner_conflict",
+            );
+          }
+          deliveryId = owner.deliveryId;
+          attemptCount = owner.attemptCount;
+          destination = owner.destination;
+        }
+      }
+      if (deliveryId === null || attemptCount === null) {
+        throw new SlackReconciliationConflictError(
+          "slack_trace_identity_missing",
+        );
+      }
+      if (
+        trace.slack_channel_id !== null &&
+        ((destination === "alerts" &&
+          trace.slack_channel_id !== "C0BMUK793NV") ||
+          (destination === "activity" &&
+            trace.slack_channel_id !== "C0BMQMW3L4E"))
+      ) {
+        throw new SlackReconciliationConflictError(
+          "slack_trace_destination_conflict",
+        );
+      }
+      const traceResult = await dependencies.store.recordSlackTrace(
         {
           traceId: trace.trace_id,
-          deliveryId: trace.delivery_id,
+          deliveryId,
+          destination,
           outcome: trace.outcome,
-          attemptCount: Number.parseInt(trace.relay_attempt, 10),
+          attemptCount,
           sendExecutionId: trace.send_execution_id,
+          slackChannelId: trace.slack_channel_id,
+          messageTs: trace.slack_message_ts,
           sendBoundaryReached: trace.send_boundary_reached,
           preSendFailureProven: trace.pre_send_failure_proven,
           startedAtUs: trace.started_at_us,
@@ -638,6 +845,9 @@ async function handleSlackControlRequest(
         },
         now,
       );
+      if (trace.outcome === "error" && traceResult === "changed") {
+        changedErrorTraces += 1;
+      }
     }
     const checkpointUs =
       await dependencies.store.advanceSlackActivityCheckpoint(
@@ -647,6 +857,7 @@ async function handleSlackControlRequest(
       {
         ok: true,
         traces: report.traces.length,
+        changed_error_traces: changedErrorTraces,
         checkpoint_us: checkpointUs,
       },
       200,

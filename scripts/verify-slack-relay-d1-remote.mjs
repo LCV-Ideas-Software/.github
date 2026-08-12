@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import {
   copyFile,
   mkdir,
@@ -12,6 +12,8 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { validateSlackDeliveryProtocolPreflight } from "./slack-delivery-protocol-preflight.mjs";
+
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RELAY_ROOT = join(REPOSITORY_ROOT, "workers", "github-slack-relay");
 const WRANGLER_ENTRYPOINT = join(
@@ -21,13 +23,45 @@ const WRANGLER_ENTRYPOINT = join(
   "bin",
   "wrangler.js",
 );
-const TARGET_MIGRATION_NAME = "0004_confirm_slack_delivery.sql";
+const EXPAND_MIGRATION_NAME = "0004_confirm_slack_delivery.sql";
+const TARGET_MIGRATION_NAME = "0005_reconcile_live_slack_receipts.sql";
 const BASELINE_MIGRATION_NAMES = Object.freeze([
   "0001_initial.sql",
   "0002_add_destination.sql",
   "0003_rename_delivery_acceptance.sql",
+  EXPAND_MIGRATION_NAME,
   TARGET_MIGRATION_NAME,
 ]);
+const PROTOCOL_BRIDGE_SOURCE_REVISION =
+  "afe5250504d37543845b07f44af7bfc30a548feb";
+const PROTOCOL_TARGET_REVISION = "c".repeat(40);
+const PROTOCOL_PROOF_SIGNING_SECRET =
+  "remote-proof-only-slack-protocol-signing-secret";
+const PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION =
+  "0004_confirm_slack_delivery";
+const PROTOCOL_TARGET_SCHEMA_REVISION =
+  "0005_reconcile_live_slack_receipts";
+function protocolActivationId(revision, schemaRevision) {
+  return createHmac("sha256", PROTOCOL_PROOF_SIGNING_SECRET)
+    .update(
+      JSON.stringify([
+        "slack_delivery_protocol_activation_id_v1",
+        revision,
+        schemaRevision,
+      ]),
+      "utf8",
+    )
+    .digest("hex");
+}
+const PROTOCOL_BRIDGE_SOURCE_ACTIVATION_ID = protocolActivationId(
+  PROTOCOL_BRIDGE_SOURCE_REVISION,
+  PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION,
+);
+const PROTOCOL_TARGET_ACTIVATION_ID = protocolActivationId(
+  PROTOCOL_TARGET_REVISION,
+  PROTOCOL_TARGET_SCHEMA_REVISION,
+);
+const PROTOCOL_BRIDGE_SOURCE_ACTIVATED_AT = 2_300;
 const MIGRATION_NAME_PATTERN = /^(?<number>[0-9]+)_[0-9A-Za-z_-]+\.sql$/u;
 const KNOWN_LOSS_ID = "de345e40-95b1-11f1-8d38-fac15f0bb4cd";
 const ISSUE_COMMENT_PREFIX =
@@ -77,11 +111,11 @@ export const REAPER_API_REQUEST_CAP =
 export const REAPER_WORST_CASE_RUNTIME_MS =
   REAPER_API_REQUEST_CAP * API_TIMEOUT_MS +
   REAPER_MAX_DATABASES_PER_RUN * REAPER_RETRY_DELAY_BUDGET_MS;
-const REMOTE_PROOF_OWNERSHIP_BARRIERS = 4;
-// Successful proof path: one absence preflight, one create, 25 seed/assertion
-// queries, four ownership barriers, and one bounded deletion. Wrangler's own
-// remote calls stay inside its two separately bounded subprocesses.
-const REMOTE_PROOF_SQL_API_REQUESTS = 25;
+const REMOTE_PROOF_OWNERSHIP_BARRIERS = 6;
+// Successful proof path: one absence preflight, one create, 27 seed/assertion
+// queries, six ownership barriers, and one bounded deletion. Wrangler's own
+// remote calls stay inside its three separately bounded subprocesses.
+const REMOTE_PROOF_SQL_API_REQUESTS = 27;
 const OWNERSHIP_RETRY_DELAY_BUDGET_MS = Array.from(
   { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
   (_, attempt) => 250 * 2 ** attempt,
@@ -91,7 +125,7 @@ export const REMOTE_PROOF_API_REQUEST_CAP =
   REMOTE_PROOF_OWNERSHIP_BARRIERS * DELETE_CONFIRMATION_ATTEMPTS * 2 +
   REMOTE_PROOF_SQL_API_REQUESTS +
   DISPOSABLE_DATABASE_DELETE_API_REQUEST_CAP;
-export const REMOTE_PROOF_WRANGLER_CALL_CAP = 2;
+export const REMOTE_PROOF_WRANGLER_CALL_CAP = 3;
 export const REMOTE_PROOF_RETRY_DELAY_BUDGET_MS =
   REMOTE_PROOF_OWNERSHIP_BARRIERS * OWNERSHIP_RETRY_DELAY_BUDGET_MS +
   REAPER_RETRY_DELAY_BUDGET_MS;
@@ -1327,10 +1361,16 @@ export function buildMigrationPlan(candidateNames) {
     new Set(numbers).size === numbers.length,
     "D1 migration numeric prefixes must be unique.",
   );
+  const expandIndex = names.indexOf(EXPAND_MIGRATION_NAME);
   const targetIndex = names.indexOf(TARGET_MIGRATION_NAME);
+  invariant(
+    expandIndex >= 0 && targetIndex === expandIndex + 1,
+    "The receipt repair must immediately follow the expand migration.",
+  );
   return {
     fullNames: names,
-    preNames: names.slice(0, targetIndex),
+    preNames: names.slice(0, expandIndex),
+    sourceNames: names.slice(0, targetIndex),
   };
 }
 
@@ -1352,8 +1392,10 @@ async function prepareMigrationDirectories(
   plan,
 ) {
   const preRoot = join(root, "pre");
+  const sourceRoot = join(root, "source");
   const fullRoot = join(root, "full");
   await mkdir(join(preRoot, "migrations"), { recursive: true });
+  await mkdir(join(sourceRoot, "migrations"), { recursive: true });
   await mkdir(join(fullRoot, "migrations"), { recursive: true });
 
   for (const name of plan.fullNames) {
@@ -1362,10 +1404,14 @@ async function prepareMigrationDirectories(
     if (plan.preNames.includes(name)) {
       await copyFile(source, join(preRoot, "migrations", name));
     }
+    if (plan.sourceNames.includes(name)) {
+      await copyFile(source, join(sourceRoot, "migrations", name));
+    }
   }
 
   const config = buildDisposableWranglerConfiguration(databaseName, databaseId);
   const preConfig = join(preRoot, "wrangler.json");
+  const sourceConfig = join(sourceRoot, "wrangler.json");
   const fullConfig = join(fullRoot, "wrangler.json");
   // The only network-derived field is an exact UUID already correlated with
   // the random capability name and creation timestamp. The destination is a
@@ -1373,8 +1419,13 @@ async function prepareMigrationDirectories(
   // codeql[js/http-to-file-access]
   await writeFile(preConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
   // codeql[js/http-to-file-access]
+  await writeFile(sourceConfig, `${config}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  // codeql[js/http-to-file-access]
   await writeFile(fullConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
-  return { fullConfig, preConfig };
+  return { fullConfig, preConfig, sourceConfig };
 }
 
 export function buildDisposableWranglerConfiguration(databaseName, databaseId) {
@@ -1504,6 +1555,26 @@ async function seedOldSchema(configuration, databaseId) {
   }
 }
 
+async function activateProtocolBridgeSource(configuration, databaseId) {
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE relay_state
+     SET slack_delivery_protocol_active = 1,
+         slack_delivery_protocol_revision = ?,
+         slack_delivery_protocol_activated_at = ?,
+         slack_delivery_protocol_activation_id = ?,
+         slack_delivery_protocol_schema_revision =
+           '0004_confirm_slack_delivery'
+     WHERE singleton_id = 1`,
+    [
+      PROTOCOL_BRIDGE_SOURCE_REVISION,
+      PROTOCOL_BRIDGE_SOURCE_ACTIVATED_AT,
+      PROTOCOL_BRIDGE_SOURCE_ACTIVATION_ID,
+    ],
+  );
+}
+
 function exactRows(actual, expected, label) {
   invariant(
     JSON.stringify(actual) === JSON.stringify(expected),
@@ -1589,15 +1660,26 @@ async function proveMigratedState(configuration, databaseId, names) {
     [
       {
         slack_activity_checkpoint_us: 0,
-        slack_delivery_protocol_active: 0,
-        slack_delivery_protocol_revision: null,
-        slack_delivery_protocol_activated_at: null,
-        slack_delivery_protocol_activation_id: null,
-        slack_delivery_protocol_schema_revision: null,
+        slack_delivery_protocol_active: 1,
+        slack_delivery_protocol_revision: PROTOCOL_BRIDGE_SOURCE_REVISION,
+        slack_delivery_protocol_activated_at:
+          PROTOCOL_BRIDGE_SOURCE_ACTIVATED_AT,
+        slack_delivery_protocol_activation_id:
+          PROTOCOL_BRIDGE_SOURCE_ACTIVATION_ID,
+        slack_delivery_protocol_schema_revision:
+          PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION,
         slack_delivery_protocol_confirmation_open: 1,
       },
     ],
-    "Initial protocol state",
+    "Production-parity bridge source state",
+  );
+  invariant(
+    validateSlackDeliveryProtocolPreflight(
+      JSON.stringify([{ success: true, results: state.results }]),
+      PROTOCOL_TARGET_REVISION,
+      PROTOCOL_PROOF_SIGNING_SECRET,
+    ).state === "active_bridge_source",
+    "Production-parity bridge source did not pass the exact deployment preflight.",
   );
 
   const quickCheck = await d1Query(
@@ -1626,7 +1708,10 @@ async function proveSchemaInventory(configuration, databaseId) {
       { type: "index", name: "idx_deliveries_recovery" },
       { type: "index", name: "idx_deliveries_retention" },
       { type: "index", name: "idx_deliveries_slack_message" },
+      { type: "index", name: "idx_deliveries_slack_send_execution" },
       { type: "index", name: "idx_slack_workflow_traces_delivery" },
+      { type: "index", name: "idx_slack_workflow_traces_send_execution" },
+      { type: "index", name: "idx_slack_workflow_traces_message" },
       { type: "table", name: "d1_migrations" },
       { type: "table", name: "deliveries" },
       { type: "table", name: "relay_state" },
@@ -1634,7 +1719,7 @@ async function proveSchemaInventory(configuration, databaseId) {
       { type: "table", name: "slack_workflow_traces" },
       {
         type: "trigger",
-        name: "enforce_one_way_slack_delivery_protocol_activation",
+        name: "enforce_one_time_slack_delivery_protocol_revision_bridge",
       },
       {
         type: "trigger",
@@ -1683,6 +1768,31 @@ async function proveSchemaInventory(configuration, databaseId) {
       "legacy_unverified",
     ].map((name) => ({ name })),
     "Delivery column inventory",
+  );
+
+  const traceColumns = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT name FROM pragma_table_info('slack_workflow_traces') ORDER BY cid`,
+  );
+  exactRows(
+    traceColumns.results,
+    [
+      "trace_id",
+      "delivery_id",
+      "outcome",
+      "relay_attempt",
+      "send_execution_id",
+      "send_boundary_reached",
+      "pre_send_failure_proven",
+      "started_at_us",
+      "completed_at_us",
+      "updated_at",
+      "applied_at",
+      "slack_channel_id",
+      "slack_message_ts",
+    ].map((name) => ({ name })),
+    "Slack workflow trace column inventory",
   );
 }
 
@@ -1830,19 +1940,19 @@ async function proveKnownLossRecovery(configuration, databaseId) {
   );
 }
 
-async function proveOneWayProtocol(configuration, databaseId) {
-  const revision = "a".repeat(40);
-  const activationId = "b".repeat(64);
+async function proveOneTimeProtocolRevisionBridge(configuration, databaseId) {
+  const revision = PROTOCOL_TARGET_REVISION;
+  const activationId = PROTOCOL_TARGET_ACTIVATION_ID;
   await d1Query(
     configuration,
     databaseId,
     `UPDATE relay_state
      SET slack_delivery_protocol_active = 1,
          slack_delivery_protocol_revision = ?,
-         slack_delivery_protocol_activated_at = 2300,
+         slack_delivery_protocol_activated_at = 2400,
          slack_delivery_protocol_activation_id = ?,
          slack_delivery_protocol_schema_revision =
-           '0004_confirm_slack_delivery'
+           '0005_reconcile_live_slack_receipts'
      WHERE singleton_id = 1`,
     [revision, activationId],
   );
@@ -1850,8 +1960,14 @@ async function proveOneWayProtocol(configuration, databaseId) {
     configuration,
     databaseId,
     `UPDATE relay_state
-     SET slack_delivery_protocol_revision = ? WHERE singleton_id = 1`,
-    ["c".repeat(40)],
+     SET slack_delivery_protocol_active = 1,
+         slack_delivery_protocol_revision = ?,
+         slack_delivery_protocol_activated_at = 2500,
+         slack_delivery_protocol_activation_id = ?,
+         slack_delivery_protocol_schema_revision =
+           '0005_reconcile_live_slack_receipts'
+     WHERE singleton_id = 1`,
+    ["e".repeat(40), "f".repeat(64)],
     "slack_delivery_protocol_activation_is_one_way",
   );
   await d1Query(
@@ -1887,13 +2003,14 @@ async function proveOneWayProtocol(configuration, databaseId) {
       {
         slack_delivery_protocol_active: 1,
         slack_delivery_protocol_revision: revision,
-        slack_delivery_protocol_activated_at: 2_300,
+        slack_delivery_protocol_activated_at: 2_400,
         slack_delivery_protocol_activation_id: activationId,
-        slack_delivery_protocol_schema_revision: "0004_confirm_slack_delivery",
+        slack_delivery_protocol_schema_revision:
+          PROTOCOL_TARGET_SCHEMA_REVISION,
         slack_delivery_protocol_confirmation_open: 0,
       },
     ],
-    "Final one-way protocol state",
+    "Final one-time protocol bridge state",
   );
   const quickCheck = await d1Query(
     configuration,
@@ -1931,12 +2048,13 @@ export async function runRemoteMigrationProof(environment = process.env) {
     const createdDatabase = await createDisposableDatabase(configuration);
     databaseId = createdDatabase.id;
     expectedCreatedAt = createdDatabase.createdAt;
-    const { fullConfig, preConfig } = await prepareMigrationDirectories(
-      temporaryRoot,
-      configuration.databaseName,
-      databaseId,
-      plan,
-    );
+    const { fullConfig, preConfig, sourceConfig } =
+      await prepareMigrationDirectories(
+        temporaryRoot,
+        configuration.databaseName,
+        databaseId,
+        plan,
+      );
     await applyMigrationsToOwnedDatabase(
       configuration,
       databaseId,
@@ -1948,6 +2066,13 @@ export async function runRemoteMigrationProof(environment = process.env) {
       configuration,
       databaseId,
       expectedCreatedAt,
+      sourceConfig,
+    );
+    await activateProtocolBridgeSource(configuration, databaseId);
+    await applyMigrationsToOwnedDatabase(
+      configuration,
+      databaseId,
+      expectedCreatedAt,
       fullConfig,
     );
     await proveMigratedState(configuration, databaseId, plan.fullNames);
@@ -1955,7 +2080,7 @@ export async function runRemoteMigrationProof(environment = process.env) {
     await proveOldWorkerQuarantine(configuration, databaseId);
     await proveTraceConstraints(configuration, databaseId);
     await proveKnownLossRecovery(configuration, databaseId);
-    await proveOneWayProtocol(configuration, databaseId);
+    await proveOneTimeProtocolRevisionBridge(configuration, databaseId);
   } catch (error) {
     primaryError = error;
   } finally {
@@ -1988,7 +2113,7 @@ export async function runRemoteMigrationProof(environment = process.env) {
   }
   if (errors.length === 1) throw errors[0];
   console.log(
-    "Remote D1 proof passed: migrations, migrated data, runtime triggers, one-way protocol, quick_check, and cleanup.",
+    "Remote D1 proof passed: production-parity migrations, migrated data, runtime triggers, one-time protocol bridge, quick_check, and cleanup.",
   );
 }
 

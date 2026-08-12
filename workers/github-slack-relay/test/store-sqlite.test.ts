@@ -20,28 +20,39 @@ import {
 } from "./helpers";
 
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
+const RECONCILIATION_RETRY_DELAY_MS = 20 * 60 * 1_000;
 const TEST_REVISION = "a".repeat(40);
 const SEND_EXECUTION_ID = "FxStoreSqliteSend1";
 const DELIVERY_EXECUTION_ID = "FxStoreSqliteDelivery1";
 const TRACE_ATTEMPT_ONE = Object.freeze({
   attemptCount: 1,
   sendExecutionId: null,
+  destination: null,
+  slackChannelId: null,
+  messageTs: null,
 });
 const PRE_SEND_TRACE_ATTEMPT_ONE = Object.freeze({
   attemptCount: 1,
   sendExecutionId: "FxStoreSqliteTraceProof1",
+  destination: null,
+  slackChannelId: null,
+  messageTs: null,
 });
 const SEND_TRACE_ATTEMPT_ONE = Object.freeze({
   attemptCount: 1,
   sendExecutionId: SEND_EXECUTION_ID,
+  destination: null,
+  slackChannelId: null,
+  messageTs: null,
 });
 const openDatabases: DatabaseSync[] = [];
 
 function protocolActivation(revision: string, activationId = "3".repeat(64)) {
   return {
     activationId,
+    bridgeSourceActivationId: "2".repeat(64),
     revision,
-    schemaRevision: "0004_confirm_slack_delivery",
+    schemaRevision: "0005_reconcile_live_slack_receipts",
     now: NOW,
   };
 }
@@ -132,6 +143,7 @@ function databaseWithMigrations(applyMigrations: boolean): {
       "0002_add_destination.sql",
       "0003_rename_delivery_acceptance.sql",
       "0004_confirm_slack_delivery.sql",
+      "0005_reconcile_live_slack_receipts.sql",
     ]) {
       database.exec(migrationSource(migration));
     }
@@ -194,6 +206,92 @@ function pauseOnDeliveryRead(
   };
 }
 
+function pauseOnTraceRead(d1: D1Database): {
+  d1: D1Database;
+  reached: Promise<void>;
+  release: () => void;
+} {
+  let resolveReached: () => void = () => undefined;
+  let resolveRelease: () => void = () => undefined;
+  const reached = new Promise<void>((resolve) => {
+    resolveReached = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    resolveRelease = resolve;
+  });
+  let pausedOnce = false;
+  return {
+    d1: {
+      prepare(query: string): D1PreparedStatement {
+        const statement = d1.prepare(query);
+        if (
+          pausedOnce ||
+          !query.includes("FROM slack_workflow_traces") ||
+          !query.includes("SELECT delivery_id, outcome")
+        ) {
+          return statement;
+        }
+        let bound = statement;
+        const paused = {
+          bind(...values: unknown[]): D1PreparedStatement {
+            bound = statement.bind(...values);
+            return paused as unknown as D1PreparedStatement;
+          },
+          async first<T>(columnName?: string): Promise<T | null> {
+            const result =
+              columnName === undefined
+                ? await bound.first<T>()
+                : await bound.first<T>(columnName);
+            pausedOnce = true;
+            resolveReached();
+            await released;
+            return result;
+          },
+          run: bound.run.bind(bound),
+          all: bound.all.bind(bound),
+        };
+        return paused as unknown as D1PreparedStatement;
+      },
+      batch: d1.batch.bind(d1),
+    } as unknown as D1Database,
+    reached,
+    release: resolveRelease,
+  };
+}
+
+function pauseBeforeFirstBatch(d1: D1Database): {
+  d1: D1Database;
+  reached: Promise<void>;
+  release: () => void;
+} {
+  let resolveReached: () => void = () => undefined;
+  let resolveRelease: () => void = () => undefined;
+  const reached = new Promise<void>((resolve) => {
+    resolveReached = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    resolveRelease = resolve;
+  });
+  let paused = false;
+  return {
+    d1: {
+      prepare: d1.prepare.bind(d1),
+      async batch<T = unknown>(
+        statements: D1PreparedStatement[],
+      ): Promise<D1Result<T>[]> {
+        if (!paused) {
+          paused = true;
+          resolveReached();
+          await released;
+        }
+        return d1.batch<T>(statements);
+      },
+    } as unknown as D1Database,
+    reached,
+    release: resolveRelease,
+  };
+}
+
 function failNextTraceResolutionBatch(d1: D1Database): {
   d1: D1Database;
   arm: () => void;
@@ -237,6 +335,58 @@ afterEach(() => {
 });
 
 describe("D1 schema and constraint behavior on real SQLite", () => {
+  it("binds each Slack function execution to one trace while allowing absent execution IDs", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    for (const deliveryId of ["trace-fx-owner-a", "trace-fx-owner-b"]) {
+      await store.insert(input(deliveryId));
+    }
+    const insertTrace = database.prepare(
+      `INSERT INTO slack_workflow_traces (
+         trace_id, delivery_id, outcome, relay_attempt, send_execution_id,
+         send_boundary_reached, pre_send_failure_proven, started_at_us,
+         completed_at_us, updated_at, applied_at
+       ) VALUES (?, ?, 'pending', 1, ?, 0, 0, ?, NULL, ?, NULL)`,
+    );
+
+    expect(() =>
+      insertTrace.run(
+        "TrMissingFxA1",
+        "trace-fx-owner-a",
+        null,
+        NOW * 1_000,
+        NOW,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      insertTrace.run(
+        "TrMissingFxB1",
+        "trace-fx-owner-b",
+        null,
+        NOW * 1_000,
+        NOW,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      insertTrace.run(
+        "TrUniqueFxA1",
+        "trace-fx-owner-a",
+        "FxUniqueTraceOwner1",
+        NOW * 1_000,
+        NOW,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      insertTrace.run(
+        "TrUniqueFxB1",
+        "trace-fx-owner-b",
+        "FxUniqueTraceOwner1",
+        NOW * 1_000,
+        NOW,
+      ),
+    ).toThrow(/UNIQUE constraint failed/u);
+  });
+
   it("keeps the expand migration compatible with Wrangler's local splitter", () => {
     const { database } = databaseWithMigrations(false);
     for (const migration of [
@@ -463,6 +613,90 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     ).toThrow("slack_delivery_protocol_activation_is_one_way");
   });
 
+  it("bridges the exact deployed source once through the D1 store CAS", async () => {
+    const { database, d1 } = databaseWithMigrations(false);
+    for (const migration of [
+      "0001_initial.sql",
+      "0002_add_destination.sql",
+      "0003_rename_delivery_acceptance.sql",
+      "0004_confirm_slack_delivery.sql",
+    ]) {
+      database.exec(migrationSource(migration));
+    }
+    const sourceRevision = "afe5250504d37543845b07f44af7bfc30a548feb";
+    const sourceActivationId = "2".repeat(64);
+    database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_delivery_protocol_active = 1,
+             slack_delivery_protocol_revision = ?,
+             slack_delivery_protocol_activated_at = ?,
+             slack_delivery_protocol_activation_id = ?,
+             slack_delivery_protocol_schema_revision = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(
+        sourceRevision,
+        NOW - 1_000,
+        sourceActivationId,
+        "0004_confirm_slack_delivery",
+      );
+    database.exec(migrationSource("0005_reconcile_live_slack_receipts.sql"));
+    const store = new D1DeliveryStore(d1);
+
+    await expect(
+      store.activateSlackDeliveryProtocol({
+        activationId: sourceActivationId,
+        bridgeSourceActivationId: sourceActivationId,
+        revision: sourceRevision,
+        schemaRevision: "0004_confirm_slack_delivery",
+        now: NOW,
+      }),
+    ).resolves.toBe("already_applied");
+
+    const target = protocolActivation("d".repeat(40), "4".repeat(64));
+    await expect(
+      store.activateSlackDeliveryProtocol({
+        ...target,
+        bridgeSourceActivationId: "5".repeat(64),
+      }),
+    ).rejects.toThrow("slack_delivery_protocol_activation_conflict");
+    await expect(
+      store.isSlackDeliveryProtocolActive(sourceRevision),
+    ).resolves.toBe(false);
+
+    await expect(
+      store.activateSlackDeliveryProtocol({
+        ...target,
+        bridgeSourceActivationId: sourceActivationId,
+      }),
+    ).resolves.toBe("applied");
+    const activatedState = database
+      .prepare(
+        `SELECT slack_delivery_protocol_revision,
+                slack_delivery_protocol_schema_revision
+         FROM relay_state WHERE singleton_id = 1`,
+      )
+      .get();
+    expect(activatedState).toEqual({
+      slack_delivery_protocol_revision: "d".repeat(40),
+      slack_delivery_protocol_schema_revision:
+        "0005_reconcile_live_slack_receipts",
+    });
+    await expect(
+      store.activateSlackDeliveryProtocol({
+        ...target,
+        bridgeSourceActivationId: sourceActivationId,
+      }),
+    ).resolves.toBe("already_applied");
+    await expect(
+      store.activateSlackDeliveryProtocol({
+        ...protocolActivation("e".repeat(40), "6".repeat(64)),
+        bridgeSourceActivationId: sourceActivationId,
+      }),
+    ).rejects.toThrow("slack_delivery_protocol_activation_conflict");
+  });
+
   it("refuses activation when an expanded schema artifact is absent", async () => {
     const { database, d1 } = databaseWithMigrations(true);
     database.exec("DROP TRIGGER quarantine_old_worker_acceptance");
@@ -527,6 +761,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       delivered_at: null,
       slack_message_ts: null,
     });
+    database.exec(migrationSource("0005_reconcile_live_slack_receipts.sql"));
     const store = new D1DeliveryStore(d1);
     await expect(store.healthcheck(NOW, TEST_REVISION)).resolves.toBe(false);
     await store.recordSlackTrace(
@@ -680,6 +915,10 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       ),
     ).toThrow();
 
+    // The repaired Worker is deployed only after the next migration has
+    // upgraded the production schema.
+    database.exec(migrationSource("0005_reconcile_live_slack_receipts.sql"));
+
     await expect(
       store.claimForSlack(
         "de345e40-95b1-11f1-8d38-fac15f0bb4cd",
@@ -697,7 +936,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       phase: "send_started",
       messageTs: null,
       attemptCount: 2,
-      functionExecutionId: SEND_EXECUTION_ID,
+      functionExecutionId: "FxStoreSqliteSend2",
       now: authorizationAt + 2,
       reconcileAt: authorizationAt + 20 * 60 * 1_000,
     });
@@ -774,16 +1013,17 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       store.advanceSlackActivityCheckpoint((NOW + 60 * 60 * 1_000) * 1_000),
     ).resolves.toBe((NOW + 3) * 1_000);
 
+    const secondAttemptAt = NOW + RECONCILIATION_RETRY_DELAY_MS + 3;
     await store.markQueued(deliveryId, NOW + 4);
-    await store.claimForSlack(deliveryId, NOW + 5);
+    await store.claimForSlack(deliveryId, secondAttemptAt);
     await store.markAcceptedByTrigger(
       deliveryId,
-      NOW + 6,
+      secondAttemptAt + 1,
       NOW + 20 * 60 * 1_000,
     );
     await expect(
       store.advanceSlackActivityCheckpoint((NOW + 60 * 60 * 1_000) * 1_000),
-    ).resolves.toBe((NOW + 6) * 1_000);
+    ).resolves.toBe((secondAttemptAt + 1) * 1_000);
   });
 
   it("recognizes the migrated schema only after protocol activation", async () => {
@@ -976,7 +1216,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       phase: "send_started",
       messageTs: null,
       attemptCount: 1,
-      functionExecutionId: SEND_EXECUTION_ID,
+      functionExecutionId: "FxStoreSqliteSend2",
       now: NOW + 1,
       reconcileAt: NOW + 20 * 60 * 1_000,
     });
@@ -992,6 +1232,191 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         reconcileAt: NOW + 20 * 60 * 1_000,
       }),
     ).rejects.toThrow("slack_message_timestamp_conflict");
+  });
+
+  it("resolves live Activities evidence through the unique send boundary", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-live-activities-receipt";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 20 * 60 * 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: "Fx0BPVFG8ARF",
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    await expect(
+      store.resolveSlackTraceIdentityBySendExecutionId("Fx0BPVFG8ARF"),
+    ).resolves.toEqual({
+      deliveryId,
+      destination: "alerts",
+      attemptCount: 1,
+    });
+    await store.recordSlackTrace(
+      {
+        traceId: "Tr0BPPV04R45",
+        deliveryId,
+        destination: "alerts",
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: "Fx0BPVFG8ARF",
+        slackChannelId: "C0BMUK793NV",
+        messageTs: "1786555894.853909",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      slackMessageTs: "1786555894.853909",
+      slackTraceId: "Tr0BPPV04R45",
+      slackSendExecutionId: "Fx0BPVFG8ARF",
+      lastError: null,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT slack_channel_id, slack_message_ts, applied_at
+           FROM slack_workflow_traces WHERE trace_id = ?`,
+        )
+        .get("Tr0BPPV04R45"),
+    ).toEqual({
+      slack_channel_id: "C0BMUK793NV",
+      slack_message_ts: "1786555894.853909",
+      applied_at: NOW + 2,
+    });
+  });
+
+  it("rejects live Activities evidence that conflicts with a direct receipt", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-live-activities-conflicting-receipt";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 20 * 60 * 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000901",
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 2,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId: "TrConflictingLiveReceipt1",
+          deliveryId,
+          outcome: "error",
+          ...SEND_TRACE_ATTEMPT_ONE,
+          destination: "alerts",
+          slackChannelId: "C0BMUK793NV",
+          messageTs: "1785758400.000902",
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 3,
+      ),
+    ).rejects.toThrow("slack_trace_message_resolution_conflict");
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      slackMessageTs: "1785758400.000901",
+      slackTraceId: null,
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get("TrConflictingLiveReceipt1"),
+    ).toEqual({ applied_at: null });
+  });
+
+  it("attaches matching live Activities evidence after a direct receipt", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-live-activities-matching-receipt";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 20 * 60 * 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000903",
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 2,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await store.recordSlackTrace(
+      {
+        traceId: "TrMatchingLiveReceipt1",
+        deliveryId,
+        outcome: "error",
+        ...SEND_TRACE_ATTEMPT_ONE,
+        destination: "alerts",
+        slackChannelId: "C0BMUK793NV",
+        messageTs: "1785758400.000903",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 3,
+    );
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      slackMessageTs: "1785758400.000903",
+      slackTraceId: "TrMatchingLiveReceipt1",
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get("TrMatchingLiveReceipt1"),
+    ).toEqual({ applied_at: NOW + 3 });
   });
 
   it("converges concurrent send-boundary callbacks to one mutation", async () => {
@@ -1020,7 +1445,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     expect(outcomes.sort()).toEqual(["duplicate", "recorded"]);
   });
 
-  it("leases a send boundary to one Slack function execution per attempt", async () => {
+  it("leases a send boundary to one Slack function and never retries stale pre-send evidence", async () => {
     const { d1 } = databaseWithMigrations(true);
     const store = new D1DeliveryStore(d1);
     const deliveryId = "sqlite-send-boundary-execution-lease";
@@ -1059,6 +1484,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         outcome: "error",
         attemptCount: 1,
         sendExecutionId: "FxSendLeaseFirst1",
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -1066,20 +1494,15 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       },
       NOW + 2,
     );
+    const secondAttemptAt = NOW + RECONCILIATION_RETRY_DELAY_MS + 2;
     await store.markQueued(deliveryId, NOW + 3);
-    await store.claimForSlack(deliveryId, NOW + 4);
-    await store.markAcceptedByTrigger(deliveryId, NOW + 4, NOW + 5_000);
-    await expect(
-      store.recordSlackProgress({
-        ...firstExecution,
-        attemptCount: 2,
-        functionExecutionId: "FxSendLeaseAttemptTwo2",
-        now: NOW + 5,
-      }),
-    ).resolves.toBe("recorded");
-    await expect(store.recordSlackProgress(firstExecution)).rejects.toThrow(
-      "slack_delivery_attempt_conflict",
-    );
+    await expect(store.claimForSlack(deliveryId, secondAttemptAt)).resolves.toBeNull();
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "manual_review",
+      attemptCount: 1,
+      slackSendExecutionId: "FxSendLeaseFirst1",
+      lastError: "slack_workflow_failed_after_send_boundary",
+    });
   });
 
   it("does not let a competing Slack execution release the active send lease", async () => {
@@ -1137,6 +1560,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         outcome: "error",
         attemptCount: 1,
         sendExecutionId: "FxAttemptOneValidator1",
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -1144,9 +1570,14 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       },
       NOW + 1,
     );
+    const secondAttemptAt = NOW + RECONCILIATION_RETRY_DELAY_MS + 1;
     await store.markQueued(deliveryId, NOW + 2);
-    await store.claimForSlack(deliveryId, NOW + 3);
-    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
+    await store.claimForSlack(deliveryId, secondAttemptAt);
+    await store.markAcceptedByTrigger(
+      deliveryId,
+      secondAttemptAt,
+      secondAttemptAt + 1_000,
+    );
     await store.recordSlackProgress({
       deliveryId,
       destination: "alerts",
@@ -1154,8 +1585,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       messageTs: null,
       attemptCount: 2,
       functionExecutionId: "FxAttemptTwoSendOwner2",
-      now: NOW + 4,
-      reconcileAt: NOW + 5_000,
+      now: secondAttemptAt + 1,
+      reconcileAt: secondAttemptAt + 2_000,
     });
     await store.recordSlackProgress({
       deliveryId,
@@ -1175,6 +1606,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         outcome: "success",
         attemptCount: 1,
         sendExecutionId: "FxAttemptOneSendOwner1",
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
         sendBoundaryReached: true,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000,
@@ -1253,7 +1687,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       completedAtUs: NOW * 1_000,
     };
 
-    await store.recordSlackTrace(trace, NOW + 1);
+    await expect(store.recordSlackTrace(trace, NOW + 1)).resolves.toBe(
+      "changed",
+    );
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "pending",
       slackTraceId: trace.traceId,
@@ -1294,14 +1730,19 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     };
 
     await store.recordSlackTrace(trace, NOW + 1);
+    const secondAttemptAt = NOW + RECONCILIATION_RETRY_DELAY_MS + 1;
     await store.markQueued(deliveryId, NOW + 2);
-    await store.claimForSlack(deliveryId, NOW + 3);
-    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
-    await store.recordSlackTrace(trace, NOW + 4);
+    await store.claimForSlack(deliveryId, secondAttemptAt);
+    await store.markAcceptedByTrigger(
+      deliveryId,
+      secondAttemptAt,
+      secondAttemptAt + 1_000,
+    );
+    await store.recordSlackTrace(trace, secondAttemptAt + 1);
 
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "accepted_by_trigger",
-      slackTraceId: trace.traceId,
+      slackTraceId: null,
       attemptCount: 2,
     });
     await store.recordSlackProgress({
@@ -1311,8 +1752,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       messageTs: null,
       attemptCount: 2,
       functionExecutionId: SEND_EXECUTION_ID,
-      now: NOW + 5,
-      reconcileAt: NOW + 5_000,
+      now: secondAttemptAt + 2,
+      reconcileAt: secondAttemptAt + 2_000,
     });
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "send_started",
@@ -1341,17 +1782,24 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     };
 
     await store.recordSlackTrace(trace, NOW + 1);
+    const secondAttemptAt = NOW + RECONCILIATION_RETRY_DELAY_MS + 1;
     await store.markQueued(deliveryId, NOW + 2);
-    await store.claimForSlack(deliveryId, NOW + 3);
-    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
-    await store.recordSlackTrace(
-      {
-        ...trace,
-        sendBoundaryReached: true,
-        preSendFailureProven: false,
-      },
-      NOW + 4,
+    await store.claimForSlack(deliveryId, secondAttemptAt);
+    await store.markAcceptedByTrigger(
+      deliveryId,
+      secondAttemptAt,
+      secondAttemptAt + 1_000,
     );
+    await expect(
+      store.recordSlackTrace(
+        {
+          ...trace,
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+        },
+        secondAttemptAt + 1,
+      ),
+    ).resolves.toBe("duplicate");
 
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "accepted_by_trigger",
@@ -1360,7 +1808,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     });
   });
 
-  it("keeps a trace resolution CAS from mutating an attempt claimed after its read", async () => {
+  it("blocks a later attempt while positive boundary resolution is pending", async () => {
     const { d1 } = databaseWithMigrations(true);
     const deliveryId = "sqlite-trace-resolution-attempt-race";
     const mutator = new D1DeliveryStore(d1);
@@ -1399,17 +1847,109 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       },
       NOW + 2,
     );
+    const secondAttemptAt = NOW + RECONCILIATION_RETRY_DELAY_MS + 2;
     await mutator.markQueued(deliveryId, NOW + 3);
-    await mutator.claimForSlack(deliveryId, NOW + 4);
-    await mutator.markAcceptedByTrigger(deliveryId, NOW + 4, NOW + 5_000);
+    await expect(
+      mutator.claimForSlack(deliveryId, secondAttemptAt),
+    ).resolves.toBeNull();
     barrier.release();
     await lateBoundary;
 
     await expect(mutator.get(deliveryId)).resolves.toMatchObject({
-      status: "accepted_by_trigger",
-      attemptCount: 2,
-      lastError: null,
-      slackTraceId: "TrSqliteAttemptRaceRetry1",
+      status: "manual_review",
+      attemptCount: 1,
+      lastError: "slack_workflow_failed_after_send_boundary",
+      slackTraceId: "TrSqliteAttemptRaceBoundary1",
+    });
+  });
+
+  it("never lets a stale pre-send claim override a persisted send boundary", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-persisted-boundary-dominates";
+    const store = new D1DeliveryStore(d1);
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + RECONCILIATION_RETRY_DELAY_MS,
+    });
+
+    await expect(
+      store.recordSlackTrace(
+        {
+          traceId: "TrSqlitePersistedBoundaryDominates1",
+          deliveryId,
+          outcome: "error",
+          ...SEND_TRACE_ATTEMPT_ONE,
+          sendBoundaryReached: false,
+          preSendFailureProven: true,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 2,
+      ),
+    ).resolves.toBe("changed");
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "manual_review",
+      attemptCount: 1,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: "slack_workflow_failed_after_send_boundary",
+    });
+  });
+
+  it("never lets a stale pre-send CAS race a persisted send boundary", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-pre-send-send-started-cas-race";
+    const mutator = new D1DeliveryStore(d1);
+    await mutator.insert(input(deliveryId));
+    await mutator.markQueued(deliveryId, NOW);
+    await mutator.claimForSlack(deliveryId, NOW);
+    await mutator.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+
+    const barrier = pauseOnDeliveryRead(d1, 2);
+    const resolver = new D1DeliveryStore(barrier.d1);
+    const stalePreSendTrace = resolver.recordSlackTrace(
+      {
+        traceId: "TrSqlitePreSendSendStartedCasRace1",
+        deliveryId,
+        outcome: "error",
+        ...SEND_TRACE_ATTEMPT_ONE,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    await barrier.reached;
+
+    await mutator.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + RECONCILIATION_RETRY_DELAY_MS,
+    });
+    barrier.release();
+    await expect(stalePreSendTrace).resolves.toBe("changed");
+
+    await expect(mutator.get(deliveryId)).resolves.toMatchObject({
+      status: "manual_review",
+      attemptCount: 1,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: "slack_workflow_failed_after_send_boundary",
     });
   });
 
@@ -1526,6 +2066,75 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     ).toEqual({ applied_at: NOW + 3 });
   });
 
+  it("reconciles pre-send proof after a sending failure returns to pending", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-pre-send-before-sending-failure";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    const trace = {
+      traceId: "TrPreSendBeforeSendingFailure1",
+      deliveryId,
+      outcome: "error" as const,
+      attemptCount: 1,
+      sendExecutionId: "FxPreSendBeforeFailure1",
+      destination: null,
+      slackChannelId: null,
+      messageTs: null,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      startedAtUs: NOW * 1_000,
+      completedAtUs: NOW * 1_000 + 1,
+    };
+
+    await expect(store.recordSlackTrace(trace, NOW + 1)).resolves.toBe(
+      "changed",
+    );
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get(trace.traceId),
+    ).toEqual({ applied_at: null });
+    await store.recordFailure(
+      deliveryId,
+      NOW + 2,
+      NOW + 3,
+      "pre_trigger_failure",
+    );
+    await expect(store.claimForSlack(deliveryId, NOW + 3)).resolves.toBeNull();
+    await expect(store.recordSlackTrace(trace, NOW + 4)).resolves.toBe(
+      "duplicate",
+    );
+
+    const retryAt = NOW + 4 + RECONCILIATION_RETRY_DELAY_MS;
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+      nextAttemptAt: retryAt,
+      slackTraceId: trace.traceId,
+      slackSendExecutionId: trace.sendExecutionId,
+      lastError: "slack_workflow_failed_before_send_boundary",
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get(trace.traceId),
+    ).toEqual({ applied_at: NOW + 4 });
+    await expect(
+      store.claimForSlack(deliveryId, retryAt),
+    ).resolves.toMatchObject({
+      status: "sending",
+      attemptCount: 2,
+      slackTraceId: null,
+      slackSendExecutionId: null,
+    });
+  });
+
   it("atomically marks a retry trace before a lost batch response", async () => {
     const { database, d1 } = databaseWithMigrations(true);
     let loseBatchResponse = true;
@@ -1569,9 +2178,14 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         )
         .get(trace.traceId),
     ).toEqual({ applied_at: NOW + 1 });
+    const secondAttemptAt = NOW + RECONCILIATION_RETRY_DELAY_MS + 1;
     await store.markQueued(deliveryId, NOW + 2);
-    await store.claimForSlack(deliveryId, NOW + 3);
-    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
+    await store.claimForSlack(deliveryId, secondAttemptAt);
+    await store.markAcceptedByTrigger(
+      deliveryId,
+      secondAttemptAt,
+      secondAttemptAt + 1_000,
+    );
     await store.recordSlackProgress({
       deliveryId,
       destination: "alerts",
@@ -1579,10 +2193,10 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       messageTs: null,
       attemptCount: 2,
       functionExecutionId: SEND_EXECUTION_ID,
-      now: NOW + 4,
-      reconcileAt: NOW + 5_000,
+      now: secondAttemptAt + 1,
+      reconcileAt: secondAttemptAt + 2_000,
     });
-    await store.recordSlackTrace(trace, NOW + 4);
+    await store.recordSlackTrace(trace, secondAttemptAt + 1);
 
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "send_started",
@@ -1647,6 +2261,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         outcome: "pending",
         attemptCount: 1,
         sendExecutionId: "FxStoreSqliteBoundary1",
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
         sendBoundaryReached: true,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000,
@@ -1661,6 +2278,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         outcome: "error",
         attemptCount: 1,
         sendExecutionId: "FxStoreSqliteBoundary1",
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -1673,6 +2293,137 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       status: "manual_review",
       lastError: "slack_workflow_failed_after_send_boundary",
       slackTraceId: "TrBoundaryOverlap1",
+    });
+  });
+
+  it("does not let a concurrent pending observation downgrade a terminal trace", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-trace-terminal-monotonic";
+    const terminalStore = new D1DeliveryStore(d1);
+    await terminalStore.insert(input(deliveryId));
+    await terminalStore.markQueued(deliveryId, NOW);
+    await terminalStore.claimForSlack(deliveryId, NOW);
+    await terminalStore.markAcceptedByTrigger(
+      deliveryId,
+      NOW,
+      NOW + 20 * 60 * 1_000,
+    );
+
+    const barrier = pauseOnTraceRead(d1);
+    const pendingStore = new D1DeliveryStore(barrier.d1);
+    const pending = pendingStore.recordSlackTrace(
+      {
+        traceId: "TrTerminalMonotonic1",
+        deliveryId,
+        outcome: "pending",
+        ...TRACE_ATTEMPT_ONE,
+        sendBoundaryReached: false,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: null,
+      },
+      NOW + 2,
+    );
+    await barrier.reached;
+    await terminalStore.recordSlackTrace(
+      {
+        traceId: "TrTerminalMonotonic1",
+        deliveryId,
+        outcome: "error",
+        ...TRACE_ATTEMPT_ONE,
+        sendBoundaryReached: false,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 1,
+    );
+    barrier.release();
+    await pending;
+
+    expect(
+      database
+        .prepare(
+          `SELECT outcome, completed_at_us, applied_at
+           FROM slack_workflow_traces WHERE trace_id = ?`,
+        )
+        .get("TrTerminalMonotonic1"),
+    ).toEqual({
+      outcome: "error",
+      completed_at_us: NOW * 1_000 + 1,
+      applied_at: NOW + 1,
+    });
+    await expect(terminalStore.get(deliveryId)).resolves.toMatchObject({
+      status: "manual_review",
+      lastError: "slack_workflow_failed_without_pre_send_proof",
+    });
+  });
+
+  it("does not let a concurrent trace ID rebind proof to another delivery", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const firstStore = new D1DeliveryStore(d1);
+    const firstDeliveryId = "sqlite-trace-identity-race-a";
+    const secondDeliveryId = "sqlite-trace-identity-race-b";
+    for (const deliveryId of [firstDeliveryId, secondDeliveryId]) {
+      await firstStore.insert(input(deliveryId));
+      await firstStore.markQueued(deliveryId, NOW);
+      await firstStore.claimForSlack(deliveryId, NOW);
+      await firstStore.markAcceptedByTrigger(
+        deliveryId,
+        NOW,
+        NOW + 20 * 60 * 1_000,
+      );
+    }
+
+    const barrier = pauseOnTraceRead(d1);
+    const secondStore = new D1DeliveryStore(barrier.d1);
+    const second = secondStore.recordSlackTrace(
+      {
+        traceId: "TrIdentityRace1",
+        deliveryId: secondDeliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: "FxIdentityRaceSecond1",
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    await barrier.reached;
+    await expect(
+      firstStore.recordSlackTrace(
+        {
+          traceId: "TrIdentityRace1",
+          deliveryId: firstDeliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: "FxIdentityRaceFirst1",
+          destination: null,
+          slackChannelId: null,
+          messageTs: null,
+          sendBoundaryReached: false,
+          preSendFailureProven: true,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 1,
+      ),
+    ).resolves.toBe("changed");
+    barrier.release();
+    await expect(second).rejects.toThrow("slack_trace_delivery_conflict");
+
+    await expect(firstStore.get(firstDeliveryId)).resolves.toMatchObject({
+      status: "pending",
+      slackTraceId: "TrIdentityRace1",
+    });
+    await expect(firstStore.get(secondDeliveryId)).resolves.toMatchObject({
+      status: "accepted_by_trigger",
+      slackTraceId: null,
     });
   });
 
@@ -1719,7 +2470,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     });
   });
 
-  it("lets authenticated pre-send failure proof override a lost send-started response", async () => {
+  it("never lets authenticated pre-send proof override a committed send-started boundary", async () => {
     const { d1 } = databaseWithMigrations(true);
     const store = new D1DeliveryStore(d1);
     const deliveryId = "sqlite-send-started-response-lost";
@@ -1745,6 +2496,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         outcome: "error",
         attemptCount: 1,
         sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -1754,8 +2508,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     );
 
     await expect(store.get(deliveryId)).resolves.toMatchObject({
-      status: "pending",
-      lastError: "slack_workflow_failed_before_send_boundary",
+      status: "manual_review",
+      lastError: "slack_workflow_failed_after_send_boundary",
       slackTraceId: "TrSendStartedResponseLost1",
     });
   });
@@ -2219,6 +2973,614 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       status: "manual_review",
       lastError: "slack_workflow_failed_without_pre_send_proof",
       slackTraceId: "TrMissingProofOriginal1",
+    });
+  });
+
+  it("does not let a stale pre-send resolution overtake message evidence for the same trace", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-pre-send-message-race";
+    const setup = new D1DeliveryStore(d1);
+    await setup.insert(input(deliveryId));
+    await setup.markQueued(deliveryId, NOW);
+    await setup.claimForSlack(deliveryId, NOW);
+    await setup.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await setup.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    const preSendBarrier = pauseBeforeFirstBatch(d1);
+    const messageBarrier = pauseBeforeFirstBatch(d1);
+    const preSendStore = new D1DeliveryStore(preSendBarrier.d1);
+    const messageStore = new D1DeliveryStore(messageBarrier.d1);
+    const traceId = "TrPreSendMessageRace1";
+    const preSend = preSendStore.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    await preSendBarrier.reached;
+    const message = messageStore.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: "alerts",
+        slackChannelId: "C0BMUK793NV",
+        messageTs: "1785758400.000991",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 3,
+    );
+    await messageBarrier.reached;
+    preSendBarrier.release();
+    await preSend;
+    messageBarrier.release();
+    await expect(message).resolves.toBe("duplicate");
+
+    await expect(setup.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackMessageTs: "1785758400.000991",
+      slackTraceId: traceId,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: null,
+    });
+  });
+
+  it("derives the effective destination when terminal evidence completes a pending message trace", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-terminal-after-pending-message";
+    const setup = new D1DeliveryStore(d1);
+    await setup.insert(input(deliveryId));
+    await setup.markQueued(deliveryId, NOW);
+    await setup.claimForSlack(deliveryId, NOW);
+    await setup.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await setup.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    const barrier = pauseOnTraceRead(d1);
+    const delayedTerminalStore = new D1DeliveryStore(barrier.d1);
+    const traceId = "TrTerminalAfterPendingMessage1";
+    const terminal = delayedTerminalStore.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 3,
+    );
+    await barrier.reached;
+    await setup.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "pending",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: "alerts",
+        slackChannelId: "C0BMUK793NV",
+        messageTs: "1785758400.000996",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: null,
+      },
+      NOW + 2,
+    );
+    barrier.release();
+    await expect(terminal).resolves.toBe("changed");
+
+    await expect(setup.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackMessageTs: "1785758400.000996",
+      slackTraceId: traceId,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: null,
+    });
+  });
+
+  it("resolves a delayed pending observation from the effective terminal message trace", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-pending-message-enrichment";
+    const setup = new D1DeliveryStore(d1);
+    await setup.insert(input(deliveryId));
+    await setup.markQueued(deliveryId, NOW);
+    await setup.claimForSlack(deliveryId, NOW);
+    await setup.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await setup.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    const barrier = pauseOnTraceRead(d1);
+    const delayedStore = new D1DeliveryStore(barrier.d1);
+    const traceId = "TrPendingMessageEnrichment1";
+    const delayed = delayedStore.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "pending",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: "alerts",
+        slackChannelId: "C0BMUK793NV",
+        messageTs: "1785758400.000993",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: null,
+      },
+      NOW + 3,
+    );
+    await barrier.reached;
+    await setup.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    barrier.release();
+    await expect(delayed).resolves.toBe("duplicate");
+
+    await expect(setup.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackMessageTs: "1785758400.000993",
+      slackTraceId: traceId,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: null,
+    });
+  });
+
+  it("lets a direct receipt dominate a concurrent pre-send retry release", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-direct-receipt-pre-send-race";
+    const setup = new D1DeliveryStore(d1);
+    await setup.insert(input(deliveryId));
+    await setup.markQueued(deliveryId, NOW);
+    await setup.claimForSlack(deliveryId, NOW);
+    await setup.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await setup.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    const barrier = pauseOnDeliveryRead(d1, 1);
+    const receiptStore = new D1DeliveryStore(barrier.d1);
+    const receipt = receiptStore.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000992",
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 3,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await barrier.reached;
+    await setup.recordSlackTrace(
+      {
+        traceId: "TrDirectReceiptPreSendRace1",
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    barrier.release();
+    await expect(receipt).resolves.toBe("recorded");
+
+    await expect(setup.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackMessageTs: "1785758400.000992",
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: null,
+    });
+  });
+
+  it("retains the boundary owner in manual review until a late direct receipt arrives", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-late-receipt-before-retry";
+    const traceId = "TrLateReceiptBeforeRetry1";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await store.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+
+    const retryAt = NOW + RECONCILIATION_RETRY_DELAY_MS;
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "manual_review",
+      attemptCount: 1,
+      nextAttemptAt: retryAt,
+      slackTraceId: traceId,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+    });
+    await expect(
+      store.claimForSlack(deliveryId, retryAt - 1),
+    ).resolves.toBeNull();
+    await expect(
+      store.recordSlackProgress({
+        deliveryId,
+        destination: "alerts",
+        phase: "delivered",
+        messageTs: "1785758400.000994",
+        attemptCount: 1,
+        functionExecutionId: DELIVERY_EXECUTION_ID,
+        now: NOW + 3,
+        reconcileAt: NOW + 20 * 60 * 1_000,
+      }),
+    ).resolves.toBe("recorded");
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackMessageTs: "1785758400.000994",
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: null,
+    });
+  });
+
+  it("does not claim a retry and accepts the original receipt after send-started evidence", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-old-receipt-after-next-attempt";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await store.recordSlackTrace(
+      {
+        traceId: "TrOldReceiptAfterNextAttempt1",
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+
+    const retryAt = NOW + 2 + RECONCILIATION_RETRY_DELAY_MS;
+    await expect(
+      store.claimForSlack(deliveryId, retryAt),
+    ).resolves.toBeNull();
+    await expect(
+      store.recordSlackProgress({
+        deliveryId,
+        destination: "alerts",
+        phase: "delivered",
+        messageTs: "1785758400.000995",
+        attemptCount: 1,
+        functionExecutionId: DELIVERY_EXECUTION_ID,
+        now: retryAt + 1,
+        reconcileAt: retryAt + 20 * 60 * 1_000,
+      }),
+    ).resolves.toBe("recorded");
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackMessageTs: "1785758400.000995",
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: null,
+    });
+  });
+
+  it("does not let an earlier trace block a later pre-trigger retry", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-later-pre-trigger-retry";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackTrace(
+      {
+        traceId: "TrEarlierAttemptBeforeRetry1",
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 1,
+    );
+
+    const secondAttemptAt = NOW + 1 + RECONCILIATION_RETRY_DELAY_MS;
+    await expect(
+      store.claimForSlack(deliveryId, secondAttemptAt),
+    ).resolves.toMatchObject({
+      status: "sending",
+      attemptCount: 2,
+      slackTraceId: null,
+      slackSendExecutionId: null,
+    });
+    await store.recordFailure(
+      deliveryId,
+      secondAttemptAt + 1,
+      secondAttemptAt + 2,
+      "pre_trigger_failure",
+    );
+    await expect(
+      store.claimForSlack(deliveryId, secondAttemptAt + 2),
+    ).resolves.toMatchObject({
+      status: "sending",
+      attemptCount: 3,
+      slackTraceId: null,
+      slackSendExecutionId: null,
+    });
+  });
+
+  it("does not claim a retry after its trace gains positive evidence", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const setup = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-positive-trace-before-retry-claim";
+    const traceId = "TrPositiveBeforeRetryClaim1";
+    await setup.insert(input(deliveryId));
+    await setup.markQueued(deliveryId, NOW);
+    await setup.claimForSlack(deliveryId, NOW);
+    await setup.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await setup.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await setup.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+
+    const barrier = pauseBeforeFirstBatch(d1);
+    const resolver = new D1DeliveryStore(barrier.d1);
+    const positive = resolver.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
+        destination: "alerts",
+        slackChannelId: "C0BMUK793NV",
+        messageTs: "1785758400.000997",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 3,
+    );
+    await barrier.reached;
+
+    const retryAt = NOW + 2 + RECONCILIATION_RETRY_DELAY_MS;
+    await expect(setup.claimForSlack(deliveryId, retryAt)).resolves.toBeNull();
+    barrier.release();
+    await expect(positive).resolves.toBe("duplicate");
+    await expect(setup.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackMessageTs: "1785758400.000997",
+      slackTraceId: traceId,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: null,
+    });
+  });
+
+  it("rejects a second trace that reuses an owned send execution", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const setup = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-reused-trace-send-execution";
+    const firstTraceId = "TrOwnedSendExecution1";
+    await setup.insert(input(deliveryId));
+    await setup.markQueued(deliveryId, NOW);
+    await setup.claimForSlack(deliveryId, NOW);
+    await setup.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await setup.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await expect(
+      setup.recordSlackTrace(
+        {
+          traceId: firstTraceId,
+          deliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: SEND_EXECUTION_ID,
+          destination: null,
+          slackChannelId: null,
+          messageTs: null,
+          sendBoundaryReached: false,
+          preSendFailureProven: true,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 1,
+        },
+        NOW + 2,
+      ),
+    ).resolves.toBe("changed");
+
+    await expect(
+      setup.recordSlackTrace(
+        {
+          traceId: "TrReusedSendExecution2",
+          deliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId: SEND_EXECUTION_ID,
+          destination: "alerts",
+          slackChannelId: "C0BMUK793NV",
+          messageTs: "1785758400.000998",
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000,
+          completedAtUs: NOW * 1_000 + 2,
+        },
+        NOW + 3,
+      ),
+    ).rejects.toThrow("slack_trace_send_execution_owner_conflict");
+
+    const traceOwners = database
+      .prepare(
+        `SELECT trace_id
+         FROM slack_workflow_traces
+         WHERE send_execution_id = ?
+         ORDER BY trace_id`,
+      )
+      .all(SEND_EXECUTION_ID)
+      .map((row) => row.trace_id);
+    expect(traceOwners).toEqual([firstTraceId]);
+    await expect(setup.get(deliveryId)).resolves.toMatchObject({
+      status: "manual_review",
+      attemptCount: 1,
+      slackMessageTs: null,
+      slackTraceId: firstTraceId,
+      slackSendExecutionId: SEND_EXECUTION_ID,
+      lastError: "slack_workflow_failed_after_send_boundary",
     });
   });
 });

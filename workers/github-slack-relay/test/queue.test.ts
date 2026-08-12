@@ -660,6 +660,9 @@ describe("scheduled recovery and retention", () => {
             deliveryId === "old-delivered"
               ? "FxOldDeliveredSend1"
               : "FxRecentDeliveredSend1",
+          destination: null,
+          slackChannelId: null,
+          messageTs: null,
           sendBoundaryReached: true,
           preSendFailureProven: false,
           startedAtUs: completedAt * 1_000 - 1,

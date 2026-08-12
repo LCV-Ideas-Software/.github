@@ -4,7 +4,8 @@ const MAX_ACTIVATION_ATTEMPTS = 2;
 const MAX_RESPONSE_BYTES = 2_048;
 const MINIMUM_SECRET_BYTES = 32;
 const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/;
-export const DELIVERY_PROTOCOL_SCHEMA_REVISION = "0004_confirm_slack_delivery";
+export const DELIVERY_PROTOCOL_SCHEMA_REVISION =
+  "0005_reconcile_live_slack_receipts";
 
 type UnknownRecord = Record<string, unknown>;
 
