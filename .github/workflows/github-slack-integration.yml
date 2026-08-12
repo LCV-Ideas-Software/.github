@@ -48,7 +48,14 @@ jobs:
           node-version: 24
           check-latest: true
           cache: npm
-          cache-dependency-path: workers/github-slack-relay/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            workers/github-slack-relay/package-lock.json
+
+      - name: Install governance policy dependencies
+        run: |
+          test "$(npm config get registry)" = "https://registry.npmjs.org/"
+          npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Install relay dependencies
         run: |

@@ -59,6 +59,26 @@ function workflowStep(source, name) {
   return source.slice(start, next === -1 ? source.length : next);
 }
 
+function assertRootPolicyDependenciesInstalled(source, testStepName) {
+  const installName = "Install governance policy dependencies";
+  const installMarker = `      - name: ${installName}\n`;
+  assert.equal(
+    source.split(installMarker).length - 1,
+    1,
+    `${installName} must appear exactly once`,
+  );
+  const install = workflowStep(source, installName);
+  assert.match(
+    install,
+    /run: \|\n          test "\$\(npm config get registry\)" = "https:\/\/registry\.npmjs\.org\/"\n          npm ci --ignore-scripts --no-audit --no-fund\n/u,
+  );
+  assert.ok(
+    source.indexOf(installMarker) <
+      source.indexOf(`      - name: ${testStepName}\n`),
+    `${installName} must run before ${testStepName}`,
+  );
+}
+
 async function workflowSources() {
   const names = (await readdir(WORKFLOWS_DIRECTORY_URL))
     .filter((name) => /\.ya?ml$/u.test(name))
@@ -101,6 +121,17 @@ function assertRecoveryEnvironmentIsolation(workflows) {
       `${name} must contain a jobs mapping`,
     );
     parsedWorkflows.set(name, workflow);
+    const serializedWorkflowEnvironment = JSON.stringify(workflow.env ?? {});
+    for (const credential of [
+      "SLACK_REDELIVERY_APP_CLIENT_ID",
+      "SLACK_REDELIVERY_APP_PRIVATE_KEY",
+    ]) {
+      assert.equal(
+        serializedWorkflowEnvironment.includes(credential),
+        false,
+        `${name} must not expose ${credential} through workflow-level env`,
+      );
+    }
     for (const [jobId, job] of Object.entries(workflow.jobs)) {
       assert.equal(
         job !== null && typeof job === "object" && !Array.isArray(job),
@@ -234,6 +265,14 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
     readFile(AUDITOR_URL, "utf8"),
     workflowSources(),
   ]);
+  assertRootPolicyDependenciesInstalled(
+    redelivery,
+    "Test webhook liveness and redelivery controllers",
+  );
+  assertRootPolicyDependenciesInstalled(
+    relay,
+    "Test organization webhook audit and recovery controllers",
+  );
   assert.match(redelivery, /^permissions: \{\}$/m);
   assert.match(
     redelivery,
@@ -247,6 +286,8 @@ test("Actions exposes no organization webhook mutation workflow", async () => {
     "jobs:\n  rogue:\n    env:\n      CLIENT: ${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}\n",
     "jobs: { rogue: { runs-on: ubuntu-latest, environment: webhook-recovery, steps: [] } }\n",
     'jobs: { rogue: { runs-on: ubuntu-latest, environment: "${{ vars.RECOVERY_ENVIRONMENT }}", steps: [] } }\n',
+    "env:\n  PRIVATE_KEY: ${{ secrets.SLACK_REDELIVERY_APP_PRIVATE_KEY }}\njobs:\n  rogue:\n    runs-on: ubuntu-latest\n    steps: []\n",
+    "env: { CLIENT_ID: \"${{ vars.SLACK_REDELIVERY_APP_CLIENT_ID }}\" }\njobs: { rogue: { runs-on: ubuntu-latest, steps: [] } }\n",
   ]) {
     const mutant = new Map(workflows);
     mutant.set("rogue.yml", rogueSource);
