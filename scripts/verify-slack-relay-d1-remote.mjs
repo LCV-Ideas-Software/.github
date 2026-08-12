@@ -267,15 +267,16 @@ export async function reconcileAmbiguousDatabaseCreation(
     attempt < CREATE_RECONCILIATION_ATTEMPTS;
     attempt += 1
   ) {
+    let databaseId;
     try {
-      const databaseId = await lookup();
+      databaseId = await lookup();
       finalLookupError = undefined;
-      if (databaseId !== undefined) {
-        await cleanup(databaseId);
-        return;
-      }
     } catch (error) {
       finalLookupError = error;
+    }
+    if (databaseId !== undefined) {
+      await cleanup(databaseId);
+      return;
     }
     if (attempt + 1 < CREATE_RECONCILIATION_ATTEMPTS) {
       await delay(250 * 2 ** attempt);

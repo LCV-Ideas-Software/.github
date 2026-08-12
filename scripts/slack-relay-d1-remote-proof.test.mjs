@@ -574,6 +574,32 @@ test("ambiguous D1 creation reconciles an eventually visible exact-name database
   assert.equal(delays, 2);
 });
 
+test("ambiguous D1 creation never mistakes cleanup failure for lookup absence", async () => {
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  let lookups = 0;
+  let cleanupCalls = 0;
+  let delays = 0;
+  await assert.rejects(
+    reconcileAmbiguousDatabaseCreation(
+      async () => {
+        lookups += 1;
+        return lookups === 1 ? databaseId : undefined;
+      },
+      async () => {
+        cleanupCalls += 1;
+        throw new Error("cleanup confirmation failed");
+      },
+      async () => {
+        delays += 1;
+      },
+    ),
+    /cleanup confirmation failed/,
+  );
+  assert.equal(lookups, 1);
+  assert.equal(cleanupCalls, 1);
+  assert.equal(delays, 0);
+});
+
 test("ambiguous D1 creation does not adopt a database without exact lookup proof", async () => {
   let lookups = 0;
   let cleanupCalls = 0;
