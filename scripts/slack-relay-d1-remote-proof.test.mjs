@@ -5,16 +5,26 @@ import test from "node:test";
 import { parseDocument } from "yaml";
 
 import {
+  boundedStaleDatabaseSelection,
   buildDisposableWranglerConfiguration,
   buildMigrationPlan,
   classifyDatabaseCreationResponse,
+  createDisposableDatabase,
+  disposableDatabasePresence,
+  exactD1QueryResult,
+  exactDisposableDatabaseIdFromList,
+  lookupAmbiguousDatabaseCreation,
+  parseCloudflareCreatedDatabase,
+  parseCloudflareDatabaseRead,
   D1_DATABASE_ACCOUNT_LIMIT,
   MAX_CLOUDFLARE_JSON_BYTES,
   readJsonResponse,
   reconcileAmbiguousDatabaseCreation,
   reapSelectedStaleDatabases,
   REMOTE_PROOF_API_REQUEST_CAP,
+  REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS,
   REMOTE_PROOF_MINIMUM_MARGIN_MS,
+  REMOTE_PROOF_REQUIRED_REMAINING_MS,
   REMOTE_PROOF_RETRY_DELAY_BUDGET_MS,
   REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,
   REMOTE_PROOF_WORST_CASE_RUNTIME_MS,
@@ -31,6 +41,7 @@ import {
   waitForDisposableDatabaseDeletion,
   waitForExpectedDisposableDatabaseOwnership,
   waitForDisposableDatabaseOwnership,
+  verifyRemoteProofDeadline,
 } from "./verify-slack-relay-d1-remote.mjs";
 
 const migrationPath =
@@ -80,18 +91,21 @@ test("the disposable proof dynamically includes every production migration", () 
   assert.ok(!plan.preNames.includes(futureName));
 });
 
-test("the disposable Wrangler config resolves only the locally generated database name", () => {
+test("the disposable Wrangler config binds the locally generated name to the verified UUID", () => {
   const databaseName =
     "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
-  const config = JSON.parse(buildDisposableWranglerConfiguration(databaseName));
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const config = JSON.parse(
+    buildDisposableWranglerConfiguration(databaseName, databaseId),
+  );
   assert.deepEqual(config.d1_databases, [
     {
       binding: "DB",
+      database_id: databaseId,
       database_name: databaseName,
       migrations_dir: "migrations",
     },
   ]);
-  assert.ok(!JSON.stringify(config).includes("database_id"));
 
   const productionConfig = readFileSync(
     "workers/github-slack-relay/wrangler.jsonc",
@@ -101,7 +115,7 @@ test("the disposable Wrangler config resolves only the locally generated databas
   assert.doesNotMatch(productionConfig, /"migrations_(?:pattern|table)"\s*:/u);
 });
 
-test("only a well-formed Cloudflare 4xx envelope is a definitive create failure", () => {
+test("only a well-formed non-retryable Cloudflare 4xx envelope is a definitive create failure", () => {
   assert.equal(
     classifyDatabaseCreationResponse({ ok: true, status: 200 }, null),
     "ambiguous",
@@ -110,13 +124,551 @@ test("only a well-formed Cloudflare 4xx envelope is a definitive create failure"
     classifyDatabaseCreationResponse({ ok: false, status: 400 }, {}),
     "ambiguous",
   );
+  const errorEnvelope = {
+    errors: [{ code: 7502, message: "conflict" }],
+    result: null,
+    success: false,
+  };
+  for (const status of [408, 409, 429, 500]) {
+    assert.equal(
+      classifyDatabaseCreationResponse(
+        { headers: new Headers(), ok: false, status },
+        errorEnvelope,
+      ),
+      "ambiguous",
+    );
+  }
   assert.equal(
     classifyDatabaseCreationResponse(
-      { ok: false, status: 409 },
-      { errors: [{ message: "conflict" }], success: false },
+      {
+        headers: new Headers({ "x-should-retry": "true" }),
+        ok: false,
+        status: 400,
+      },
+      errorEnvelope,
     ),
-    "definitive_failure",
+    "ambiguous",
   );
+  for (const status of [400, 401, 403, 404, 422]) {
+    assert.equal(
+      classifyDatabaseCreationResponse(
+        { headers: new Headers(), ok: false, status },
+        errorEnvelope,
+      ),
+      "definitive_failure",
+    );
+  }
+  for (const malformed of [
+    { errors: [], result: null, success: false },
+    { errors: [{}], result: null, success: false },
+    { errors: [{ code: 0, message: "invalid" }], result: null, success: false },
+    {
+      errors: [{ code: -1, message: "invalid" }],
+      result: null,
+      success: false,
+    },
+    {
+      errors: [{ code: 7502, message: "conflict" }],
+      result: {},
+      success: false,
+    },
+  ]) {
+    assert.equal(
+      classifyDatabaseCreationResponse(
+        { headers: new Headers(), ok: false, status: 400 },
+        malformed,
+      ),
+      "ambiguous",
+    );
+  }
+});
+
+test("a successful create response proves exact fresh ownership metadata", () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const createdAt = "2026-08-12T16:25:44.442097Z";
+  assert.deepEqual(
+    parseCloudflareCreatedDatabase(
+      {
+        result: { created_at: createdAt, name: databaseName, uuid: databaseId },
+        success: true,
+      },
+      { ok: true },
+      databaseName,
+      {
+        notAfterMs: Date.parse("2026-08-12T16:26:00.000Z"),
+        notBeforeMs: Date.parse("2026-08-12T16:25:00.000Z"),
+      },
+    ),
+    { createdAt: Date.parse(createdAt), id: databaseId, name: databaseName },
+  );
+  assert.throws(
+    () =>
+      parseCloudflareCreatedDatabase(
+        {
+          result: {
+            created_at: "2026-08-12T14:00:00.000Z",
+            name: databaseName,
+            uuid: databaseId,
+          },
+          success: true,
+        },
+        { ok: true },
+        databaseName,
+        {
+          notAfterMs: Date.parse("2026-08-12T16:26:00.000Z"),
+          notBeforeMs: Date.parse("2026-08-12T16:25:00.000Z"),
+        },
+      ),
+    /invalid ownership metadata/u,
+  );
+});
+
+test("the filtered D1 lookup follows Cloudflare pagination metadata rather than total_count", () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const officialShapedInfo = {
+    count: 1,
+    page: 1,
+    per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+    total_count: 2_000,
+  };
+  assert.equal(
+    exactDisposableDatabaseIdFromList(
+      {
+        result: [{ name: databaseName, uuid: databaseId }],
+        result_info: officialShapedInfo,
+        success: true,
+      },
+      { ok: true },
+      databaseName,
+    ),
+    databaseId,
+  );
+  assert.equal(
+    exactDisposableDatabaseIdFromList(
+      {
+        result: [],
+        result_info: { ...officialShapedInfo, count: 0 },
+        success: true,
+      },
+      { ok: true },
+      databaseName,
+    ),
+    undefined,
+  );
+});
+
+test("the filtered D1 lookup rejects incomplete or malformed result sets", () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const valid = {
+    result: [{ name: databaseName, uuid: databaseId }],
+    result_info: {
+      count: 1,
+      page: 1,
+      per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+      total_count: 2_000,
+    },
+    success: true,
+  };
+  for (const payload of [
+    { ...valid, result: [{ uuid: databaseId }] },
+    { ...valid, result: [{ name: databaseName }] },
+    { ...valid, result_info: { ...valid.result_info, count: 0 } },
+    { ...valid, result_info: { ...valid.result_info, page: 2 } },
+    { ...valid, result_info: { ...valid.result_info, per_page: 20 } },
+    { ...valid, result_info: { ...valid.result_info, total_count: 0 } },
+    {
+      ...valid,
+      result: Array.from(
+        { length: REAPER_DATABASE_LIST_PAGE_SIZE },
+        (_, index) => ({
+          name: `unrelated-database-${index}`,
+          uuid: `${index.toString(16).padStart(8, "0")}-2222-4333-8444-555555555555`,
+        }),
+      ),
+      result_info: {
+        count: REAPER_DATABASE_LIST_PAGE_SIZE,
+        page: 1,
+        per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+        total_count: D1_DATABASE_ACCOUNT_LIMIT,
+      },
+    },
+  ]) {
+    assert.throws(
+      () =>
+        exactDisposableDatabaseIdFromList(payload, { ok: true }, databaseName),
+      /lookup returned/u,
+    );
+  }
+
+  assert.throws(
+    () =>
+      exactDisposableDatabaseIdFromList(
+        {
+          ...valid,
+          result: [
+            { name: "unrelated-a", uuid: databaseId },
+            { name: "unrelated-b", uuid: databaseId },
+          ],
+          result_info: { ...valid.result_info, count: 2 },
+        },
+        { ok: true },
+        databaseName,
+      ),
+    /duplicate UUIDs/u,
+  );
+  assert.throws(
+    () =>
+      exactDisposableDatabaseIdFromList(
+        {
+          ...valid,
+          result: [
+            { name: databaseName, uuid: databaseId },
+            {
+              name: databaseName,
+              uuid: "22222222-3333-4444-8555-666666666666",
+            },
+          ],
+          result_info: { ...valid.result_info, count: 2 },
+        },
+        { ok: true },
+        databaseName,
+      ),
+    /duplicate exact names/u,
+  );
+
+  const fullPage = Array.from(
+    { length: REAPER_DATABASE_LIST_PAGE_SIZE },
+    (_, index) => ({
+      name: `unrelated-database-${index}`,
+      uuid: `${index.toString(16).padStart(8, "0")}-2222-4333-8444-555555555555`,
+    }),
+  );
+  assert.equal(
+    exactDisposableDatabaseIdFromList(
+      {
+        result: fullPage,
+        result_info: {
+          count: REAPER_DATABASE_LIST_PAGE_SIZE,
+          page: 1,
+          per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+          total_count: REAPER_DATABASE_LIST_PAGE_SIZE,
+        },
+        success: true,
+      },
+      { ok: true },
+      databaseName,
+    ),
+    undefined,
+  );
+});
+
+test("a D1 read treats only a well-formed not-found envelope as absent", () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const notFound = {
+    errors: [{ code: 7404, message: "D1 database not found" }],
+    result: null,
+    success: false,
+  };
+  assert.equal(
+    parseCloudflareDatabaseRead(
+      notFound,
+      { ok: false, status: 404 },
+      {
+        databaseId,
+        databaseName,
+      },
+    ),
+    undefined,
+  );
+  for (const payload of [
+    {},
+    { ...notFound, errors: [] },
+    { ...notFound, errors: [{ code: 7000, message: "wrong error" }] },
+    { ...notFound, success: true },
+    { ...notFound, result: { name: databaseName, uuid: databaseId } },
+  ]) {
+    assert.throws(
+      () =>
+        parseCloudflareDatabaseRead(
+          payload,
+          { ok: false, status: 404 },
+          {
+            databaseId,
+            databaseName,
+          },
+        ),
+      /read-back failed/u,
+    );
+  }
+  assert.throws(
+    () =>
+      parseCloudflareDatabaseRead(
+        notFound,
+        {
+          headers: new Headers({ "x-should-retry": "true" }),
+          ok: false,
+          status: 404,
+        },
+        { databaseId, databaseName },
+      ),
+    /read-back failed/u,
+  );
+});
+
+test("the real HTTP adapter maps only retryable wire failures to transient state", async () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const base = {
+    accountId: "a".repeat(32),
+    apiToken: "t".repeat(32),
+    databaseName,
+  };
+  let calls = 0;
+  const throttled = await disposableDatabasePresence(
+    {
+      ...base,
+      fetch: async () => {
+        calls += 1;
+        return new Response("rate limited", { status: 429 });
+      },
+    },
+    databaseId,
+  );
+  assert.equal(throttled.state, "transient_error");
+  assert.match(throttled.cause.message, /retryable HTTP 429/u);
+  assert.equal(calls, 1);
+
+  await assert.rejects(
+    disposableDatabasePresence(
+      {
+        ...base,
+        fetch: async () =>
+          Response.json(
+            {
+              errors: [{ code: 1000, message: "do not retry" }],
+              result: null,
+              success: false,
+            },
+            {
+              headers: { "x-should-retry": "false" },
+              status: 503,
+            },
+          ),
+      },
+      databaseId,
+    ),
+    /lookup failed/u,
+  );
+
+  await assert.rejects(
+    disposableDatabasePresence(
+      {
+        ...base,
+        fetch: async () => new Response("{", { status: 200 }),
+      },
+      databaseId,
+    ),
+    /non-JSON HTTP 200/u,
+  );
+
+  const bodyTransportFailure = await disposableDatabasePresence(
+    {
+      ...base,
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new TypeError("terminated"));
+            },
+          }),
+        ),
+    },
+    databaseId,
+  );
+  assert.equal(bodyTransportFailure.state, "transient_error");
+  assert.match(bodyTransportFailure.cause.message, /body transport/u);
+
+  const absentList = {
+    result: [],
+    result_info: {
+      count: 0,
+      page: 1,
+      per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+      total_count: 3,
+    },
+    success: true,
+  };
+  const responses = [
+    Response.json(absentList),
+    Response.json(
+      {
+        errors: [{ code: 7404, message: "not found" }],
+        result: null,
+        success: false,
+      },
+      {
+        headers: { "x-should-retry": "true" },
+        status: 404,
+      },
+    ),
+  ];
+  const retrying404 = await disposableDatabasePresence(
+    { ...base, fetch: async () => responses.shift() },
+    databaseId,
+  );
+  assert.equal(retrying404.state, "transient_error");
+});
+
+test("ambiguous create reconciliation retains a once-observed UUID until absence is proven by ID", async () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  const exactList = {
+    result: [{ name: databaseName, uuid: databaseId }],
+    result_info: {
+      count: 1,
+      page: 1,
+      per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+      total_count: 3,
+    },
+    success: true,
+  };
+  const absentList = {
+    ...exactList,
+    result: [],
+    result_info: { ...exactList.result_info, count: 0 },
+  };
+  const notFound = {
+    errors: [{ code: 7404, message: "not found" }],
+    result: null,
+    success: false,
+  };
+  const responses = [
+    Response.json(exactList),
+    Response.json(notFound, { status: 404 }),
+    Response.json(absentList),
+    Response.json(notFound, { status: 404 }),
+  ];
+  const reconciliation = { candidateId: undefined };
+  const configuration = {
+    accountId: "a".repeat(32),
+    apiToken: "t".repeat(32),
+    databaseName,
+    fetch: async () => responses.shift(),
+  };
+  const ownershipWindow = {
+    notAfterMs: Date.parse("2026-08-12T16:26:00.000Z"),
+    notBeforeMs: Date.parse("2026-08-12T16:25:00.000Z"),
+  };
+  assert.deepEqual(
+    await lookupAmbiguousDatabaseCreation(
+      configuration,
+      ownershipWindow,
+      reconciliation,
+    ),
+    { state: "partial_visibility" },
+  );
+  assert.equal(reconciliation.candidateId, databaseId);
+  assert.deepEqual(
+    await lookupAmbiguousDatabaseCreation(
+      configuration,
+      ownershipWindow,
+      reconciliation,
+    ),
+    { state: "absent" },
+  );
+  assert.equal(responses.length, 0);
+});
+
+test("a retryable create response carries its candidate UUID into every reconciliation read", async () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const absentList = {
+    result: [],
+    result_info: {
+      count: 0,
+      page: 1,
+      per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+      total_count: 3,
+    },
+    success: true,
+  };
+  const notFound = {
+    errors: [{ code: 7404, message: "not found" }],
+    result: null,
+    success: false,
+  };
+  const urls = [];
+  let calls = 0;
+  await assert.rejects(
+    createDisposableDatabase({
+      accountId: "a".repeat(32),
+      apiToken: "t".repeat(32),
+      databaseName,
+      delay: async () => {},
+      fetch: async (url) => {
+        urls.push(String(url));
+        calls += 1;
+        if (calls === 1) {
+          return Response.json(
+            {
+              errors: [{ code: 1000, message: "retry" }],
+              result: { name: databaseName, uuid: databaseId },
+              success: false,
+            },
+            { status: 429 },
+          );
+        }
+        return calls % 2 === 0
+          ? Response.json(absentList)
+          : Response.json(notFound, { status: 404 });
+      },
+    }),
+    /ambiguous response/u,
+  );
+  assert.equal(calls, 11);
+  assert.equal(
+    urls.filter((url) => url.endsWith(`/d1/database/${databaseId}`)).length,
+    5,
+  );
+});
+
+test("a D1 read and the reaper reject non-ISO creation timestamps", () => {
+  const databaseName =
+    "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555";
+  const databaseId = "11111111-2222-4333-8444-555555555555";
+  for (const created_at of [0, 1, "0", "1", "2026-02-30T00:00:00Z"]) {
+    assert.throws(
+      () =>
+        parseCloudflareDatabaseRead(
+          {
+            result: { created_at, name: databaseName, uuid: databaseId },
+            success: true,
+          },
+          { ok: true, status: 200 },
+          { databaseId, databaseName },
+        ),
+      /ownership metadata/u,
+    );
+    assert.throws(
+      () =>
+        selectStaleDisposableDatabases(
+          [{ created_at, name: databaseName, uuid: databaseId }],
+          Date.parse("2026-08-12T14:00:00.000Z"),
+        ),
+      /incomplete or malformed/u,
+    );
+  }
 });
 
 test("the out-of-process reaper selects only stale capability names", () => {
@@ -155,7 +707,22 @@ test("the out-of-process reaper selects only stale capability names", () => {
       ],
       now,
     ),
-    [{ createdAt: Date.parse(olderCreatedAt), id: olderId, name: olderName }],
+    [
+      { createdAt: Date.parse(olderCreatedAt), id: olderId, name: olderName },
+      { createdAt: Date.parse(staleCreatedAt), id: staleId, name: staleName },
+    ],
+  );
+  assert.deepEqual(
+    boundedStaleDatabaseSelection([
+      { createdAt: Date.parse(olderCreatedAt), id: olderId, name: olderName },
+      { createdAt: Date.parse(staleCreatedAt), id: staleId, name: staleName },
+    ]),
+    {
+      remaining: 1,
+      selected: [
+        { createdAt: Date.parse(olderCreatedAt), id: olderId, name: olderName },
+      ],
+    },
   );
 });
 
@@ -288,6 +855,34 @@ test("the bounded JSON reader preserves exact-byte and JSON semantics", async ()
     readJsonResponse(new Response(null, { status: 204 })),
     /Cloudflare returned non-JSON HTTP 204\./,
   );
+  await assert.rejects(
+    readJsonResponse(
+      new Response(
+        new Uint8Array([
+          0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d,
+        ]),
+      ),
+    ),
+    /Cloudflare returned non-JSON HTTP 200\./,
+  );
+});
+
+test("a D1 query accepts exactly one successful result", () => {
+  const success = { results: [], success: true };
+  assert.equal(
+    exactD1QueryResult({ result: [success], success: true }, { ok: true }),
+    success,
+  );
+  for (const result of [
+    [],
+    [success, success],
+    [{ results: [], success: false }],
+  ]) {
+    assert.throws(
+      () => exactD1QueryResult({ result, success: true }, { ok: true }),
+      /ambiguous result/u,
+    );
+  }
 });
 
 test("the reaper worst-case API budget fits the workflow timeout", () => {
@@ -316,6 +911,37 @@ test("the deploy proof never runs the account-wide stale reaper", () => {
   assert.doesNotMatch(proof, /reapStaleDisposableDatabases/u);
 });
 
+test("the successful create identity is carried through config, barriers, and cleanup", () => {
+  const source = readFileSync(proofPath, "utf8");
+  const proof = source.slice(
+    source.indexOf("export async function runRemoteMigrationProof"),
+    source.indexOf("if (process.argv[1] === fileURLToPath(import.meta.url))"),
+  );
+  assert.match(
+    proof,
+    /const createdDatabase = await createDisposableDatabase\(configuration\);[\s\S]*?databaseId = createdDatabase\.id;[\s\S]*?expectedCreatedAt = createdDatabase\.createdAt;/u,
+  );
+  assert.match(
+    proof,
+    /prepareMigrationDirectories\([\s\S]*?databaseId,[\s\S]*?plan,/u,
+  );
+  assert.equal(
+    proof.match(
+      /applyMigrationsToOwnedDatabase\([\s\S]*?databaseId,[\s\S]*?expectedCreatedAt,[\s\S]*?(?:preConfig|fullConfig),/gu,
+    )?.length,
+    2,
+  );
+  assert.match(
+    proof,
+    /deleteDisposableDatabase\([\s\S]*?databaseId,[\s\S]*?expectedCreatedAt,/u,
+  );
+  assert.equal(
+    readFileSync(proofPath, "utf8").match(/codeql\[js\/http-to-file-access\]/gu)
+      ?.length,
+    2,
+  );
+});
+
 test("the remote proof worst-case budget preserves the workflow margin", () => {
   const workflow = readFileSync(workflowPath, "utf8");
   const proofSource = readFileSync(proofPath, "utf8");
@@ -324,14 +950,17 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
     uniqueKeys: true,
   });
   assert.deepEqual(document.errors, []);
-  const deploy = document.toJS({ maxAliasCount: 0 }).jobs.deploy;
+  const proofJob = document.toJS({ maxAliasCount: 0 }).jobs.prove_remote_d1;
 
   assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 76);
   assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 2);
   assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 10_500);
   assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_390_500);
+  assert.equal(REMOTE_PROOF_WORKFLOW_TIMEOUT_MS, 3_600_000);
+  assert.equal(REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS, 60_000);
+  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 1_990_500);
   assert.equal(
-    deploy["timeout-minutes"] * 60_000,
+    proofJob["timeout-minutes"] * 60_000,
     REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,
   );
   assert.ok(
@@ -339,9 +968,17 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
       REMOTE_PROOF_WORKFLOW_TIMEOUT_MS - REMOTE_PROOF_MINIMUM_MARGIN_MS,
   );
   assert.equal(STALE_DATABASE_AGE_MS, 3 * REMOTE_PROOF_WORKFLOW_TIMEOUT_MS);
+  const firstStep = proofJob.steps[0];
+  assert.equal(
+    firstStep.name,
+    "Establish the fail-closed remote proof deadline",
+  );
+  assert.match(firstStep.run, /now_ms="\$\(date \+%s%3N\)"/u);
+  assert.match(firstStep.run, /now_ms \+ 59 \* 60 \* 1000/u);
+  assert.match(firstStep.run, /REMOTE_PROOF_DEADLINE_MS=%s/u);
   assert.match(
     proofSource,
-    /async function cloudflareRequest[\s\S]*?consumeCloudflareRequestBudget\(configuration\)[\s\S]*?await fetch/u,
+    /async function cloudflareRequest[\s\S]*?consumeCloudflareRequestBudget\(configuration\)[\s\S]*?await \(configuration\.fetch \?\? fetch\)/u,
   );
   assert.match(
     proofSource,
@@ -350,6 +987,37 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
   assert.match(
     proofSource,
     /startWranglerCallBudget\(configuration, REMOTE_PROOF_WRANGLER_CALL_CAP\)/u,
+  );
+});
+
+test("the absolute proof deadline fails before remote work when cleanup time is unavailable", () => {
+  const now = 1_786_500_000_000;
+  assert.equal(
+    verifyRemoteProofDeadline(
+      {
+        REMOTE_PROOF_DEADLINE_MS: String(
+          now + REMOTE_PROOF_REQUIRED_REMAINING_MS,
+        ),
+      },
+      now,
+    ),
+    now + REMOTE_PROOF_REQUIRED_REMAINING_MS,
+  );
+  assert.throws(
+    () =>
+      verifyRemoteProofDeadline(
+        {
+          REMOTE_PROOF_DEADLINE_MS: String(
+            now + REMOTE_PROOF_REQUIRED_REMAINING_MS - 1,
+          ),
+        },
+        now,
+      ),
+    /enough job time/u,
+  );
+  assert.throws(
+    () => verifyRemoteProofDeadline({}, now),
+    /missing or malformed/u,
   );
 });
 
@@ -404,10 +1072,16 @@ test("the production migration is preceded by the disposable remote D1 proof", (
   });
   assert.deepEqual(document.errors, []);
   const parsed = document.toJS({ maxAliasCount: 0 });
+  const proofJob = parsed.jobs.prove_remote_d1;
   const deploy = parsed.jobs.deploy;
+  assert.equal(proofJob.environment, "cloudflare-production");
   assert.equal(deploy.environment, "cloudflare-production");
+  assert.equal(proofJob.needs, "verify");
+  assert.equal(deploy.needs, "prove_remote_d1");
+  assert.equal(parsed.jobs.deploy_slack.needs, "deploy");
+  assert.equal(proofJob.if, deploy.if);
   assert.equal(deploy.concurrency, undefined);
-  const proofStep = deploy.steps.findIndex(
+  const proofSteps = proofJob.steps.filter(
     (step) =>
       step.name === "Prove durable inbox migration in disposable remote D1" &&
       step.run === "node scripts/verify-slack-relay-d1-remote.mjs" &&
@@ -415,13 +1089,26 @@ test("the production migration is preceded by the disposable remote D1 proof", (
         "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" &&
       step.env.CLOUDFLARE_API_TOKEN === "${{ secrets.CLOUDFLARE_API_TOKEN }}",
   );
-  const productionStep = deploy.steps.findIndex(
+  const productionSteps = deploy.steps.filter(
     (step) =>
       step.name === "Apply durable inbox migrations" &&
       step.run.includes("wrangler d1 migrations apply github-slack-alerts-db"),
   );
-  assert.ok(proofStep >= 0);
-  assert.ok(productionStep > proofStep);
+  assert.equal(proofSteps.length, 1);
+  assert.equal(productionSteps.length, 1);
+  assert.equal(
+    deploy.steps.some(
+      (step) =>
+        step.name === "Prove durable inbox migration in disposable remote D1",
+    ),
+    false,
+  );
+  assert.equal(
+    proofJob.steps.some(
+      (step) => step.name === "Apply durable inbox migrations",
+    ),
+    false,
+  );
 
   const syntax = spawnSync(process.execPath, ["--check", proofPath], {
     encoding: "utf8",
@@ -430,7 +1117,14 @@ test("the production migration is preceded by the disposable remote D1 proof", (
 });
 
 test("disposable D1 cleanup fails closed until bounded absence is proven", async () => {
-  const stillPresent = { id: "proof-id", name: "proof-name" };
+  const stillPresent = {
+    database: {
+      createdAt: 1_786_500_000_000,
+      id: "11111111-2222-4333-8444-555555555555",
+      name: "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555",
+    },
+    state: "owned",
+  };
   let confirmations = 0;
   await assert.rejects(
     waitForDisposableDatabaseDeletion(
@@ -444,7 +1138,31 @@ test("disposable D1 cleanup fails closed until bounded absence is proven", async
   );
   assert.equal(confirmations, 4);
 
-  const sequence = [stillPresent, stillPresent, undefined, undefined];
+  confirmations = 0;
+  const reappearing = [
+    { state: "absent" },
+    { state: "absent" },
+    stillPresent,
+    stillPresent,
+  ];
+  await assert.rejects(
+    waitForDisposableDatabaseDeletion(
+      async () => {
+        confirmations += 1;
+        return reappearing.shift();
+      },
+      async () => {},
+    ),
+    /deletion did not converge after bounded confirmation/u,
+  );
+  assert.equal(confirmations, 4);
+
+  const sequence = [
+    { state: "absent" },
+    stillPresent,
+    { state: "absent" },
+    { state: "absent" },
+  ];
   confirmations = 0;
   await assert.doesNotReject(
     waitForDisposableDatabaseDeletion(
@@ -456,13 +1174,39 @@ test("disposable D1 cleanup fails closed until bounded absence is proven", async
     ),
   );
   assert.equal(confirmations, 4);
+
+  const transient = {
+    cause: new Error("rate limited"),
+    state: "transient_error",
+  };
+  const resetByTransient = [
+    { state: "absent" },
+    transient,
+    { state: "absent" },
+    { state: "absent" },
+  ];
+  await assert.doesNotReject(
+    waitForDisposableDatabaseDeletion(
+      async () => resetByTransient.shift(),
+      async () => {},
+    ),
+  );
 });
 
 test("disposable D1 cleanup waits through an eventually consistent UUID read", async () => {
   const databaseId = "11111111-2222-4333-8444-555555555555";
-  const pending = { id: databaseId, pendingConsistency: true };
-  const owned = { id: databaseId, name: "tmp-slack-relay-171-proof" };
-  const sequence = [pending, owned];
+  const pending = { state: "partial_visibility" };
+  const database = {
+    createdAt: 1_786_500_000_000,
+    id: databaseId,
+    name: `tmp-slack-relay-171-${databaseId}`,
+  };
+  const owned = { database, state: "owned" };
+  const sequence = [
+    { cause: new Error("rate limited"), state: "transient_error" },
+    pending,
+    owned,
+  ];
   let delays = 0;
   const result = await waitForDisposableDatabaseOwnership(
     async () => sequence.shift(),
@@ -470,15 +1214,24 @@ test("disposable D1 cleanup waits through an eventually consistent UUID read", a
       delays += 1;
     },
   );
-  assert.deepEqual(result, owned);
-  assert.equal(delays, 1);
+  assert.deepEqual(result, database);
+  assert.equal(delays, 2);
 });
 
 test("remote migration ownership tolerates only bounded absence and partial visibility", async () => {
   const databaseId = "11111111-2222-4333-8444-555555555555";
-  const pending = { id: databaseId, pendingConsistency: true };
-  const owned = { id: databaseId, name: "tmp-slack-relay-171-proof" };
-  const sequence = [undefined, pending, owned];
+  const pending = { state: "partial_visibility" };
+  const database = {
+    createdAt: 1_786_500_000_000,
+    id: databaseId,
+    name: `tmp-slack-relay-171-${databaseId}`,
+  };
+  const owned = { database, state: "owned" };
+  const sequence = [
+    { cause: new Error("rate limited"), state: "transient_error" },
+    pending,
+    owned,
+  ];
   let delays = 0;
   assert.deepEqual(
     await waitForExpectedDisposableDatabaseOwnership(
@@ -488,14 +1241,21 @@ test("remote migration ownership tolerates only bounded absence and partial visi
         delays += 1;
       },
     ),
-    owned,
+    database,
   );
   assert.equal(delays, 2);
 
   let mismatchDelays = 0;
   await assert.rejects(
     waitForExpectedDisposableDatabaseOwnership(
-      async () => ({ id: "22222222-3333-4444-8555-666666666666" }),
+      async () => ({
+        database: {
+          createdAt: 1_786_500_000_000,
+          id: "22222222-3333-4444-8555-666666666666",
+          name: "tmp-slack-relay-171-22222222-3333-4444-8555-666666666666",
+        },
+        state: "owned",
+      }),
       databaseId,
       async () => {
         mismatchDelays += 1;
@@ -511,7 +1271,7 @@ test("remote migration ownership tolerates only bounded absence and partial visi
     waitForExpectedDisposableDatabaseOwnership(
       async () => {
         absentLookups += 1;
-        return undefined;
+        return { state: "absent" };
       },
       databaseId,
       async () => {
@@ -526,9 +1286,16 @@ test("remote migration ownership tolerates only bounded absence and partial visi
 
 test("remote migration runs exactly once between independent ownership barriers", async () => {
   const databaseId = "11111111-2222-4333-8444-555555555555";
-  const pending = { id: databaseId, pendingConsistency: true };
-  const owned = { id: databaseId, name: "tmp-slack-relay-171-proof" };
-  const sequence = [undefined, owned, pending, owned];
+  const pending = { state: "partial_visibility" };
+  const owned = {
+    database: {
+      createdAt: 1_786_500_000_000,
+      id: databaseId,
+      name: `tmp-slack-relay-171-${databaseId}`,
+    },
+    state: "owned",
+  };
+  const sequence = [{ state: "absent" }, owned, pending, owned];
   let operations = 0;
   await runWithDisposableDatabaseOwnershipBarriers(
     async () => sequence.shift(),
@@ -544,7 +1311,7 @@ test("remote migration runs exactly once between independent ownership barriers"
   operations = 0;
   await assert.rejects(
     runWithDisposableDatabaseOwnershipBarriers(
-      async () => undefined,
+      async () => ({ state: "absent" }),
       databaseId,
       async () => {
         operations += 1;
@@ -558,24 +1325,38 @@ test("remote migration runs exactly once between independent ownership barriers"
 
 test("ambiguous D1 creation reconciles an eventually visible exact-name database", async () => {
   const databaseId = "11111111-2222-4333-8444-555555555555";
-  const sequence = [undefined, undefined, databaseId];
+  const database = {
+    createdAt: 1_786_500_000_000,
+    id: databaseId,
+    name: `tmp-slack-relay-171-${databaseId}`,
+  };
+  const sequence = [
+    { state: "absent" },
+    { state: "partial_visibility" },
+    { database, state: "owned" },
+  ];
   const cleaned = [];
   let delays = 0;
 
   await reconcileAmbiguousDatabaseCreation(
     async () => sequence.shift(),
-    async (foundId) => cleaned.push(foundId),
+    async (found) => cleaned.push(found),
     async () => {
       delays += 1;
     },
   );
 
-  assert.deepEqual(cleaned, [databaseId]);
+  assert.deepEqual(cleaned, [database]);
   assert.equal(delays, 2);
 });
 
 test("ambiguous D1 creation never mistakes cleanup failure for lookup absence", async () => {
   const databaseId = "11111111-2222-4333-8444-555555555555";
+  const database = {
+    createdAt: 1_786_500_000_000,
+    id: databaseId,
+    name: `tmp-slack-relay-171-${databaseId}`,
+  };
   let lookups = 0;
   let cleanupCalls = 0;
   let delays = 0;
@@ -583,7 +1364,9 @@ test("ambiguous D1 creation never mistakes cleanup failure for lookup absence", 
     reconcileAmbiguousDatabaseCreation(
       async () => {
         lookups += 1;
-        return lookups === 1 ? databaseId : undefined;
+        return lookups === 1
+          ? { database, state: "owned" }
+          : { state: "absent" };
       },
       async () => {
         cleanupCalls += 1;
@@ -600,13 +1383,102 @@ test("ambiguous D1 creation never mistakes cleanup failure for lookup absence", 
   assert.equal(delays, 0);
 });
 
+test("ambiguous D1 creation propagates lookup mismatches immediately", async () => {
+  const sequence = [
+    { state: "absent" },
+    { state: "absent" },
+    { state: "partial_visibility" },
+    new Error("ownership metadata mismatch"),
+    { state: "absent" },
+  ];
+  let lookups = 0;
+  let cleanupCalls = 0;
+  let delays = 0;
+  await assert.rejects(
+    reconcileAmbiguousDatabaseCreation(
+      async () => {
+        lookups += 1;
+        const next = sequence.shift();
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      async () => {
+        cleanupCalls += 1;
+      },
+      async () => {
+        delays += 1;
+      },
+    ),
+    /ownership metadata mismatch/,
+  );
+  assert.equal(lookups, 4);
+  assert.equal(cleanupCalls, 0);
+  assert.equal(delays, 3);
+});
+
+test("ambiguous D1 creation requires two final consecutive absences", async () => {
+  const converging = [
+    { state: "absent" },
+    { state: "absent" },
+    { state: "partial_visibility" },
+    { state: "absent" },
+    { state: "absent" },
+  ];
+  let lookups = 0;
+  let delays = 0;
+  await reconcileAmbiguousDatabaseCreation(
+    async () => {
+      lookups += 1;
+      return converging.shift();
+    },
+    async () => assert.fail("an absent database must not be cleaned"),
+    async () => {
+      delays += 1;
+    },
+  );
+  assert.equal(lookups, 5);
+  assert.equal(delays, 4);
+
+  const oscillating = [
+    { state: "absent" },
+    { state: "partial_visibility" },
+    { state: "absent" },
+    { state: "partial_visibility" },
+    { state: "absent" },
+  ];
+  await assert.rejects(
+    reconcileAmbiguousDatabaseCreation(
+      async () => oscillating.shift(),
+      async () => assert.fail("an absent database must not be cleaned"),
+      async () => {},
+    ),
+    /did not converge to owned or proven absent/,
+  );
+
+  const transientFinal = [
+    { state: "absent" },
+    { state: "absent" },
+    { state: "absent" },
+    { state: "absent" },
+    { cause: new Error("rate limited"), state: "transient_error" },
+  ];
+  await assert.rejects(
+    reconcileAmbiguousDatabaseCreation(
+      async () => transientFinal.shift(),
+      async () => assert.fail("transient state must not be cleaned"),
+      async () => {},
+    ),
+    /did not converge to owned or proven absent/,
+  );
+});
+
 test("ambiguous D1 creation does not adopt a database without exact lookup proof", async () => {
   let lookups = 0;
   let cleanupCalls = 0;
   await reconcileAmbiguousDatabaseCreation(
     async () => {
       lookups += 1;
-      return undefined;
+      return { state: "absent" };
     },
     async () => {
       cleanupCalls += 1;

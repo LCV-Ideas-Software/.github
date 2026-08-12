@@ -37,6 +37,8 @@ const DISPOSABLE_DATABASE_NAME_PATTERN =
   /^tmp-slack-relay-171-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DATABASE_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const CLOUDFLARE_TIMESTAMP_PATTERN =
+  /^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?:\.(?<fraction>[0-9]{1,9}))?Z$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const PRODUCTION_DATABASE_ID = "cf070eb0-32d9-4ee0-9516-d469833cdc77";
 export const API_TIMEOUT_MS = 15_000;
@@ -45,7 +47,8 @@ export const WRANGLER_TIMEOUT_MS = 120_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
 const CREATE_RECONCILIATION_ATTEMPTS = 5;
 const CREATION_CLOCK_SKEW_MS = 5 * 60_000;
-export const REMOTE_PROOF_WORKFLOW_TIMEOUT_MS = 40 * 60_000;
+export const REMOTE_PROOF_WORKFLOW_TIMEOUT_MS = 60 * 60_000;
+export const REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS = 60_000;
 export const REMOTE_PROOF_MINIMUM_MARGIN_MS = 10 * 60_000;
 export const STALE_DATABASE_AGE_MS = 3 * REMOTE_PROOF_WORKFLOW_TIMEOUT_MS;
 // Cloudflare documents 50,000 D1 databases for Workers Paid accounts and a
@@ -96,6 +99,8 @@ export const REMOTE_PROOF_WORST_CASE_RUNTIME_MS =
   REMOTE_PROOF_API_REQUEST_CAP * API_TIMEOUT_MS +
   REMOTE_PROOF_WRANGLER_CALL_CAP * WRANGLER_TIMEOUT_MS +
   REMOTE_PROOF_RETRY_DELAY_BUDGET_MS;
+export const REMOTE_PROOF_REQUIRED_REMAINING_MS =
+  REMOTE_PROOF_WORST_CASE_RUNTIME_MS + REMOTE_PROOF_MINIMUM_MARGIN_MS;
 const WRANGLER_ENV_KEYS = Object.freeze([
   "APPDATA",
   "FORCE_COLOR",
@@ -116,6 +121,13 @@ const WRANGLER_ENV_KEYS = Object.freeze([
   "USERPROFILE",
   "WINDIR",
 ]);
+
+class CloudflareBodyTransportError extends Error {
+  constructor(cause) {
+    super("Cloudflare response body transport failed.", { cause });
+    this.name = "CloudflareBodyTransportError";
+  }
+}
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -175,6 +187,19 @@ function readConfiguration(environment) {
   };
 }
 
+export function verifyRemoteProofDeadline(environment, nowMs = Date.now()) {
+  const deadlineMs = Number(environment.REMOTE_PROOF_DEADLINE_MS);
+  invariant(
+    Number.isSafeInteger(deadlineMs) && Number.isSafeInteger(nowMs),
+    "REMOTE_PROOF_DEADLINE_MS is missing or malformed.",
+  );
+  invariant(
+    deadlineMs - nowMs >= REMOTE_PROOF_REQUIRED_REMAINING_MS,
+    "Remote D1 proof no longer has enough job time for its bounded work and cleanup.",
+  );
+  return deadlineMs;
+}
+
 export async function readJsonResponse(response) {
   const reader = response.body?.getReader();
   if (reader === undefined) {
@@ -184,7 +209,13 @@ export async function readJsonResponse(response) {
   let received = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (cause) {
+        throw new CloudflareBodyTransportError(cause);
+      }
+      const { done, value } = chunk;
       if (done) break;
       invariant(
         value instanceof Uint8Array,
@@ -217,7 +248,11 @@ export async function readJsonResponse(response) {
     reader.releaseLock();
   }
   try {
-    return JSON.parse(new TextDecoder().decode(bytes.subarray(0, received)));
+    return JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, received),
+      ),
+    );
   } catch {
     throw new Error(`Cloudflare returned non-JSON HTTP ${response.status}.`);
   }
@@ -237,21 +272,60 @@ function cloudflareErrors(payload) {
     .join("; ");
 }
 
+class CloudflareTransientResponseError extends Error {
+  constructor(message, { cause, payload } = {}) {
+    super(message, { cause });
+    this.name = "CloudflareTransientResponseError";
+    this.payload = payload;
+  }
+}
+
 async function cloudflareRequest(configuration, path, init) {
   consumeCloudflareRequestBudget(configuration);
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${configuration.accountId}${path}`,
-    {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${configuration.apiToken}`,
-        "Content-Type": "application/json",
-        ...(init.headers ?? {}),
+  let response;
+  try {
+    response = await (configuration.fetch ?? fetch)(
+      `https://api.cloudflare.com/client/v4/accounts/${configuration.accountId}${path}`,
+      {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${configuration.apiToken}`,
+          "Content-Type": "application/json",
+          ...(init.headers ?? {}),
+        },
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
       },
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
-    },
-  );
-  const payload = await readJsonResponse(response);
+    );
+  } catch (cause) {
+    throw new CloudflareTransientResponseError(
+      "Cloudflare request failed before a response was received.",
+      { cause },
+    );
+  }
+  if (retryableCloudflareResponse(response)) {
+    let payload;
+    try {
+      payload = await readJsonResponse(response);
+    } catch {
+      await response.body?.cancel().catch(() => undefined);
+    }
+    throw new CloudflareTransientResponseError(
+      `Cloudflare returned retryable HTTP ${response.status}.`,
+      { payload },
+    );
+  }
+  let payload;
+  try {
+    payload = await readJsonResponse(response);
+  } catch (cause) {
+    if (cause instanceof CloudflareBodyTransportError) {
+      throw new CloudflareTransientResponseError(
+        "Cloudflare response failed during body transport.",
+        { cause },
+      );
+    }
+    throw cause;
+  }
   return { payload, response };
 }
 
@@ -261,46 +335,87 @@ export async function reconcileAmbiguousDatabaseCreation(
   delay = (milliseconds) =>
     new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
 ) {
-  let finalLookupError;
+  let consecutiveAbsences = 0;
+  let finalTransientCause;
   for (
     let attempt = 0;
     attempt < CREATE_RECONCILIATION_ATTEMPTS;
     attempt += 1
   ) {
-    let databaseId;
-    try {
-      databaseId = await lookup();
-      finalLookupError = undefined;
-    } catch (error) {
-      finalLookupError = error;
-    }
-    if (databaseId !== undefined) {
-      await cleanup(databaseId);
+    const result = await lookup();
+    invariant(
+      result?.state === "absent" ||
+        result?.state === "partial_visibility" ||
+        (result?.state === "transient_error" &&
+          result.cause instanceof Error) ||
+        (result?.state === "owned" &&
+          typeof result.database?.id === "string" &&
+          DATABASE_ID_PATTERN.test(result.database.id) &&
+          result.database.id !== PRODUCTION_DATABASE_ID &&
+          typeof result.database.name === "string" &&
+          DISPOSABLE_DATABASE_NAME_PATTERN.test(result.database.name) &&
+          Number.isSafeInteger(result.database.createdAt)),
+      "Disposable D1 creation reconciliation returned an invalid lookup state.",
+    );
+    if (result.state === "owned") {
+      await cleanup(result.database);
       return;
     }
+    consecutiveAbsences =
+      result.state === "absent" ? consecutiveAbsences + 1 : 0;
+    finalTransientCause =
+      result.state === "transient_error" ? result.cause : undefined;
     if (attempt + 1 < CREATE_RECONCILIATION_ATTEMPTS) {
       await delay(250 * 2 ** attempt);
     }
   }
-  if (finalLookupError !== undefined) {
+  if (consecutiveAbsences < 2) {
     throw new Error(
-      "Disposable D1 creation reconciliation could not prove absence.",
-      { cause: finalLookupError },
+      "Disposable D1 creation reconciliation did not converge to owned or proven absent.",
+      { cause: finalTransientCause },
     );
   }
 }
 
 export function classifyDatabaseCreationResponse(response, payload) {
   const payloadIsObject = typeof payload === "object" && payload !== null;
-  if (response.ok && payloadIsObject && payload.success === true) {
+  if (
+    response.ok &&
+    !retryableCloudflareResponse(response) &&
+    payloadIsObject &&
+    payload.success === true
+  ) {
     return "success";
   }
+  const explicitlyRetryable =
+    typeof response.headers?.get === "function" &&
+    response.headers.get("x-should-retry") === "true";
+  const retryableStatus =
+    response.status === 408 ||
+    response.status === 409 ||
+    response.status === 429 ||
+    response.status >= 500;
+  const errorsAreDefinitive =
+    Array.isArray(payload?.errors) &&
+    payload.errors.length > 0 &&
+    payload.errors.every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        Number.isSafeInteger(entry.code) &&
+        entry.code >= 1_000 &&
+        typeof entry.message === "string" &&
+        entry.message.length > 0,
+    );
   if (
     response.status >= 400 &&
     response.status < 500 &&
+    !explicitlyRetryable &&
+    !retryableStatus &&
     payloadIsObject &&
     payload.success === false &&
-    Array.isArray(payload.errors)
+    errorsAreDefinitive &&
+    (payload.result === undefined || payload.result === null)
   ) {
     return "definitive_failure";
   }
@@ -311,15 +426,28 @@ async function rejectAmbiguousDatabaseCreation(
   configuration,
   cause,
   ownershipWindow,
+  candidateId,
 ) {
   const creationError = new Error(
     `Disposable D1 creation had an ambiguous response. Exact temporary name: ${configuration.databaseName}`,
     { cause },
   );
   try {
+    const reconciliation = { candidateId };
     await reconcileAmbiguousDatabaseCreation(
-      () => findDisposableDatabase(configuration, ownershipWindow),
-      (databaseId) => deleteDisposableDatabase(configuration, databaseId),
+      () =>
+        lookupAmbiguousDatabaseCreation(
+          configuration,
+          ownershipWindow,
+          reconciliation,
+        ),
+      (database) =>
+        deleteDisposableDatabase(
+          configuration,
+          database.id,
+          database.createdAt,
+        ),
+      configuration.delay,
     );
   } catch (cleanupError) {
     throw new AggregateError(
@@ -330,7 +458,45 @@ async function rejectAmbiguousDatabaseCreation(
   throw creationError;
 }
 
-async function createDisposableDatabase(configuration) {
+function safeDisposableCandidateId(payload, databaseName) {
+  return DISPOSABLE_DATABASE_NAME_PATTERN.test(databaseName) &&
+    typeof payload?.result?.uuid === "string" &&
+    DATABASE_ID_PATTERN.test(payload.result.uuid) &&
+    payload.result.uuid !== PRODUCTION_DATABASE_ID &&
+    payload.result?.name === databaseName
+    ? payload.result.uuid
+    : undefined;
+}
+
+export function parseCloudflareCreatedDatabase(
+  payload,
+  response,
+  databaseName,
+  ownershipWindow,
+) {
+  invariant(
+    response.ok &&
+      !retryableCloudflareResponse(response) &&
+      payload?.success === true,
+    "Disposable D1 creation returned an invalid success envelope.",
+  );
+  const id = payload.result?.uuid;
+  const name = payload.result?.name;
+  const createdAt = parseCloudflareTimestamp(payload.result?.created_at);
+  invariant(
+    typeof id === "string" &&
+      DATABASE_ID_PATTERN.test(id) &&
+      id !== PRODUCTION_DATABASE_ID &&
+      name === databaseName &&
+      DISPOSABLE_DATABASE_NAME_PATTERN.test(name) &&
+      createdAt >= ownershipWindow.notBeforeMs - CREATION_CLOCK_SKEW_MS &&
+      createdAt <= ownershipWindow.notAfterMs + CREATION_CLOCK_SKEW_MS,
+    "Disposable D1 creation returned invalid ownership metadata.",
+  );
+  return { createdAt, id, name };
+}
+
+export async function createDisposableDatabase(configuration) {
   const requestStartedAt = Date.now();
   let result;
   try {
@@ -339,47 +505,127 @@ async function createDisposableDatabase(configuration) {
       body: JSON.stringify({ name: configuration.databaseName }),
     });
   } catch (error) {
-    return rejectAmbiguousDatabaseCreation(configuration, error, {
-      notAfterMs: Date.now(),
-      notBeforeMs: requestStartedAt,
-    });
+    return rejectAmbiguousDatabaseCreation(
+      configuration,
+      error,
+      {
+        notAfterMs: Date.now(),
+        notBeforeMs: requestStartedAt,
+      },
+      safeDisposableCandidateId(error?.payload, configuration.databaseName),
+    );
   }
   const { payload, response } = result;
+  const ownershipWindow = {
+    notAfterMs: Date.now(),
+    notBeforeMs: requestStartedAt,
+  };
   const classification = classifyDatabaseCreationResponse(response, payload);
   if (classification !== "success") {
     if (classification === "ambiguous") {
       return rejectAmbiguousDatabaseCreation(
         configuration,
         new Error(`Cloudflare returned ambiguous HTTP ${response.status}.`),
-        {
-          notAfterMs: Date.now(),
-          notBeforeMs: requestStartedAt,
-        },
+        ownershipWindow,
+        safeDisposableCandidateId(payload, configuration.databaseName),
       );
     }
     throw new Error(
       `Disposable D1 creation failed: ${cloudflareErrors(payload)}`,
     );
   }
-  const id = payload.result?.uuid;
-  const name = payload.result?.name;
-  if (
-    typeof id !== "string" ||
-    !DATABASE_ID_PATTERN.test(id) ||
-    id === PRODUCTION_DATABASE_ID ||
-    name !== configuration.databaseName ||
-    !name.startsWith(DATABASE_NAME_PREFIX)
-  ) {
+  try {
+    return parseCloudflareCreatedDatabase(
+      payload,
+      response,
+      configuration.databaseName,
+      ownershipWindow,
+    );
+  } catch (error) {
+    const candidateId = safeDisposableCandidateId(
+      payload,
+      configuration.databaseName,
+    );
     return rejectAmbiguousDatabaseCreation(
       configuration,
-      new Error("Disposable D1 creation returned invalid ownership metadata."),
-      {
-        notAfterMs: Date.now(),
-        notBeforeMs: requestStartedAt,
-      },
+      error,
+      ownershipWindow,
+      candidateId,
     );
   }
+}
+
+export function exactDisposableDatabaseIdFromList(
+  payload,
+  response,
+  databaseName,
+) {
+  invariant(
+    response.ok &&
+      !retryableCloudflareResponse(response) &&
+      payload?.success === true &&
+      Array.isArray(payload.result),
+    `Disposable D1 lookup failed: ${cloudflareErrors(payload)}`,
+  );
+  const info = payload.result_info;
+  invariant(
+    Number.isSafeInteger(info?.count) &&
+      info.count === payload.result.length &&
+      Number.isSafeInteger(info.page) &&
+      info.page === 1 &&
+      Number.isSafeInteger(info.per_page) &&
+      info.per_page === REAPER_DATABASE_LIST_PAGE_SIZE &&
+      Number.isSafeInteger(info.total_count) &&
+      info.total_count >= payload.result.length &&
+      info.total_count <= D1_DATABASE_ACCOUNT_LIMIT &&
+      (payload.result.length < info.per_page ||
+        info.total_count <= info.page * info.per_page),
+    "Disposable D1 lookup returned inconsistent or incomplete pagination metadata.",
+  );
+  invariant(
+    payload.result.every(
+      (database) =>
+        typeof database?.name === "string" &&
+        database.name.length > 0 &&
+        typeof database.uuid === "string" &&
+        DATABASE_ID_PATTERN.test(database.uuid),
+    ),
+    "Disposable D1 lookup returned incomplete or malformed database metadata.",
+  );
+  invariant(
+    new Set(payload.result.map((database) => database.uuid)).size ===
+      payload.result.length,
+    "Disposable D1 lookup returned duplicate UUIDs.",
+  );
+  const exact = payload.result.filter(
+    (database) => database.name === databaseName,
+  );
+  invariant(
+    exact.length <= 1,
+    "Disposable D1 lookup returned duplicate exact names.",
+  );
+  if (exact.length === 0) return undefined;
+  const id = exact[0].uuid;
+  invariant(
+    id !== PRODUCTION_DATABASE_ID,
+    "Disposable D1 lookup returned an invalid database ID.",
+  );
   return id;
+}
+
+function retryableCloudflareResponse(response) {
+  const retryHeader =
+    typeof response.headers?.get === "function"
+      ? response.headers.get("x-should-retry")
+      : null;
+  if (retryHeader === "true") return true;
+  if (retryHeader === "false") return false;
+  return (
+    response.status === 408 ||
+    response.status === 409 ||
+    response.status === 429 ||
+    response.status >= 500
+  );
 }
 
 async function listDisposableDatabaseId(configuration) {
@@ -393,41 +639,67 @@ async function listDisposableDatabaseId(configuration) {
     `/d1/database?${search.toString()}`,
     { method: "GET" },
   );
-  invariant(
-    response.ok && payload.success === true && Array.isArray(payload.result),
-    `Disposable D1 lookup failed: ${cloudflareErrors(payload)}`,
+  return exactDisposableDatabaseIdFromList(
+    payload,
+    response,
+    configuration.databaseName,
   );
-  invariant(
-    payload.result_info?.total_count === payload.result.length,
-    "Disposable D1 lookup did not return its complete exact-name result set.",
-  );
-  const exact = payload.result.filter(
-    (database) => database?.name === configuration.databaseName,
-  );
-  invariant(
-    exact.length <= 1,
-    "Disposable D1 lookup returned duplicate exact names.",
-  );
-  if (exact.length === 0) return undefined;
-  const id = exact[0]?.uuid;
-  invariant(
-    typeof id === "string" &&
-      DATABASE_ID_PATTERN.test(id) &&
-      id !== PRODUCTION_DATABASE_ID,
-    "Disposable D1 lookup returned an invalid database ID.",
-  );
-  return id;
 }
 
 async function findDisposableDatabase(configuration, ownershipWindow) {
   const id = await listDisposableDatabaseId(configuration);
   if (id === undefined) return undefined;
-  const owned = await getDisposableDatabase(configuration, id, ownershipWindow);
+  const owned = await getDisposableDatabase(configuration, id, {
+    ownershipWindow,
+  });
   invariant(
     owned !== undefined,
     "Disposable D1 exact-name lookup disappeared before ownership read-back.",
   );
   return owned.id;
+}
+
+export async function lookupAmbiguousDatabaseCreation(
+  configuration,
+  ownershipWindow,
+  reconciliation = { candidateId: undefined },
+) {
+  let databaseId;
+  try {
+    databaseId = await listDisposableDatabaseId(configuration);
+  } catch (error) {
+    if (error instanceof CloudflareTransientResponseError) {
+      return { cause: error, state: "transient_error" };
+    }
+    throw error;
+  }
+  if (databaseId !== undefined) {
+    invariant(
+      reconciliation.candidateId === undefined ||
+        reconciliation.candidateId === databaseId,
+      "Disposable D1 creation reconciliation observed a different UUID.",
+    );
+    reconciliation.candidateId = databaseId;
+  }
+  const candidateId = reconciliation.candidateId;
+  if (candidateId === undefined) return { state: "absent" };
+  let owned;
+  try {
+    owned = await getDisposableDatabase(configuration, candidateId, {
+      ownershipWindow,
+    });
+  } catch (error) {
+    if (error instanceof CloudflareTransientResponseError) {
+      return { cause: error, state: "transient_error" };
+    }
+    throw error;
+  }
+  if (owned === undefined) {
+    return databaseId === undefined
+      ? { state: "absent" }
+      : { state: "partial_visibility" };
+  }
+  return { database: owned, state: "owned" };
 }
 
 function validateCompleteD1Inventory(databases, expectedTotal) {
@@ -467,8 +739,12 @@ async function listAllD1Databases(configuration) {
         info.count === payload.result.length &&
         Number.isSafeInteger(info.page) &&
         info.page === page &&
+        Number.isSafeInteger(info.per_page) &&
+        info.per_page === REAPER_DATABASE_LIST_PAGE_SIZE &&
         Number.isSafeInteger(info.total_count) &&
-        info.total_count >= 0,
+        info.total_count >= payload.result.length &&
+        info.total_count <= D1_DATABASE_ACCOUNT_LIMIT &&
+        payload.result.length <= REAPER_DATABASE_LIST_PAGE_SIZE,
       "D1 inventory returned inconsistent pagination metadata.",
     );
     if (expectedTotal === undefined) expectedTotal = info.total_count;
@@ -488,10 +764,110 @@ async function listAllD1Databases(configuration) {
   throw new Error("D1 inventory exceeded its bounded page cap.");
 }
 
+function parseCloudflareTimestamp(value) {
+  invariant(
+    typeof value === "string",
+    "Disposable D1 ownership metadata contains an invalid creation timestamp.",
+  );
+  const match = CLOUDFLARE_TIMESTAMP_PATTERN.exec(value);
+  invariant(
+    match !== null,
+    "Disposable D1 ownership metadata contains an invalid creation timestamp.",
+  );
+  const milliseconds = Date.parse(value);
+  const year = Number.parseInt(match.groups.year, 10);
+  const month = Number.parseInt(match.groups.month, 10);
+  const day = Number.parseInt(match.groups.day, 10);
+  const hour = Number.parseInt(match.groups.hour, 10);
+  const minute = Number.parseInt(match.groups.minute, 10);
+  const second = Number.parseInt(match.groups.second, 10);
+  const fractionMilliseconds = Number.parseInt(
+    `${match.groups.fraction ?? ""}000`.slice(0, 3),
+    10,
+  );
+  const reconstructed = Date.UTC(
+    year,
+    month - 1,
+    day,
+    hour,
+    minute,
+    second,
+    fractionMilliseconds,
+  );
+  const exact = new Date(reconstructed);
+  invariant(
+    Number.isFinite(milliseconds) &&
+      milliseconds === reconstructed &&
+      exact.getUTCFullYear() === year &&
+      exact.getUTCMonth() === month - 1 &&
+      exact.getUTCDate() === day &&
+      exact.getUTCHours() === hour &&
+      exact.getUTCMinutes() === minute &&
+      exact.getUTCSeconds() === second,
+    "Disposable D1 ownership metadata contains an invalid creation timestamp.",
+  );
+  return milliseconds;
+}
+
+function isWellFormedCloudflareNotFound(payload, response) {
+  return (
+    response.ok === false &&
+    response.status === 404 &&
+    !retryableCloudflareResponse(response) &&
+    payload?.success === false &&
+    (payload.result === undefined || payload.result === null) &&
+    Array.isArray(payload.errors) &&
+    payload.errors.length > 0 &&
+    payload.errors.every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        entry.code === 7404 &&
+        typeof entry.message === "string" &&
+        entry.message.length > 0,
+    )
+  );
+}
+
+export function parseCloudflareDatabaseRead(
+  payload,
+  response,
+  { databaseId, databaseName, expectedCreatedAt, ownershipWindow },
+) {
+  if (isWellFormedCloudflareNotFound(payload, response)) return undefined;
+  invariant(
+    response.ok && payload?.success === true,
+    `Disposable D1 read-back failed: ${cloudflareErrors(payload)}`,
+  );
+  const id = payload.result?.uuid;
+  const name = payload.result?.name;
+  const createdAt = parseCloudflareTimestamp(payload.result?.created_at);
+  invariant(
+    id === databaseId &&
+      name === databaseName &&
+      DISPOSABLE_DATABASE_NAME_PATTERN.test(name),
+    "Disposable D1 read-back did not prove exact UUID/name ownership metadata.",
+  );
+  if (ownershipWindow !== undefined) {
+    invariant(
+      createdAt >= ownershipWindow.notBeforeMs - CREATION_CLOCK_SKEW_MS &&
+        createdAt <= ownershipWindow.notAfterMs + CREATION_CLOCK_SKEW_MS,
+      "Disposable D1 creation time is outside the ambiguous request window.",
+    );
+  }
+  if (expectedCreatedAt !== undefined) {
+    invariant(
+      createdAt === expectedCreatedAt,
+      "Disposable D1 creation timestamp changed after ownership was proven.",
+    );
+  }
+  return { createdAt, id, name };
+}
+
 async function getDisposableDatabase(
   configuration,
   databaseId,
-  ownershipWindow,
+  { expectedCreatedAt, ownershipWindow } = {},
 ) {
   invariant(
     DATABASE_ID_PATTERN.test(databaseId) &&
@@ -503,52 +879,12 @@ async function getDisposableDatabase(
     `/d1/database/${databaseId}`,
     { method: "GET" },
   );
-  if (response.status === 404) return undefined;
-  invariant(
-    response.ok && payload.success === true,
-    `Disposable D1 read-back failed: ${cloudflareErrors(payload)}`,
-  );
-  const id = payload.result?.uuid;
-  const name = payload.result?.name;
-  const createdAt = Date.parse(payload.result?.created_at);
-  invariant(
-    id === databaseId &&
-      name === configuration.databaseName &&
-      name.startsWith(DATABASE_NAME_PREFIX) &&
-      Number.isFinite(createdAt),
-    "Disposable D1 read-back did not prove exact UUID/name ownership.",
-  );
-  if (ownershipWindow !== undefined) {
-    invariant(
-      createdAt >= ownershipWindow.notBeforeMs - CREATION_CLOCK_SKEW_MS &&
-        createdAt <= ownershipWindow.notAfterMs + CREATION_CLOCK_SKEW_MS,
-      "Disposable D1 creation time is outside the ambiguous request window.",
-    );
-  }
-  return { createdAt, id, name };
-}
-
-export async function waitForDisposableDatabaseDeletion(
-  lookup,
-  delay = (milliseconds) =>
-    new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
-) {
-  let consecutiveAbsences = 0;
-  for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
-    const remaining = await lookup();
-    if (remaining === undefined) {
-      consecutiveAbsences += 1;
-      if (consecutiveAbsences === 2) return;
-    } else {
-      consecutiveAbsences = 0;
-    }
-    if (attempt + 1 < DELETE_CONFIRMATION_ATTEMPTS) {
-      await delay(250 * 2 ** attempt);
-    }
-  }
-  throw new Error(
-    "Disposable D1 deletion did not converge after bounded confirmation.",
-  );
+  return parseCloudflareDatabaseRead(payload, response, {
+    databaseId,
+    databaseName: configuration.databaseName,
+    expectedCreatedAt,
+    ownershipWindow,
+  });
 }
 
 async function deleteDisposableDatabase(
@@ -557,21 +893,22 @@ async function deleteDisposableDatabase(
   expectedCreatedAt,
 ) {
   invariant(
-    configuration.databaseName.startsWith(DATABASE_NAME_PREFIX) &&
+    DISPOSABLE_DATABASE_NAME_PATTERN.test(configuration.databaseName) &&
       DATABASE_ID_PATTERN.test(databaseId) &&
-      databaseId !== PRODUCTION_DATABASE_ID,
+      databaseId !== PRODUCTION_DATABASE_ID &&
+      Number.isSafeInteger(expectedCreatedAt),
     "Refusing to delete a D1 database outside the disposable proof scope.",
   );
   const ownedDatabase = await waitForDisposableDatabaseOwnership(() =>
-    disposableDatabasePresence(configuration, databaseId),
+    disposableDatabasePresence(configuration, databaseId, {
+      expectedCreatedAt,
+    }),
   );
   if (ownedDatabase === undefined) return false;
-  if (expectedCreatedAt !== undefined) {
-    invariant(
-      ownedDatabase.createdAt === expectedCreatedAt,
-      "Stale disposable D1 ownership changed before bounded cleanup.",
-    );
-  }
+  invariant(
+    ownedDatabase.createdAt === expectedCreatedAt,
+    "Stale disposable D1 ownership changed before bounded cleanup.",
+  );
   let deletionError;
   try {
     const { payload, response } = await cloudflareRequest(
@@ -590,7 +927,9 @@ async function deleteDisposableDatabase(
 
   try {
     await waitForDisposableDatabaseDeletion(() =>
-      disposableDatabasePresence(configuration, databaseId),
+      disposableDatabasePresence(configuration, databaseId, {
+        expectedCreatedAt,
+      }),
     );
   } catch (confirmationError) {
     if (deletionError === undefined) throw confirmationError;
@@ -612,27 +951,40 @@ export function selectStaleDisposableDatabases(databases, nowMs) {
         "D1 inventory item has a missing or malformed name.",
       );
       if (!database.name.startsWith(DATABASE_NAME_PREFIX)) return false;
-      const createdAt = Date.parse(database.created_at);
+      let createdAt;
+      try {
+        createdAt = parseCloudflareTimestamp(database.created_at);
+      } catch {
+        throw new Error(
+          "Disposable D1 inventory item is incomplete or malformed.",
+        );
+      }
       invariant(
         DISPOSABLE_DATABASE_NAME_PATTERN.test(database.name) &&
           typeof database.uuid === "string" &&
           DATABASE_ID_PATTERN.test(database.uuid) &&
-          database.uuid !== PRODUCTION_DATABASE_ID &&
-          Number.isFinite(createdAt),
+          database.uuid !== PRODUCTION_DATABASE_ID,
         "Disposable D1 inventory item is incomplete or malformed.",
       );
       return Number.isFinite(createdAt) && createdAt <= cutoff;
     })
     .map((database) => ({
-      createdAt: Date.parse(database.created_at),
+      createdAt: parseCloudflareTimestamp(database.created_at),
       id: database.uuid,
       name: database.name,
     }))
     .sort(
       (left, right) =>
         left.createdAt - right.createdAt || left.id.localeCompare(right.id),
-    )
-    .slice(0, REAPER_MAX_DATABASES_PER_RUN);
+    );
+}
+
+export function boundedStaleDatabaseSelection(stale) {
+  invariant(Array.isArray(stale), "Stale D1 selection must be an array.");
+  return {
+    remaining: Math.max(0, stale.length - REAPER_MAX_DATABASES_PER_RUN),
+    selected: stale.slice(0, REAPER_MAX_DATABASES_PER_RUN),
+  };
 }
 
 export async function reapStaleDisposableDatabases(
@@ -648,8 +1000,9 @@ export async function reapStaleDisposableDatabases(
     await listAllD1Databases(configuration),
     nowMs,
   );
-  return reapSelectedStaleDatabases(
-    stale,
+  const bounded = boundedStaleDatabaseSelection(stale);
+  const removed = await reapSelectedStaleDatabases(
+    bounded.selected,
     nowMs,
     {
       inspect: getDisposableDatabase,
@@ -657,6 +1010,11 @@ export async function reapStaleDisposableDatabases(
     },
     configuration,
   );
+  invariant(
+    bounded.remaining === 0,
+    `Disposable D1 reaper removed its bounded batch but ${bounded.remaining} stale database(s) remain.`,
+  );
+  return removed;
 }
 
 export async function reapSelectedStaleDatabases(
@@ -686,16 +1044,84 @@ export async function reapSelectedStaleDatabases(
   return removed;
 }
 
-async function disposableDatabasePresence(configuration, databaseId) {
-  const listedId = await listDisposableDatabaseId(configuration);
+function validateDisposableDatabasePresence(presence) {
+  invariant(
+    presence?.state === "absent" ||
+      presence?.state === "partial_visibility" ||
+      (presence?.state === "transient_error" &&
+        presence.cause instanceof Error) ||
+      (presence?.state === "owned" &&
+        typeof presence.database?.id === "string" &&
+        DATABASE_ID_PATTERN.test(presence.database.id) &&
+        presence.database.id !== PRODUCTION_DATABASE_ID &&
+        typeof presence.database.name === "string" &&
+        DISPOSABLE_DATABASE_NAME_PATTERN.test(presence.database.name) &&
+        Number.isSafeInteger(presence.database.createdAt)),
+    "Disposable D1 lookup returned an invalid presence state.",
+  );
+  return presence;
+}
+
+export async function disposableDatabasePresence(
+  configuration,
+  databaseId,
+  ownership = {},
+) {
+  let listedId;
+  try {
+    listedId = await listDisposableDatabaseId(configuration);
+  } catch (error) {
+    if (error instanceof CloudflareTransientResponseError) {
+      return { cause: error, state: "transient_error" };
+    }
+    throw error;
+  }
   invariant(
     listedId === undefined || listedId === databaseId,
     "Disposable D1 name was rebound to a different UUID.",
   );
-  const byId = await getDisposableDatabase(configuration, databaseId);
-  if (listedId === undefined && byId === undefined) return undefined;
-  if (listedId === databaseId && byId !== undefined) return byId;
-  return { id: databaseId, pendingConsistency: true };
+  let byId;
+  try {
+    byId = await getDisposableDatabase(configuration, databaseId, ownership);
+  } catch (error) {
+    if (error instanceof CloudflareTransientResponseError) {
+      return { cause: error, state: "transient_error" };
+    }
+    throw error;
+  }
+  if (listedId === undefined && byId === undefined) {
+    return { state: "absent" };
+  }
+  if (listedId === databaseId && byId !== undefined) {
+    return { database: byId, state: "owned" };
+  }
+  if (byId !== undefined) return { database: byId, state: "owned" };
+  return { state: "partial_visibility" };
+}
+
+export async function waitForDisposableDatabaseDeletion(
+  lookup,
+  delay = (milliseconds) =>
+    new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+) {
+  let consecutiveAbsences = 0;
+  let finalTransientCause;
+  for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    const presence = validateDisposableDatabasePresence(await lookup());
+    consecutiveAbsences =
+      presence.state === "absent" ? consecutiveAbsences + 1 : 0;
+    finalTransientCause =
+      presence.state === "transient_error" ? presence.cause : undefined;
+    if (attempt + 1 < DELETE_CONFIRMATION_ATTEMPTS) {
+      await delay(250 * 2 ** attempt);
+    }
+  }
+  if (consecutiveAbsences < 2) {
+    throw new Error(
+      "Disposable D1 deletion did not converge after bounded confirmation.",
+      { cause: finalTransientCause },
+    );
+  }
 }
 
 export async function waitForDisposableDatabaseOwnership(
@@ -703,19 +1129,25 @@ export async function waitForDisposableDatabaseOwnership(
   delay = (milliseconds) =>
     new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
 ) {
+  let consecutiveAbsences = 0;
+  let finalTransientCause;
   for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
-    const presence = await lookup();
-    if (presence === undefined) {
-      await waitForDisposableDatabaseDeletion(lookup, delay);
-      return undefined;
+    const presence = validateDisposableDatabasePresence(await lookup());
+    if (presence.state === "owned") {
+      return presence.database;
     }
-    if (presence.pendingConsistency !== true) return presence;
+    consecutiveAbsences =
+      presence.state === "absent" ? consecutiveAbsences + 1 : 0;
+    finalTransientCause =
+      presence.state === "transient_error" ? presence.cause : undefined;
     if (attempt + 1 < DELETE_CONFIRMATION_ATTEMPTS) {
       await delay(250 * 2 ** attempt);
     }
   }
+  if (consecutiveAbsences >= 2) return undefined;
   throw new Error(
     "Disposable D1 ownership did not converge before bounded cleanup.",
+    { cause: finalTransientCause },
   );
 }
 
@@ -725,21 +1157,25 @@ export async function waitForExpectedDisposableDatabaseOwnership(
   delay = (milliseconds) =>
     new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
 ) {
+  let finalTransientCause;
   for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
-    const presence = await lookup();
-    if (presence !== undefined && presence.pendingConsistency !== true) {
+    const presence = validateDisposableDatabasePresence(await lookup());
+    if (presence.state === "owned") {
       invariant(
-        presence.id === expectedDatabaseId,
+        presence.database.id === expectedDatabaseId,
         "Disposable D1 ownership resolved to a different UUID.",
       );
-      return presence;
+      return presence.database;
     }
+    finalTransientCause =
+      presence.state === "transient_error" ? presence.cause : undefined;
     if (attempt + 1 < DELETE_CONFIRMATION_ATTEMPTS) {
       await delay(250 * 2 ** attempt);
     }
   }
   throw new Error(
     "Disposable D1 ownership did not converge before remote migration.",
+    { cause: finalTransientCause },
   );
 }
 
@@ -755,11 +1191,32 @@ export async function runWithDisposableDatabaseOwnershipBarriers(
     delay,
   );
   await operation();
-  await waitForExpectedDisposableDatabaseOwnership(
+  return waitForExpectedDisposableDatabaseOwnership(
     lookup,
     expectedDatabaseId,
     delay,
   );
+}
+
+export function exactD1QueryResult(payload, response) {
+  invariant(
+    response.ok &&
+      payload.success === true &&
+      Array.isArray(payload.result) &&
+      payload.result.length === 1 &&
+      typeof payload.result[0] === "object" &&
+      payload.result[0] !== null &&
+      typeof payload.result[0].results !== "undefined" &&
+      Array.isArray(payload.result[0].results) &&
+      payload.result[0].success === true,
+    `Disposable D1 query failed or returned an ambiguous result: ${cloudflareErrors(payload)}`,
+  );
+  const [result] = payload.result;
+  invariant(
+    result !== null && result.success === true,
+    "Disposable D1 query did not return one successful result.",
+  );
+  return result;
 }
 
 async function d1Query(configuration, databaseId, sql, params = []) {
@@ -771,15 +1228,7 @@ async function d1Query(configuration, databaseId, sql, params = []) {
       body: JSON.stringify({ params, sql }),
     },
   );
-  const result = Array.isArray(payload.result) ? payload.result[0] : null;
-  invariant(
-    response.ok &&
-      payload.success === true &&
-      result !== null &&
-      result.success === true,
-    `Disposable D1 query failed: ${cloudflareErrors(payload)}`,
-  );
-  return result;
+  return exactD1QueryResult(payload, response);
 }
 
 async function expectD1QueryError(
@@ -798,9 +1247,11 @@ async function expectD1QueryError(
     },
   );
   const errorText = cloudflareErrors(payload);
+  const results = Array.isArray(payload.result) ? payload.result : [];
   invariant(
     !response.ok &&
       payload.success === false &&
+      results.every((result) => result?.success !== true) &&
       errorText.includes(expectedFragment),
     `Disposable D1 unexpectedly accepted a forbidden transition (${response.status}).`,
   );
@@ -894,7 +1345,12 @@ async function migrationPlan() {
   );
 }
 
-async function prepareMigrationDirectories(root, databaseName, plan) {
+async function prepareMigrationDirectories(
+  root,
+  databaseName,
+  databaseId,
+  plan,
+) {
   const preRoot = join(root, "pre");
   const fullRoot = join(root, "full");
   await mkdir(join(preRoot, "migrations"), { recursive: true });
@@ -908,17 +1364,24 @@ async function prepareMigrationDirectories(root, databaseName, plan) {
     }
   }
 
-  const config = buildDisposableWranglerConfiguration(databaseName);
+  const config = buildDisposableWranglerConfiguration(databaseName, databaseId);
   const preConfig = join(preRoot, "wrangler.json");
   const fullConfig = join(fullRoot, "wrangler.json");
+  // The only network-derived field is an exact UUID already correlated with
+  // the random capability name and creation timestamp. The destination is a
+  // new mode-0600 file inside our own mkdtemp directory, never a remote path.
+  // codeql[js/http-to-file-access]
   await writeFile(preConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
+  // codeql[js/http-to-file-access]
   await writeFile(fullConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
   return { fullConfig, preConfig };
 }
 
-export function buildDisposableWranglerConfiguration(databaseName) {
+export function buildDisposableWranglerConfiguration(databaseName, databaseId) {
   invariant(
-    databaseName.startsWith(DATABASE_NAME_PREFIX),
+    DISPOSABLE_DATABASE_NAME_PATTERN.test(databaseName) &&
+      DATABASE_ID_PATTERN.test(databaseId) &&
+      databaseId !== PRODUCTION_DATABASE_ID,
     "Refusing to configure a database outside the disposable proof scope.",
   );
   return JSON.stringify(
@@ -928,6 +1391,7 @@ export function buildDisposableWranglerConfiguration(databaseName) {
       d1_databases: [
         {
           binding: "DB",
+          database_id: databaseId,
           database_name: databaseName,
           migrations_dir: "migrations",
         },
@@ -943,7 +1407,7 @@ function applyMigrations(configuration, configPath) {
     "d1",
     "migrations",
     "apply",
-    configuration.databaseName,
+    "DB",
     "--remote",
     "--config",
     configPath,
@@ -953,10 +1417,14 @@ function applyMigrations(configuration, configPath) {
 async function applyMigrationsToOwnedDatabase(
   configuration,
   databaseId,
+  expectedCreatedAt,
   configPath,
 ) {
-  await runWithDisposableDatabaseOwnershipBarriers(
-    () => disposableDatabasePresence(configuration, databaseId),
+  return runWithDisposableDatabaseOwnershipBarriers(
+    () =>
+      disposableDatabasePresence(configuration, databaseId, {
+        expectedCreatedAt,
+      }),
     databaseId,
     () => applyMigrations(configuration, configPath),
   );
@@ -1440,6 +1908,7 @@ async function proveOneWayProtocol(configuration, databaseId) {
 }
 
 export async function runRemoteMigrationProof(environment = process.env) {
+  verifyRemoteProofDeadline(environment);
   const configuration = readConfiguration(environment);
   startCloudflareRequestBudget(
     configuration,
@@ -1450,6 +1919,7 @@ export async function runRemoteMigrationProof(environment = process.env) {
   const plan = await migrationPlan();
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lcv-slack-d1-proof-"));
   let databaseId;
+  let expectedCreatedAt;
   let primaryError;
   let cleanupError;
   let localCleanupError;
@@ -1458,15 +1928,28 @@ export async function runRemoteMigrationProof(environment = process.env) {
       (await findDisposableDatabase(configuration)) === undefined,
       "Refusing to adopt a pre-existing disposable D1 name.",
     );
-    databaseId = await createDisposableDatabase(configuration);
+    const createdDatabase = await createDisposableDatabase(configuration);
+    databaseId = createdDatabase.id;
+    expectedCreatedAt = createdDatabase.createdAt;
     const { fullConfig, preConfig } = await prepareMigrationDirectories(
       temporaryRoot,
       configuration.databaseName,
+      databaseId,
       plan,
     );
-    await applyMigrationsToOwnedDatabase(configuration, databaseId, preConfig);
+    await applyMigrationsToOwnedDatabase(
+      configuration,
+      databaseId,
+      expectedCreatedAt,
+      preConfig,
+    );
     await seedOldSchema(configuration, databaseId);
-    await applyMigrationsToOwnedDatabase(configuration, databaseId, fullConfig);
+    await applyMigrationsToOwnedDatabase(
+      configuration,
+      databaseId,
+      expectedCreatedAt,
+      fullConfig,
+    );
     await proveMigratedState(configuration, databaseId, plan.fullNames);
     await proveSchemaInventory(configuration, databaseId);
     await proveOldWorkerQuarantine(configuration, databaseId);
@@ -1478,7 +1961,11 @@ export async function runRemoteMigrationProof(environment = process.env) {
   } finally {
     if (databaseId !== undefined && cleanupError === undefined) {
       try {
-        await deleteDisposableDatabase(configuration, databaseId);
+        await deleteDisposableDatabase(
+          configuration,
+          databaseId,
+          expectedCreatedAt,
+        );
       } catch (error) {
         cleanupError = error;
       }

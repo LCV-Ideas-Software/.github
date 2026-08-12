@@ -94,7 +94,7 @@ const WORKFLOW_SPECS = Object.freeze([
     path: ".github/workflows/github-slack-integration.yml",
     workflowName: "GitHub Slack Integration",
     jobId: "verify",
-    jobIds: ["verify", "deploy", "deploy_slack"],
+    jobIds: ["verify", "prove_remote_d1", "deploy", "deploy_slack"],
     jobName: "Verify GitHub Slack relay",
     eventIds: ["push", "pull_request", "merge_group", "workflow_dispatch"],
     pullRequest: { branches: ["main"] },
@@ -102,9 +102,9 @@ const WORKFLOW_SPECS = Object.freeze([
     policyRunner: false,
     nodeOptions: "--no-deprecation",
     digest: "6cf8e9b558e1a392b3fd771de1105c87c5d1378dfb7eb8cbb5229b7b693d04e0",
-    privilegedJobIds: ["deploy", "deploy_slack"],
+    privilegedJobIds: ["prove_remote_d1", "deploy", "deploy_slack"],
     privilegedDigest:
-      "dd4d467b8ab2011a1c7c6c40d214bb7d27301cc27c793bc6501efe0f25d4b84c",
+      "e5d5ec304ffc44cc5b5069f335099d091384162d7c97a841b92c8120d86b65c1",
   },
   {
     path: ".github/workflows/slack-github-integration.yml",

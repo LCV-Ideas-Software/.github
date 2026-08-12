@@ -81,6 +81,11 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
+    "    needs: prove_remote_d1\n    permissions:",
+    "    needs: verify\n    permissions:",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
     "    needs: deploy\n    permissions:",
     "    needs: verify\n    permissions:",
   );

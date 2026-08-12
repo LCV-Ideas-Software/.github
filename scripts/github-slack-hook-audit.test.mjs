@@ -164,6 +164,11 @@ function assertRecoveryEnvironmentIsolation(workflows) {
   }
   assert.deepEqual(environmentDeclarations, [
     ["cloudflare-pages.yml", "deploy", "cloudflare-production"],
+    [
+      "github-slack-integration.yml",
+      "prove_remote_d1",
+      "cloudflare-production",
+    ],
     ["github-slack-integration.yml", "deploy", "cloudflare-production"],
     ["github-slack-integration.yml", "deploy_slack", "slack-production"],
     ["github-slack-webhook-redelivery.yml", "redeliver", "webhook-recovery"],
