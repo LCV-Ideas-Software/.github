@@ -152,6 +152,55 @@ Deno.test(
 );
 
 Deno.test(
+  "retries an idempotent progress write after an invalid successful response",
+  async () => {
+    const scenarios = [
+      {
+        phase: "send_started" as const,
+        firstResponse: () => new Response('{"ok":', { status: 200 }),
+      },
+      {
+        phase: "delivered" as const,
+        firstResponse: () => Response.json({ ok: "true" }),
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const bodies: string[] = [];
+      const result = await reportRelayProgress(
+        await authorizedInputs(scenario.phase),
+        SECRET,
+        FUNCTION_EXECUTION_ID,
+        {
+          now: () => NOW,
+          fetchImpl: (_url, init) => {
+            bodies.push(String(init?.body));
+            return Promise.resolve(
+              bodies.length === 1
+                ? scenario.firstResponse()
+                : Response.json({ ok: true, duplicate: true }),
+            );
+          },
+        },
+      );
+
+      assert(
+        result.ok,
+        `${scenario.phase} did not confirm its committed idempotent retry`,
+      );
+      assert(
+        bodies.length === 2,
+        `${scenario.phase} did not use exactly one confirmation retry`,
+      );
+      assert(
+        bodies[0] === bodies[1],
+        `${scenario.phase} changed identity during its confirmation retry`,
+      );
+    }
+  },
+);
+
+Deno.test(
   "releases a message only to the Slack execution that owns the send lease",
   async () => {
     const value = await authorizedInputs("send_started");

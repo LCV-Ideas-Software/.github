@@ -205,6 +205,11 @@ export async function reportRelayProgress(
     } catch {
       // A receipt is not accepted without the exact authenticated endpoint reply.
     }
+    // A successful HTTP status with a truncated or structurally invalid body is
+    // indistinguishable from a committed write whose confirmation was lost.
+    // Retry the byte-identical, execution-bound operation once; the relay's CAS
+    // returns the same owner as an idempotent duplicate after a prior commit.
+    if (attempt === 0) continue;
     return { ok: false };
   }
   return { ok: false };
