@@ -264,7 +264,12 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     relayWorkflowSource.indexOf("  deploy:"),
     relayWorkflowSource.indexOf("  deploy_slack:"),
   );
-  assert.match(relayDeployJob, /needs: verify/);
+  const remoteProofJob = relayWorkflowSource.slice(
+    relayWorkflowSource.indexOf("  prove_remote_d1:"),
+    relayWorkflowSource.indexOf("  deploy:"),
+  );
+  assert.match(remoteProofJob, /needs: verify/);
+  assert.match(relayDeployJob, /needs: prove_remote_d1/);
   assert.match(relayDeployJob, /slack_delivery_protocol_activated_at/);
   assert.match(relayDeployJob, /slack_delivery_protocol_activation_id/);
   assert.match(relayDeployJob, /slack_delivery_protocol_schema_revision/);

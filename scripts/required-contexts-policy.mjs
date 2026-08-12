@@ -14,6 +14,8 @@ const SLACK_VERIFY_CONDITION =
   "github.event_name != 'schedule' || github.event.schedule == '17 7 * * *'";
 const ZIZMOR_CONFIG_PATH = ".github/zizmor.yml";
 const RELAY_CONFIG_PATH = "workers/github-slack-relay/wrangler.jsonc";
+const D1_REAPER_WORKFLOW_PATH =
+  ".github/workflows/slack-d1-disposable-reaper.yml";
 
 // Each digest covers the YAML-parsed workflow env, defaults, and complete
 // required job. Mapping keys are sorted; names, conditions, permissions,
@@ -92,17 +94,17 @@ const WORKFLOW_SPECS = Object.freeze([
     path: ".github/workflows/github-slack-integration.yml",
     workflowName: "GitHub Slack Integration",
     jobId: "verify",
-    jobIds: ["verify", "deploy", "deploy_slack"],
+    jobIds: ["verify", "prove_remote_d1", "deploy", "deploy_slack"],
     jobName: "Verify GitHub Slack relay",
     eventIds: ["push", "pull_request", "merge_group", "workflow_dispatch"],
     pullRequest: { branches: ["main"] },
     contexts: ["Verify GitHub Slack relay"],
     policyRunner: false,
     nodeOptions: "--no-deprecation",
-    digest: "ff2f43836721cdaca69468b0002dd0042fa103d678da81eda6debb9d61893f0e",
-    privilegedJobIds: ["deploy", "deploy_slack"],
+    digest: "6cf8e9b558e1a392b3fd771de1105c87c5d1378dfb7eb8cbb5229b7b693d04e0",
+    privilegedJobIds: ["prove_remote_d1", "deploy", "deploy_slack"],
     privilegedDigest:
-      "3c65b67838735a5e0823a000ca36928f7dccf051e6eaa917dd456f5f7e37d70d",
+      "e5d5ec304ffc44cc5b5069f335099d091384162d7c97a841b92c8120d86b65c1",
   },
   {
     path: ".github/workflows/slack-github-integration.yml",
@@ -129,8 +131,17 @@ const WORKFLOW_SPECS = Object.freeze([
   },
 ]);
 
+const STANDALONE_PRIVILEGED_WORKFLOW_SPECS = Object.freeze([
+  {
+    path: D1_REAPER_WORKFLOW_PATH,
+    jobIds: ["reap"],
+    digest: "9bc6349e6e985e9bf88eb7029cc37b12ad8230fcb19c6e87a86ec1ca4a4dbabd",
+  },
+]);
+
 const YAML_SOURCE_PATHS = Object.freeze([
   ...WORKFLOW_SPECS.map(({ path }) => path),
+  ...STANDALONE_PRIVILEGED_WORKFLOW_SPECS.map(({ path }) => path),
   ZIZMOR_CONFIG_PATH,
 ]);
 const ALL_SOURCE_PATHS = Object.freeze([
@@ -276,6 +287,31 @@ function privilegedWorkflowDigest(workflow, jobs, jobIds) {
   return createHash("sha256")
     .update(JSON.stringify(projection), "utf8")
     .digest("hex");
+}
+
+function standalonePrivilegedWorkflowDigest(workflow) {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize(workflow)), "utf8")
+    .digest("hex");
+}
+
+function validateStandalonePrivilegedWorkflow(workflow, spec) {
+  const jobs = plainObject(workflow.jobs, `${spec.path}.jobs`);
+  exact(Object.keys(jobs), spec.jobIds, `${spec.path} job inventory`);
+  for (const jobId of spec.jobIds) {
+    const job = plainObject(jobs[jobId], `${spec.path}.jobs.${jobId}`);
+    requirePolicy(
+      Array.isArray(job.steps),
+      `${spec.path}.jobs.${jobId} steps are missing`,
+    );
+    rejectKey(job, "continue-on-error", `${spec.path}.jobs.${jobId}`);
+    rejectFailureMasking(job, spec.path);
+  }
+  exact(
+    standalonePrivilegedWorkflowDigest(workflow),
+    spec.digest,
+    `${spec.path} canonical standalone privileged-workflow digest`,
+  );
 }
 
 function validateWorkflow(workflow, spec) {
@@ -425,6 +461,9 @@ export function validateRequiredContextPolicy(sources) {
   const contexts = WORKFLOW_SPECS.flatMap((spec) =>
     validateWorkflow(parsed[spec.path], spec),
   );
+  for (const spec of STANDALONE_PRIVILEGED_WORKFLOW_SPECS) {
+    validateStandalonePrivilegedWorkflow(parsed[spec.path], spec);
+  }
   validateZizmorConfig(parsed[ZIZMOR_CONFIG_PATH]);
   validateRelayConfig(sources[RELAY_CONFIG_PATH]);
   exact(

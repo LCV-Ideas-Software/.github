@@ -1,0 +1,39 @@
+name: Slack D1 Disposable Reaper
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: slack-d1-disposable-reaper-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reap:
+    name: Reap stale Slack D1 proof databases
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: cloudflare-production
+    steps:
+      - name: Checkout default branch without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Reap stale disposable D1 proof databases
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/verify-slack-relay-d1-remote.mjs --reap-stale

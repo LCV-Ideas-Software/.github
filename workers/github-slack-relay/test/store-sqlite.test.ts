@@ -237,7 +237,7 @@ afterEach(() => {
 });
 
 describe("D1 schema and constraint behavior on real SQLite", () => {
-  it("keeps the expand migration executable as individual Wrangler D1 statements", () => {
+  it("keeps the expand migration compatible with Wrangler's local splitter", () => {
     const { database } = databaseWithMigrations(false);
     for (const migration of [
       "0001_initial.sql",

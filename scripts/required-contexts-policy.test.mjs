@@ -7,6 +7,7 @@ import {
 } from "./required-contexts-policy.mjs";
 
 const sources = await readRequiredContextSources();
+const D1_REAPER_WORKFLOW = ".github/workflows/slack-d1-disposable-reaper.yml";
 
 function mutated(path, before, after) {
   const source = sources[path];
@@ -44,11 +45,44 @@ test("the privileged Slack monitor job cannot lose its bounded execution budget"
   );
 });
 
+test("the standalone D1 reaper workflow is protected as one exact privileged contract", () => {
+  assert.equal(typeof sources[D1_REAPER_WORKFLOW], "string");
+  for (const [before, after] of [
+    ['    - cron: "37 * * * *"', '    - cron: "* * * * *"'],
+    ["permissions: {}", "permissions:\n  contents: write"],
+    ["  cancel-in-progress: false", "  cancel-in-progress: true"],
+    [
+      "  group: slack-d1-disposable-reaper-${{ github.repository }}",
+      "  group: unrelated-${{ github.repository }}",
+    ],
+    [
+      "    if: github.ref == 'refs/heads/main'",
+      "    if: github.event_name == 'workflow_dispatch'",
+    ],
+    ["      contents: read", "      contents: write"],
+    [
+      "          persist-credentials: false",
+      "          persist-credentials: true",
+    ],
+    [
+      "        run: node scripts/verify-slack-relay-d1-remote.mjs --reap-stale",
+      "        run: echo skipped",
+    ],
+  ]) {
+    rejectsMutation(D1_REAPER_WORKFLOW, before, after);
+  }
+});
+
 test("the privileged relay DAG cannot bypass or drift from its required predecessor", () => {
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
     "    needs: verify\n    permissions:",
     "    permissions:",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "    needs: prove_remote_d1\n    permissions:",
+    "    needs: verify\n    permissions:",
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
@@ -69,6 +103,16 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
     ".github/workflows/github-slack-integration.yml",
     "          scripts/slack-delivery-protocol-preflight.test.mjs\n",
     "",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "      - name: Prove durable inbox migration in disposable remote D1",
+    "      - name: Skip the disposable remote D1 proof",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "        run: node scripts/verify-slack-relay-d1-remote.mjs",
+    "        run: echo skipped",
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
@@ -187,7 +231,7 @@ test("job-level and critical-step continue-on-error are forbidden", () => {
     [".github/workflows/pages.yml", "    timeout-minutes: 15"],
     [
       ".github/workflows/github-slack-integration.yml",
-      "    timeout-minutes: 20",
+      "    timeout-minutes: 40",
     ],
     [
       ".github/workflows/slack-github-integration.yml",

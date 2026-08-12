@@ -18,7 +18,9 @@ on:
       - "scripts/provision-slack-relay-secret.mjs"
       - "scripts/slack-delivery-protocol-preflight.mjs"
       - "scripts/slack-delivery-protocol-preflight.test.mjs"
+      - "scripts/slack-relay-d1-remote-proof.test.mjs"
       - "scripts/slack-relay-secret-rollout.test.mjs"
+      - "scripts/verify-slack-relay-d1-remote.mjs"
       - "slack/github-integration/**"
       - "workers/github-slack-relay/**"
   pull_request:
@@ -91,6 +93,7 @@ jobs:
           scripts/slack-workflow-monitor.test.mjs
           scripts/slack-relay-secret-rollout.test.mjs
           scripts/slack-delivery-protocol-preflight.test.mjs
+          scripts/slack-relay-d1-remote-proof.test.mjs
 
       - name: Verify Cloudflare relay
         working-directory: workers/github-slack-relay
@@ -118,8 +121,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.token || '' }}
         run: deno task --frozen audit
 
-  deploy:
-    name: Deploy GitHub Slack relay
+  prove_remote_d1:
+    name: Prove remote D1 migration
     if: >-
       vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
       (github.event_name == 'push' ||
@@ -128,7 +131,57 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
+    environment: cloudflare-production
+    steps:
+      - name: Establish the fail-closed remote proof deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          now_ms="$(date +%s%3N)"
+          deadline_ms="$((now_ms + 59 * 60 * 1000))"
+          printf 'REMOTE_PROOF_DEADLINE_MS=%s\n' "$deadline_ms" >> "$GITHUB_ENV"
+
+      - name: Checkout verified revision without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Install relay dependencies
+        run: |
+          test "$(npm config get registry --prefix workers/github-slack-relay)" = "https://registry.npmjs.org/"
+          npm ci --prefix workers/github-slack-relay --ignore-scripts --no-audit --no-fund
+
+      - name: Verify relay dependency signatures and advisories
+        run: |
+          npm audit signatures --prefix workers/github-slack-relay
+          npm audit --prefix workers/github-slack-relay --audit-level=low
+          expected_wrangler="$(node -p "require('./workers/github-slack-relay/package.json').devDependencies.wrangler")"
+          test "$(workers/github-slack-relay/node_modules/.bin/wrangler --version)" = "$expected_wrangler"
+
+      - name: Prove durable inbox migration in disposable remote D1
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/verify-slack-relay-d1-remote.mjs
+
+  deploy:
+    name: Deploy GitHub Slack relay
+    if: >-
+      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    needs: prove_remote_d1
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     environment: cloudflare-production
     steps:
       - name: Checkout verified revision without persisted credentials
