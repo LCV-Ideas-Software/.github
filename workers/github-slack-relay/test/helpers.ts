@@ -1,24 +1,28 @@
 import { vi } from "vitest";
 
 import type { SlackWorkflowPayload } from "../src/domain";
-import type {
-  DeliveryInput,
-  DeliveryStatus,
-  DeliveryStore,
-  QueueJob,
-  RecoveryClaim,
-  SlackDeliveryProtocolActivation,
-  SlackDeliveryProtocolActivationResult,
-  SlackProgressInput,
-  SlackProgressResult,
-  SlackTraceReconciliation,
-  StoredDelivery,
+import {
+  SlackDeliveryProtocolActivationConflictError,
+  SlackProgressConflictError,
+  type DeliveryInput,
+  type DeliveryStatus,
+  type DeliveryStore,
+  type QueueJob,
+  type RecoveryClaim,
+  type SlackDeliveryProtocolActivation,
+  type SlackDeliveryProtocolActivationResult,
+  type SlackProgressInput,
+  type SlackProgressResult,
+  type SlackTraceReconciliation,
+  type StoredDelivery,
 } from "../src/store";
 
 export const TEST_WEBHOOK_SECRET = "unit-test-github-webhook-secret-32";
 export const TEST_SLACK_URL =
   "https://hooks.slack.com/triggers/T00000000/B00000000/TESTTOKEN";
 export const TEST_RELAY_SIGNING_SECRET = "vitest-only-relay-signing-secret";
+export const TEST_RELAY_SIGNING_SECRET_NEXT =
+  "vitest-only-next-relay-signing-secret";
 
 function cloneDelivery(delivery: StoredDelivery): StoredDelivery {
   return structuredClone(delivery);
@@ -37,8 +41,12 @@ export class MemoryDeliveryStore implements DeliveryStore {
   slackDeliveryProtocolConfirmationOpen = true;
   healthy = true;
 
-  async isSlackDeliveryProtocolActive(): Promise<boolean> {
-    return this.slackDeliveryProtocolActive;
+  async isSlackDeliveryProtocolActive(expectedRevision: string): Promise<boolean> {
+    return (
+      this.slackDeliveryProtocolActive &&
+      (this.slackDeliveryProtocolRevision ?? expectedRevision) ===
+        expectedRevision
+    );
   }
 
   async activateSlackDeliveryProtocol(
@@ -51,7 +59,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
       Number.isSafeInteger(activation.now) &&
       activation.now > 0;
     if (!valid) {
-      throw new Error("slack_delivery_protocol_activation_conflict");
+      throw new SlackDeliveryProtocolActivationConflictError(
+        "slack_delivery_protocol_activation_conflict",
+      );
     }
     if (!this.slackDeliveryProtocolActive) {
       if (
@@ -61,7 +71,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
         this.slackDeliveryProtocolSchemaRevision !== null ||
         !this.slackDeliveryProtocolConfirmationOpen
       ) {
-        throw new Error("slack_delivery_protocol_activation_conflict");
+        throw new SlackDeliveryProtocolActivationConflictError(
+          "slack_delivery_protocol_activation_conflict",
+        );
       }
       this.slackDeliveryProtocolActive = true;
       this.slackDeliveryProtocolRevision = activation.revision;
@@ -79,7 +91,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
     ) {
       return "already_applied";
     }
-    throw new Error("slack_delivery_protocol_activation_conflict");
+    throw new SlackDeliveryProtocolActivationConflictError(
+      "slack_delivery_protocol_activation_conflict",
+    );
   }
 
   async insert(input: DeliveryInput): Promise<boolean> {
@@ -240,7 +254,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
   ): Promise<SlackProgressResult> {
     const delivery = this.require(input.deliveryId);
     if (delivery.destination !== input.destination) {
-      throw new Error("delivery_destination_mismatch");
+      throw new SlackProgressConflictError("delivery_destination_mismatch");
     }
     if (input.phase === "send_started") {
       if (
@@ -267,7 +281,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
             /^slack_trigger_http_5\d\d_ambiguous$/u.test(delivery.lastError))
         )
       ) {
-        throw new Error("delivery_not_awaiting_slack_progress");
+        throw new SlackProgressConflictError(
+          "delivery_not_awaiting_slack_progress",
+        );
       }
       delivery.status = "send_started";
       delivery.sendStartedAt = input.now;
@@ -278,17 +294,21 @@ export class MemoryDeliveryStore implements DeliveryStore {
       return "recorded";
     }
     if (input.messageTs === null) {
-      throw new Error("slack_message_timestamp_missing");
+      throw new SlackProgressConflictError("slack_message_timestamp_missing");
     }
     if (
       delivery.status === "manual_review" &&
       delivery.lastError === "known_slack_workflow_timeout_message_absent"
     ) {
-      throw new Error("known_loss_recovery_authorization_required");
+      throw new SlackProgressConflictError(
+        "known_loss_recovery_authorization_required",
+      );
     }
     if (delivery.status === "delivered") {
       if (delivery.slackMessageTs === input.messageTs) return "duplicate";
-      throw new Error("slack_message_timestamp_conflict");
+      throw new SlackProgressConflictError(
+        "slack_message_timestamp_conflict",
+      );
     }
     for (const other of this.deliveries.values()) {
       if (
@@ -296,7 +316,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
         other.destination === input.destination &&
         other.slackMessageTs === input.messageTs
       ) {
-        throw new Error("slack_message_timestamp_conflict");
+        throw new SlackProgressConflictError(
+          "slack_message_timestamp_conflict",
+        );
       }
     }
     if (
@@ -308,7 +330,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
         "manual_review",
       ].includes(delivery.status)
     ) {
-      throw new Error("delivery_not_awaiting_slack_progress");
+      throw new SlackProgressConflictError(
+        "delivery_not_awaiting_slack_progress",
+      );
     }
     delivery.status = "delivered";
     delivery.deliveredAt = input.now;
@@ -502,6 +526,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
       if (
         delivery.status === "delivered" &&
         delivery.deliveredAt !== null &&
+        delivery.slackTraceId !== null &&
         delivery.deliveredAt < cutoff
       ) {
         this.deliveries.delete(deliveryId);
@@ -511,10 +536,12 @@ export class MemoryDeliveryStore implements DeliveryStore {
     return purged;
   }
 
-  async healthcheck(now: number): Promise<boolean> {
+  async healthcheck(now: number, expectedRevision: string): Promise<boolean> {
     return (
       this.healthy &&
       this.slackDeliveryProtocolActive &&
+      (this.slackDeliveryProtocolRevision ?? expectedRevision) ===
+        expectedRevision &&
       ![...this.deliveries.values()].some(
         (delivery) =>
           delivery.status === "manual_review" ||
@@ -620,8 +647,9 @@ export function makeEnv(
     SLACK_RELAY_SIGNING_SECRET: (options.relaySigningSecret ??
       TEST_RELAY_SIGNING_SECRET) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET_NEXT:
-      options.relaySigningSecretNext as unknown as SecretsStoreSecret,
-    SLACK_RELAY_SIGNING_ACTIVE_SLOT: "current",
+      (options.relaySigningSecretNext ??
+        TEST_RELAY_SIGNING_SECRET_NEXT) as unknown as SecretsStoreSecret,
+    SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
     WORKER_VERSION: {
       id: "test-worker-version",
       tag: options.workerRevision ?? "a".repeat(40),

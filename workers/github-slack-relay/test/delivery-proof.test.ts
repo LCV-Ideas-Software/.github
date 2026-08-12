@@ -15,18 +15,55 @@ import {
   MemoryDeliveryStore,
   TEST_RELAY_SIGNING_SECRET,
 } from "./helpers";
+import type {
+  SlackDeliveryProtocolActivation,
+  SlackDeliveryProtocolActivationResult,
+  SlackProgressInput,
+  SlackProgressResult,
+} from "../src/store";
 
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
 const NOW_SECONDS = String(Math.floor(NOW / 1_000));
 const REVISION = "a".repeat(40);
 const ACTIVATION_ID = "1".repeat(64);
 const SCHEMA_REVISION = "0004_confirm_slack_delivery";
+const ACTIVATION_SECRET = "staged-next-activation-key-for-tests";
+
+class ActivationResponseLossStore extends MemoryDeliveryStore {
+  #loseFirstResponse = true;
+
+  override async activateSlackDeliveryProtocol(
+    activation: SlackDeliveryProtocolActivation,
+  ): Promise<SlackDeliveryProtocolActivationResult> {
+    const result = await super.activateSlackDeliveryProtocol(activation);
+    if (this.#loseFirstResponse) {
+      this.#loseFirstResponse = false;
+      throw new Error("simulated_d1_response_loss_after_activation_cas");
+    }
+    return result;
+  }
+}
+
+class ProgressResponseLossStore extends MemoryDeliveryStore {
+  #loseFirstResponse = true;
+
+  override async recordSlackProgress(
+    input: SlackProgressInput,
+  ): Promise<SlackProgressResult> {
+    const result = await super.recordSlackProgress(input);
+    if (this.#loseFirstResponse) {
+      this.#loseFirstResponse = false;
+      throw new Error("simulated_d1_response_loss_after_progress_cas");
+    }
+    return result;
+  }
+}
 
 function activationRequest({
   activationId = ACTIVATION_ID,
   expectedRevision = REVISION,
   schemaRevision = SCHEMA_REVISION,
-  secret = TEST_RELAY_SIGNING_SECRET,
+  secret = ACTIVATION_SECRET,
 }: {
   activationId?: string;
   expectedRevision?: string;
@@ -104,8 +141,9 @@ describe("authenticated Slack delivery proof", () => {
       }
     ).slackDeliveryProtocolActive = false;
     const queue = new FakeQueue();
-    const stagedKey = "staged-next-key-that-must-not-activate";
-    const env = makeEnv(queue, { relaySigningSecretNext: stagedKey });
+    const env = makeEnv(queue, {
+      relaySigningSecretNext: ACTIVATION_SECRET,
+    });
     (env as Env & { WORKER_VERSION: WorkerVersionMetadata }).WORKER_VERSION = {
       id: "version-id",
       tag: REVISION,
@@ -121,12 +159,12 @@ describe("authenticated Slack delivery proof", () => {
     );
     expect(wrongKey.status).toBe(401);
 
-    const inactiveStagedKey = await handleFetch(
-      activationRequest({ secret: stagedKey }),
+    const currentKeyCannotActivate = await handleFetch(
+      activationRequest({ secret: TEST_RELAY_SIGNING_SECRET }),
       env,
       { store, now: () => NOW },
     );
-    expect(inactiveStagedKey.status).toBe(401);
+    expect(currentKeyCannotActivate.status).toBe(401);
 
     const wrongRevision = await handleFetch(
       activationRequest({ expectedRevision: "b".repeat(40) }),
@@ -181,6 +219,32 @@ describe("authenticated Slack delivery proof", () => {
       now: () => NOW,
     });
     expect(postContractReplay.status).toBe(409);
+  });
+
+  it("returns a retryable failure when D1 loses the activation CAS response", async () => {
+    const store = new ActivationResponseLossStore();
+    store.slackDeliveryProtocolActive = false;
+    const env = makeEnv(new FakeQueue(), {
+      relaySigningSecretNext: ACTIVATION_SECRET,
+      workerRevision: REVISION,
+    });
+
+    const lost = await handleFetch(activationRequest(), env, {
+      store,
+      now: () => NOW,
+    });
+    expect(lost.status).toBe(503);
+    expect(await lost.json()).toEqual({ error: "persistence_unavailable" });
+
+    const confirmation = await handleFetch(activationRequest(), env, {
+      store,
+      now: () => NOW + 1,
+    });
+    expect(confirmation.status).toBe(200);
+    expect(await confirmation.json()).toMatchObject({
+      activation_status: "already_applied",
+      activation_id: ACTIVATION_ID,
+    });
   });
 
   it("matches the cross-runtime HMAC golden vectors", async () => {
@@ -258,6 +322,30 @@ describe("authenticated Slack delivery proof", () => {
     expect(store.deliveries.get("receipt-delivery-1")?.status).toBe(
       "delivered",
     );
+  });
+
+  it("retries a receipt whose D1 CAS response was lost without another delivery mutation", async () => {
+    const store = new ProgressResponseLossStore();
+    const env = makeEnv(new FakeQueue());
+    store.seed("receipt-delivery-1", "accepted_by_trigger", NOW);
+
+    const lost = await handleFetch(await progressRequest(), env, {
+      store,
+      now: () => NOW,
+    });
+    expect(lost.status).toBe(503);
+    expect(await lost.json()).toEqual({ error: "persistence_unavailable" });
+    expect(store.deliveries.get("receipt-delivery-1")).toMatchObject({
+      status: "delivered",
+      slackMessageTs: "1785758400.000001",
+    });
+
+    const confirmation = await handleFetch(await progressRequest(), env, {
+      store,
+      now: () => NOW + 1,
+    });
+    expect(confirmation.status).toBe(200);
+    expect(await confirmation.json()).toEqual({ ok: true, duplicate: true });
   });
 
   it("lets an authenticated live workflow heal an ambiguous trigger response before SendMessage", async () => {

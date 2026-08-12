@@ -23,6 +23,8 @@ import {
 import {
   D1DeliveryStore,
   SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION,
+  SlackDeliveryProtocolActivationConflictError,
+  SlackProgressConflictError,
   type DeliveryStore,
   type QueueJob,
   type StoredDelivery,
@@ -72,6 +74,7 @@ interface SchedulerResult {
 
 interface RelaySigningConfiguration {
   active: string;
+  next: string | null;
   secrets: readonly string[];
 }
 
@@ -461,6 +464,7 @@ async function relaySigningConfiguration(
     if (slot === "next" && next === null) return null;
     return {
       active: slot === "next" ? (next as string) : current,
+      next,
       secrets: next === null ? [current] : [current, next],
     };
   } catch {
@@ -500,7 +504,10 @@ async function handleSlackControlRequest(
     if (activation === null) {
       return jsonResponse({ error: "invalid_request" }, 400);
     }
-    if (!(await verifySlackProtocolActivation(activation, signing.active))) {
+    if (signing.next === null) {
+      return jsonResponse({ error: "authentication_unavailable" }, 503);
+    }
+    if (!(await verifySlackProtocolActivation(activation, signing.next))) {
       return jsonResponse({ error: "invalid_signature" }, 401);
     }
 
@@ -536,8 +543,11 @@ async function handleSlackControlRequest(
         },
         200,
       );
-    } catch {
-      return jsonResponse({ error: "protocol_activation_conflict" }, 409);
+    } catch (error) {
+      if (error instanceof SlackDeliveryProtocolActivationConflictError) {
+        return jsonResponse({ error: "protocol_activation_conflict" }, 409);
+      }
+      return jsonResponse({ error: "persistence_unavailable" }, 503);
     }
   }
 
@@ -563,8 +573,11 @@ async function handleSlackControlRequest(
         reconcileAt: now + SLACK_RECONCILIATION_GRACE_MS,
       });
       return jsonResponse({ ok: true, duplicate: result === "duplicate" }, 200);
-    } catch {
-      return jsonResponse({ error: "delivery_state_conflict" }, 409);
+    } catch (error) {
+      if (error instanceof SlackProgressConflictError) {
+        return jsonResponse({ error: "delivery_state_conflict" }, 409);
+      }
+      return jsonResponse({ error: "persistence_unavailable" }, 503);
     }
   }
 
@@ -654,6 +667,13 @@ export async function handleFetch(
 
   if (url.pathname === HEALTH_PATH && request.method === "GET") {
     const now = dependencies.now();
+    const deployedRevision = env.WORKER_VERSION?.tag;
+    if (
+      typeof deployedRevision !== "string" ||
+      !WORKER_REVISION_PATTERN.test(deployedRevision)
+    ) {
+      return jsonResponse({ status: "unavailable" }, 503);
+    }
     try {
       const [
         healthy,
@@ -663,7 +683,7 @@ export async function handleFetch(
         relaySigning,
         legacyUnverified,
       ] = await Promise.all([
-        dependencies.store.healthcheck(now),
+        dependencies.store.healthcheck(now, deployedRevision),
         readSecret(env.GITHUB_WEBHOOK_SECRET),
         readSecret(env.SLACK_ALERTS_WORKFLOW_WEBHOOK_URL),
         readSecret(env.SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL),
@@ -919,9 +939,16 @@ function protocolActivationRetrySeconds(attempts: number): number {
 
 async function slackDeliveryProtocolIsActive(
   store: DeliveryStore,
+  expectedRevision: unknown,
 ): Promise<boolean> {
+  if (
+    typeof expectedRevision !== "string" ||
+    !WORKER_REVISION_PATTERN.test(expectedRevision)
+  ) {
+    return false;
+  }
   try {
-    return await store.isSlackDeliveryProtocolActive();
+    return await store.isSlackDeliveryProtocolActive(expectedRevision);
   } catch {
     return false;
   }
@@ -984,7 +1011,12 @@ export async function processPrimaryMessage(
     return;
   }
 
-  if (!(await slackDeliveryProtocolIsActive(dependencies.store))) {
+  if (
+    !(await slackDeliveryProtocolIsActive(
+      dependencies.store,
+      env.WORKER_VERSION?.tag,
+    ))
+  ) {
     retryMessage(message, protocolActivationRetrySeconds(message.attempts));
     return;
   }
@@ -1214,7 +1246,12 @@ export async function processDeadLetterMessage(
     return;
   }
 
-  if (!(await slackDeliveryProtocolIsActive(dependencies.store))) {
+  if (
+    !(await slackDeliveryProtocolIsActive(
+      dependencies.store,
+      env.WORKER_VERSION?.tag,
+    ))
+  ) {
     retryMessage(message, protocolActivationRetrySeconds(message.attempts));
     return;
   }
@@ -1289,7 +1326,12 @@ export async function runScheduledRecovery(
 ): Promise<SchedulerResult> {
   const dependencies = runtime(env, overrides);
   const now = dependencies.now();
-  if (!(await slackDeliveryProtocolIsActive(dependencies.store))) {
+  if (
+    !(await slackDeliveryProtocolIsActive(
+      dependencies.store,
+      env.WORKER_VERSION?.tag,
+    ))
+  ) {
     console.info(
       JSON.stringify({
         event: "scheduled_recovery_deferred",

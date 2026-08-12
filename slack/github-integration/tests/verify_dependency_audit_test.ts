@@ -94,7 +94,6 @@ Deno.test("keeps candidate events tokenless and trusted events live", () => {
       "push",
       "schedule",
       "workflow_dispatch",
-      "workflow_run",
     ]
   ) {
     const configuration = readVerificationConfiguration({
@@ -113,6 +112,15 @@ Deno.test("keeps candidate events tokenless and trusted events live", () => {
       "requires GITHUB_TOKEN",
     );
   }
+
+  assertThrows(
+    () =>
+      readVerificationConfiguration({
+        GITHUB_EVENT_NAME: "workflow_run",
+        GITHUB_TOKEN: "trusted-job-token",
+      }),
+    "unsupported GITHUB_EVENT_NAME",
+  );
 
   assertThrows(
     () => readVerificationConfiguration({ GITHUB_TOKEN: "" }),

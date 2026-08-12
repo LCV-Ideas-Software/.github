@@ -9,7 +9,7 @@
   "minify": true,
   "upload_source_maps": true,
   "vars": {
-    "SLACK_RELAY_SIGNING_ACTIVE_SLOT": "current",
+    "SLACK_RELAY_SIGNING_ACTIVE_SLOT": "next",
   },
   "version_metadata": {
     "binding": "WORKER_VERSION",

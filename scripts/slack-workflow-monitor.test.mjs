@@ -21,6 +21,10 @@ const relayWorkflowSource = await readFile(
   new URL("../.github/workflows/github-slack-integration.yml", import.meta.url),
   "utf8",
 );
+const relayWranglerSource = await readFile(
+  new URL("../workers/github-slack-relay/wrangler.jsonc", import.meta.url),
+  "utf8",
+);
 
 const environment = Object.freeze({
   SLACK_APP_ID: "A12345",
@@ -104,72 +108,44 @@ test("production manifest registers the receipt function and only the documented
 });
 
 test("deployment verifies both protected triggers without logging their details", () => {
-  assert.match(workflowSource, /SLACK_GITHUB_ACTIVITY_TRIGGER_ID/);
-  assert.match(workflowSource, /SLACK_GITHUB_ALERT_TRIGGER_ID/);
-  assert.match(workflowSource, /slack api workflows\.triggers\.list/);
+  assert.match(relayWorkflowSource, /SLACK_GITHUB_ACTIVITY_TRIGGER_ID/);
+  assert.match(relayWorkflowSource, /SLACK_GITHUB_ALERT_TRIGGER_ID/);
+  assert.match(relayWorkflowSource, /api workflows\.triggers\.list/);
   assert.ok(
-    workflowSource.includes(
+    relayWorkflowSource.includes(
       `request_body="$(printf '{"app_id":"%s","limit":100}' "$SLACK_APP_ID")"`,
     ),
   );
-  assert.match(workflowSource, /scripts\/verify_trigger_inventory\.ts/);
-  assert.doesNotMatch(workflowSource, /slack trigger (?:list|info)/);
-  assert.doesNotMatch(workflowSource, /trigger_output/);
-  assert.match(workflowSource, /rm -f "\$inventory_error"/);
+  assert.match(relayWorkflowSource, /scripts\/verify_trigger_inventory\.ts/);
+  assert.doesNotMatch(relayWorkflowSource, /slack trigger (?:list|info)/);
+  assert.doesNotMatch(relayWorkflowSource, /trigger_output/);
+  assert.match(relayWorkflowSource, /rm -f "\$inventory_error"/);
 });
 
 test("Slack deployment is serialized behind the exact successful relay rollout", () => {
-  assert.match(
-    workflowSource,
-    /workflow_run:\s*\n\s+workflows: \[GitHub Slack Integration\]/,
+  assert.doesNotMatch(workflowSource, /workflow_run:/);
+  assert.doesNotMatch(workflowSource, /github\.event\.workflow_run/);
+  assert.doesNotMatch(workflowSource, /^  deploy:/m);
+  const deployJob = relayWorkflowSource.slice(
+    relayWorkflowSource.indexOf("  deploy_slack:"),
   );
-  const deployJob = workflowSource.slice(
-    workflowSource.indexOf("  deploy:"),
-    workflowSource.indexOf("  monitor:"),
+  const relayDeployJob = relayWorkflowSource.slice(
+    relayWorkflowSource.indexOf("  deploy:"),
+    relayWorkflowSource.indexOf("  deploy_slack:"),
   );
-  assert.match(deployJob, /github\.event_name == 'workflow_run'/);
-  assert.match(
-    deployJob,
-    /github\.event\.workflow_run\.conclusion == 'success'/,
-  );
-  assert.match(
-    deployJob,
-    /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/,
-  );
-  assert.match(deployJob, /github\.event\.workflow_run\.event == 'push'/);
-  assert.match(
-    deployJob,
-    /github\.event\.workflow_run\.event == 'workflow_dispatch'/,
-  );
-  assert.match(
-    deployJob,
-    /ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/,
-  );
-  assert.doesNotMatch(deployJob, /github\.event_name == 'push'/);
-  const verifyJob = workflowSource.slice(
-    workflowSource.indexOf("  verify:"),
-    workflowSource.indexOf("  deploy:"),
-  );
-  assert.match(verifyJob, /github\.event_name != 'workflow_run'/);
-  assert.match(
-    verifyJob,
-    /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/,
-  );
-  assert.match(
-    verifyJob,
-    /github\.event\.workflow_run\.conclusion == 'success'/,
-  );
-  assert.match(verifyJob, /github\.event\.workflow_run\.event == 'push'/);
-  assert.match(
-    verifyJob,
-    /github\.event\.workflow_run\.event == 'workflow_dispatch'/,
-  );
+  assert.match(relayDeployJob, /needs: verify/);
+  assert.match(deployJob, /needs: deploy/);
+  assert.match(deployJob, /environment: slack-production/);
+  assert.match(deployJob, /github\.event_name == 'push'/);
+  assert.match(deployJob, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(deployJob, /github\.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(deployJob, /workflow_run/);
   assert.match(relayWorkflowSource, /- "slack\/github-integration\/\*\*"/);
   assert.match(
     relayWorkflowSource,
     /- "\.github\/workflows\/slack-github-integration\.yml"/,
   );
-  const deploySlack = deployJob.indexOf("slack deploy");
+  const deploySlack = deployJob.indexOf('bin/slack" deploy');
   const verifyTriggers = deployJob.indexOf(
     "scripts/verify_trigger_inventory.ts",
   );
@@ -190,17 +166,10 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     activationStepStart,
     activationStepEnd === -1 ? undefined : activationStepEnd,
   );
+  assert.match(activationStep, /EXPECTED_REVISION: \$\{\{ github\.sha \}\}/);
   assert.match(
     activationStep,
-    /ACTIVATION_SEED: \$\{\{ github\.event\.workflow_run\.id \}\}/,
-  );
-  assert.match(
-    activationStep,
-    /EXPECTED_REVISION: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/,
-  );
-  assert.match(
-    activationStep,
-    /--allow-env=ACTIVATION_SEED,EXPECTED_REVISION,SLACK_RELAY_SIGNING_SECRET/,
+    /--allow-env=EXPECTED_REVISION,SLACK_RELAY_SIGNING_SECRET_NEXT/,
   );
   assert.match(
     activationStep,
@@ -208,6 +177,60 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   );
   assert.doesNotMatch(activationStep, /if:\s*always\(\)/);
   assert.match(relayWorkflowSource, /--tag "\$GITHUB_SHA"/);
+  assert.doesNotMatch(relayWorkflowSource, /GITHUB_PATH/);
+  assert.match(
+    deployJob,
+    /"\$\{RUNNER_TEMP\}\/slack-cli-\$\{SLACK_CLI_VERSION\}\/bin\/slack" deploy/,
+  );
+  const provisionCloudflare = relayWorkflowSource.indexOf(
+    "scripts/provision-cloudflare-relay-secret.mjs",
+  );
+  const deployWorker = relayWorkflowSource.indexOf("wrangler deploy");
+  const provisionSlack = deployJob.indexOf(
+    "scripts/provision-slack-relay-secret.mjs",
+  );
+  assert.ok(provisionCloudflare >= 0 && provisionCloudflare < deployWorker);
+  assert.ok(provisionSlack >= 0 && provisionSlack < deploySlack);
+  assert.match(
+    relayWorkflowSource,
+    /environment: cloudflare-production[\s\S]*SLACK_RELAY_SIGNING_SECRET: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
+  );
+  assert.match(
+    deployJob,
+    /SLACK_RELAY_SIGNING_SECRET: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
+  );
+  assert.match(
+    activationStep,
+    /SLACK_RELAY_SIGNING_SECRET_NEXT: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
+  );
+
+  const requiredVerifyJob = relayWorkflowSource.slice(
+    relayWorkflowSource.indexOf("  verify:"),
+    relayWorkflowSource.indexOf("  deploy:"),
+  );
+  assert.match(requiredVerifyJob, /- name: Setup Deno 2\.9\.5/);
+  assert.match(requiredVerifyJob, /- name: Check Slack workflow app/);
+  assert.match(requiredVerifyJob, /deno task --frozen check/);
+  assert.match(
+    requiredVerifyJob,
+    /- name: Audit Slack workflow app dependencies/,
+  );
+  assert.match(requiredVerifyJob, /run: deno task --frozen audit/);
+});
+
+test("expanded Worker selects staged NEXT while retaining current as a verifier", () => {
+  assert.match(
+    relayWranglerSource,
+    /"SLACK_RELAY_SIGNING_ACTIVE_SLOT":\s*"next"/,
+  );
+  assert.match(
+    relayWranglerSource,
+    /"binding":\s*"SLACK_RELAY_SIGNING_SECRET"[\s\S]*?"secret_name":\s*"github-slack-relay-signing-secret"/,
+  );
+  assert.match(
+    relayWranglerSource,
+    /"binding":\s*"SLACK_RELAY_SIGNING_SECRET_NEXT"[\s\S]*?"secret_name":\s*"github-slack-relay-signing-secret-next"/,
+  );
 });
 
 test("configuration rejects every absent required value and short relay secrets", () => {
@@ -284,6 +307,18 @@ test("configuration can stage both verifier keys while selecting one signer", ()
   });
   assert.equal(promoted.relaySigningSecret, next);
   assert.equal(promoted.relaySigningActiveSlot, "next");
+});
+
+test("monitor can sign with the staged NEXT key without storing old current in GitHub", () => {
+  const next = "next-only-secret-for-protected-github-environment";
+  const configuration = readSlackMonitorConfiguration({
+    ...environment,
+    SLACK_RELAY_SIGNING_SECRET: undefined,
+    SLACK_RELAY_SIGNING_SECRET_NEXT: next,
+    SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
+  });
+  assert.equal(configuration.relaySigningSecret, next);
+  assert.deepEqual(configuration.relaySigningSecrets, [next]);
 });
 
 test("monitor uses the durable checkpoint and posts an authenticated empty report", async () => {

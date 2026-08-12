@@ -12,7 +12,7 @@ import {
   FakeQueue,
   makeEnv,
   MemoryDeliveryStore,
-  TEST_RELAY_SIGNING_SECRET,
+  TEST_RELAY_SIGNING_SECRET_NEXT,
   TEST_SLACK_URL,
 } from "./helpers";
 
@@ -78,6 +78,30 @@ describe("Slack queue delivery", () => {
     });
   });
 
+  it("defers delivery when the active tuple belongs to an older Worker revision", async () => {
+    const store = new MemoryDeliveryStore();
+    store.slackDeliveryProtocolRevision = "b".repeat(40);
+    const queue = new FakeQueue();
+    const deliveryId = "protocol-old-revision-primary";
+    store.seed(deliveryId, "queued", NOW, { attemptCount: 4 });
+    const { message, ack, retry } = fakeMessage(deliveryId);
+    const fetchMock = vi.fn<typeof fetch>();
+
+    await processPrimaryMessage(message, makeEnv(queue), {
+      store,
+      now: () => NOW,
+      fetch: fetchMock,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "queued",
+      attemptCount: 4,
+    });
+  });
+
   it("acks the Queue but keeps Slack trigger acceptance nonterminal", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
@@ -109,7 +133,7 @@ describe("Slack queue delivery", () => {
     expect(sentPayload.relay_timestamp).toBe(String(Math.floor(NOW / 1_000)));
     expect(sentPayload.relay_signature).toMatch(/^[0-9a-f]{64}$/u);
     expect(sentPayload.relay_signature).toBe(
-      await signSlackRelayPayload(sentPayload, TEST_RELAY_SIGNING_SECRET),
+      await signSlackRelayPayload(sentPayload, TEST_RELAY_SIGNING_SECRET_NEXT),
     );
     expect(ack).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
@@ -611,9 +635,11 @@ describe("scheduled recovery and retention", () => {
     const day = 24 * 60 * 60 * 1_000;
     store.seed("old-delivered", "delivered", NOW - 31 * day, {
       deliveredAt: NOW - 31 * day,
+      slackTraceId: "TrOldDelivered1",
     });
     store.seed("recent-delivered", "delivered", NOW - 29 * day, {
       deliveredAt: NOW - 29 * day,
+      slackTraceId: "TrRecentDelivered1",
     });
     store.seed("old-trigger-accepted", "accepted_by_trigger", NOW - 60 * day, {
       legacyUnverified: true,

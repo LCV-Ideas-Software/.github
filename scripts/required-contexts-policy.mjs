@@ -11,8 +11,9 @@ const POLICY_TEST_STEP_NAME = "Test required context policy";
 const POLICY_TEST_COMMAND =
   "node --test scripts/required-contexts-policy.test.mjs";
 const SLACK_VERIFY_CONDITION =
-  "(github.event_name != 'schedule' || github.event.schedule == '17 7 * * *') && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))";
+  "github.event_name != 'schedule' || github.event.schedule == '17 7 * * *'";
 const ZIZMOR_CONFIG_PATH = ".github/zizmor.yml";
+const RELAY_CONFIG_PATH = "workers/github-slack-relay/wrangler.jsonc";
 
 // Each digest covers the YAML-parsed workflow env, defaults, and complete
 // required job. Mapping keys are sorted; names, conditions, permissions,
@@ -91,23 +92,25 @@ const WORKFLOW_SPECS = Object.freeze([
     path: ".github/workflows/github-slack-integration.yml",
     workflowName: "GitHub Slack Integration",
     jobId: "verify",
-    jobIds: ["verify", "deploy"],
+    jobIds: ["verify", "deploy", "deploy_slack"],
     jobName: "Verify GitHub Slack relay",
     eventIds: ["push", "pull_request", "merge_group", "workflow_dispatch"],
     pullRequest: { branches: ["main"] },
     contexts: ["Verify GitHub Slack relay"],
     policyRunner: false,
     nodeOptions: "--no-deprecation",
-    digest: "d3d8707bcdf450a4dfaf79ee202abd73217a9c4dc77e0755c0c3d4a65dc2cbcc",
+    digest: "606a6033f647fe12592eefcd9c98e155b5abb407d624a66129823f23cc4489b8",
+    privilegedJobIds: ["deploy", "deploy_slack"],
+    privilegedDigest:
+      "9afa596ce9d6e91b407f0a0f5d2d5e9c8766f603dfaf0c2bb8eb245dc80c95fb",
   },
   {
     path: ".github/workflows/slack-github-integration.yml",
     workflowName: "Slack GitHub Integration",
     jobId: "verify",
-    jobIds: ["verify", "deploy", "monitor"],
+    jobIds: ["verify", "monitor"],
     jobName: "Verify Slack workflow app",
     eventIds: [
-      "workflow_run",
       "push",
       "pull_request",
       "merge_group",
@@ -119,13 +122,17 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Verify Slack workflow app"],
     policyRunner: false,
     nodeOptions: undefined,
-    digest: "43565640752341c65468d1cc9453ec393fef8c82cf57190c52663b55842d2511",
+    digest: "990bea33cb0d23d2714a5c19a88c9e87a60a352bb1b6e5dbbc6e680313f67fc7",
   },
 ]);
 
-const ALL_SOURCE_PATHS = Object.freeze([
+const YAML_SOURCE_PATHS = Object.freeze([
   ...WORKFLOW_SPECS.map(({ path }) => path),
   ZIZMOR_CONFIG_PATH,
+]);
+const ALL_SOURCE_PATHS = Object.freeze([
+  ...YAML_SOURCE_PATHS,
+  RELAY_CONFIG_PATH,
 ]);
 
 function fail(message) {
@@ -247,6 +254,27 @@ function requiredJobDigest(workflow, job) {
     .digest("hex");
 }
 
+function privilegedWorkflowDigest(workflow, jobs, jobIds) {
+  const privilegedJobs = Object.fromEntries(
+    jobIds.map((jobId) => [
+      jobId,
+      plainObject(jobs[jobId], `privileged job ${jobId}`),
+    ]),
+  );
+  const projection = canonicalize({
+    name: workflow.name,
+    on: workflow.on,
+    permissions: workflow.permissions,
+    env: workflow.env ?? null,
+    defaults: workflow.defaults ?? null,
+    concurrency: workflow.concurrency ?? null,
+    jobs: privilegedJobs,
+  });
+  return createHash("sha256")
+    .update(JSON.stringify(projection), "utf8")
+    .digest("hex");
+}
+
 function validateWorkflow(workflow, spec) {
   exact(workflow.name, spec.workflowName, `${spec.path} workflow name`);
   exact(workflow.permissions, {}, `${spec.path} workflow permissions`);
@@ -313,6 +341,13 @@ function validateWorkflow(workflow, spec) {
     spec.digest,
     `${spec.path} canonical required-job digest`,
   );
+  if (spec.privilegedJobIds !== undefined) {
+    exact(
+      privilegedWorkflowDigest(workflow, jobs, spec.privilegedJobIds),
+      spec.privilegedDigest,
+      `${spec.path} canonical privileged-DAG digest`,
+    );
+  }
   return spec.contexts;
 }
 
@@ -330,6 +365,44 @@ function validateZizmorConfig(config) {
   );
 }
 
+function validateRelayConfig(source) {
+  requirePolicy(
+    typeof source === "string",
+    `${RELAY_CONFIG_PATH} source is missing`,
+  );
+  let config;
+  try {
+    config = JSON.parse(source.replace(/,\s*([}\]])/gu, "$1"));
+  } catch (error) {
+    fail(`${RELAY_CONFIG_PATH} JSONC is invalid: ${error.message}`);
+  }
+  plainObject(config, RELAY_CONFIG_PATH);
+  exact(
+    config.vars,
+    { SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next" },
+    `${RELAY_CONFIG_PATH} relay signer selection`,
+  );
+  const bindings = config.secrets_store_secrets;
+  requirePolicy(
+    Array.isArray(bindings),
+    `${RELAY_CONFIG_PATH} Secrets Store bindings are missing`,
+  );
+  const relayBindings = bindings
+    .filter(({ binding }) => binding.startsWith("SLACK_RELAY_SIGNING_SECRET"))
+    .map(({ binding, secret_name: secretName }) => [binding, secretName]);
+  exact(
+    relayBindings,
+    [
+      ["SLACK_RELAY_SIGNING_SECRET", "github-slack-relay-signing-secret"],
+      [
+        "SLACK_RELAY_SIGNING_SECRET_NEXT",
+        "github-slack-relay-signing-secret-next",
+      ],
+    ],
+    `${RELAY_CONFIG_PATH} relay verifier bindings`,
+  );
+}
+
 export async function readRequiredContextSources(
   repositoryRoot = new URL("../", import.meta.url),
 ) {
@@ -344,12 +417,13 @@ export async function readRequiredContextSources(
 
 export function validateRequiredContextPolicy(sources) {
   const parsed = Object.fromEntries(
-    ALL_SOURCE_PATHS.map((path) => [path, parseYaml(sources[path], path)]),
+    YAML_SOURCE_PATHS.map((path) => [path, parseYaml(sources[path], path)]),
   );
   const contexts = WORKFLOW_SPECS.flatMap((spec) =>
     validateWorkflow(parsed[spec.path], spec),
   );
   validateZizmorConfig(parsed[ZIZMOR_CONFIG_PATH]);
+  validateRelayConfig(sources[RELAY_CONFIG_PATH]);
   exact(
     contexts,
     [

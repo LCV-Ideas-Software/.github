@@ -4,15 +4,13 @@ const MAX_ACTIVATION_ATTEMPTS = 2;
 const MAX_RESPONSE_BYTES = 2_048;
 const MINIMUM_SECRET_BYTES = 32;
 const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/;
-const ACTIVATION_SEED_PATTERN = /^[1-9][0-9]{0,19}$/;
 export const DELIVERY_PROTOCOL_SCHEMA_REVISION = "0004_confirm_slack_delivery";
 
 type UnknownRecord = Record<string, unknown>;
 
 interface ActivationConfiguration {
-  activationSeed: string;
   expectedRevision: string;
-  relaySigningSecret: string;
+  relaySigningSecretNext: string;
 }
 
 export interface ActivationResult {
@@ -33,38 +31,32 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function runtimeEnvironment(): Record<string, string | undefined> {
   return {
-    ACTIVATION_SEED: Deno.env.get("ACTIVATION_SEED"),
     EXPECTED_REVISION: Deno.env.get("EXPECTED_REVISION"),
-    SLACK_RELAY_SIGNING_SECRET: Deno.env.get("SLACK_RELAY_SIGNING_SECRET"),
+    SLACK_RELAY_SIGNING_SECRET_NEXT: Deno.env.get(
+      "SLACK_RELAY_SIGNING_SECRET_NEXT",
+    ),
   };
 }
 
 export function readActivationConfiguration(
   environment: Record<string, string | undefined>,
 ): Readonly<ActivationConfiguration> {
-  const activationSeed = environment.ACTIVATION_SEED;
   const expectedRevision = environment.EXPECTED_REVISION;
-  const relaySigningSecret = environment.SLACK_RELAY_SIGNING_SECRET;
-  invariant(
-    typeof activationSeed === "string" &&
-      ACTIVATION_SEED_PATTERN.test(activationSeed),
-    "ACTIVATION_SEED is missing or malformed.",
-  );
+  const relaySigningSecretNext = environment.SLACK_RELAY_SIGNING_SECRET_NEXT;
   invariant(
     typeof expectedRevision === "string" &&
       WORKER_REVISION_PATTERN.test(expectedRevision),
     "EXPECTED_REVISION is missing or malformed.",
   );
   invariant(
-    typeof relaySigningSecret === "string" &&
-      new TextEncoder().encode(relaySigningSecret).byteLength >=
+    typeof relaySigningSecretNext === "string" &&
+      new TextEncoder().encode(relaySigningSecretNext).byteLength >=
         MINIMUM_SECRET_BYTES,
-    "SLACK_RELAY_SIGNING_SECRET is missing or malformed.",
+    "SLACK_RELAY_SIGNING_SECRET_NEXT is missing or malformed.",
   );
   return Object.freeze({
-    activationSeed,
     expectedRevision,
-    relaySigningSecret,
+    relaySigningSecretNext,
   });
 }
 
@@ -89,24 +81,21 @@ async function hmac(message: string, secret: string): Promise<string> {
 }
 
 export function canonicalActivationId(
-  activationSeed: string,
   expectedRevision: string,
 ): string {
   return JSON.stringify([
     "slack_delivery_protocol_activation_id_v1",
-    activationSeed,
     expectedRevision,
     DELIVERY_PROTOCOL_SCHEMA_REVISION,
   ]);
 }
 
 export function deriveActivationId(
-  activationSeed: string,
   expectedRevision: string,
   secret: string,
 ): Promise<string> {
   return hmac(
-    canonicalActivationId(activationSeed, expectedRevision),
+    canonicalActivationId(expectedRevision),
     secret,
   );
 }
@@ -226,15 +215,14 @@ export async function activateDeliveryProtocol({
 } = {}): Promise<Readonly<ActivationResult>> {
   const configuration = readActivationConfiguration(environment);
   const activationId = await deriveActivationId(
-    configuration.activationSeed,
     configuration.expectedRevision,
-    configuration.relaySigningSecret,
+    configuration.relaySigningSecretNext,
   );
   const activationSignature = await signProtocolActivation(
     activationId,
     configuration.expectedRevision,
     DELIVERY_PROTOCOL_SCHEMA_REVISION,
-    configuration.relaySigningSecret,
+    configuration.relaySigningSecretNext,
   );
   const requestBody = JSON.stringify({
     activation_id: activationId,

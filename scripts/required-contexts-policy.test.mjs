@@ -28,6 +28,32 @@ test("the current seven required contexts satisfy one canonical contract", () =>
   assert.doesNotThrow(() => validateRequiredContextPolicy(sources));
 });
 
+test("the relay required context pins NEXT as the expanded runtime signer", () => {
+  rejectsMutation(
+    "workers/github-slack-relay/wrangler.jsonc",
+    '"SLACK_RELAY_SIGNING_ACTIVE_SLOT": "next"',
+    '"SLACK_RELAY_SIGNING_ACTIVE_SLOT": "current"',
+  );
+});
+
+test("the privileged relay DAG cannot bypass or drift from its required predecessor", () => {
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "    needs: verify\n    permissions:",
+    "    permissions:",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "    needs: deploy\n    permissions:",
+    "    needs: verify\n    permissions:",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          workers/github-slack-relay/node_modules/.bin/wrangler deploy \\",
+    "          echo skipped \\",
+  );
+});
+
 test("every required workflow keeps pull_request and merge_group exact", () => {
   for (const path of [
     ".github/workflows/dependency-review.yml",
@@ -182,6 +208,16 @@ test("critical actions, inputs, paths, and failure propagation stay exact", () =
       ".github/workflows/github-slack-integration.yml",
       "          npm test",
       "          npm test || true",
+    ],
+    [
+      ".github/workflows/github-slack-integration.yml",
+      "          deno task --frozen check",
+      "          deno task --frozen check || true",
+    ],
+    [
+      ".github/workflows/github-slack-integration.yml",
+      "        run: deno task --frozen audit",
+      "        run: deno task --frozen audit || true",
     ],
     [
       ".github/workflows/slack-github-integration.yml",

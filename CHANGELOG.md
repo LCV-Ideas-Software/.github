@@ -165,21 +165,32 @@ evidence is the execution trail recorded in
   `sending` rows are also never resent. Historical trigger acceptances remain
   explicitly unverified, and the known loss migrates to `manual_review` instead
   of being relabelled as delivered. The migration remains compatible with the
-  previously deployed Worker; its in-window acceptances are trigger-quarantined;
-  production rollout is serialized Worker-first and begins with the receipt-aware
-  consumers closed. Only after the exact Slack revision and protected trigger
-  inventory are deployed does a current-key HMAC bind the expected main SHA to
-  the Worker's immutable version tag, prove the expanded schema, and perform a
-  one-way activation CAS that persists an immutable activation ID, SHA and
-  schema revision; one byte-identical retry can confirm a response lost after
+  previously deployed Worker; its in-window acceptances are trigger-quarantined.
+  Production rollout is now one same-SHA workflow. Its required predecessor
+  verifies both the Worker and the complete Slack app candidate before the
+  serialized migration, Cloudflare `NEXT` staging, inactive Worker deploy,
+  Slack `NEXT` staging, Slack deploy, protected-trigger inventory, and
+  activation. The same newly generated
+  value must first be stored under `SLACK_RELAY_SIGNING_SECRET` in both protected
+  GitHub environments; the jobs write it only in request bodies to the two
+  external `NEXT` slots and never recover or log the old current value. The
+  Worker and monitor select `NEXT` for new traffic while both hosted runtimes
+  retain current as an in-flight verifier. A `NEXT`-key HMAC binds the exact main
+  SHA to the Worker's immutable version tag, proves the expanded schema, and
+  performs a one-way activation CAS that persists an activation ID derived from
+  that SHA and schema. One byte-identical retry can confirm a response lost after
   CAS without another mutation, while a new ID, changed tuple, post-contract
   request, partial deploy, wrong key/SHA, or downgrade remains closed without a
-  Slack POST or D1 delivery attempt;
-  current and staged HMAC slots verify across Worker, Slack, and monitor without
-  performing a cutover; empty activity scans cannot advance to wall clock; D1
-  causally clamps the monitor checkpoint behind uncorrelated live attempts; and
-  the known ID has a fixed one-time audited release requiring separate absence
-  proof and explicit ID/destination authorization before its normal receipt path
+  Slack POST or D1 delivery attempt. Ambiguous D1 writes now return retryable 5xx,
+  competing receipt/progress writes converge only after an exact reread, late
+  trace evidence is merged, and delivered rows without a Slack trace are retained.
+  Terminally contradictory traces are rejected before any reconciliation
+  mutation; empty activity scans cannot advance to wall clock; D1 causally clamps
+  the monitor checkpoint behind uncorrelated live attempts; and the known ID has
+  a fixed one-time audited release requiring separate absence proof and explicit
+  ID/destination authorization before its normal receipt path. The former
+  `workflow_run` checkout and `GITHUB_PATH` mutation were removed from this
+  privileged rollout
   ([#171](https://github.com/LCV-Ideas-Software/.github/issues/171)).
 
 ### Issues discovered during this audit

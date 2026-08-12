@@ -29,11 +29,15 @@ function requiredEnvironmentValue(environment, name) {
 }
 
 export function readSlackMonitorConfiguration(environment = process.env) {
-  const currentRelaySigningSecret = requiredEnvironmentValue(
-    environment,
-    "SLACK_RELAY_SIGNING_SECRET",
-  );
-  if (Buffer.byteLength(currentRelaySigningSecret, "utf8") < 32) {
+  const rawCurrent = environment.SLACK_RELAY_SIGNING_SECRET;
+  const currentRelaySigningSecret =
+    typeof rawCurrent === "string" && rawCurrent.trim() !== ""
+      ? rawCurrent.trim()
+      : null;
+  if (
+    currentRelaySigningSecret !== null &&
+    Buffer.byteLength(currentRelaySigningSecret, "utf8") < 32
+  ) {
     throw new Error(
       "Required environment variable SLACK_RELAY_SIGNING_SECRET is malformed.",
     );
@@ -46,7 +50,8 @@ export function readSlackMonitorConfiguration(environment = process.env) {
   if (
     nextRelaySigningSecret !== null &&
     (Buffer.byteLength(nextRelaySigningSecret, "utf8") < 32 ||
-      nextRelaySigningSecret === currentRelaySigningSecret)
+      (currentRelaySigningSecret !== null &&
+        nextRelaySigningSecret === currentRelaySigningSecret))
   ) {
     throw new Error(
       "Optional environment variable SLACK_RELAY_SIGNING_SECRET_NEXT is malformed.",
@@ -57,6 +62,11 @@ export function readSlackMonitorConfiguration(environment = process.env) {
   if (activeSlot !== "current" && activeSlot !== "next") {
     throw new Error(
       "Environment variable SLACK_RELAY_SIGNING_ACTIVE_SLOT is malformed.",
+    );
+  }
+  if (activeSlot === "current" && currentRelaySigningSecret === null) {
+    throw new Error(
+      "Required environment variable SLACK_RELAY_SIGNING_SECRET is missing.",
     );
   }
   if (activeSlot === "next" && nextRelaySigningSecret === null) {
@@ -70,9 +80,9 @@ export function readSlackMonitorConfiguration(environment = process.env) {
     appId: requiredEnvironmentValue(environment, "SLACK_APP_ID"),
     relaySigningSecret: relaySigningSecret,
     relaySigningSecrets: Object.freeze(
-      nextRelaySigningSecret === null
-        ? [currentRelaySigningSecret]
-        : [currentRelaySigningSecret, nextRelaySigningSecret],
+      [currentRelaySigningSecret, nextRelaySigningSecret].filter(
+        (secret) => secret !== null,
+      ),
     ),
     relaySigningActiveSlot: activeSlot,
     serviceToken: requiredEnvironmentValue(environment, "SLACK_SERVICE_TOKEN"),

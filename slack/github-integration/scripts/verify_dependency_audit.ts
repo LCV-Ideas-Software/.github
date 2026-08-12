@@ -80,7 +80,7 @@ export function readVerificationConfiguration(
 
   invariant(
     eventName === "push" || eventName === "schedule" ||
-      eventName === "workflow_dispatch" || eventName === "workflow_run",
+      eventName === "workflow_dispatch",
     `unsupported GITHUB_EVENT_NAME: ${eventName}`,
   );
   invariant(token, `${eventName} trusted verification requires GITHUB_TOKEN`);

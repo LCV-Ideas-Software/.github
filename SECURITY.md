@@ -46,17 +46,25 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   never automatically resent. Dead letters and active manual review fail readiness; quarantined
   historical rows remain visibly `legacy_unverified` without authorizing a resend. The one known
   lost ID stays in manual review until an exact, audited, explicitly authorized one-time recovery.
-  Expand rollout starts with delivery disabled: Queue consumers back off without D1 attempts or a
-  Slack POST until a current-key HMAC binds the exact deployed Worker tag to the exact Slack deploy,
-  proves the expanded schema, and performs the only permitted false-to-true CAS while persisting an
-  immutable activation ID, revision, and schema. One byte-identical retry may confirm the same CAS
-  read-only after a lost response; a new ID, changed tuple, post-contract request, downgrade, wrong
-  revision, wrong key, partial deploy, or incomplete schema fails closed;
+  Expand rollout starts with delivery disabled and is serialized in one exact-SHA workflow. Queue
+  consumers back off without D1 attempts or a Slack POST while Cloudflare and Slack receive the same
+  new value only in their runtime `NEXT` slots. The new Worker and monitor select `NEXT`; both hosted
+  runtimes retain the old current key only for in-flight compatibility. Only after the Slack deploy
+  and exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack revision, and expanded
+  schema and perform the only permitted false-to-true CAS while persisting an immutable activation
+  ID, revision, and schema. One byte-identical retry may confirm the same CAS read-only after a lost
+  response; a new ID, changed tuple, post-contract request, downgrade, wrong revision, wrong key,
+  partial deploy, or incomplete schema fails closed;
 - external credentials assigned by purpose to protected environments restricted to `main`.
-  `SLACK_SERVICE_TOKEN` is held in `slack-production`. The
+  `SLACK_SERVICE_TOKEN` and the production relay signer are held in `slack-production`. Before the
+  receipt-protocol expand rollout, the same newly generated signer must be provisioned under the
+  name `SLACK_RELAY_SIGNING_SECRET` in both `slack-production` and `cloudflare-production`. The
+  workflows use it as a write-only source for the external runtime `NEXT` slots; they never read the
+  old external current value. The Cloudflare GitHub copy is a temporary rollout artifact and must be
+  removed by the separately reviewed contract phase after promotion and drain evidence. The
   `SLACK_REDELIVERY_APP_PRIVATE_KEY` secret and `SLACK_REDELIVERY_APP_CLIENT_ID` variable are held
   in `webhook-recovery`, which only the organization-webhook redelivery job declares.
-  At steady state, `cloudflare-production` contains only `CLOUDFLARE_API_TOKEN` and
+  Outside that reviewed HMAC transition, `cloudflare-production` contains only `CLOUDFLARE_API_TOKEN` and
   `CLOUDFLARE_ACCOUNT_ID`, and only the Pages and relay deployment jobs declare it. A zero-downtime
   credential migration may temporarily retain rollback copies of the App pair there until
   exact-`main` canaries succeed; those copies are migration artifacts and must be removed before

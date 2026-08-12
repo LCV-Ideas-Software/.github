@@ -10,14 +10,12 @@ import {
 
 const REVISION = "a".repeat(40);
 const SECRET = "deno-test-only-relay-signing-secret";
-const SEED = "1234567890";
 const ACTIVATION_ID =
-  "6e0647eb628a4ee26a329bfb1fd956f98d6cef7eebb281bb525147eacb14660f";
+  "999e803a62f5cdccde265327ca4895fc706730d377085203d81e5bc3f20cf085";
 
 const ENVIRONMENT = Object.freeze({
-  ACTIVATION_SEED: SEED,
   EXPECTED_REVISION: REVISION,
-  SLACK_RELAY_SIGNING_SECRET: SECRET,
+  SLACK_RELAY_SIGNING_SECRET_NEXT: SECRET,
 });
 
 function assertThrows(action: () => unknown, expected: string): void {
@@ -49,17 +47,16 @@ function successResponse(
 
 Deno.test("uses cross-runtime domain separation for activation ID and request", async () => {
   if (
-    canonicalActivationId(SEED, REVISION) !==
+    canonicalActivationId(REVISION) !==
       JSON.stringify([
         "slack_delivery_protocol_activation_id_v1",
-        SEED,
         REVISION,
         DELIVERY_PROTOCOL_SCHEMA_REVISION,
       ])
   ) {
     throw new Error("Activation ID canonical form drifted.");
   }
-  if (await deriveActivationId(SEED, REVISION, SECRET) !== ACTIVATION_ID) {
+  if (await deriveActivationId(REVISION, SECRET) !== ACTIVATION_ID) {
     throw new Error("Activation ID HMAC drifted.");
   }
   const canonical = canonicalProtocolActivation(
@@ -86,7 +83,7 @@ Deno.test("uses cross-runtime domain separation for activation ID and request", 
   );
   if (
     signature !==
-      "b09df6018de4de3cb6b7ffbbf6e6689a2d2c0dc50eda70ee1a2f7a105b633120"
+      "1f235452f23e9ec1d66a2807321176197d64f381433af2568e7ca951c8ec7991"
   ) {
     throw new Error(`Activation HMAC drifted: ${signature}`);
   }
@@ -95,12 +92,10 @@ Deno.test("uses cross-runtime domain separation for activation ID and request", 
 Deno.test("rejects missing, malformed, and non-exact activation inputs", () => {
   for (
     const environment of [
-      { EXPECTED_REVISION: REVISION, SLACK_RELAY_SIGNING_SECRET: SECRET },
-      { ACTIVATION_SEED: SEED, SLACK_RELAY_SIGNING_SECRET: SECRET },
-      { ACTIVATION_SEED: SEED, EXPECTED_REVISION: REVISION },
-      { ...ENVIRONMENT, ACTIVATION_SEED: "0" },
+      { SLACK_RELAY_SIGNING_SECRET_NEXT: SECRET },
+      { EXPECTED_REVISION: REVISION },
       { ...ENVIRONMENT, EXPECTED_REVISION: "A".repeat(40) },
-      { ...ENVIRONMENT, SLACK_RELAY_SIGNING_SECRET: "short" },
+      { ...ENVIRONMENT, SLACK_RELAY_SIGNING_SECRET_NEXT: "short" },
     ]
   ) {
     assertThrows(

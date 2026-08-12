@@ -88,8 +88,22 @@ export interface SlackDeliveryProtocolActivation {
   now: number;
 }
 
+export class SlackDeliveryProtocolActivationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlackDeliveryProtocolActivationConflictError";
+  }
+}
+
+export class SlackProgressConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlackProgressConflictError";
+  }
+}
+
 export interface DeliveryStore {
-  isSlackDeliveryProtocolActive(): Promise<boolean>;
+  isSlackDeliveryProtocolActive(expectedRevision: string): Promise<boolean>;
   activateSlackDeliveryProtocol(
     activation: SlackDeliveryProtocolActivation,
   ): Promise<SlackDeliveryProtocolActivationResult>;
@@ -145,7 +159,7 @@ export interface DeliveryStore {
   getSlackActivityCheckpoint(): Promise<number>;
   advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number>;
   purgeDeliveredBefore(cutoff: number): Promise<number>;
-  healthcheck(now: number): Promise<boolean>;
+  healthcheck(now: number, expectedRevision: string): Promise<boolean>;
   hasLegacyUnverifiedDebt(): Promise<boolean>;
 }
 
@@ -246,7 +260,12 @@ export class D1DeliveryStore implements DeliveryStore {
     this.#database = database;
   }
 
-  async isSlackDeliveryProtocolActive(): Promise<boolean> {
+  async isSlackDeliveryProtocolActive(
+    expectedRevision: string,
+  ): Promise<boolean> {
+    if (!WORKER_REVISION_PATTERN.test(expectedRevision)) {
+      return false;
+    }
     const state = await this.#database
       .prepare(
         `SELECT slack_delivery_protocol_active,
@@ -293,7 +312,7 @@ export class D1DeliveryStore implements DeliveryStore {
     ) {
       throw new Error("slack_delivery_protocol_state_inconsistent");
     }
-    return true;
+    return state.slack_delivery_protocol_revision === expectedRevision;
   }
 
   async activateSlackDeliveryProtocol(
@@ -306,7 +325,9 @@ export class D1DeliveryStore implements DeliveryStore {
       !Number.isSafeInteger(activation.now) ||
       activation.now <= 0
     ) {
-      throw new Error("invalid_slack_delivery_protocol_activation");
+      throw new SlackDeliveryProtocolActivationConflictError(
+        "invalid_slack_delivery_protocol_activation",
+      );
     }
 
     const schema = await this.#database
@@ -332,7 +353,9 @@ export class D1DeliveryStore implements DeliveryStore {
       )
       .first<{ artifact_count: number }>();
     if (schema?.artifact_count !== REQUIRED_PROTOCOL_SCHEMA_ARTIFACTS) {
-      throw new Error("slack_delivery_protocol_schema_incomplete");
+      throw new SlackDeliveryProtocolActivationConflictError(
+        "slack_delivery_protocol_schema_incomplete",
+      );
     }
 
     const activated = await this.#database
@@ -375,7 +398,9 @@ export class D1DeliveryStore implements DeliveryStore {
           activation.schemaRevision ||
         activated.slack_delivery_protocol_confirmation_open !== 1
       ) {
-        throw new Error("slack_delivery_protocol_activation_conflict");
+        throw new SlackDeliveryProtocolActivationConflictError(
+          "slack_delivery_protocol_activation_conflict",
+        );
       }
       return "applied";
     }
@@ -404,7 +429,9 @@ export class D1DeliveryStore implements DeliveryStore {
       !Number.isSafeInteger(existing.slack_delivery_protocol_activated_at) ||
       (existing.slack_delivery_protocol_activated_at as number) <= 0
     ) {
-      throw new Error("slack_delivery_protocol_activation_conflict");
+      throw new SlackDeliveryProtocolActivationConflictError(
+        "slack_delivery_protocol_activation_conflict",
+      );
     }
     return "already_applied";
   }
@@ -622,10 +649,10 @@ export class D1DeliveryStore implements DeliveryStore {
   ): Promise<SlackProgressResult> {
     const existing = await this.get(input.deliveryId);
     if (existing === null) {
-      throw new Error("delivery_not_found");
+      throw new SlackProgressConflictError("delivery_not_found");
     }
     if (existing.destination !== input.destination) {
-      throw new Error("delivery_destination_mismatch");
+      throw new SlackProgressConflictError("delivery_destination_mismatch");
     }
 
     if (input.phase === "send_started") {
@@ -644,7 +671,9 @@ export class D1DeliveryStore implements DeliveryStore {
           retryableTriggerAmbiguityReason(existing.lastError)
         )
       ) {
-        throw new Error("delivery_not_awaiting_slack_progress");
+        throw new SlackProgressConflictError(
+          "delivery_not_awaiting_slack_progress",
+        );
       }
 
       const result = await this.#database
@@ -680,25 +709,36 @@ export class D1DeliveryStore implements DeliveryStore {
         )
         .run();
       if (!changed(result)) {
-        throw new Error("delivery_state_changed_before_progress_recorded");
+        const current = await this.get(input.deliveryId);
+        if (
+          current?.destination === input.destination &&
+          (current.status === "send_started" || current.status === "delivered")
+        ) {
+          return "duplicate";
+        }
+        throw new SlackProgressConflictError(
+          "delivery_state_changed_before_progress_recorded",
+        );
       }
       return "recorded";
     }
 
     if (input.messageTs === null) {
-      throw new Error("slack_message_timestamp_missing");
+      throw new SlackProgressConflictError("slack_message_timestamp_missing");
     }
     if (
       existing.status === "manual_review" &&
       existing.lastError === "known_slack_workflow_timeout_message_absent"
     ) {
-      throw new Error("known_loss_recovery_authorization_required");
+      throw new SlackProgressConflictError(
+        "known_loss_recovery_authorization_required",
+      );
     }
     if (existing.status === "delivered") {
       if (existing.slackMessageTs === input.messageTs) {
         return "duplicate";
       }
-      throw new Error("slack_message_timestamp_conflict");
+      throw new SlackProgressConflictError("slack_message_timestamp_conflict");
     }
     if (
       existing.status !== "sending" &&
@@ -707,7 +747,9 @@ export class D1DeliveryStore implements DeliveryStore {
       existing.status !== "send_started" &&
       existing.status !== "manual_review"
     ) {
-      throw new Error("delivery_not_awaiting_slack_progress");
+      throw new SlackProgressConflictError(
+        "delivery_not_awaiting_slack_progress",
+      );
     }
 
     let result: D1Result<unknown>;
@@ -733,11 +775,43 @@ export class D1DeliveryStore implements DeliveryStore {
           input.destination,
         )
         .run();
-    } catch {
-      throw new Error("slack_message_timestamp_conflict");
+    } catch (error) {
+      const current = await this.get(input.deliveryId);
+      if (
+        current?.destination === input.destination &&
+        current.status === "delivered" &&
+        current.slackMessageTs === input.messageTs
+      ) {
+        return "duplicate";
+      }
+      const owner = await this.#database
+        .prepare(
+          `SELECT delivery_id
+           FROM deliveries
+           WHERE destination = ? AND slack_message_ts = ?
+           LIMIT 1`,
+        )
+        .bind(input.destination, input.messageTs)
+        .first<{ delivery_id: string }>();
+      if (owner !== null && owner.delivery_id !== input.deliveryId) {
+        throw new SlackProgressConflictError(
+          "slack_message_timestamp_conflict",
+        );
+      }
+      throw error;
     }
     if (!changed(result)) {
-      throw new Error("delivery_state_changed_before_progress_recorded");
+      const current = await this.get(input.deliveryId);
+      if (
+        current?.destination === input.destination &&
+        current.status === "delivered" &&
+        current.slackMessageTs === input.messageTs
+      ) {
+        return "duplicate";
+      }
+      throw new SlackProgressConflictError(
+        "delivery_state_changed_before_progress_recorded",
+      );
     }
     return "recorded";
   }
@@ -875,10 +949,6 @@ export class D1DeliveryStore implements DeliveryStore {
     ) {
       throw new Error("slack_trace_outcome_conflict");
     }
-    if (existingTrace !== null && existingTrace.applied_at !== null) {
-      return;
-    }
-
     await this.#database
       .prepare(
         `INSERT INTO slack_workflow_traces (
@@ -955,7 +1025,17 @@ export class D1DeliveryStore implements DeliveryStore {
       throw new Error("delivery_not_found");
     }
 
-    if (current.slackTraceId === trace.traceId) {
+    const sameTraceMayReleaseMissingProof =
+      current.slackTraceId === trace.traceId &&
+      current.status === "manual_review" &&
+      current.lastError === "slack_workflow_failed_without_pre_send_proof" &&
+      preSendFailureProven;
+    if (
+      current.slackTraceId === trace.traceId &&
+      !sendBoundaryReached &&
+      trace.outcome === "error" &&
+      !sameTraceMayReleaseMissingProof
+    ) {
       await this.#markSlackTraceApplied(trace.traceId, now);
       return;
     }
@@ -1039,20 +1119,24 @@ export class D1DeliveryStore implements DeliveryStore {
              OR (
                status = 'manual_review'
                AND (
-                 last_error IN (
-                   'slack_trigger_request_outcome_ambiguous',
+                  last_error IN (
+                    'slack_trigger_request_outcome_ambiguous',
                    'slack_trigger_success_confirmation_ambiguous',
                    'slack_trigger_http_408_ambiguous',
                    'replayed_slack_trigger_attempt_ambiguous',
                    'stale_slack_trigger_attempt_ambiguous',
                    'dead_letter_slack_trigger_attempt_ambiguous'
-                 )
-                 OR last_error GLOB 'slack_trigger_http_5[0-9][0-9]_ambiguous'
-               )
+                  )
+                  OR last_error GLOB 'slack_trigger_http_5[0-9][0-9]_ambiguous'
+                  OR (
+                    last_error = 'slack_workflow_failed_without_pre_send_proof'
+                    AND slack_trace_id = ?
+                  )
+                )
              )
            )`,
       )
-      .bind(now, now, trace.traceId, trace.deliveryId)
+      .bind(now, now, trace.traceId, trace.deliveryId, trace.traceId)
       .run();
     if (!changed(retry)) {
       await this.markManualReview(
@@ -1139,6 +1223,7 @@ export class D1DeliveryStore implements DeliveryStore {
         `DELETE FROM deliveries
          WHERE status = 'delivered'
            AND delivered_at IS NOT NULL
+           AND slack_trace_id IS NOT NULL
            AND delivered_at < ?`,
       )
       .bind(cutoff)
@@ -1147,7 +1232,10 @@ export class D1DeliveryStore implements DeliveryStore {
     return result.meta.changes ?? 0;
   }
 
-  async healthcheck(now: number): Promise<boolean> {
+  async healthcheck(now: number, expectedRevision: string): Promise<boolean> {
+    if (!WORKER_REVISION_PATTERN.test(expectedRevision)) {
+      return false;
+    }
     await this.#database
       .prepare(
         `SELECT
@@ -1190,6 +1278,7 @@ export class D1DeliveryStore implements DeliveryStore {
            AND typeof(slack_activity_checkpoint_us) = 'integer'
            AND slack_delivery_protocol_active = 1
            AND typeof(slack_delivery_protocol_revision) = 'text'
+           AND slack_delivery_protocol_revision = ?
            AND length(slack_delivery_protocol_revision) = 40
            AND slack_delivery_protocol_revision NOT GLOB '*[^0-9a-f]*'
            AND typeof(slack_delivery_protocol_activated_at) = 'integer'
@@ -1201,6 +1290,7 @@ export class D1DeliveryStore implements DeliveryStore {
              '0004_confirm_slack_delivery'
            AND slack_delivery_protocol_confirmation_open IN (0, 1)`,
       )
+      .bind(expectedRevision)
       .first<{
         next_slack_at: number;
         slack_activity_checkpoint_us: number;
