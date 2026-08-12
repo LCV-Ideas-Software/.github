@@ -104,7 +104,7 @@ const WORKFLOW_SPECS = Object.freeze([
     digest: "6cf8e9b558e1a392b3fd771de1105c87c5d1378dfb7eb8cbb5229b7b693d04e0",
     privilegedJobIds: ["prove_remote_d1", "deploy", "deploy_slack"],
     privilegedDigest:
-      "e5d5ec304ffc44cc5b5069f335099d091384162d7c97a841b92c8120d86b65c1",
+      "a3520b2024e341cf1bcf70e595bb6b54e3a18dff318943f9ebd827a674fb5e38",
   },
   {
     path: ".github/workflows/slack-github-integration.yml",

@@ -44,22 +44,35 @@ import {
   verifyRemoteProofDeadline,
 } from "./verify-slack-relay-d1-remote.mjs";
 
-const migrationPath =
+const expandMigrationPath =
   "workers/github-slack-relay/migrations/0004_confirm_slack_delivery.sql";
+const targetMigrationPath =
+  "workers/github-slack-relay/migrations/0005_reconcile_live_slack_receipts.sql";
 const migrationsDirectory = "workers/github-slack-relay/migrations";
 const proofPath = "scripts/verify-slack-relay-d1-remote.mjs";
 const workflowPath = ".github/workflows/github-slack-integration.yml";
 const reaperWorkflowPath = ".github/workflows/slack-d1-disposable-reaper.yml";
 
 test("the remote D1 migration avoids known server-side parser and pattern limits", () => {
-  const migration = readFileSync(migrationPath, "utf8");
+  const expandMigration = readFileSync(expandMigrationPath, "utf8");
+  const targetMigration = readFileSync(targetMigrationPath, "utf8");
   const allMigrations = readdirSync(migrationsDirectory)
     .filter((name) => name.endsWith(".sql"))
     .sort()
     .map((name) => readFileSync(`${migrationsDirectory}/${name}`, "utf8"))
     .join("\n");
   assert.doesNotMatch(allMigrations, /\bSELECT\s+CASE\b/iu);
-  assert.equal(migration.match(/\bSELECT\s+\(CASE\b/giu)?.length, 2);
+  assert.equal(expandMigration.match(/\bSELECT\s+\(CASE\b/giu)?.length, 2);
+  assert.equal(
+    targetMigration.match(
+      /afe5250504d37543845b07f44af7bfc30a548feb/gu,
+    )?.length,
+    1,
+  );
+  assert.match(
+    targetMigration,
+    /CREATE TRIGGER enforce_one_time_slack_delivery_protocol_revision_bridge/u,
+  );
 
   const patterns = [
     ...allMigrations.matchAll(/\b(?:GLOB|LIKE)\s+'((?:''|[^'])*)'/giu),
@@ -74,7 +87,7 @@ test("the remote D1 migration avoids known server-side parser and pattern limits
 
   const prefix =
     "https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-";
-  assert.equal(migration.split(`) = '${prefix}'`).length - 1, 2);
+  assert.equal(expandMigration.split(`) = '${prefix}'`).length - 1, 2);
 });
 
 test("the disposable proof dynamically includes every production migration", () => {
@@ -83,12 +96,21 @@ test("the disposable proof dynamically includes every production migration", () 
     .sort();
   const futureName = "9999_test_future_contract.sql";
   const plan = buildMigrationPlan([...currentNames, futureName]);
-  const targetIndex = currentNames.indexOf("0004_confirm_slack_delivery.sql");
+  const expandIndex = currentNames.indexOf("0004_confirm_slack_delivery.sql");
+  const targetIndex = currentNames.indexOf(
+    "0005_reconcile_live_slack_receipts.sql",
+  );
 
   assert.deepEqual(plan.fullNames, [...currentNames, futureName]);
-  assert.deepEqual(plan.preNames, currentNames.slice(0, targetIndex));
+  assert.deepEqual(plan.preNames, currentNames.slice(0, expandIndex));
+  assert.deepEqual(plan.sourceNames, currentNames.slice(0, targetIndex));
   assert.ok(!plan.preNames.includes("0004_confirm_slack_delivery.sql"));
+  assert.ok(plan.sourceNames.includes("0004_confirm_slack_delivery.sql"));
+  assert.ok(
+    !plan.sourceNames.includes("0005_reconcile_live_slack_receipts.sql"),
+  );
   assert.ok(!plan.preNames.includes(futureName));
+  assert.ok(!plan.sourceNames.includes(futureName));
 });
 
 test("the disposable Wrangler config binds the locally generated name to the verified UUID", () => {
@@ -927,9 +949,13 @@ test("the successful create identity is carried through config, barriers, and cl
   );
   assert.equal(
     proof.match(
-      /applyMigrationsToOwnedDatabase\([\s\S]*?databaseId,[\s\S]*?expectedCreatedAt,[\s\S]*?(?:preConfig|fullConfig),/gu,
+      /applyMigrationsToOwnedDatabase\([\s\S]*?databaseId,[\s\S]*?expectedCreatedAt,[\s\S]*?(?:preConfig|sourceConfig|fullConfig),/gu,
     )?.length,
-    2,
+    3,
+  );
+  assert.match(
+    proof,
+    /preConfig,[\s\S]*?seedOldSchema\(configuration, databaseId\);[\s\S]*?sourceConfig,[\s\S]*?activateProtocolBridgeSource\(configuration, databaseId\);[\s\S]*?fullConfig,/u,
   );
   assert.match(
     proof,
@@ -938,7 +964,7 @@ test("the successful create identity is carried through config, barriers, and cl
   assert.equal(
     readFileSync(proofPath, "utf8").match(/codeql\[js\/http-to-file-access\]/gu)
       ?.length,
-    2,
+    3,
   );
 });
 
@@ -952,13 +978,13 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
   assert.deepEqual(document.errors, []);
   const proofJob = document.toJS({ maxAliasCount: 0 }).jobs.prove_remote_d1;
 
-  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 76);
-  assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 2);
-  assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 10_500);
-  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_390_500);
+  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 94);
+  assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 3);
+  assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 14_000);
+  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_784_000);
   assert.equal(REMOTE_PROOF_WORKFLOW_TIMEOUT_MS, 3_600_000);
   assert.equal(REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS, 60_000);
-  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 1_990_500);
+  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_384_000);
   assert.equal(
     proofJob["timeout-minutes"] * 60_000,
     REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,

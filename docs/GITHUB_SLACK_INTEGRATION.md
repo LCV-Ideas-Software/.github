@@ -43,7 +43,7 @@ GitHub organization webhook
   -> authenticated send-boundary receipt to D1
   -> Slack SendMessage function
   -> private #github-activity OR private #github-alerts
-  -> authenticated delivery receipt with Slack message_timestamp
+  -> authenticated delivery receipt with Slack message_context.message_ts
   -> paginated Slack activity reconciliation attaches trace_id
 ```
 
@@ -99,9 +99,9 @@ workflow validates:
 Only then does the coded workflow authenticate the send boundary with
 `POST /slack/progress` and call Slack's `SendMessage` function. The next step
 posts an idempotent HMAC receipt containing the GitHub `delivery_id`, fixed
-destination, and Slack `message_timestamp`. Trigger acceptance remains
+destination, and Slack `message_context.message_ts`. Trigger acceptance remains
 `accepted_by_trigger`; only the post-message receipt creates `delivered`.
-The pre-send CAS binds that signed attempt to the Slack
+The send-boundary CAS binds that signed attempt to the Slack
 `event.function_execution_id`. A retry by the same execution can confirm a lost
 response, but a different workflow execution is rejected before it receives the
 message output. The safe-retry delivery transition and trace-applied marker are
@@ -113,11 +113,20 @@ five-minute/60-second window around that Slack step activity's own timestamp;
 an old valid HMAC cannot be replayed into a later trace.
 
 Slack's activity result supplies the custom function's `function_execution_id`.
-The monitor carries that identifier plus the signed `relay_attempt` in its HMAC
-v2 reconciliation report. D1 may release a pre-send failure only when the
-attempt matches and, once a send lease exists, the reported execution is its
-exact owner. A competing workflow or an older-attempt trace is durably applied
-without releasing, attaching to, or making purgable the current delivery.
+The monitor carries that identifier plus the signed `relay_attempt`, channel,
+and message timestamp in its HMAC v3 reconciliation report. The new checkpoint
+advertises `reconciliation_version: 3`. During the one-time rollout only, a
+checkpoint without a version selects the domain-separated v2 format understood
+by the old Worker. The new Worker rejects every v2 report so an in-flight old
+monitor cannot mutate state or advance a checkpoint after the upgrade. The new
+monitor sends only terminal error traces to an old Worker; it retains every
+success, pending, or v3-only trace, pins the checkpoint, and fails until v3 is
+available. D1 may release a retry only from an authenticated terminal failure
+of the signed validator, before any send boundary, bound to the exact relay
+attempt and validator `function_execution_id`. Any persisted send lease or
+`send_started` fact blocks that retry and forces manual review. A competing
+workflow or older-attempt trace cannot release, attach to, or make purgable the
+current delivery.
 
 The validator emits a domain-separated progress token bound to the validated
 `delivery_id`, destination, relay attempt, and original timestamp. Both progress steps must
@@ -205,9 +214,9 @@ The Deno app has these stable components:
   private `#github-alerts`;
 - `functions/validate_relay_message.ts` verifies HMAC, destination, freshness
   and URL, then emits bounded Slack mrkdwn;
-- `functions/report_relay_progress.ts` records the authenticated pre-send
+- `functions/report_relay_progress.ts` records the authenticated send
   boundary, passes the validated message to `SendMessage`, and records its
-  resulting `message_timestamp` idempotently;
+  resulting `message_context.message_ts` idempotently;
 - `triggers/github_activity_webhook.ts` and
   `triggers/github_alert_webhook.ts` define the two webhook triggers;
 - `manifest.ts` imports both workflows and contains exactly `chat:write`,
@@ -403,10 +412,12 @@ remain blocked.
 7. Create the four remote Secrets Store entries interactively. The HMAC values
    must match their GitHub and Slack counterparts respectively.
 8. Prepare the exact-main workflow for the authorized gate flip in step 16. It
-   applies D1 migrations, stages the protected GitHub signer as Cloudflare
+   first validates the deployed activation tuple, then applies D1 migrations,
+   stages the protected GitHub signer as Cloudflare
    runtime `NEXT`, and deploys the Worker with active slot `next` only after all
-   checks pass. Migration `0004` starts the
-   receipt-aware delivery protocol closed;
+   checks pass. Migration `0004` started the receipt-aware delivery protocol
+   closed; migration `0005` adds live receipt correlation and the single
+   source-pinned upgrade from deployed `afe525/0004` to the reviewed target;
    the new primary, DLQ and scheduled consumers must not cross the Slack send
    boundary or mutate D1 attempt/manual-review state while it is closed.
 9. In the same workflow and exact SHA, let the dependent Slack job stage that
@@ -414,7 +425,8 @@ remain blocked.
    two-trigger inventory. The fixed-purpose HMAC activator derives an immutable
    pseudorandom `activation_id` from the exact SHA and schema revision under the
    `NEXT` key, binds that tuple to the Worker's immutable version tag,
-   proves the expanded D1 schema, and completes the sole false-to-true CAS. A
+   proves the expanded D1 schema, and completes either the initial inactive to
+   target CAS or the sole reviewed `afe525/0004` to target/`0005` bridge. A
    lost response permits one byte-identical confirmation request; no new tuple
    is permitted. Only then run signed real canaries against both Slack triggers
    and require the actual
@@ -501,14 +513,16 @@ ingestion therefore requires an intentional webhook action as well.
 - `.github/workflows/github-slack-integration.yml` verifies the recovery
   controller, Worker, and Slack app formatting, lint, types, tests and candidate
   dependency audit in the same required predecessor. Only after that combined
-  check succeeds does it apply the expand-only D1 migration, stage Cloudflare
-  runtime `NEXT`, and deploy the relay from `main` with `--tag "$GITHUB_SHA"`
-  when the gate is `true`. After migration and before either hosted deploy, it
-  reads all six persisted fields in the D1 activation tuple. It permits only
-  the initial inactive state with all activation metadata null or an active tuple whose SHA, schema revision
-  and deterministic HMAC activation ID exactly match the staged signer. A
-  partial tuple or later SHA therefore fails before secret staging or Worker
-  replacement until the reviewed contract removes this expand-only preflight.
+  check succeeds does it run the remote preflight before any production
+  migration. The preflight accepts only the initial inactive tuple, the exact
+  target tuple, or the fixed
+  `afe5250504d37543845b07f44af7bfc30a548feb/0004_confirm_slack_delivery`
+  source tuple with its deterministic HMAC activation ID, and requires zero
+  duplicate execution-ID groups in both deliveries and traces. It then applies
+  migration `0005`, stages Cloudflare runtime `NEXT`, and deploys the relay from
+  `main` with `--tag "$GITHUB_SHA"` when the gate is `true`. A partial tuple or
+  later SHA therefore fails before migration, secret staging, or Worker
+  replacement until the reviewed contract removes this expand preflight.
   Its dependent `deploy_slack` job then stages Slack
   runtime `NEXT`, deploys the same checked-out SHA with an explicitly addressed,
   checksum-verified Slack CLI, then updates the existing activity and alert
@@ -533,9 +547,11 @@ ingestion therefore requires an intentional webhook action as well.
   bounded reconciliation chunks, plus 30 minutes for setup and local processing.
   It normally completes in seconds; the larger cap prevents Slack throttling from
   killing every run before any durable reconciliation can be posted.
-  The migration flag defaults false. Until authenticated activation, valid
-  Queue messages receive bounded backoff without a Slack POST, a D1 dispatch
-  attempt, a manual-review transition or scheduled recovery mutation. Slack-source
+  A fresh inactive deployment starts closed. In the live one-time bridge, the
+  source Worker remains active on `afe525/0004`, while the target Worker stays
+  fail-closed until the exact target/`0005` tuple is activated. While the target
+  is closed, its valid Queue messages receive bounded backoff without a Slack
+  POST, a D1 dispatch attempt, a manual-review transition or scheduled recovery mutation. Slack-source
   paths trigger this same workflow, so the compatible Worker is always deployed
   before the Slack app and neither deploy can race the other.
 - `.github/workflows/github-slack-webhook-redelivery.yml` runs its scheduled or
@@ -557,20 +573,24 @@ ingestion therefore requires an intentional webhook action as well.
   combined Worker workflow on `main`; the Slack deployment cannot run in
   parallel or from a direct push/dispatch of the monitor workflow.
 
-The activation path is an expand-only one-shot latch, not a permanent deploy or
-status API. It verifies only the staged `NEXT` HMAC key, requires the
+The activation path is an expand-only one-shot latch with one source-pinned
+upgrade, not a permanent deploy or status API. It verifies only the staged
+`NEXT` HMAC key, requires the
 expected lowercase 40-character SHA to equal `WORKER_VERSION.tag`, checks the
 required D1 tables/triggers, and atomically persists the immutable activation
-ID, SHA, schema revision, and server activation time with the sole
-false-to-true transition. An identical signed request with the same tuple may
+ID, SHA, schema revision, and server activation time. It accepts only an
+inactive-to-target activation or the fixed deployed
+`afe5250504d37543845b07f44af7bfc30a548feb/0004_confirm_slack_delivery`
+source-to-target/`0005` bridge. An identical signed request with the target tuple may
 return read-only `already_applied` while confirmation is open. That is
 idempotent confirmation of the original CAS, not replay of activation; it
 cannot change time, attempts, or any delivery. A new ID, changed tuple, wrong
 key/SHA/schema, incomplete schema, downgrade, or missing activation record fails
 closed. The deployment preflight independently requires all six persisted
-fields to represent either the initial inactive tuple with null activation metadata or the exact active
-SHA/schema/HMAC tuple. It refuses partial state, a different signer or any
-other revision; an exact-SHA workflow rerun remains allowed. Once rollout
+fields to represent the initial inactive tuple, the fixed source bridge tuple,
+or the exact target SHA/schema/HMAC tuple. It refuses partial state, a different
+signer, or any other revision; an exact-target workflow rerun remains allowed.
+Once rollout
 evidence is complete, a separately reviewed contract
 change must irreversibly close confirmation and remove the workflow preflight,
 activation step, and endpoint before any later integration-path deploy. After
@@ -615,22 +635,22 @@ new primary and DLQ consumers only apply bounded Queue backoff and the recovery
 cron performs no delivery-state mutation. The Slack leg has explicit evidence
 states:
 
-| State                 | Meaning                                                                                                                                                                         | Automatic resend                                    |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `accepted_by_slack`   | Expand/contract compatibility value. Historical rows in this state are quarantined with `legacy_unverified = 1`; new rows written briefly by the old Worker remain nonterminal. | Only with complete pre-send failure proof.          |
-| `accepted_by_trigger` | Slack returned HTTP 2xx plus exact JSON `ok: true`; the asynchronous workflow may still fail.                                                                                   | Only with complete pre-send failure proof.          |
-| `send_started`        | Slack successfully crossed the authenticated step immediately before `SendMessage`.                                                                                             | Never.                                              |
-| `delivered`           | The post-`SendMessage` callback supplied an authenticated, unique Slack `message_timestamp`.                                                                                    | Never.                                              |
-| `manual_review`       | Evidence is ambiguous, conflicting, the known loss, or post-boundary.                                                                                                           | Never without the fixed audited known-loss release. |
+| State                 | Meaning                                                                                                                                                                         | Automatic resend                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `accepted_by_slack`   | Expand/contract compatibility value. Historical rows in this state are quarantined with `legacy_unverified = 1`; new rows written briefly by the old Worker remain nonterminal. | Only with authenticated signed-validator failure and no send boundary. |
+| `accepted_by_trigger` | Slack returned HTTP 2xx plus exact JSON `ok: true`; the asynchronous workflow may still fail.                                                                                   | Only with authenticated signed-validator failure and no send boundary. |
+| `send_started`        | Slack successfully crossed the authenticated step immediately before `SendMessage`.                                                                                             | Never.                                                                 |
+| `delivered`           | The post-`SendMessage` callback supplied an authenticated, unique Slack `message_context.message_ts`.                                                                           | Never.                                                                 |
+| `manual_review`       | Evidence is ambiguous, conflicting, the known loss, or post-boundary.                                                                                                           | Never without the fixed audited known-loss release.                    |
 
 The Queue message is acknowledged at `accepted_by_trigger`, but that state is
 nonterminal for delivery accounting. A row can return to `pending` only when a
 complete Slack trace contains workflow start, terminal error and an explicit
-failed validator or pre-send step, with no successful send boundary. Merely
+authenticated failure of the signed validator, with no send boundary. Merely
 omitting a boundary event is not negative proof. Success without an authenticated
 receipt, any post-boundary failure, incomplete trace evidence and state
 conflicts are fail-closed `manual_review` cases. A valid late delivery receipt
-may resolve such a row because it supplies positive `message_timestamp`
+may resolve such a row because it supplies positive `message_context.message_ts`
 evidence; no negative inference can do so.
 
 The same rule begins at the trigger request. Configuration and signature
@@ -639,10 +659,12 @@ rejections are retryable. A network exception after the POST begins, HTTP 408,
 any 5xx, a 2xx body without exact `ok: true`, or a stale `sending` row cannot
 prove that Slack did not start a workflow. Those states move to
 `manual_review`; neither the primary Queue, DLQ nor five-minute recovery cron
-sends them again merely because time passed. A fresh authenticated pre-send
-callback may continue that same live workflow, and the monitor may return the
+sends them again merely because time passed. A fresh authenticated send-boundary
+callback may continue that same live workflow, but its error is ambiguous
+because D1 may already have committed `send_started`. The monitor may return a
 row to `pending` only after a complete terminal error trace contains an
-explicit failed validator or pre-send step and no successful send boundary.
+authenticated signed-validator failure and no send boundary. A persisted
+`send_started` row is never released for retry.
 
 `GET /healthz` returns HTTP 200 with status `ready` only when the one-way
 receipt-aware protocol activation is present, the D1 `deliveries` schema is
@@ -689,12 +711,12 @@ Monitoring and recovery are layered:
   verifies. A relay admitted by hosted current becomes correlatable at its first
   `NEXT` progress step; rejected or unauthenticated trigger inputs are ignored.
   A terminal error is retryable only when that authenticated trace also contains
-  an explicit failed validator or pre-send step; absence of a boundary event
-  alone remains ambiguous. If a pre-send progress CAS committed but both HTTP
-  responses were lost, the authenticated failed step proves that its dependent
-  `SendMessage` never ran and safely overrides the local `send_started` marker;
+  an explicit signed-validator failure; absence of a boundary event alone
+  remains ambiguous. An error from the send-boundary callback never proves that
+  `SendMessage` did not run and never overrides a local `send_started` marker;
 - only bounded `delivery_id`, `trace_id`, outcome, send-boundary flag,
-  explicit pre-send-failure proof bit and microsecond timestamps leave the
+  explicit signed-validator-failure proof bit, channel/message evidence, and
+  microsecond timestamps leave the
   monitor. The complete activities
   collection and private step inputs are never logged or posted to D1. The
   watermark advances only after every page and normalized trace is durably
@@ -755,7 +777,7 @@ and [GitHub's automatic redelivery design][github-redelivery].
 
 ### Migration and historical backfill
 
-Migration `0004_confirm_slack_delivery.sql` is deliberately expand-only. It
+Migration `0004_confirm_slack_delivery.sql` was deliberately expand-only. It
 retains the old `accepted_at` column and permits `accepted_by_slack`, so the
 previously deployed Worker can continue to read, update and health-check D1
 between migration and its replacement. Historical `accepted_by_slack` rows
@@ -770,10 +792,14 @@ An expand trigger also intercepts every later old-Worker transition to
 `accepted_by_slack`, clears `accepted_at`, preserves the trigger timestamp and
 marks the row `legacy_unverified = 1`, so it cannot be treated as receipt proof
 or blindly delivered by the new Worker. The migration adds a protocol flag with
-default false and one-way activation/confirmation triggers. Activation succeeds
-only after the store proves the trace/recovery tables plus quarantine, recovery
-and one-way triggers; the CAS persists the activation ID, exact Worker revision,
-schema revision, and server activation time. Concurrent identical requests
+default false and one-way activation/confirmation triggers. Migration
+`0005_reconcile_live_slack_receipts.sql` adds unique execution and Slack-message
+ownership constraints, stores channel/message evidence on traces, and replaces
+the original trigger with the single source-pinned `afe525/0004` to reviewed
+target/`0005` bridge. Activation succeeds only after the store proves the
+trace/recovery tables and all current triggers; the CAS persists the activation
+ID, exact Worker revision, schema revision, and server activation time.
+Concurrent identical target requests
 produce one mutation and `applied`/`already_applied` responses; no divergent
 tuple can reuse the latch. A reviewed contract can only close confirmation, and
 there is no downgrade or reopening path.
@@ -789,7 +815,7 @@ reason `known_slack_workflow_timeout_message_absent`.
 A legacy row may be backfilled as `delivered` only from positive evidence of
 exactly one matching private-channel message and its Slack timestamp. Zero
 matches permit automatic retry only when a complete terminal error trace
-contains an explicit failed validator or pre-send step and no successful send
+contains an authenticated signed-validator failure and no send
 boundary. Zero without that proof, multiple matches, a truncated trace, or any
 trace after the boundary remains `manual_review`. The known
 missing message requires a separately authorized new send; GitHub webhook
@@ -922,6 +948,7 @@ GitHub.
 - [Authorizing Slack CLI for CI/CD][slack-cli-auth]
 - [Using environment variables with the Deno Slack SDK][slack-app-env]
 - [`apps.activities.list`][slack-activities]
+- [Slack message context and `message_ts`][slack-message-context]
 - [Logging Slack function and app behavior][slack-logging]
 - [Cloudflare Workers best practices][cloudflare-workers]
 - [Cloudflare Queues dead-letter queues][cloudflare-dlq]
@@ -950,6 +977,7 @@ GitHub.
 [slack-deploy]: https://docs.slack.dev/tools/deno-slack-sdk/guides/deploying-to-slack/
 [slack-date-formatting]: https://docs.slack.dev/messaging/formatting-message-text/#date-formatting
 [slack-logging]: https://docs.slack.dev/tools/deno-slack-sdk/guides/logging-function-and-app-behavior/
+[slack-message-context]: https://docs.slack.dev/reference/types/message_context-type/
 [slack-slash-commands]: https://docs.slack.dev/interactivity/implementing-slash-commands/
 [slack-trigger]: https://docs.slack.dev/tools/slack-cli/reference/commands/slack_trigger/
 [slack-webhook-trigger]: https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-webhook-triggers/

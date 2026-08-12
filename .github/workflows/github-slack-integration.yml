@@ -207,15 +207,6 @@ jobs:
           expected_wrangler="$(node -p "require('./workers/github-slack-relay/package.json').devDependencies.wrangler")"
           test "$(workers/github-slack-relay/node_modules/.bin/wrangler --version)" = "$expected_wrangler"
 
-      - name: Apply durable inbox migrations
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
-            --remote \
-            --config workers/github-slack-relay/wrangler.jsonc
-
       - name: Refuse to replace an already activated relay revision
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -228,9 +219,18 @@ jobs:
           workers/github-slack-relay/node_modules/.bin/wrangler d1 execute github-slack-alerts-db \
             --remote \
             --config workers/github-slack-relay/wrangler.jsonc \
-            --command "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1" \
+            --command "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open, (SELECT COUNT(*) FROM (SELECT slack_send_execution_id FROM deliveries WHERE slack_send_execution_id IS NOT NULL GROUP BY slack_send_execution_id HAVING COUNT(*) > 1)) AS duplicate_delivery_execution_id_groups, (SELECT COUNT(*) FROM (SELECT send_execution_id FROM slack_workflow_traces WHERE send_execution_id IS NOT NULL GROUP BY send_execution_id HAVING COUNT(*) > 1)) AS duplicate_slack_trace_execution_id_groups FROM relay_state WHERE singleton_id = 1" \
             --json \
             | node scripts/slack-delivery-protocol-preflight.mjs
+
+      - name: Apply durable inbox migrations
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
+            --remote \
+            --config workers/github-slack-relay/wrangler.jsonc
 
       - name: Stage the new relay signer as Cloudflare NEXT
         env:
@@ -282,6 +282,7 @@ jobs:
           check-latest: true
 
       - name: Install verified Slack CLI 4.6.0
+        id: install-slack-cli
         shell: bash
         env:
           SLACK_CLI_ASSET: slack_cli_4.6.0_linux_64-bit.tar.gz
@@ -317,6 +318,7 @@ jobs:
             echo "::error::The verified Slack CLI asset did not report the expected version."
             exit 1
           fi
+          printf 'slack_bin=%s\n' "$install_root/bin/slack" >> "$GITHUB_OUTPUT"
 
       - name: Stage the new relay signer as Slack NEXT
         env:
@@ -329,7 +331,7 @@ jobs:
         working-directory: slack/github-integration
         env:
           SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
-          SLACK_CLI_VERSION: 4.6.0
+          SLACK_BIN: ${{ steps.install-slack-cli.outputs.slack_bin }}
           SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
           SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
         run: |
@@ -337,7 +339,7 @@ jobs:
           : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
           : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
           : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
-          "${RUNNER_TEMP}/slack-cli-${SLACK_CLI_VERSION}/bin/slack" deploy \
+          "$SLACK_BIN" deploy \
             --app "$SLACK_APP_ID" \
             --team "$SLACK_TEAM_ID" \
             --token "$SLACK_SERVICE_TOKEN" \
@@ -350,7 +352,7 @@ jobs:
           ACTIVITY_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ACTIVITY_TRIGGER_ID }}
           ALERT_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ALERT_TRIGGER_ID }}
           SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
-          SLACK_CLI_VERSION: 4.6.0
+          SLACK_BIN: ${{ steps.install-slack-cli.outputs.slack_bin }}
           SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
           SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
         shell: bash
@@ -377,7 +379,7 @@ jobs:
 
           update_log="$(mktemp "${RUNNER_TEMP}/slack-trigger-update.XXXXXX")"
           trap 'rm -f "$update_log"' EXIT
-          if ! "${RUNNER_TEMP}/slack-cli-${SLACK_CLI_VERSION}/bin/slack" \
+          if ! "$SLACK_BIN" \
             trigger update \
             --trigger-id "$ACTIVITY_TRIGGER_ID" \
             --trigger-def triggers/github_activity_webhook.ts \
@@ -392,7 +394,7 @@ jobs:
             exit 1
           fi
           : >"$update_log"
-          if ! "${RUNNER_TEMP}/slack-cli-${SLACK_CLI_VERSION}/bin/slack" \
+          if ! "$SLACK_BIN" \
             trigger update \
             --trigger-id "$ALERT_TRIGGER_ID" \
             --trigger-def triggers/github_alert_webhook.ts \
@@ -415,7 +417,7 @@ jobs:
           ACTIVITY_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ACTIVITY_TRIGGER_ID }}
           ALERT_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ALERT_TRIGGER_ID }}
           SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
-          SLACK_CLI_VERSION: 4.6.0
+          SLACK_BIN: ${{ steps.install-slack-cli.outputs.slack_bin }}
           SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
           SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
         shell: bash
@@ -441,7 +443,7 @@ jobs:
 
           inventory_error="${RUNNER_TEMP}/slack-trigger-inventory.err"
           request_body="$(printf '{"app_id":"%s","limit":100}' "$SLACK_APP_ID")"
-          if ! "${RUNNER_TEMP}/slack-cli-${SLACK_CLI_VERSION}/bin/slack" \
+          if ! "$SLACK_BIN" \
             api workflows.triggers.list \
             --token "$SLACK_SERVICE_TOKEN" \
             --json "$request_body" \

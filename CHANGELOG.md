@@ -159,8 +159,8 @@ evidence is the execution trail recorded in
   nonterminal `accepted_by_trigger`; the Slack workflow authenticates a
   pre-`SendMessage` boundary and an idempotent post-message receipt carrying
   Slack's timestamp; and the fully paginated monitor durably correlates the
-  actual Slack trace. Only a complete error trace with an explicit failed
-  validator or pre-send step and no send boundary can be retried; ambiguous
+  actual Slack trace. Only a complete error trace with an authenticated failure
+  of the signed validator and no send boundary can be retried; ambiguous
   trigger network/5xx outcomes and stale
   `sending` rows are also never resent. Historical trigger acceptances remain
   explicitly unverified, and the known loss migrates to `manual_review` instead
@@ -168,7 +168,7 @@ evidence is the execution trail recorded in
   previously deployed Worker; its in-window acceptances are trigger-quarantined.
   Production rollout is now one same-SHA workflow. Its required predecessor
   verifies both the Worker and the complete Slack app candidate before the
-  serialized migration, activation-tuple preflight, Cloudflare `NEXT` staging,
+  serialized activation-tuple preflight, migration, Cloudflare `NEXT` staging,
   inactive Worker deploy,
   Slack `NEXT` staging, Slack deploy, protected-trigger inventory, and
   activation. The same newly generated
@@ -182,14 +182,16 @@ evidence is the execution trail recorded in
   callbacks only under `NEXT`, so the monitor correlates it without recovering
   old current into GitHub. Before either hosted deploy, the activation-tuple
   preflight reads all six persisted activation fields and permits only the
-  initial inactive tuple with all activation metadata null or an active tuple whose SHA, schema and
-  deterministic HMAC activation ID exactly match the staged signer. A partial
+  initial inactive tuple, the fixed deployed `afe525/0004` bridge source, or the
+  exact target tuple whose SHA, schema and deterministic HMAC activation ID
+  match the staged signer. A partial
   tuple or later revision cannot replace the live Worker until a reviewed
   contract removes the expand latch. A
   `NEXT`-key HMAC binds the exact main
   SHA to the Worker's immutable version tag, proves the expanded schema, and
-  performs a one-way activation CAS that persists an activation ID derived from
-  that SHA and schema. One byte-identical retry can confirm a response lost after
+  performs only an inactive-to-target activation or the source-pinned
+  `afe525/0004` to target/`0005` transition, persisting an activation ID derived
+  from that SHA and schema. One byte-identical retry can confirm a response lost after
   CAS without another mutation, while a new ID, changed tuple, post-contract
   request, partial deploy, wrong key/SHA, or downgrade remains closed without a
   Slack POST or D1 delivery attempt. After the app deploy, both protected
@@ -203,17 +205,22 @@ evidence is the execution trail recorded in
   cross `SendMessage`; retries by that same execution remain idempotent. The
   safe-retry delivery transition and terminal-trace marker commit in one D1
   batch, so a lost response cannot let the old trace release a later attempt.
-  The activity monitor reports the signed attempt and Slack step
-  `function_execution_id`; D1 requires both to match the live lease before a
-  trace can release, attach to, or make purgable a delivery. Authenticated proof
-  that a failed pre-send progress step never
-  reached `SendMessage` safely releases even a locally recorded `send_started`
-  CAS. Late trace evidence is merged, delivered rows without a Slack trace are
+  The activity monitor reports the signed attempt and relevant Slack step
+  `function_execution_id`. A validator-only retry binds the attempt to the
+  validator execution ID and is rejected if any send lease exists;
+  post-boundary evidence must match the live send owner before it can attach to
+  or make purgable a delivery. Authenticated proof that the signed validator
+  failed before any send boundary safely releases an unstarted attempt. An error from the send-boundary callback is ambiguous and
+  never overrides a locally recorded `send_started` CAS. Late trace evidence is
+  merged, delivered rows without a Slack trace are
   retained, and purging cannot cross the durable activity checkpoint minus its
   overlap window; a delivered row remains eligible when its applied terminal
   trace is success or a boundary-confirmed error caused by a lost receipt reply.
   Terminally contradictory traces are rejected before any reconciliation
-  mutation; empty activity scans cannot advance to wall clock; D1 causally clamps
+  mutation. Reconciliation v3 HMAC-binds the observed Slack channel and
+  `message_ts`; the rollout bridge pins the checkpoint and fails on evidence
+  that an old Worker cannot represent, while a new Worker rejects every v2
+  report. Empty activity scans cannot advance to wall clock; D1 causally clamps
   the monitor checkpoint behind uncorrelated live attempts; the scheduled job's
   timeout covers the full bounded 100-page retry/report plan plus setup margin,
   so throttling cannot force the same uncommitted window to restart forever;

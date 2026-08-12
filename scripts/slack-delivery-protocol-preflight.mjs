@@ -5,8 +5,13 @@ const REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 const ACTIVATION_ID_PATTERN = /^[0-9a-f]{64}$/u;
 const MINIMUM_SECRET_BYTES = 32;
 const MAX_INPUT_BYTES = 1_000_000;
-const SCHEMA_REVISION = "0004_confirm_slack_delivery";
+const TARGET_SCHEMA_REVISION = "0005_reconcile_live_slack_receipts";
+const BRIDGE_SOURCE_SCHEMA_REVISION = "0004_confirm_slack_delivery";
+const ONE_TIME_BRIDGE_SOURCE_REVISION =
+  "afe5250504d37543845b07f44af7bfc30a548feb";
 const EXPECTED_ROW_KEYS = [
+  "duplicate_delivery_execution_id_groups",
+  "duplicate_slack_trace_execution_id_groups",
   "slack_delivery_protocol_active",
   "slack_delivery_protocol_activated_at",
   "slack_delivery_protocol_activation_id",
@@ -78,11 +83,30 @@ export function validateSlackDeliveryProtocolPreflight(
     fail("received an unexpected D1 row shape");
   }
   const active = row.slack_delivery_protocol_active;
+  const duplicateDeliveryExecutionIdGroups =
+    row.duplicate_delivery_execution_id_groups;
+  const duplicateTraceExecutionIdGroups =
+    row.duplicate_slack_trace_execution_id_groups;
   const revision = row.slack_delivery_protocol_revision;
   const activatedAt = row.slack_delivery_protocol_activated_at;
   const activationId = row.slack_delivery_protocol_activation_id;
   const schemaRevision = row.slack_delivery_protocol_schema_revision;
   const confirmationOpen = row.slack_delivery_protocol_confirmation_open;
+
+  if (
+    !Number.isSafeInteger(duplicateDeliveryExecutionIdGroups) ||
+    duplicateDeliveryExecutionIdGroups < 0 ||
+    !Number.isSafeInteger(duplicateTraceExecutionIdGroups) ||
+    duplicateTraceExecutionIdGroups < 0
+  ) {
+    fail("received malformed Slack trace ownership inventory");
+  }
+  if (
+    duplicateDeliveryExecutionIdGroups !== 0 ||
+    duplicateTraceExecutionIdGroups !== 0
+  ) {
+    fail("found duplicate Slack function execution owners");
+  }
 
   if (
     active === 0 &&
@@ -105,20 +129,24 @@ export function validateSlackDeliveryProtocolPreflight(
     !Number.isSafeInteger(activatedAt) ||
     activatedAt <= 0 ||
     typeof activationId !== "string" ||
-    !ACTIVATION_ID_PATTERN.test(activationId) ||
-    schemaRevision !== SCHEMA_REVISION
+    !ACTIVATION_ID_PATTERN.test(activationId)
   ) {
     fail("found an inconsistent activation tuple");
   }
-  if (revision !== expectedRevision) {
+  const exactTarget =
+    revision === expectedRevision && schemaRevision === TARGET_SCHEMA_REVISION;
+  const exactBridgeSource =
+    revision === ONE_TIME_BRIDGE_SOURCE_REVISION &&
+    schemaRevision === BRIDGE_SOURCE_SCHEMA_REVISION;
+  if (!exactTarget && !exactBridgeSource) {
     fail("is activated for another revision; refusing Worker replacement");
   }
   const expectedActivationId = createHmac("sha256", relaySigningSecret)
     .update(
       JSON.stringify([
         "slack_delivery_protocol_activation_id_v1",
-        expectedRevision,
-        SCHEMA_REVISION,
+        revision,
+        schemaRevision,
       ]),
       "utf8",
     )
@@ -133,7 +161,11 @@ export function validateSlackDeliveryProtocolPreflight(
       "found an activation ID that does not match the exact revision and signer",
     );
   }
-  return Object.freeze({ state: "active_exact_tuple" });
+  return Object.freeze(
+    exactTarget
+      ? { state: "active_exact_tuple" }
+      : { state: "active_bridge_source", activeRevision: revision },
+  );
 }
 
 async function readBoundedStdin() {

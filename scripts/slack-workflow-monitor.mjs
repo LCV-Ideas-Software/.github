@@ -17,6 +17,15 @@ const MAX_ACTIVITIES_PER_PAGE = 100;
 const SAFE_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 const DELIVERY_ID_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
 const TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/;
+const FUNCTION_ID_PATTERN = /^Fn[A-Za-z0-9]{1,126}$/u;
+const FUNCTION_EXECUTION_ID_PATTERN = /^Fx[A-Za-z0-9]{1,126}$/u;
+const MESSAGE_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
+const SLACK_DESTINATION_BY_CHANNEL = new Map([
+  ["C0BMUK793NV", "alerts"],
+  ["C0BMQMW3L4E", "activity"],
+]);
+const SLACK_SEND_MESSAGE_FUNCTION_ID = "Fn0102";
+const LEGACY_VALIDATE_RELAY_FUNCTION_ID = "Fn0BMBCA9QG7";
 const SIGNATURE_PATTERN = /^[a-f0-9]{64}$/;
 const RELAY_SIGNED_FIELDS = [
   "source",
@@ -38,6 +47,7 @@ const RELAY_SIGNED_FIELDS = [
 const EXECUTION_EVENT_TYPES = new Set([
   "workflow_execution_started",
   "workflow_execution_result",
+  "workflow_step_started",
   "workflow_step_execution_result",
 ]);
 
@@ -126,9 +136,9 @@ function checkpointCanonical(request) {
   ]);
 }
 
-function reconciliationCanonical(report) {
+function reconciliationCanonical(report, version = 3) {
   return JSON.stringify([
-    "slack_activity_reconciliation_v2",
+    `slack_activity_reconciliation_v${version}`,
     report.checkpoint_us,
     report.report_timestamp,
     report.traces.map((trace) => [
@@ -137,6 +147,9 @@ function reconciliationCanonical(report) {
       trace.outcome,
       trace.relay_attempt,
       trace.send_execution_id,
+      ...(version === 3
+        ? [trace.slack_channel_id, trace.slack_message_ts]
+        : []),
       trace.send_boundary_reached,
       trace.pre_send_failure_proven,
       trace.started_at_us,
@@ -162,6 +175,18 @@ function slackApiFailure(responseBody) {
   }
   return new Error(
     "Slack activity API failed with an unrecognized error code; response withheld.",
+  );
+}
+
+function hasExactKeys(value, expectedKeys) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const actualKeys = Object.keys(value).sort();
+  const requiredKeys = [...expectedKeys].sort();
+  return (
+    actualKeys.length === requiredKeys.length &&
+    actualKeys.every((key, index) => key === requiredKeys[index])
   );
 }
 
@@ -192,14 +217,7 @@ async function relayPost(fetchImpl, url, body) {
   }
   if (!response.ok)
     throw httpFailure("Relay reconciliation endpoint", response);
-  const parsed = await parsedJsonResponse(
-    response,
-    "Relay reconciliation endpoint",
-  );
-  if (parsed?.ok !== true && !Number.isSafeInteger(parsed?.checkpoint_us)) {
-    throw new Error("Relay reconciliation endpoint returned an invalid reply.");
-  }
-  return parsed;
+  return await parsedJsonResponse(response, "Relay reconciliation endpoint");
 }
 
 async function readCheckpoint(fetchImpl, configuration, reportTimestamp) {
@@ -211,13 +229,23 @@ async function readCheckpoint(fetchImpl, configuration, reportTimestamp) {
       checkpointCanonical(unsigned),
     ),
   });
+  const currentShape = hasExactKeys(response, [
+    "checkpoint_us",
+    "reconciliation_version",
+  ]);
+  const bridgeShape = hasExactKeys(response, ["checkpoint_us"]);
   if (
+    (!currentShape && !bridgeShape) ||
     !Number.isSafeInteger(response.checkpoint_us) ||
-    response.checkpoint_us < 0
+    response.checkpoint_us < 0 ||
+    (currentShape && response.reconciliation_version !== 3)
   ) {
     throw new Error("Relay reconciliation checkpoint is malformed.");
   }
-  return response.checkpoint_us;
+  return Object.freeze({
+    checkpointUs: response.checkpoint_us,
+    reconciliationVersion: currentShape ? 3 : 2,
+  });
 }
 
 async function fetchSlackPage({ body, configuration, fetchImpl, sleepImpl }) {
@@ -364,7 +392,10 @@ function authenticatedStepEvidence(
       sendBoundaryReached:
         phase === "delivered" ||
         (phase === "send_started" && stepOutcome === "Success"),
-      preSendFailureProven: phase === "send_started" && stepOutcome === "Error",
+      // A failed boundary callback is ambiguous: the Worker may have committed
+      // send_started before the Slack function lost the HTTP confirmation.
+      // Only the validator step below runs strictly before this side effect.
+      preSendFailureProven: false,
     };
   }
 
@@ -397,9 +428,20 @@ function authenticatedStepEvidence(
   };
 }
 
+function sameStepResult(left, right) {
+  const leftOutputs = recordFor(left.outputs);
+  const rightOutputs = recordFor(right.outputs);
+  return (
+    left.functionId === right.functionId &&
+    left.outcome === right.outcome &&
+    leftOutputs?.channel_id === rightOutputs?.channel_id &&
+    leftOutputs?.message_ts === rightOutputs?.message_ts
+  );
+}
+
 export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
   const traces = new Map();
-  let errors = 0;
+  const errorActivities = [];
   let maximumCreated = 0;
 
   for (const activityValue of activities) {
@@ -422,7 +464,9 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
       );
     }
     maximumCreated = Math.max(maximumCreated, created);
-    if (level === "error" || level === "fatal") errors += 1;
+    if (level === "error" || level === "fatal") {
+      errorActivities.push({ created, traceId });
+    }
     if (!EXECUTION_EVENT_TYPES.has(eventType)) continue;
     if (typeof traceId !== "string" || !TRACE_ID_PATTERN.test(traceId)) {
       throw new Error(
@@ -437,22 +481,33 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
         deliveryId: null,
         relayAttempt: null,
         sendExecutionId: null,
+        slackChannelId: null,
+        slackMessageTs: null,
         outcome: "pending",
         sendBoundaryReached: false,
         preSendFailureProven: false,
         startedAtUs: null,
         completedAtUs: null,
+        executionEventCount: 0,
+        workflowStartCount: 0,
+        workflowResultCount: 0,
+        topologyTotalSteps: null,
+        stepStarts: new Map(),
+        stepResults: new Map(),
       };
       traces.set(traceId, trace);
     }
+    trace.executionEventCount += 1;
     const payload = recordFor(activity.payload);
     if (eventType === "workflow_execution_started") {
+      trace.workflowStartCount += 1;
       trace.startedAtUs =
         trace.startedAtUs === null
           ? created
           : Math.min(trace.startedAtUs, created);
     }
     if (eventType === "workflow_execution_result") {
+      trace.workflowResultCount += 1;
       const outcome = payload?.exec_outcome;
       const terminalOutcome =
         outcome === "Success"
@@ -477,15 +532,76 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
         trace.completedAtUs = created;
       }
     }
+    if (eventType === "workflow_step_started") {
+      const currentStep = payload?.current_step;
+      const totalSteps = payload?.total_steps;
+      const functionId = payload?.function_id;
+      const functionExecutionId = payload?.function_execution_id;
+      if (
+        !Number.isSafeInteger(currentStep) ||
+        currentStep < 1 ||
+        (totalSteps !== 2 && totalSteps !== 4) ||
+        currentStep > totalSteps ||
+        (trace.topologyTotalSteps !== null &&
+          trace.topologyTotalSteps !== totalSteps) ||
+        typeof functionId !== "string" ||
+        !FUNCTION_ID_PATTERN.test(functionId) ||
+        typeof functionExecutionId !== "string" ||
+        !FUNCTION_EXECUTION_ID_PATTERN.test(functionExecutionId)
+      ) {
+        throw new Error("Slack workflow step start has an unknown topology.");
+      }
+      trace.topologyTotalSteps = totalSteps;
+      const existingStart = trace.stepStarts.get(currentStep);
+      if (
+        existingStart !== undefined &&
+        (existingStart.functionId !== functionId ||
+          existingStart.functionExecutionId !== functionExecutionId)
+      ) {
+        throw new Error("Slack trace contains conflicting step starts.");
+      }
+      for (const [step, value] of trace.stepStarts) {
+        if (
+          step !== currentStep &&
+          value.functionExecutionId === functionExecutionId
+        ) {
+          throw new Error("Slack trace reuses a function execution ID.");
+        }
+      }
+      trace.stepStarts.set(currentStep, { functionId, functionExecutionId });
+    }
     if (eventType === "workflow_step_execution_result") {
       const inputs = recordFor(payload?.inputs);
       const stepOutcome = payload?.exec_outcome;
+      const functionId = payload?.function_id;
+      const functionExecutionId = payload?.function_execution_id;
+      if (
+        typeof functionId === "string" &&
+        FUNCTION_ID_PATTERN.test(functionId) &&
+        typeof functionExecutionId === "string" &&
+        FUNCTION_EXECUTION_ID_PATTERN.test(functionExecutionId) &&
+        (stepOutcome === "Success" || stepOutcome === "Error")
+      ) {
+        const result = {
+          functionId,
+          outcome: stepOutcome,
+          outputs: payload?.outputs,
+        };
+        const existingResult = trace.stepResults.get(functionExecutionId);
+        if (
+          existingResult !== undefined &&
+          !sameStepResult(existingResult, result)
+        ) {
+          throw new Error("Slack trace contains conflicting step results.");
+        }
+        trace.stepResults.set(functionExecutionId, result);
+      }
       const evidence = authenticatedStepEvidence(
         inputs,
         stepOutcome,
         relaySigningSecrets,
         created,
-        payload?.function_execution_id,
+        functionExecutionId,
       );
       if (evidence !== null) {
         const deliveryId = evidence.deliveryId;
@@ -520,9 +636,178 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
 
   const normalizedTraces = [];
   for (const trace of traces.values()) {
+    if (trace.topologyTotalSteps === 2) {
+      const validatorStart = trace.stepStarts.get(1);
+      const sendStart = trace.stepStarts.get(2);
+      const validatorResult =
+        validatorStart === undefined
+          ? undefined
+          : trace.stepResults.get(validatorStart.functionExecutionId);
+      const sendResult =
+        sendStart === undefined
+          ? undefined
+          : trace.stepResults.get(sendStart.functionExecutionId);
+      const sendOutputs = recordFor(sendResult?.outputs);
+      const exactLegacyTopology =
+        trace.executionEventCount === 6 &&
+        trace.workflowStartCount === 1 &&
+        trace.workflowResultCount === 1 &&
+        trace.stepStarts.size === 2 &&
+        trace.stepResults.size === 2 &&
+        validatorStart?.functionId === LEGACY_VALIDATE_RELAY_FUNCTION_ID &&
+        sendStart?.functionId === SLACK_SEND_MESSAGE_FUNCTION_ID &&
+        validatorResult?.functionId === LEGACY_VALIDATE_RELAY_FUNCTION_ID &&
+        sendResult?.functionId === SLACK_SEND_MESSAGE_FUNCTION_ID &&
+        trace.deliveryId === null &&
+        trace.relayAttempt === null &&
+        trace.sendExecutionId === null &&
+        trace.startedAtUs !== null &&
+        trace.completedAtUs !== null;
+      if (!exactLegacyTopology) {
+        throw new Error("Slack legacy workflow trace has an unknown topology.");
+      }
+      if (
+        trace.outcome === "success" &&
+        validatorResult.outcome === "Success" &&
+        sendResult.outcome === "Success" &&
+        sendOutputs !== null &&
+        typeof sendOutputs.channel_id === "string" &&
+        SLACK_DESTINATION_BY_CHANNEL.has(sendOutputs.channel_id) &&
+        typeof sendOutputs.message_ts === "string" &&
+        MESSAGE_TS_PATTERN.test(sendOutputs.message_ts)
+      ) {
+        // This exact two-step topology predates durable receipts. Its message
+        // metadata is not an ownership proof for current D1 rows, so it is
+        // recognized only to keep the overlap scan compatible and is ignored.
+        continue;
+      }
+      if (
+        trace.outcome === "error" &&
+        errorActivities.some(({ traceId }) => traceId === trace.traceId)
+      ) {
+        // Preserve the Slack error in the sanitized aggregate below while
+        // allowing receipt-aware traces from the same page to be reconciled.
+        continue;
+      }
+      throw new Error("Slack legacy workflow trace is incomplete.");
+    }
+    const boundaryStart = trace.stepStarts.get(2);
+    const sendStart = trace.stepStarts.get(3);
+    const receiptStart = trace.stepStarts.get(4);
+    const hasUnboundSendResult = [...trace.stepResults].some(
+      ([functionExecutionId, result]) =>
+        result.functionId === SLACK_SEND_MESSAGE_FUNCTION_ID &&
+        (sendStart === undefined ||
+          functionExecutionId !== sendStart.functionExecutionId),
+    );
     if (
-      trace.deliveryId !== null &&
-      trace.relayAttempt !== null &&
+      hasUnboundSendResult ||
+      (sendStart !== undefined && boundaryStart === undefined) ||
+      (receiptStart !== undefined &&
+        (boundaryStart === undefined || sendStart === undefined)) ||
+      (sendStart !== undefined &&
+        sendStart.functionId !== SLACK_SEND_MESSAGE_FUNCTION_ID) ||
+      (receiptStart !== undefined &&
+        boundaryStart?.functionId !== receiptStart.functionId)
+    ) {
+      throw new Error("Slack workflow trace has an unknown step topology.");
+    }
+    if (trace.preSendFailureProven && boundaryStart !== undefined) {
+      throw new Error("Slack workflow advanced after a failed validator step.");
+    }
+    if (boundaryStart !== undefined) {
+      const boundaryResult = trace.stepResults.get(
+        boundaryStart.functionExecutionId,
+      );
+      if (
+        boundaryResult !== undefined &&
+        boundaryResult.functionId !== boundaryStart.functionId
+      ) {
+        throw new Error("Slack boundary step identity changed within a trace.");
+      }
+      if (boundaryResult?.outcome === "Success") {
+        if (
+          trace.sendExecutionId !== null &&
+          trace.sendExecutionId !== boundaryStart.functionExecutionId
+        ) {
+          throw new Error(
+            "Slack trace contains conflicting send execution IDs.",
+          );
+        }
+        trace.sendExecutionId = boundaryStart.functionExecutionId;
+        trace.sendBoundaryReached = true;
+        trace.preSendFailureProven = false;
+      }
+      if (sendStart !== undefined) {
+        if (boundaryResult?.outcome === "Error") {
+          throw new Error(
+            "Slack workflow advanced after a failed boundary step.",
+          );
+        }
+        if (
+          trace.sendExecutionId !== null &&
+          trace.sendExecutionId !== boundaryStart.functionExecutionId
+        ) {
+          throw new Error(
+            "Slack trace contains conflicting send execution IDs.",
+          );
+        }
+        trace.sendExecutionId = boundaryStart.functionExecutionId;
+        trace.sendBoundaryReached = true;
+        trace.preSendFailureProven = false;
+      }
+    }
+    if (sendStart !== undefined) {
+      const sendResult = trace.stepResults.get(sendStart.functionExecutionId);
+      if (
+        sendResult !== undefined &&
+        sendResult.functionId !== sendStart.functionId
+      ) {
+        throw new Error("Slack SendMessage identity changed within a trace.");
+      }
+      if (receiptStart !== undefined && sendResult?.outcome === "Error") {
+        throw new Error(
+          "Slack workflow advanced after a failed SendMessage step.",
+        );
+      }
+      if (
+        sendResult?.outcome === "Success" &&
+        boundaryStart !== undefined &&
+        trace.sendExecutionId === boundaryStart.functionExecutionId
+      ) {
+        const outputs = recordFor(sendResult.outputs);
+        if (
+          outputs === null ||
+          typeof outputs.channel_id !== "string" ||
+          !SLACK_DESTINATION_BY_CHANNEL.has(outputs.channel_id) ||
+          typeof outputs.message_ts !== "string" ||
+          !MESSAGE_TS_PATTERN.test(outputs.message_ts)
+        ) {
+          throw new Error("Slack SendMessage returned malformed evidence.");
+        }
+        trace.slackChannelId = outputs.channel_id;
+        trace.slackMessageTs = outputs.message_ts;
+      }
+    }
+    if (receiptStart !== undefined) {
+      const receiptResult = trace.stepResults.get(
+        receiptStart.functionExecutionId,
+      );
+      if (
+        receiptResult !== undefined &&
+        receiptResult.functionId !== receiptStart.functionId
+      ) {
+        throw new Error("Slack receipt step identity changed within a trace.");
+      }
+    }
+    const hasExplicitIdentity =
+      trace.deliveryId !== null && trace.relayAttempt !== null;
+    const hasDerivedIdentity =
+      trace.deliveryId === null &&
+      trace.relayAttempt === null &&
+      trace.sendExecutionId !== null;
+    if (
+      (hasExplicitIdentity || hasDerivedIdentity) &&
       trace.startedAtUs !== null &&
       (trace.outcome === "pending" || trace.completedAtUs !== null)
     ) {
@@ -532,6 +817,8 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
         outcome: trace.outcome,
         relay_attempt: trace.relayAttempt,
         send_execution_id: trace.sendExecutionId,
+        slack_channel_id: trace.slackChannelId,
+        slack_message_ts: trace.slackMessageTs,
         send_boundary_reached: trace.sendBoundaryReached,
         pre_send_failure_proven:
           trace.preSendFailureProven && !trace.sendBoundaryReached,
@@ -543,6 +830,15 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
   normalizedTraces.sort((left, right) =>
     left.trace_id.localeCompare(right.trace_id),
   );
+  const normalizedTraceIds = new Set(
+    normalizedTraces
+      .filter((trace) => trace.outcome === "error")
+      .map((trace) => trace.trace_id),
+  );
+  const errors = errorActivities.filter(
+    ({ traceId }) =>
+      typeof traceId !== "string" || !normalizedTraceIds.has(traceId),
+  ).length;
   return Object.freeze({ errors, maximumCreated, traces: normalizedTraces });
 }
 
@@ -553,8 +849,10 @@ async function postReconciliation({
   configuration,
   fetchImpl,
   now,
+  reconciliationVersion,
 }) {
   const chunks = [];
+  let changedErrorTraces = 0;
   for (let index = 0; index < traces.length; index += REPORT_TRACE_LIMIT) {
     chunks.push(traces.slice(index, index + REPORT_TRACE_LIMIT));
   }
@@ -576,13 +874,62 @@ async function postReconciliation({
       ...unsigned,
       report_signature: signature(
         configuration.relaySigningSecret,
-        reconciliationCanonical(unsigned),
+        reconciliationCanonical(unsigned, reconciliationVersion),
       ),
     });
-    if (response.ok !== true) {
+    const currentShape = hasExactKeys(response, [
+      "ok",
+      "traces",
+      "changed_error_traces",
+      "checkpoint_us",
+    ]);
+    const bridgeShape =
+      reconciliationVersion === 2 &&
+      hasExactKeys(response, ["ok", "traces", "checkpoint_us"]);
+    if ((!currentShape && !bridgeShape) || response.ok !== true) {
       throw new Error("Relay reconciliation report was not accepted.");
     }
+    if (
+      response.traces !== chunks[index].length ||
+      (currentShape &&
+        (!Number.isSafeInteger(response.changed_error_traces) ||
+          response.changed_error_traces < 0 ||
+          response.changed_error_traces > response.traces)) ||
+      !Number.isSafeInteger(response.checkpoint_us) ||
+      response.checkpoint_us < previousCheckpointUs ||
+      response.checkpoint_us > unsigned.checkpoint_us
+    ) {
+      throw new Error("Relay reconciliation report returned invalid counts.");
+    }
+    changedErrorTraces += currentShape
+      ? response.changed_error_traces
+      : chunks[index].filter((trace) => trace.outcome === "error").length;
   }
+  return changedErrorTraces;
+}
+
+function bridgeCompatibleTrace(trace) {
+  return (
+    trace.outcome === "error" &&
+    trace.delivery_id !== null &&
+    trace.relay_attempt !== null &&
+    trace.slack_channel_id === null &&
+    trace.slack_message_ts === null
+  );
+}
+
+function asBridgeTrace(trace) {
+  return Object.freeze({
+    trace_id: trace.trace_id,
+    delivery_id: trace.delivery_id,
+    outcome: trace.outcome,
+    relay_attempt: trace.relay_attempt,
+    send_execution_id: trace.send_execution_id,
+    send_boundary_reached: trace.send_boundary_reached,
+    pre_send_failure_proven: trace.pre_send_failure_proven,
+    started_at_us: trace.started_at_us,
+    completed_at_us: trace.completed_at_us,
+  });
 }
 
 export async function monitorSlackWorkflow({
@@ -605,11 +952,12 @@ export async function monitorSlackWorkflow({
     throw new Error("The Slack activity timestamp is outside the safe range.");
   }
   const reportTimestamp = String(Math.floor(currentTime / 1_000));
-  const previousCheckpointUs = await readCheckpoint(
+  const checkpoint = await readCheckpoint(
     fetchImpl,
     configuration,
     reportTimestamp,
   );
+  const previousCheckpointUs = checkpoint.checkpointUs;
   const minimumFromCheckpoint = Math.max(
     0,
     previousCheckpointUs - CHECKPOINT_OVERLAP_US,
@@ -664,25 +1012,48 @@ export async function monitorSlackWorkflow({
         ? minDateCreated
         : previousCheckpointUs
       : Math.max(previousCheckpointUs, reconciliation.maximumCreated);
-  await postReconciliation({
-    checkpointUs: evidenceCheckpointUs,
+  const bridgeTraces = reconciliation.traces.filter(bridgeCompatibleTrace);
+  const reportTraces =
+    checkpoint.reconciliationVersion === 3
+      ? reconciliation.traces
+      : bridgeTraces.map(asBridgeTrace);
+  const reportCheckpointUs =
+    checkpoint.reconciliationVersion === 2 &&
+    bridgeTraces.length !== reconciliation.traces.length
+      ? previousCheckpointUs
+      : evidenceCheckpointUs;
+  const withheldBridgeTraces =
+    checkpoint.reconciliationVersion === 2
+      ? reconciliation.traces.filter((trace) => !bridgeCompatibleTrace(trace))
+          .length
+      : 0;
+  const changedErrorTraces = await postReconciliation({
+    checkpointUs: reportCheckpointUs,
     previousCheckpointUs,
-    traces: reconciliation.traces,
+    traces: reportTraces,
     configuration,
     fetchImpl,
     now,
+    reconciliationVersion: checkpoint.reconciliationVersion,
   });
 
-  if (reconciliation.errors > 0) {
-    const noun = reconciliation.errors === 1 ? "error" : "errors";
+  const errors = reconciliation.errors + changedErrorTraces;
+  if (errors > 0) {
+    const noun = errors === 1 ? "error" : "errors";
     throw new Error(
-      `Slack recorded ${reconciliation.errors} workflow ${noun}; activity payloads withheld after durable reconciliation.`,
+      `Slack recorded ${errors} new or uncorrelated workflow ${noun}; activity payloads withheld after durable reconciliation.`,
+    );
+  }
+  if (withheldBridgeTraces > 0) {
+    const noun = withheldBridgeTraces === 1 ? "trace" : "traces";
+    throw new Error(
+      `Slack retained ${withheldBridgeTraces} ${noun} until relay reconciliation v3 becomes available; activity payloads withheld.`,
     );
   }
   return Object.freeze({
     errors: 0,
     pages,
-    traces: reconciliation.traces.length,
+    traces: reportTraces.length,
   });
 }
 

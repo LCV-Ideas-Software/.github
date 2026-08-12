@@ -149,6 +149,34 @@ function assertReconciliationRequest(init) {
     body.report_signature,
     hmac(
       JSON.stringify([
+        "slack_activity_reconciliation_v3",
+        body.checkpoint_us,
+        body.report_timestamp,
+        body.traces.map((trace) => [
+          trace.trace_id,
+          trace.delivery_id,
+          trace.outcome,
+          trace.relay_attempt,
+          trace.send_execution_id,
+          trace.slack_channel_id,
+          trace.slack_message_ts,
+          trace.send_boundary_reached,
+          trace.pre_send_failure_proven,
+          trace.started_at_us,
+          trace.completed_at_us,
+        ]),
+      ]),
+    ),
+  );
+  return body;
+}
+
+function assertBridgeReconciliationRequest(init) {
+  const body = JSON.parse(String(init.body));
+  assert.equal(
+    body.report_signature,
+    hmac(
+      JSON.stringify([
         "slack_activity_reconciliation_v2",
         body.checkpoint_us,
         body.report_timestamp,
@@ -167,6 +195,22 @@ function assertReconciliationRequest(init) {
     ),
   );
   return body;
+}
+
+function acceptedReconciliationResponse(report, changedErrorTraces = 0) {
+  return jsonResponse({
+    ok: true,
+    traces: report.traces.length,
+    changed_error_traces: changedErrorTraces,
+    checkpoint_us: report.checkpoint_us,
+  });
+}
+
+function checkpointResponse(checkpointUs) {
+  return jsonResponse({
+    checkpoint_us: checkpointUs,
+    reconciliation_version: 3,
+  });
 }
 
 test("production manifest registers the receipt function and only the documented message scopes", () => {
@@ -206,7 +250,7 @@ test("deployment updates both protected trigger definitions before inventory and
   const deployJob = relayWorkflowSource.slice(
     relayWorkflowSource.indexOf("  deploy_slack:"),
   );
-  const deploySlack = deployJob.indexOf('bin/slack" deploy');
+  const deploySlack = deployJob.indexOf('"$SLACK_BIN" deploy');
   const updateStepStart = deployJob.indexOf(
     "      - name: Update the two protected production webhook triggers",
   );
@@ -270,6 +314,16 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   );
   assert.match(remoteProofJob, /needs: verify/);
   assert.match(relayDeployJob, /needs: prove_remote_d1/);
+  const productionPreflight = relayDeployJob.indexOf(
+    "scripts/slack-delivery-protocol-preflight.mjs",
+  );
+  const productionMigration = relayDeployJob.indexOf(
+    "wrangler d1 migrations apply github-slack-alerts-db",
+  );
+  assert.ok(
+    productionPreflight >= 0 && productionPreflight < productionMigration,
+    "the active tuple must authorize the exact bridge before production D1 mutates",
+  );
   assert.match(relayDeployJob, /slack_delivery_protocol_activated_at/);
   assert.match(relayDeployJob, /slack_delivery_protocol_activation_id/);
   assert.match(relayDeployJob, /slack_delivery_protocol_schema_revision/);
@@ -288,7 +342,7 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     relayWorkflowSource,
     /- "\.github\/workflows\/slack-github-integration\.yml"/,
   );
-  const deploySlack = deployJob.indexOf('bin/slack" deploy');
+  const deploySlack = deployJob.indexOf('"$SLACK_BIN" deploy');
   const verifyTriggers = deployJob.indexOf(
     "scripts/verify_trigger_inventory.ts",
   );
@@ -323,7 +377,7 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   assert.doesNotMatch(relayWorkflowSource, /GITHUB_PATH/);
   assert.match(
     deployJob,
-    /"\$\{RUNNER_TEMP\}\/slack-cli-\$\{SLACK_CLI_VERSION\}\/bin\/slack" deploy/,
+    /printf 'slack_bin=%s\\n' "\$install_root\/bin\/slack" >> "\$GITHUB_OUTPUT"[\s\S]*SLACK_BIN: \$\{\{ steps\.install-slack-cli\.outputs\.slack_bin \}\}[\s\S]*"\$SLACK_BIN" deploy/,
   );
   const provisionCloudflare = relayWorkflowSource.indexOf(
     "scripts/provision-cloudflare-relay-secret.mjs",
@@ -507,7 +561,7 @@ test("monitor uses the durable checkpoint and posts an authenticated empty repor
       calls.push(input);
       if (input === CHECKPOINT_URL) {
         assertCheckpointRequest(init);
-        return jsonResponse({ checkpoint_us: 0 });
+        return checkpointResponse(0);
       }
       if (input === SLACK_URL) {
         assert.equal(init.method, "POST");
@@ -535,7 +589,7 @@ test("monitor uses the durable checkpoint and posts an authenticated empty repor
       const report = assertReconciliationRequest(init);
       assert.equal(report.checkpoint_us, (now - 20 * 60 * 1_000) * 1_000);
       assert.deepEqual(report.traces, []);
-      return jsonResponse({ ok: true, traces: 0 });
+      return acceptedReconciliationResponse(report);
     },
   });
 
@@ -543,11 +597,31 @@ test("monitor uses the durable checkpoint and posts an authenticated empty repor
   assert.deepEqual(calls, [CHECKPOINT_URL, SLACK_URL, RECONCILIATION_URL]);
 });
 
-test("an empty scan anchors its lower bound instead of advancing to wall clock", async () => {
+test("rejects a checkpoint error envelope before reading Slack activities", async () => {
+  let slackRequests = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+      fetchImpl: async (input) => {
+        assert.equal(input, CHECKPOINT_URL);
+        slackRequests += input === SLACK_URL ? 1 : 0;
+        return jsonResponse({
+          ok: false,
+          checkpoint_us: Number.MAX_SAFE_INTEGER,
+        });
+      },
+    }),
+    /checkpoint is malformed/,
+  );
+  assert.equal(slackRequests, 0);
+});
+
+test("uses the authenticated v2 bridge while the old Worker is still live", async () => {
   const now = Date.parse("2026-08-04T08:00:00.000Z");
   const initialAnchor = (now - 20 * 60 * 1_000) * 1_000;
   let report;
-  await monitorSlackWorkflow({
+  const result = await monitorSlackWorkflow({
     environment,
     now: () => now,
     fetchImpl: async (input, init) => {
@@ -561,8 +635,253 @@ test("an empty scan anchors its lower bound instead of advancing to wall clock",
           response_metadata: { next_cursor: "" },
         });
       }
+      assert.equal(input, RECONCILIATION_URL);
+      report = assertBridgeReconciliationRequest(init);
+      return jsonResponse({
+        ok: true,
+        traces: report.traces.length,
+        checkpoint_us: report.checkpoint_us,
+      });
+    },
+  });
+  assert.equal(report.checkpoint_us, initialAnchor);
+  assert.deepEqual(report.traces, []);
+  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+});
+
+test("fails closed on an error trace reported through the v2 bridge", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  let report;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        if (input === SLACK_URL) {
+          return jsonResponse({
+            ok: true,
+            activities: [
+              {
+                level: "info",
+                event_type: "workflow_execution_started",
+                created,
+                trace_id: "TrBridgeError1",
+                payload: {},
+              },
+              {
+                level: "error",
+                event_type: "workflow_step_execution_result",
+                created: created + 1,
+                trace_id: "TrBridgeError1",
+                payload: {
+                  exec_outcome: "Error",
+                  function_execution_id: "FxBridgeError1",
+                  inputs: signedValidatorInputs("delivery-bridge-error-1"),
+                },
+              },
+              {
+                level: "error",
+                event_type: "workflow_execution_result",
+                created: created + 2,
+                trace_id: "TrBridgeError1",
+                payload: { exec_outcome: "Error" },
+              },
+            ],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        report = assertBridgeReconciliationRequest(init);
+        return jsonResponse({
+          ok: true,
+          traces: report.traces.length,
+          checkpoint_us: report.checkpoint_us,
+        });
+      },
+    }),
+    /recorded 1 new or uncorrelated workflow error/,
+  );
+  assert.equal(report.traces.length, 1);
+  assert.equal(report.traces[0].outcome, "error");
+});
+
+test("retains v3-only message evidence until the new Worker is live", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  const traceId = "TrBridgeMessageEvidence1";
+  const boundaryFunctionId = "FnBridgeMessageBoundary1";
+  let report;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        if (input === SLACK_URL) {
+          const step = (
+            offset,
+            current_step,
+            function_id,
+            function_execution_id,
+          ) => ({
+            level: "info",
+            event_type: "workflow_step_started",
+            created: created + offset,
+            trace_id: traceId,
+            payload: {
+              current_step,
+              total_steps: 4,
+              function_id,
+              function_execution_id,
+            },
+          });
+          const result = (
+            offset,
+            function_id,
+            function_execution_id,
+            outputs,
+          ) => ({
+            level: "info",
+            event_type: "workflow_step_execution_result",
+            created: created + offset,
+            trace_id: traceId,
+            payload: {
+              exec_outcome: "Success",
+              function_id,
+              function_execution_id,
+              ...(outputs === undefined ? {} : { outputs }),
+            },
+          });
+          return jsonResponse({
+            ok: true,
+            activities: [
+              {
+                level: "info",
+                event_type: "workflow_execution_started",
+                created,
+                trace_id: traceId,
+                payload: {},
+              },
+              step(1, 2, boundaryFunctionId, "FxBridgeMessageBoundary1"),
+              result(2, boundaryFunctionId, "FxBridgeMessageBoundary1"),
+              step(3, 3, "Fn0102", "FxBridgeMessageSend1"),
+              result(4, "Fn0102", "FxBridgeMessageSend1", {
+                channel_id: "C0BMUK793NV",
+                message_ts: "1785830400.123456",
+              }),
+              step(5, 4, boundaryFunctionId, "FxBridgeMessageReceipt1"),
+              result(6, boundaryFunctionId, "FxBridgeMessageReceipt1"),
+              {
+                level: "info",
+                event_type: "workflow_execution_result",
+                created: created + 7,
+                trace_id: traceId,
+                payload: { exec_outcome: "Success" },
+              },
+            ],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        report = assertBridgeReconciliationRequest(init);
+        return jsonResponse({
+          ok: true,
+          traces: report.traces.length,
+          checkpoint_us: report.checkpoint_us,
+        });
+      },
+    }),
+    /retained 1 trace until relay reconciliation v3 becomes available/,
+  );
+  assert.equal(report.checkpoint_us, 0);
+  assert.deepEqual(report.traces, []);
+});
+
+test("retains a successful receipt-less trace until the v3 Worker is live", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  let report;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return jsonResponse({ checkpoint_us: 0 });
+        }
+        if (input === SLACK_URL) {
+          return jsonResponse({
+            ok: true,
+            activities: [
+              {
+                level: "info",
+                event_type: "workflow_execution_started",
+                created,
+                trace_id: "TrBridgeReceiptlessSuccess1",
+                payload: {},
+              },
+              {
+                level: "info",
+                event_type: "workflow_step_execution_result",
+                created: created + 1,
+                trace_id: "TrBridgeReceiptlessSuccess1",
+                payload: {
+                  exec_outcome: "Success",
+                  function_execution_id: "FxBridgeReceiptlessSuccess1",
+                  inputs: signedProgressInputs(
+                    "delivery-bridge-receiptless-success-1",
+                  ),
+                },
+              },
+              {
+                level: "info",
+                event_type: "workflow_execution_result",
+                created: created + 2,
+                trace_id: "TrBridgeReceiptlessSuccess1",
+                payload: { exec_outcome: "Success" },
+              },
+            ],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        report = assertBridgeReconciliationRequest(init);
+        return jsonResponse({
+          ok: true,
+          traces: report.traces.length,
+          checkpoint_us: report.checkpoint_us,
+        });
+      },
+    }),
+    /retained 1 trace until relay reconciliation v3 becomes available/,
+  );
+  assert.equal(report.checkpoint_us, 0);
+  assert.deepEqual(report.traces, []);
+});
+
+test("an empty scan anchors its lower bound instead of advancing to wall clock", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const initialAnchor = (now - 20 * 60 * 1_000) * 1_000;
+  let report;
+  await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponse(0);
+      }
+      if (input === SLACK_URL) {
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
       report = assertReconciliationRequest(init);
-      return jsonResponse({ ok: true, traces: 0 });
+      return acceptedReconciliationResponse(report);
     },
   });
   assert.equal(report.checkpoint_us, initialAnchor);
@@ -573,7 +892,7 @@ test("an empty scan anchors its lower bound instead of advancing to wall clock",
     now: () => later,
     fetchImpl: async (input, init) => {
       if (input === CHECKPOINT_URL) {
-        return jsonResponse({ checkpoint_us: initialAnchor });
+        return checkpointResponse(initialAnchor);
       }
       if (input === SLACK_URL) {
         const form = Object.fromEntries(init.body);
@@ -589,7 +908,7 @@ test("an empty scan anchors its lower bound instead of advancing to wall clock",
       }
       const secondReport = assertReconciliationRequest(init);
       assert.equal(secondReport.checkpoint_us, initialAnchor);
-      return jsonResponse({ ok: true, traces: 0 });
+      return acceptedReconciliationResponse(secondReport);
     },
   });
 });
@@ -604,11 +923,12 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
     now: () => now,
     fetchImpl: async (input, init) => {
       if (input === CHECKPOINT_URL) {
-        return jsonResponse({ checkpoint_us: created - 10_000 });
+        return checkpointResponse(created - 10_000);
       }
       if (input === RECONCILIATION_URL) {
-        reports.push(assertReconciliationRequest(init));
-        return jsonResponse({ ok: true, traces: 1 });
+        const report = assertReconciliationRequest(init);
+        reports.push(report);
+        return acceptedReconciliationResponse(report);
       }
       assert.equal(input, SLACK_URL);
       slackPage += 1;
@@ -676,6 +996,8 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
       outcome: "success",
       relay_attempt: "1",
       send_execution_id: "FxMonitorPagedSend1",
+      slack_channel_id: null,
+      slack_message_ts: null,
       send_boundary_reached: true,
       pre_send_failure_proven: false,
       started_at_us: created,
@@ -729,7 +1051,7 @@ test("refreshes the authenticated report timestamp after long pagination and bet
     fetchImpl: async (input, init) => {
       if (input === CHECKPOINT_URL) {
         assertCheckpointRequest(init);
-        return jsonResponse({ checkpoint_us: created - 10_000 });
+        return checkpointResponse(created - 10_000);
       }
       if (input === SLACK_URL) {
         const currentPage = page;
@@ -748,7 +1070,7 @@ test("refreshes the authenticated report timestamp after long pagination and bet
       reportTimestamps.push(report.report_timestamp);
       assert.equal(report.report_timestamp, String(Math.floor(clock / 1_000)));
       if (reportTimestamps.length === 1) clock += 301_000;
-      return jsonResponse({ ok: true, traces: report.traces.length });
+      return acceptedReconciliationResponse(report);
     },
   });
 
@@ -792,6 +1114,8 @@ test("persists an incomplete trace so later pages cannot forget its send boundar
       outcome: "pending",
       relay_attempt: "1",
       send_execution_id: "FxMonitorPendingBoundary1",
+      slack_channel_id: null,
+      slack_message_ts: null,
       send_boundary_reached: true,
       pre_send_failure_proven: false,
       started_at_us: created,
@@ -799,6 +1123,335 @@ test("persists an incomplete trace so later pages cannot forget its send boundar
     },
   ]);
   assert.ok(!JSON.stringify(result).includes("must-not-leak"));
+});
+
+test("reconciles the live Slack activity shape when custom-step inputs are omitted", () => {
+  const created = Date.parse("2026-08-12T17:31:29.000Z") * 1_000;
+  const result = reconcileSlackActivities([
+    {
+      level: "info",
+      event_type: "workflow_execution_started",
+      created,
+      trace_id: "Tr0BPPV04R45",
+      payload: {},
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_started",
+      created: created + 1,
+      trace_id: "Tr0BPPV04R45",
+      payload: {
+        current_step: 2,
+        total_steps: 4,
+        function_id: "Fn0BQMSJB7DE",
+        function_execution_id: "Fx0BPVFG8ARF",
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_execution_result",
+      created: created + 2,
+      trace_id: "Tr0BPPV04R45",
+      payload: {
+        exec_outcome: "Success",
+        function_id: "Fn0BQMSJB7DE",
+        function_execution_id: "Fx0BPVFG8ARF",
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_started",
+      created: created + 3,
+      trace_id: "Tr0BPPV04R45",
+      payload: {
+        current_step: 3,
+        total_steps: 4,
+        function_id: "Fn0102",
+        function_execution_id: "Fx0BPTGJMJKU",
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_execution_result",
+      created: created + 4,
+      trace_id: "Tr0BPPV04R45",
+      payload: {
+        exec_outcome: "Success",
+        function_id: "Fn0102",
+        function_execution_id: "Fx0BPTGJMJKU",
+        outputs: {
+          channel_id: "C0BMUK793NV",
+          message_ts: "1786555894.853909",
+        },
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_started",
+      created: created + 5,
+      trace_id: "Tr0BPPV04R45",
+      payload: {
+        current_step: 4,
+        total_steps: 4,
+        function_id: "Fn0BQMSJB7DE",
+        function_execution_id: "Fx0BPPUYSB3P",
+      },
+    },
+    {
+      level: "error",
+      event_type: "workflow_step_execution_result",
+      created: created + 6,
+      trace_id: "Tr0BPPV04R45",
+      payload: {
+        exec_outcome: "Error",
+        function_id: "Fn0BQMSJB7DE",
+        function_execution_id: "Fx0BPPUYSB3P",
+      },
+    },
+    {
+      level: "error",
+      event_type: "workflow_execution_result",
+      created: created + 7,
+      trace_id: "Tr0BPPV04R45",
+      payload: { exec_outcome: "Error" },
+    },
+  ]);
+
+  assert.deepEqual(result.traces, [
+    {
+      trace_id: "Tr0BPPV04R45",
+      delivery_id: null,
+      outcome: "error",
+      relay_attempt: null,
+      send_execution_id: "Fx0BPVFG8ARF",
+      send_boundary_reached: true,
+      pre_send_failure_proven: false,
+      slack_channel_id: "C0BMUK793NV",
+      slack_message_ts: "1786555894.853909",
+      started_at_us: created,
+      completed_at_us: created + 7,
+    },
+  ]);
+  assert.equal(result.errors, 0);
+});
+
+test("ignores a complete legacy two-step workflow while reconciling current traces", () => {
+  const created = Date.parse("2026-08-12T17:31:29.000Z") * 1_000;
+  const legacyTraceId = "TrLegacyTwoStepSuccess1";
+  const currentTraceId = "TrCurrentReceiptAware1";
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created,
+        trace_id: legacyTraceId,
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_started",
+        created: created + 1,
+        trace_id: legacyTraceId,
+        payload: {
+          current_step: 1,
+          total_steps: 2,
+          function_id: "Fn0BMBCA9QG7",
+          function_execution_id: "FxLegacyValidatorSuccess1",
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 2,
+        trace_id: legacyTraceId,
+        payload: {
+          exec_outcome: "Success",
+          function_id: "Fn0BMBCA9QG7",
+          function_execution_id: "FxLegacyValidatorSuccess1",
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_started",
+        created: created + 3,
+        trace_id: legacyTraceId,
+        payload: {
+          current_step: 2,
+          total_steps: 2,
+          function_id: "Fn0102",
+          function_execution_id: "FxLegacySendMessageSuccess1",
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 4,
+        trace_id: legacyTraceId,
+        payload: {
+          exec_outcome: "Success",
+          function_id: "Fn0102",
+          function_execution_id: "FxLegacySendMessageSuccess1",
+          outputs: {
+            channel_id: "C0BMQMW3L4E",
+            message_ts: "1786555894.853909",
+          },
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_execution_result",
+        created: created + 5,
+        trace_id: legacyTraceId,
+        payload: { exec_outcome: "Success" },
+      },
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created: created + 6,
+        trace_id: currentTraceId,
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 7,
+        trace_id: currentTraceId,
+        payload: {
+          exec_outcome: "Success",
+          function_execution_id: "FxCurrentReceiptBoundary1",
+          inputs: signedProgressInputs(
+            "delivery-current-receipt-aware-1",
+            "send_started",
+            "alerts",
+            String(Math.floor(created / 1_000_000)),
+          ),
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_execution_result",
+        created: created + 8,
+        trace_id: currentTraceId,
+        payload: { exec_outcome: "Success" },
+      },
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
+
+  assert.equal(result.errors, 0);
+  assert.equal(result.maximumCreated, created + 8);
+  assert.equal(result.traces.length, 1);
+  assert.equal(result.traces[0].trace_id, currentTraceId);
+  assert.equal(
+    result.traces[0].delivery_id,
+    "delivery-current-receipt-aware-1",
+  );
+});
+
+test("leaves correlated errors to durable relay novelty and retains uncorrelated errors", () => {
+  const created = Date.parse("2026-08-12T17:31:29.000Z") * 1_000;
+  const recovered = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created,
+        trace_id: "TrRecoveredOverlap1",
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_started",
+        created: created + 1,
+        trace_id: "TrRecoveredOverlap1",
+        payload: {
+          current_step: 2,
+          total_steps: 4,
+          function_id: "FnBoundaryOverlap1",
+          function_execution_id: "FxBoundaryOverlap1",
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 2,
+        trace_id: "TrRecoveredOverlap1",
+        payload: {
+          exec_outcome: "Success",
+          function_id: "FnBoundaryOverlap1",
+          function_execution_id: "FxBoundaryOverlap1",
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_started",
+        created: created + 3,
+        trace_id: "TrRecoveredOverlap1",
+        payload: {
+          current_step: 3,
+          total_steps: 4,
+          function_id: "Fn0102",
+          function_execution_id: "FxSendOverlap1",
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 4,
+        trace_id: "TrRecoveredOverlap1",
+        payload: {
+          exec_outcome: "Success",
+          function_id: "Fn0102",
+          function_execution_id: "FxSendOverlap1",
+          outputs: {
+            channel_id: "C0BMQMW3L4E",
+            message_ts: "1786555894.853909",
+          },
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_started",
+        created: created + 5,
+        trace_id: "TrRecoveredOverlap1",
+        payload: {
+          current_step: 4,
+          total_steps: 4,
+          function_id: "FnBoundaryOverlap1",
+          function_execution_id: "FxReceiptOverlap1",
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_step_execution_result",
+        created: created + 6,
+        trace_id: "TrRecoveredOverlap1",
+        payload: {
+          exec_outcome: "Error",
+          function_id: "FnBoundaryOverlap1",
+          function_execution_id: "FxReceiptOverlap1",
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_execution_result",
+        created: created + 7,
+        trace_id: "TrRecoveredOverlap1",
+        payload: { exec_outcome: "Error" },
+      },
+      {
+        level: "error",
+        event_type: "workflow_execution_result",
+        created: created - 1,
+        trace_id: "TrHistoricalOverlap1",
+        payload: { exec_outcome: "Error" },
+      },
+    ],
+    [],
+  );
+
+  assert.equal(recovered.errors, 1);
 });
 
 test("correlates a current-authenticated relay through its NEXT-only progress evidence", () => {
@@ -858,6 +1511,8 @@ test("correlates a current-authenticated relay through its NEXT-only progress ev
       outcome: "success",
       relay_attempt: "1",
       send_execution_id: "FxMonitorCurrentInbound1",
+      slack_channel_id: null,
+      slack_message_ts: null,
       send_boundary_reached: true,
       pre_send_failure_proven: false,
       started_at_us: created,
@@ -866,7 +1521,7 @@ test("correlates a current-authenticated relay through its NEXT-only progress ev
   ]);
 });
 
-test("persists explicit pre-send failure proof before the terminal result arrives", () => {
+test("does not call an ambiguous boundary failure pre-send proof before the terminal result arrives", () => {
   const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
   const result = reconcileSlackActivities(
     [
@@ -899,12 +1554,316 @@ test("persists explicit pre-send failure proof before the terminal result arrive
       outcome: "pending",
       relay_attempt: "1",
       send_execution_id: "FxMonitorPreSendB1",
+      slack_channel_id: null,
+      slack_message_ts: null,
       send_boundary_reached: false,
-      pre_send_failure_proven: true,
+      pre_send_failure_proven: false,
       started_at_us: created,
       completed_at_us: null,
     },
   ]);
+  assert.equal(result.errors, 1);
+});
+
+test("quarantines a boundary-step failure without inventing later workflow steps", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created,
+        trace_id: "TrBoundaryFailure1",
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_started",
+        created: created + 1,
+        trace_id: "TrBoundaryFailure1",
+        payload: {
+          current_step: 2,
+          total_steps: 4,
+          function_id: "FnBoundaryFailure1",
+          function_execution_id: "FxBoundaryFailure1",
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_step_execution_result",
+        created: created + 2,
+        trace_id: "TrBoundaryFailure1",
+        payload: {
+          exec_outcome: "Error",
+          function_id: "FnBoundaryFailure1",
+          function_execution_id: "FxBoundaryFailure1",
+          inputs: signedProgressInputs("delivery-boundary-failure-1"),
+        },
+      },
+      {
+        level: "error",
+        event_type: "workflow_execution_result",
+        created: created + 3,
+        trace_id: "TrBoundaryFailure1",
+        payload: { exec_outcome: "Error" },
+      },
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
+
+  assert.deepEqual(result.traces, [
+    {
+      trace_id: "TrBoundaryFailure1",
+      delivery_id: "delivery-boundary-failure-1",
+      outcome: "error",
+      relay_attempt: "1",
+      send_execution_id: "FxBoundaryFailure1",
+      slack_channel_id: null,
+      slack_message_ts: null,
+      send_boundary_reached: false,
+      pre_send_failure_proven: false,
+      started_at_us: created,
+      completed_at_us: created + 3,
+    },
+  ]);
+});
+
+test("rejects a failed boundary that nevertheless advances to SendMessage", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  assert.throws(
+    () =>
+      reconcileSlackActivities(
+        [
+          {
+            level: "info",
+            event_type: "workflow_execution_started",
+            created,
+            trace_id: "TrContradictoryBoundary1",
+            payload: {},
+          },
+          {
+            level: "info",
+            event_type: "workflow_step_started",
+            created: created + 1,
+            trace_id: "TrContradictoryBoundary1",
+            payload: {
+              current_step: 2,
+              total_steps: 4,
+              function_id: "FnContradictoryBoundary1",
+              function_execution_id: "FxContradictoryBoundary1",
+            },
+          },
+          {
+            level: "error",
+            event_type: "workflow_step_execution_result",
+            created: created + 2,
+            trace_id: "TrContradictoryBoundary1",
+            payload: {
+              exec_outcome: "Error",
+              function_id: "FnContradictoryBoundary1",
+              function_execution_id: "FxContradictoryBoundary1",
+              inputs: signedProgressInputs("delivery-contradictory-boundary"),
+            },
+          },
+          {
+            level: "info",
+            event_type: "workflow_step_started",
+            created: created + 3,
+            trace_id: "TrContradictoryBoundary1",
+            payload: {
+              current_step: 3,
+              total_steps: 4,
+              function_id: "Fn0102",
+              function_execution_id: "FxContradictorySend1",
+            },
+          },
+        ],
+        [environment.SLACK_RELAY_SIGNING_SECRET],
+      ),
+    /advanced after a failed boundary step/,
+  );
+});
+
+test("rejects a failed validator trace that nevertheless starts the boundary", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  assert.throws(
+    () =>
+      reconcileSlackActivities(
+        [
+          {
+            level: "info",
+            event_type: "workflow_execution_started",
+            created,
+            trace_id: "TrContradictoryValidator1",
+            payload: {},
+          },
+          {
+            level: "error",
+            event_type: "workflow_step_execution_result",
+            created: created + 1,
+            trace_id: "TrContradictoryValidator1",
+            payload: {
+              exec_outcome: "Error",
+              function_id: "FnContradictoryValidator1",
+              function_execution_id: "FxContradictoryValidator1",
+              inputs: signedValidatorInputs("delivery-contradictory-validator"),
+            },
+          },
+          {
+            level: "info",
+            event_type: "workflow_step_started",
+            created: created + 2,
+            trace_id: "TrContradictoryValidator1",
+            payload: {
+              current_step: 2,
+              total_steps: 4,
+              function_id: "FnContradictoryBoundary2",
+              function_execution_id: "FxContradictoryBoundary2",
+            },
+          },
+        ],
+        [environment.SLACK_RELAY_SIGNING_SECRET],
+      ),
+    /advanced after a failed validator step/,
+  );
+});
+
+test("rejects a receipt result whose function identity differs from its start", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const traceId = "TrReceiptIdentityMismatch1";
+  assert.throws(
+    () =>
+      reconcileSlackActivities([
+        {
+          level: "info",
+          event_type: "workflow_execution_started",
+          created,
+          trace_id: traceId,
+          payload: {},
+        },
+        {
+          level: "info",
+          event_type: "workflow_step_started",
+          created: created + 1,
+          trace_id: traceId,
+          payload: {
+            current_step: 2,
+            total_steps: 4,
+            function_id: "FnReceiptIdentity1",
+            function_execution_id: "FxReceiptIdentityBoundary1",
+          },
+        },
+        {
+          level: "info",
+          event_type: "workflow_step_execution_result",
+          created: created + 2,
+          trace_id: traceId,
+          payload: {
+            exec_outcome: "Success",
+            function_id: "FnReceiptIdentity1",
+            function_execution_id: "FxReceiptIdentityBoundary1",
+          },
+        },
+        {
+          level: "info",
+          event_type: "workflow_step_started",
+          created: created + 3,
+          trace_id: traceId,
+          payload: {
+            current_step: 3,
+            total_steps: 4,
+            function_id: "Fn0102",
+            function_execution_id: "FxReceiptIdentitySend1",
+          },
+        },
+        {
+          level: "info",
+          event_type: "workflow_step_execution_result",
+          created: created + 4,
+          trace_id: traceId,
+          payload: {
+            exec_outcome: "Success",
+            function_id: "Fn0102",
+            function_execution_id: "FxReceiptIdentitySend1",
+            outputs: {
+              channel_id: "C0BMQMW3L4E",
+              message_ts: "1786555894.853909",
+            },
+          },
+        },
+        {
+          level: "info",
+          event_type: "workflow_step_started",
+          created: created + 5,
+          trace_id: traceId,
+          payload: {
+            current_step: 4,
+            total_steps: 4,
+            function_id: "FnReceiptIdentity1",
+            function_execution_id: "FxReceiptIdentityFinal1",
+          },
+        },
+        {
+          level: "error",
+          event_type: "workflow_step_execution_result",
+          created: created + 6,
+          trace_id: traceId,
+          payload: {
+            exec_outcome: "Error",
+            function_id: "FnDifferentReceipt1",
+            function_execution_id: "FxReceiptIdentityFinal1",
+          },
+        },
+      ]),
+    /receipt step identity changed/,
+  );
+});
+
+test("rejects SendMessage result evidence without its exact step start", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  assert.throws(
+    () =>
+      reconcileSlackActivities(
+        [
+          {
+            level: "info",
+            event_type: "workflow_execution_started",
+            created,
+            trace_id: "TrUnboundSendResult1",
+            payload: {},
+          },
+          {
+            level: "error",
+            event_type: "workflow_step_execution_result",
+            created: created + 1,
+            trace_id: "TrUnboundSendResult1",
+            payload: {
+              exec_outcome: "Error",
+              function_id: "FnBoundaryUnbound1",
+              function_execution_id: "FxBoundaryUnbound1",
+              inputs: signedProgressInputs("delivery-unbound-send-result"),
+            },
+          },
+          {
+            level: "info",
+            event_type: "workflow_step_execution_result",
+            created: created + 2,
+            trace_id: "TrUnboundSendResult1",
+            payload: {
+              exec_outcome: "Success",
+              function_id: "Fn0102",
+              function_execution_id: "FxUnboundSendResult1",
+              outputs: {
+                channel_id: "C0BMQMW3L4E",
+                message_ts: "1786555894.853909",
+              },
+            },
+          },
+        ],
+        [environment.SLACK_RELAY_SIGNING_SECRET],
+      ),
+    /unknown step topology/,
+  );
 });
 
 test("does not trust an unauthenticated failed validator input as retry proof", () => {
@@ -1114,11 +2073,11 @@ test("a complete pre-send failure is reconciled before the sanitized monitor fai
       now: () => now,
       fetchImpl: async (input, init) => {
         if (input === CHECKPOINT_URL) {
-          return jsonResponse({ checkpoint_us: 0 });
+          return checkpointResponse(0);
         }
         if (input === RECONCILIATION_URL) {
           report = assertReconciliationRequest(init);
-          return jsonResponse({ ok: true, traces: 1 });
+          return acceptedReconciliationResponse(report, 1);
         }
         return jsonResponse({
           ok: true,
@@ -1157,7 +2116,7 @@ test("a complete pre-send failure is reconciled before the sanitized monitor fai
       },
     }),
     (error) =>
-      /recorded 2 workflow errors/.test(error.message) &&
+      /recorded 1 new or uncorrelated workflow error/.test(error.message) &&
       /durable reconciliation/.test(error.message) &&
       !/secret-payload/.test(error.message) &&
       !error.message.includes(environment.SLACK_SERVICE_TOKEN),
@@ -1168,11 +2127,74 @@ test("a complete pre-send failure is reconciled before the sanitized monitor fai
     outcome: "error",
     relay_attempt: "1",
     send_execution_id: "FxMonitorPreSendValidator1",
+    slack_channel_id: null,
+    slack_message_ts: null,
     send_boundary_reached: false,
     pre_send_failure_proven: true,
     started_at_us: created,
     completed_at_us: created + 2,
   });
+});
+
+test("reports a late-indexed error trace once and accepts its durable replay", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  const activities = [
+    {
+      level: "info",
+      event_type: "workflow_execution_started",
+      created,
+      trace_id: "TrLateIndexedError1",
+      payload: {},
+    },
+    {
+      level: "error",
+      event_type: "workflow_step_execution_result",
+      created: created + 1,
+      trace_id: "TrLateIndexedError1",
+      payload: {
+        exec_outcome: "Error",
+        function_execution_id: "FxLateIndexedError1",
+        inputs: signedProgressInputs("delivery-late-indexed-error-1"),
+      },
+    },
+    {
+      level: "error",
+      event_type: "workflow_execution_result",
+      created: created + 2,
+      trace_id: "TrLateIndexedError1",
+      payload: { exec_outcome: "Error" },
+    },
+  ];
+  let reportAttempt = 0;
+  const fetchImpl = async (input, init) => {
+    if (input === CHECKPOINT_URL) {
+      return checkpointResponse(created + 100);
+    }
+    if (input === RECONCILIATION_URL) {
+      const report = assertReconciliationRequest(init);
+      assert.equal(report.traces.length, 1);
+      reportAttempt += 1;
+      return acceptedReconciliationResponse(
+        report,
+        reportAttempt === 1 ? 1 : 0,
+      );
+    }
+    return jsonResponse({
+      ok: true,
+      activities,
+      response_metadata: { next_cursor: "" },
+    });
+  };
+
+  await assert.rejects(
+    monitorSlackWorkflow({ environment, fetchImpl, now: () => now }),
+    /recorded 1 new or uncorrelated workflow error/,
+  );
+  await assert.doesNotReject(
+    monitorSlackWorkflow({ environment, fetchImpl, now: () => now }),
+  );
+  assert.equal(reportAttempt, 2);
 });
 
 test("repeated pagination cursors fail before advancing the checkpoint", async () => {
@@ -1182,7 +2204,7 @@ test("repeated pagination cursors fail before advancing the checkpoint", async (
       environment,
       fetchImpl: async (input) => {
         if (input === CHECKPOINT_URL) {
-          return jsonResponse({ checkpoint_us: 0 });
+          return checkpointResponse(0);
         }
         if (input === RECONCILIATION_URL) {
           reports += 1;
@@ -1207,7 +2229,7 @@ test("rejects an oversized Slack page before it can exceed the job budget", asyn
       environment,
       fetchImpl: async (input) => {
         if (input === CHECKPOINT_URL) {
-          return jsonResponse({ checkpoint_us: 0 });
+          return checkpointResponse(0);
         }
         if (input === RECONCILIATION_URL) {
           reconciliationPosts += 1;
@@ -1278,7 +2300,7 @@ test("contradictory terminal outcomes abort before any relay mutation", async ()
       now: () => now,
       fetchImpl: async (input) => {
         if (input === CHECKPOINT_URL) {
-          return jsonResponse({ checkpoint_us: 0 });
+          return checkpointResponse(0);
         }
         if (input === RECONCILIATION_URL) {
           reconciliationPosts += 1;
@@ -1347,12 +2369,14 @@ test("HTTP 429 performs one bounded Slack retry and does not retry twice", async
   const delays = [];
   const result = await monitorSlackWorkflow({
     environment,
-    fetchImpl: async (input) => {
+    fetchImpl: async (input, init) => {
       if (input === CHECKPOINT_URL) {
-        return jsonResponse({ checkpoint_us: 0 });
+        return checkpointResponse(0);
       }
       if (input === RECONCILIATION_URL) {
-        return jsonResponse({ ok: true, traces: 0 });
+        return acceptedReconciliationResponse(
+          assertReconciliationRequest(init),
+        );
       }
       slackRequests += 1;
       return slackRequests === 1
@@ -1378,7 +2402,7 @@ test("HTTP 429 performs one bounded Slack retry and does not retry twice", async
       environment,
       fetchImpl: async (input) => {
         if (input === CHECKPOINT_URL) {
-          return jsonResponse({ checkpoint_us: 0 });
+          return checkpointResponse(0);
         }
         slackRequests += 1;
         return new Response("withheld", {
@@ -1402,9 +2426,7 @@ test("HTTP and malformed failures never echo upstream bodies or credentials", as
       monitorSlackWorkflow({
         environment,
         fetchImpl: async (input) =>
-          input === CHECKPOINT_URL
-            ? jsonResponse({ checkpoint_us: 0 })
-            : response,
+          input === CHECKPOINT_URL ? checkpointResponse(0) : response,
       }),
       (error) =>
         !/private upstream body|private invalid JSON/.test(error.message) &&
