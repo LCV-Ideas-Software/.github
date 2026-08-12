@@ -119,6 +119,7 @@ Each trigger receives a flat string-only object with every key present:
 | `event`           | GitHub webhook event name.                           |
 | `action`          | GitHub lifecycle action.                             |
 | `destination`     | Fixed internal enum: `alerts` or `activity`.         |
+| `relay_attempt`   | Current durable D1 dispatch-attempt number.          |
 | `relay_timestamp` | Epoch seconds at dispatch time.                      |
 | `relay_signature` | HMAC-SHA256 over the canonical fields.               |
 
@@ -128,6 +129,10 @@ of a channel message. Before `SendMessage`, the Slack workflow records an
 authenticated `send_started` boundary. After `SendMessage`, it posts an
 idempotent HMAC receipt containing the `delivery_id`, fixed destination and
 Slack `message_timestamp`; only that receipt moves the row to `delivered`.
+The pre-send callback also binds the signed relay attempt to exactly one Slack
+`function_execution_id`. The owning execution may idempotently confirm a lost
+response; a competing workflow execution receives no message and cannot cross
+`SendMessage`.
 The paginated activity monitor subsequently associates Slack's actual
 `trace_id` with the same delivery. A canary is complete only when the one
 channel message, D1 receipt and Slack trace agree.
@@ -383,10 +388,14 @@ advances to wall-clock time. D1 additionally clamps every proposed advance
 behind the earliest nonlegacy live attempt until a trace is correlated. It
 retains an earlier trace binding across a retry until authenticated progress
 proves the next Slack execution, while every live attempt continues clamping
-the watermark. It persists correlated incomplete traces before advancing the checkpoint and
-extracts only bounded `delivery_id`, `trace_id`, outcome, timestamps, the
-send-boundary flag and the explicit pre-send-failure proof bit. A delivery is
-correlated only after the 14-field relay signature verifies under an available
+the watermark. It persists correlated incomplete traces before advancing the
+checkpoint and extracts only bounded `delivery_id`, `trace_id`, outcome,
+timestamps, the signed relay attempt, the Slack send-function execution ID, the
+send-boundary flag and the explicit pre-send-failure proof bit. D1 compares the
+attempt and execution owner before any retry, trace attachment or purge, so a
+competing or stale trace cannot release or become the correlation for a newer
+attempt. A delivery is
+correlated only after the 15-field relay signature verifies under an available
 monitor key or the derived `NEXT` progress authorization verifies, and the
 signed relay timestamp is
 within the validator's five-minute/60-second window around the Slack step
@@ -402,9 +411,11 @@ receipt, any post-boundary failure, missing proof, incomplete evidence or a
 conflicting trace fails closed.
 
 Retention is also checkpoint-aware: a receipt-confirmed row is purged only when
-its applied successful trace predates both the 30-day cutoff and the durable
-activity checkpoint minus the 20-minute overlap. A still-queryable Slack trace
-therefore cannot outlive the D1 delivery correlation it names.
+its applied terminal trace predates both the 30-day cutoff and the durable
+activity checkpoint minus the 20-minute overlap. That trace may be successful,
+or may be a boundary-confirmed error after the delivery receipt committed but
+its response was lost. A still-queryable Slack trace therefore cannot outlive
+the D1 delivery correlation it names.
 
 Migration `0004_confirm_slack_delivery.sql` is expand-only: it retains the old
 `accepted_at` column and `accepted_by_slack` value so the previously deployed

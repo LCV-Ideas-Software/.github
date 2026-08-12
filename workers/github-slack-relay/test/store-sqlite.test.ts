@@ -20,6 +20,20 @@ import {
 
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
 const TEST_REVISION = "a".repeat(40);
+const SEND_EXECUTION_ID = "FxStoreSqliteSend1";
+const DELIVERY_EXECUTION_ID = "FxStoreSqliteDelivery1";
+const TRACE_ATTEMPT_ONE = Object.freeze({
+  attemptCount: 1,
+  sendExecutionId: null,
+});
+const PRE_SEND_TRACE_ATTEMPT_ONE = Object.freeze({
+  attemptCount: 1,
+  sendExecutionId: "FxStoreSqliteTraceProof1",
+});
+const SEND_TRACE_ATTEMPT_ONE = Object.freeze({
+  attemptCount: 1,
+  sendExecutionId: SEND_EXECUTION_ID,
+});
 const openDatabases: DatabaseSync[] = [];
 
 function protocolActivation(revision: string, activationId = "3".repeat(64)) {
@@ -47,18 +61,25 @@ function d1Result(changes: number, results: unknown[] = []): D1Result<unknown> {
 }
 
 function sqliteD1(database: DatabaseSync): D1Database {
+  const statementRunners = new WeakMap<
+    D1PreparedStatement,
+    () => D1Result<unknown>
+  >();
   return {
     prepare(query: string): D1PreparedStatement {
       const statement = database.prepare(query);
       let values: SQLInputValue[] = [];
+      const run = (): D1Result<unknown> => {
+        const result = statement.run(...values);
+        return d1Result(Number(result.changes));
+      };
       const prepared = {
         bind(...bindings: unknown[]): D1PreparedStatement {
           values = bindings as SQLInputValue[];
           return prepared as unknown as D1PreparedStatement;
         },
         async run(): Promise<D1Result<unknown>> {
-          const result = statement.run(...values);
-          return d1Result(Number(result.changes));
+          return run();
         },
         async first<T>(columnName?: string): Promise<T | null> {
           const row = statement.get(...values) as
@@ -71,7 +92,27 @@ function sqliteD1(database: DatabaseSync): D1Database {
           return d1Result(0, rows) as D1Result<T>;
         },
       };
+      statementRunners.set(prepared as unknown as D1PreparedStatement, run);
       return prepared as unknown as D1PreparedStatement;
+    },
+    async batch<T = unknown>(
+      statements: D1PreparedStatement[],
+    ): Promise<D1Result<T>[]> {
+      database.exec("BEGIN IMMEDIATE TRANSACTION;");
+      try {
+        const results = statements.map((statement) => {
+          const run = statementRunners.get(statement);
+          if (run === undefined) {
+            throw new Error("foreign_sqlite_d1_statement");
+          }
+          return run() as D1Result<T>;
+        });
+        database.exec("COMMIT;");
+        return results;
+      } catch (error) {
+        database.exec("ROLLBACK;");
+        throw error;
+      }
     },
   } as unknown as D1Database;
 }
@@ -96,6 +137,60 @@ function databaseWithMigrations(applyMigrations: boolean): {
   }
 
   return { database, d1: sqliteD1(database) };
+}
+
+function pauseOnDeliveryRead(
+  d1: D1Database,
+  targetRead: number,
+): {
+  d1: D1Database;
+  reached: Promise<void>;
+  release: () => void;
+} {
+  let readCount = 0;
+  let resolveReached: () => void = () => undefined;
+  let resolveRelease: () => void = () => undefined;
+  const reached = new Promise<void>((resolve) => {
+    resolveReached = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    resolveRelease = resolve;
+  });
+  return {
+    d1: {
+      prepare(query: string): D1PreparedStatement {
+        const statement = d1.prepare(query);
+        if (query !== "SELECT * FROM deliveries WHERE delivery_id = ?") {
+          return statement;
+        }
+        let bound = statement;
+        const paused = {
+          bind(...values: unknown[]): D1PreparedStatement {
+            bound = statement.bind(...values);
+            return paused as unknown as D1PreparedStatement;
+          },
+          async first<T>(columnName?: string): Promise<T | null> {
+            const result =
+              columnName === undefined
+                ? await bound.first<T>()
+                : await bound.first<T>(columnName);
+            readCount += 1;
+            if (readCount === targetRead) {
+              resolveReached();
+              await released;
+            }
+            return result;
+          },
+          run: bound.run.bind(bound),
+          all: bound.all.bind(bound),
+        };
+        return paused as unknown as D1PreparedStatement;
+      },
+      batch: d1.batch.bind(d1),
+    } as unknown as D1Database,
+    reached,
+    release: resolveRelease,
+  };
 }
 
 function input(deliveryId: string): DeliveryInput {
@@ -395,6 +490,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrLegacyPreSend1",
         deliveryId: "legacy-unverified",
         outcome: "error",
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -452,6 +548,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         destination: "activity",
         phase: "delivered",
         messageTs: "1785758400.000170",
+        attemptCount: 1,
+        functionExecutionId: DELIVERY_EXECUTION_ID,
         now: NOW + 1,
         reconcileAt: NOW + 20 * 60 * 1_000,
       }),
@@ -552,9 +650,21 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     await store.recordSlackProgress({
       deliveryId: "de345e40-95b1-11f1-8d38-fac15f0bb4cd",
       destination: "activity",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 2,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: authorizationAt + 2,
+      reconcileAt: authorizationAt + 20 * 60 * 1_000,
+    });
+    await store.recordSlackProgress({
+      deliveryId: "de345e40-95b1-11f1-8d38-fac15f0bb4cd",
+      destination: "activity",
       phase: "delivered",
       messageTs: "1785758400.000171",
-      now: authorizationAt + 2,
+      attemptCount: 2,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: authorizationAt + 3,
       reconcileAt: authorizationAt + 20 * 60 * 1_000,
     });
     await expect(
@@ -608,6 +718,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrLateIndexed1",
         deliveryId,
         outcome: "error",
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: (NOW + 1) * 1_000,
@@ -771,6 +882,16 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       NOW,
       NOW + 20 * 60 * 1_000,
     );
+    await store.recordSlackProgress({
+      deliveryId: "sqlite-receipt-one",
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
 
     await expect(
       store.recordSlackProgress({
@@ -778,7 +899,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         destination: "alerts",
         phase: "delivered",
         messageTs: "1785758400.000001",
-        now: NOW + 1,
+        attemptCount: 1,
+        functionExecutionId: DELIVERY_EXECUTION_ID,
+        now: NOW + 2,
         reconcileAt: NOW + 20 * 60 * 1_000,
       }),
     ).resolves.toBe("recorded");
@@ -788,7 +911,9 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         destination: "alerts",
         phase: "delivered",
         messageTs: "1785758400.000001",
-        now: NOW + 2,
+        attemptCount: 1,
+        functionExecutionId: DELIVERY_EXECUTION_ID,
+        now: NOW + 3,
         reconcileAt: NOW + 20 * 60 * 1_000,
       }),
     ).resolves.toBe("duplicate");
@@ -801,13 +926,25 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       NOW,
       NOW + 20 * 60 * 1_000,
     );
+    await store.recordSlackProgress({
+      deliveryId: "sqlite-receipt-two",
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
     await expect(
       store.recordSlackProgress({
         deliveryId: "sqlite-receipt-two",
         destination: "alerts",
         phase: "delivered",
         messageTs: "1785758400.000001",
-        now: NOW + 3,
+        attemptCount: 1,
+        functionExecutionId: DELIVERY_EXECUTION_ID,
+        now: NOW + 4,
         reconcileAt: NOW + 20 * 60 * 1_000,
       }),
     ).rejects.toThrow("slack_message_timestamp_conflict");
@@ -826,6 +963,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       destination: "alerts" as const,
       phase: "send_started" as const,
       messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
       now: NOW + 1,
       reconcileAt: NOW + 20 * 60 * 1_000,
     };
@@ -837,6 +976,184 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     expect(outcomes.sort()).toEqual(["duplicate", "recorded"]);
   });
 
+  it("leases a send boundary to one Slack function execution per attempt", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-send-boundary-execution-lease";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    const firstExecution = {
+      deliveryId,
+      destination: "alerts" as const,
+      phase: "send_started" as const,
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: "FxSendLeaseFirst1",
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    };
+
+    await expect(store.recordSlackProgress(firstExecution)).resolves.toBe(
+      "recorded",
+    );
+    await expect(store.recordSlackProgress(firstExecution)).resolves.toBe(
+      "duplicate",
+    );
+    await expect(
+      store.recordSlackProgress({
+        ...firstExecution,
+        functionExecutionId: "FxSendLeaseSecond2",
+      }),
+    ).rejects.toThrow("slack_send_execution_conflict");
+
+    await store.recordSlackTrace(
+      {
+        traceId: "TrSendLeaseAttemptOneFailure1",
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: "FxSendLeaseFirst1",
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    await store.markQueued(deliveryId, NOW + 3);
+    await store.claimForSlack(deliveryId, NOW + 4);
+    await store.markAcceptedByTrigger(deliveryId, NOW + 4, NOW + 5_000);
+    await expect(
+      store.recordSlackProgress({
+        ...firstExecution,
+        attemptCount: 2,
+        functionExecutionId: "FxSendLeaseAttemptTwo2",
+        now: NOW + 5,
+      }),
+    ).resolves.toBe("recorded");
+    await expect(store.recordSlackProgress(firstExecution)).rejects.toThrow(
+      "slack_delivery_attempt_conflict",
+    );
+  });
+
+  it("does not let a competing Slack execution release the active send lease", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-competing-workflow-trace";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: "FxSendLeaseOwnerA1",
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    const competingTrace = {
+      traceId: "TrCompetingWorkflowB1",
+      deliveryId,
+      outcome: "error" as const,
+      ...PRE_SEND_TRACE_ATTEMPT_ONE,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      attemptCount: 1,
+      sendExecutionId: "FxSendLeaseCompetitorB2",
+      startedAtUs: NOW * 1_000,
+      completedAtUs: NOW * 1_000 + 1,
+    };
+
+    await store.recordSlackTrace(competingTrace, NOW + 2);
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "send_started",
+      attemptCount: 1,
+      slackSendExecutionId: "FxSendLeaseOwnerA1",
+    });
+  });
+
+  it("does not attach an earlier-attempt trace to a later delivered attempt", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-stale-trace-after-later-delivery";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackTrace(
+      {
+        traceId: "TrAttemptOnePreSendFailure1",
+        deliveryId,
+        outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: "FxAttemptOneValidator1",
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 1,
+    );
+    await store.markQueued(deliveryId, NOW + 2);
+    await store.claimForSlack(deliveryId, NOW + 3);
+    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 2,
+      functionExecutionId: "FxAttemptTwoSendOwner2",
+      now: NOW + 4,
+      reconcileAt: NOW + 5_000,
+    });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000779",
+      attemptCount: 2,
+      functionExecutionId: "FxAttemptTwoReceipt2",
+      now: NOW + 5,
+      reconcileAt: NOW + 5_000,
+    });
+
+    await store.recordSlackTrace(
+      {
+        traceId: "TrAttemptOneLateSuccess1",
+        deliveryId,
+        outcome: "success",
+        attemptCount: 1,
+        sendExecutionId: "FxAttemptOneSendOwner1",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 2,
+      },
+      NOW + 6,
+    );
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 2,
+      slackTraceId: null,
+      slackSendExecutionId: "FxAttemptTwoSendOwner2",
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get("TrAttemptOneLateSuccess1"),
+    ).toEqual({ applied_at: NOW + 6 });
+  });
+
   it("converges concurrent delivered receipts with the same message timestamp", async () => {
     const { d1 } = databaseWithMigrations(true);
     const store = new D1DeliveryStore(d1);
@@ -845,12 +1162,24 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     await store.markQueued(deliveryId, NOW);
     await store.claimForSlack(deliveryId, NOW);
     await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
     const progress = {
       deliveryId,
       destination: "alerts" as const,
       phase: "delivered" as const,
       messageTs: "1785758400.000777",
-      now: NOW + 1,
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 2,
       reconcileAt: NOW + 20 * 60 * 1_000,
     };
 
@@ -873,6 +1202,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       traceId: "TrSqliteReplay1",
       deliveryId,
       outcome: "error" as const,
+      ...PRE_SEND_TRACE_ATTEMPT_ONE,
       sendBoundaryReached: false,
       preSendFailureProven: true,
       startedAtUs: NOW * 1_000 - 1,
@@ -912,6 +1242,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       traceId: "TrAppliedNextAttempt1",
       deliveryId,
       outcome: "error" as const,
+      ...PRE_SEND_TRACE_ATTEMPT_ONE,
       sendBoundaryReached: false,
       preSendFailureProven: true,
       startedAtUs: NOW * 1_000,
@@ -934,6 +1265,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       destination: "alerts",
       phase: "send_started",
       messageTs: null,
+      attemptCount: 2,
+      functionExecutionId: SEND_EXECUTION_ID,
       now: NOW + 5,
       reconcileAt: NOW + 5_000,
     });
@@ -944,9 +1277,228 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     });
   });
 
-  it("does not reapply a terminal trace after its delivery mutation commits without the applied marker", async () => {
+  it("does not quarantine a later D1 attempt when an earlier trace gains a boundary", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-late-boundary-old-attempt";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    const trace = {
+      traceId: "TrSqliteLateBoundary1",
+      deliveryId,
+      outcome: "error" as const,
+      ...PRE_SEND_TRACE_ATTEMPT_ONE,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      startedAtUs: NOW * 1_000,
+      completedAtUs: NOW * 1_000 + 1,
+    };
+
+    await store.recordSlackTrace(trace, NOW + 1);
+    await store.markQueued(deliveryId, NOW + 2);
+    await store.claimForSlack(deliveryId, NOW + 3);
+    await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
+    await store.recordSlackTrace(
+      {
+        ...trace,
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+      },
+      NOW + 4,
+    );
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "accepted_by_trigger",
+      attemptCount: 2,
+      lastError: null,
+    });
+  });
+
+  it("keeps a trace resolution CAS from mutating an attempt claimed after its read", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-trace-resolution-attempt-race";
+    const mutator = new D1DeliveryStore(d1);
+    await mutator.insert(input(deliveryId));
+    await mutator.markQueued(deliveryId, NOW);
+    await mutator.claimForSlack(deliveryId, NOW);
+    await mutator.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+
+    const barrier = pauseOnDeliveryRead(d1, 2);
+    const resolver = new D1DeliveryStore(barrier.d1);
+    const lateBoundary = resolver.recordSlackTrace(
+      {
+        traceId: "TrSqliteAttemptRaceBoundary1",
+        deliveryId,
+        outcome: "error",
+        ...SEND_TRACE_ATTEMPT_ONE,
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 1,
+    );
+    await barrier.reached;
+
+    await mutator.recordSlackTrace(
+      {
+        traceId: "TrSqliteAttemptRaceRetry1",
+        deliveryId,
+        outcome: "error",
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 2,
+      },
+      NOW + 2,
+    );
+    await mutator.markQueued(deliveryId, NOW + 3);
+    await mutator.claimForSlack(deliveryId, NOW + 4);
+    await mutator.markAcceptedByTrigger(deliveryId, NOW + 4, NOW + 5_000);
+    barrier.release();
+    await lateBoundary;
+
+    await expect(mutator.get(deliveryId)).resolves.toMatchObject({
+      status: "accepted_by_trigger",
+      attemptCount: 2,
+      lastError: null,
+      slackTraceId: "TrSqliteAttemptRaceRetry1",
+    });
+  });
+
+  it("attaches a trace when its receipt commits after the trace read", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const deliveryId = "sqlite-trace-resolution-receipt-race";
+    const mutator = new D1DeliveryStore(d1);
+    await mutator.insert(input(deliveryId));
+    await mutator.markQueued(deliveryId, NOW);
+    await mutator.claimForSlack(deliveryId, NOW);
+    await mutator.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await mutator.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    const barrier = pauseOnDeliveryRead(d1, 2);
+    const resolver = new D1DeliveryStore(barrier.d1);
+    const successfulTrace = resolver.recordSlackTrace(
+      {
+        traceId: "TrSqliteReceiptRaceSuccess1",
+        deliveryId,
+        outcome: "success",
+        ...SEND_TRACE_ATTEMPT_ONE,
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    await barrier.reached;
+    await mutator.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000780",
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 3,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    barrier.release();
+    await successfulTrace;
+
+    await expect(mutator.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      attemptCount: 1,
+      slackTraceId: "TrSqliteReceiptRaceSuccess1",
+      slackSendExecutionId: SEND_EXECUTION_ID,
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get("TrSqliteReceiptRaceSuccess1"),
+    ).toEqual({ applied_at: NOW + 2 });
+
+    await mutator.advanceSlackActivityCheckpoint(
+      (NOW + 30 * 60 * 1_000) * 1_000,
+    );
+    await expect(mutator.purgeDeliveredBefore(NOW + 4)).resolves.toBe(1);
+    await expect(mutator.get(deliveryId)).resolves.toBeNull();
+  });
+
+  it("leaves a pre-send trace unapplied until the trigger leaves sending", async () => {
     const { database, d1 } = databaseWithMigrations(true);
     const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-sending-before-trigger-acceptance";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    const trace = {
+      traceId: "TrSqliteSendingPreSend1",
+      deliveryId,
+      outcome: "error" as const,
+      ...PRE_SEND_TRACE_ATTEMPT_ONE,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      startedAtUs: NOW * 1_000,
+      completedAtUs: NOW * 1_000 + 1,
+    };
+
+    await store.recordSlackTrace(trace, NOW + 1);
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get(trace.traceId),
+    ).toEqual({ applied_at: null });
+    await store.markAcceptedByTrigger(deliveryId, NOW + 2, NOW + 60_000);
+    await store.recordSlackTrace(trace, NOW + 3);
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+      slackTraceId: trace.traceId,
+      lastError: "slack_workflow_failed_before_send_boundary",
+    });
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get(trace.traceId),
+    ).toEqual({ applied_at: NOW + 3 });
+  });
+
+  it("atomically marks a retry trace before a lost batch response", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    let loseBatchResponse = true;
+    const responseLostD1 = {
+      prepare: d1.prepare.bind(d1),
+      async batch<T = unknown>(
+        statements: D1PreparedStatement[],
+      ): Promise<D1Result<T>[]> {
+        const results = await d1.batch<T>(statements);
+        if (loseBatchResponse) {
+          loseBatchResponse = false;
+          throw new Error("d1_batch_response_lost");
+        }
+        return results;
+      },
+    } as unknown as D1Database;
+    const store = new D1DeliveryStore(responseLostD1);
     const deliveryId = "sqlite-unmarked-trace-next-attempt";
     await store.insert(input(deliveryId));
     await store.markQueued(deliveryId, NOW);
@@ -956,26 +1508,41 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       traceId: "TrUnmarkedNextAttempt1",
       deliveryId,
       outcome: "error" as const,
+      ...PRE_SEND_TRACE_ATTEMPT_ONE,
       sendBoundaryReached: false,
       preSendFailureProven: true,
       startedAtUs: NOW * 1_000,
       completedAtUs: NOW * 1_000 + 1,
     };
 
-    await store.recordSlackTrace(trace, NOW + 1);
-    database
-      .prepare(
-        "UPDATE slack_workflow_traces SET applied_at = NULL WHERE trace_id = ?",
-      )
-      .run(trace.traceId);
+    await expect(store.recordSlackTrace(trace, NOW + 1)).rejects.toThrow(
+      "d1_batch_response_lost",
+    );
+    expect(
+      database
+        .prepare(
+          "SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?",
+        )
+        .get(trace.traceId),
+    ).toEqual({ applied_at: NOW + 1 });
     await store.markQueued(deliveryId, NOW + 2);
     await store.claimForSlack(deliveryId, NOW + 3);
     await store.markAcceptedByTrigger(deliveryId, NOW + 3, NOW + 4_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 2,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 4,
+      reconcileAt: NOW + 5_000,
+    });
     await store.recordSlackTrace(trace, NOW + 4);
 
     await expect(store.get(deliveryId)).resolves.toMatchObject({
-      status: "accepted_by_trigger",
-      slackTraceId: trace.traceId,
+      status: "send_started",
+      slackTraceId: null,
       attemptCount: 2,
     });
   });
@@ -988,7 +1555,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     database
       .prepare(
         `UPDATE deliveries
-         SET status = 'accepted_by_slack', legacy_unverified = 1,
+         SET status = 'accepted_by_slack', attempt_count = 1,
+             legacy_unverified = 1,
              trigger_accepted_at = ?, next_attempt_at = ?
          WHERE delivery_id = ?`,
       )
@@ -999,6 +1567,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrLegacySuccess1",
         deliveryId,
         outcome: "success",
+        ...TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000,
@@ -1032,6 +1601,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrBoundaryOverlap1",
         deliveryId,
         outcome: "pending",
+        attemptCount: 1,
+        sendExecutionId: "FxStoreSqliteBoundary1",
         sendBoundaryReached: true,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000,
@@ -1044,6 +1615,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrBoundaryOverlap1",
         deliveryId,
         outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: "FxStoreSqliteBoundary1",
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -1073,6 +1646,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrPreSendOverlap1",
         deliveryId,
         outcome: "pending",
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -1085,6 +1659,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrPreSendOverlap1",
         deliveryId,
         outcome: "error",
+        ...TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000,
@@ -1113,6 +1688,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       destination: "alerts",
       phase: "send_started",
       messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
       now: NOW + 1,
       reconcileAt: NOW + 1_000,
     });
@@ -1122,6 +1699,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrSendStartedResponseLost1",
         deliveryId,
         outcome: "error",
+        attemptCount: 1,
+        sendExecutionId: SEND_EXECUTION_ID,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000,
@@ -1149,6 +1728,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       traceId: "TrLateBoundary1",
       deliveryId,
       outcome: "error" as const,
+      ...PRE_SEND_TRACE_ATTEMPT_ONE,
       startedAtUs: NOW * 1_000,
       completedAtUs: NOW * 1_000 + 1,
     };
@@ -1192,13 +1772,25 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     await store.recordSlackProgress({
       deliveryId,
       destination: "alerts",
-      phase: "delivered",
-      messageTs: "1785758400.000888",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
       now: NOW + 1,
       reconcileAt: NOW + 1_000,
     });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000888",
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 2,
+      reconcileAt: NOW + 1_000,
+    });
 
-    await expect(store.purgeDeliveredBefore(NOW + 2)).resolves.toBe(0);
+    await expect(store.purgeDeliveredBefore(NOW + 3)).resolves.toBe(0);
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "delivered",
       slackTraceId: null,
@@ -1216,9 +1808,21 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     await store.recordSlackProgress({
       deliveryId,
       destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 1_000,
+    });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
       phase: "delivered",
       messageTs: "1785758400.000099",
-      now: NOW + 1,
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 2,
       reconcileAt: NOW + 1_000,
     });
     await store.recordSlackTrace(
@@ -1226,6 +1830,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrRetention1",
         deliveryId,
         outcome: "success",
+        ...SEND_TRACE_ATTEMPT_ONE,
         sendBoundaryReached: true,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000,
@@ -1241,7 +1846,67 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       )
       .run(NOW * 1_000 + 20 * 60 * 1_000 * 1_000 + 2);
 
-    await expect(store.purgeDeliveredBefore(NOW + 2)).resolves.toBe(1);
+    await expect(store.purgeDeliveredBefore(NOW + 3)).resolves.toBe(1);
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM deliveries").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM slack_workflow_traces")
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("purges a delivered row after a lost receipt response produces a boundary error trace", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-delivered-lost-receipt-response";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 1_000,
+    });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000299",
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 2,
+      reconcileAt: NOW + 1_000,
+    });
+    await store.recordSlackTrace(
+      {
+        traceId: "TrLostReceiptResponse1",
+        deliveryId,
+        outcome: "error",
+        ...SEND_TRACE_ATTEMPT_ONE,
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_activity_checkpoint_us = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(NOW * 1_000 + 20 * 60 * 1_000 * 1_000 + 2);
+
+    await expect(store.purgeDeliveredBefore(NOW + 3)).resolves.toBe(1);
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM deliveries").get(),
     ).toEqual({ count: 0 });
@@ -1263,9 +1928,21 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     await store.recordSlackProgress({
       deliveryId,
       destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: SEND_EXECUTION_ID,
+      now: NOW + 1,
+      reconcileAt: NOW + 1_000,
+    });
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
       phase: "delivered",
       messageTs: "1785758400.000199",
-      now: NOW + 1,
+      attemptCount: 1,
+      functionExecutionId: DELIVERY_EXECUTION_ID,
+      now: NOW + 2,
       reconcileAt: NOW + 1_000,
     });
     await store.recordSlackTrace(
@@ -1273,6 +1950,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrRetentionOverlap1",
         deliveryId,
         outcome: "success",
+        ...SEND_TRACE_ATTEMPT_ONE,
         sendBoundaryReached: true,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000,
@@ -1288,7 +1966,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       )
       .run(NOW * 1_000 + 20 * 60 * 1_000 * 1_000);
 
-    await expect(store.purgeDeliveredBefore(NOW + 2)).resolves.toBe(0);
+    await expect(store.purgeDeliveredBefore(NOW + 3)).resolves.toBe(0);
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "delivered",
       slackTraceId: "TrRetentionOverlap1",
@@ -1300,6 +1978,8 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     const store = new D1DeliveryStore(d1);
     const deliveryId = "sqlite-trigger-ambiguity";
     await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
     await store.markManualReview(
       deliveryId,
       NOW,
@@ -1311,6 +1991,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrTriggerSafe1",
         deliveryId,
         outcome: "error",
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000 - 1,
@@ -1339,6 +2020,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrIncompleteError1",
         deliveryId,
         outcome: "error",
+        ...TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000 - 1,
@@ -1365,6 +2047,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       traceId: "TrLatePreSendProof1",
       deliveryId,
       outcome: "error" as const,
+      ...TRACE_ATTEMPT_ONE,
       sendBoundaryReached: false,
       startedAtUs: NOW * 1_000 - 1,
       completedAtUs: NOW * 1_000,
@@ -1381,7 +2064,11 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     });
 
     await store.recordSlackTrace(
-      { ...base, preSendFailureProven: true },
+      {
+        ...base,
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
+        preSendFailureProven: true,
+      },
       NOW + 2,
     );
     await expect(store.get(deliveryId)).resolves.toMatchObject({
@@ -1405,6 +2092,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrMissingProofOriginal1",
         deliveryId,
         outcome: "error",
+        ...TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: false,
         startedAtUs: NOW * 1_000 - 1,
@@ -1417,6 +2105,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         traceId: "TrUnrelatedProof1",
         deliveryId,
         outcome: "error",
+        ...PRE_SEND_TRACE_ATTEMPT_ONE,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000 - 1,
@@ -1427,7 +2116,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
 
     await expect(store.get(deliveryId)).resolves.toMatchObject({
       status: "manual_review",
-      lastError: "slack_reconciliation_state_conflict",
+      lastError: "slack_workflow_failed_without_pre_send_proof",
       slackTraceId: "TrMissingProofOriginal1",
     });
   });

@@ -37,13 +37,22 @@ monitor later associates Slack's actual `trace_id`. If the post-message receipt
 is unavailable, the workflow fails and the relay keeps the row for manual review
 without resending the GitHub event.
 
+The relay signs its current D1 attempt into the workflow. At the pre-send
+callback, D1 atomically leases that attempt to Slack's
+`event.function_execution_id`: a retry from the same function execution can
+confirm a lost response, while a second workflow execution cannot receive the
+message output and therefore cannot reach `SendMessage`. The activity monitor
+reports the same signed relay attempt and the step's `function_execution_id`; D1
+accepts pre-send retry proof only from the execution that owns that attempt's
+lease, so a competing or stale trace cannot release the owner.
+
 The validator also issues a five-minute, domain-separated progress token bound
-to `delivery_id`, destination, and the original relay timestamp. The progress
-function must verify that token before it can sign either callback, so invoking
-the custom function independently cannot manufacture delivery evidence. During a
-staged rotation, current or `NEXT` may authenticate the inbound relay, but the
-validator issues the progress token only with the distinct staged `NEXT` key.
-Both progress callbacks therefore use `NEXT`.
+to `delivery_id`, destination, relay attempt, and the original relay timestamp.
+The progress function must verify that token before it can sign either callback,
+so invoking the custom function independently cannot manufacture delivery
+evidence. During a staged rotation, current or `NEXT` may authenticate the
+inbound relay, but the validator issues the progress token only with the
+distinct staged `NEXT` key. Both progress callbacks therefore use `NEXT`.
 
 The Worker control plane and activity monitor both verify only staged `NEXT`. A
 current-authenticated execution becomes correlatable at its first `NEXT`

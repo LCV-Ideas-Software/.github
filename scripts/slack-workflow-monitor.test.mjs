@@ -65,12 +65,14 @@ function signedProgressInputs(
     delivery_id: deliveryId,
     destination,
     phase,
+    relay_attempt: "1",
     relay_timestamp: relayTimestamp,
     progress_token: hmacWithSecret(
       JSON.stringify([
-        "slack_progress_authorization_v1",
+        "slack_progress_authorization_v2",
         deliveryId,
         destination,
+        "1",
         relayTimestamp,
       ]),
       secret,
@@ -98,6 +100,7 @@ function signedValidatorInputs(
     event: "workflow_run",
     action: "completed",
     destination,
+    relay_attempt: "1",
     relay_timestamp: relayTimestamp,
     expected_destination: destination,
   };
@@ -118,6 +121,7 @@ function signedValidatorInputs(
         inputs.event,
         inputs.action,
         inputs.destination,
+        inputs.relay_attempt,
         inputs.relay_timestamp,
       ]),
       secret,
@@ -144,13 +148,15 @@ function assertReconciliationRequest(init) {
     body.report_signature,
     hmac(
       JSON.stringify([
-        "slack_activity_reconciliation_v1",
+        "slack_activity_reconciliation_v2",
         body.checkpoint_us,
         body.report_timestamp,
         body.traces.map((trace) => [
           trace.trace_id,
           trace.delivery_id,
           trace.outcome,
+          trace.relay_attempt,
+          trace.send_execution_id,
           trace.send_boundary_reached,
           trace.pre_send_failure_proven,
           trace.started_at_us,
@@ -554,6 +560,7 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
               trace_id: "TrPaged1",
               payload: {
                 exec_outcome: "Success",
+                function_execution_id: "FxMonitorPagedSend1",
                 inputs: {
                   ...signedProgressInputs("delivery-paged-1"),
                   private_value: "must-not-leak",
@@ -589,6 +596,8 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
       trace_id: "TrPaged1",
       delivery_id: "delivery-paged-1",
       outcome: "success",
+      relay_attempt: "1",
+      send_execution_id: "FxMonitorPagedSend1",
       send_boundary_reached: true,
       pre_send_failure_proven: false,
       started_at_us: created,
@@ -616,6 +625,7 @@ test("persists an incomplete trace so later pages cannot forget its send boundar
         trace_id: "TrPendingBoundary1",
         payload: {
           exec_outcome: "Success",
+          function_execution_id: "FxMonitorPendingBoundary1",
           inputs: {
             ...signedProgressInputs("delivery-pending-boundary-1"),
             private_value: "must-not-leak",
@@ -631,6 +641,8 @@ test("persists an incomplete trace so later pages cannot forget its send boundar
       trace_id: "TrPendingBoundary1",
       delivery_id: "delivery-pending-boundary-1",
       outcome: "pending",
+      relay_attempt: "1",
+      send_execution_id: "FxMonitorPendingBoundary1",
       send_boundary_reached: true,
       pre_send_failure_proven: false,
       started_at_us: created,
@@ -675,6 +687,7 @@ test("correlates a current-authenticated relay through its NEXT-only progress ev
         trace_id: "TrCurrentInboundNextProgress1",
         payload: {
           exec_outcome: "Success",
+          function_execution_id: "FxMonitorCurrentInbound1",
           inputs: signedProgressInputs(deliveryId),
         },
       },
@@ -694,6 +707,8 @@ test("correlates a current-authenticated relay through its NEXT-only progress ev
       trace_id: "TrCurrentInboundNextProgress1",
       delivery_id: deliveryId,
       outcome: "success",
+      relay_attempt: "1",
+      send_execution_id: "FxMonitorCurrentInbound1",
       send_boundary_reached: true,
       pre_send_failure_proven: false,
       started_at_us: created,
@@ -720,6 +735,7 @@ test("persists explicit pre-send failure proof before the terminal result arrive
         trace_id: "TrPendingPreSend1",
         payload: {
           exec_outcome: "Error",
+          function_execution_id: "FxMonitorPreSendB1",
           inputs: signedProgressInputs("delivery-pending-pre-send-1"),
         },
       },
@@ -732,6 +748,8 @@ test("persists explicit pre-send failure proof before the terminal result arrive
       trace_id: "TrPendingPreSend1",
       delivery_id: "delivery-pending-pre-send-1",
       outcome: "pending",
+      relay_attempt: "1",
+      send_execution_id: "FxMonitorPreSendB1",
       send_boundary_reached: false,
       pre_send_failure_proven: true,
       started_at_us: created,
@@ -798,6 +816,7 @@ test("does not trust replayed authenticated step inputs outside their activity w
         trace_id: "TrReplayedValidator1",
         payload: {
           exec_outcome: "Error",
+          function_execution_id: "FxMonitorBoundaryValidator1",
           inputs: signedValidatorInputs(
             "existing-real-delivery-id",
             "alerts",
@@ -866,6 +885,7 @@ test("accepts authenticated step inputs at the exact activity freshness boundari
         trace_id: "TrBoundaryValidator1",
         payload: {
           exec_outcome: "Error",
+          function_execution_id: "FxMonitorBoundaryValidator1",
           inputs: signedValidatorInputs(
             "delivery-boundary-validator",
             "alerts",
@@ -894,6 +914,7 @@ test("accepts authenticated step inputs at the exact activity freshness boundari
         trace_id: "TrBoundaryProgress1",
         payload: {
           exec_outcome: "Success",
+          function_execution_id: "FxMonitorBoundaryProgress1",
           inputs: signedProgressInputs(
             "delivery-boundary-progress",
             "send_started",
@@ -967,6 +988,7 @@ test("a complete pre-send failure is reconciled before the sanitized monitor fai
               trace_id: "TrPreSend1",
               payload: {
                 exec_outcome: "Error",
+                function_execution_id: "FxMonitorPreSendValidator1",
                 inputs: signedValidatorInputs("delivery-pre-send-1"),
               },
             },
@@ -995,6 +1017,8 @@ test("a complete pre-send failure is reconciled before the sanitized monitor fai
     trace_id: "TrPreSend1",
     delivery_id: "delivery-pre-send-1",
     outcome: "error",
+    relay_attempt: "1",
+    send_execution_id: "FxMonitorPreSendValidator1",
     send_boundary_reached: false,
     pre_send_failure_proven: true,
     started_at_us: created,
@@ -1040,6 +1064,7 @@ test("pure reconciliation refuses conflicting delivery IDs without exposing inpu
             trace_id: "TrConflict1",
             payload: {
               exec_outcome: "Success",
+              function_execution_id: "FxMonitorConflictOne1",
               inputs: {
                 ...signedProgressInputs("delivery-one"),
                 secret: "one",
@@ -1053,6 +1078,7 @@ test("pure reconciliation refuses conflicting delivery IDs without exposing inpu
             trace_id: "TrConflict1",
             payload: {
               exec_outcome: "Error",
+              function_execution_id: "FxMonitorConflictTwo2",
               inputs: {
                 ...signedProgressInputs("delivery-two"),
                 secret: "two",
@@ -1108,6 +1134,7 @@ test("contradictory terminal outcomes abort before any relay mutation", async ()
               trace_id: "TrContradictory1",
               payload: {
                 exec_outcome: "Error",
+                function_execution_id: "FxMonitorContradictory1",
                 inputs: signedProgressInputs("delivery-contradictory-1"),
               },
             },

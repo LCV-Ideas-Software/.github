@@ -13,6 +13,7 @@ const EXPECTED_KEYS = [
   "details",
   "event",
   "occurred_at",
+  "relay_attempt",
   "relay_signature",
   "relay_timestamp",
   "repository",

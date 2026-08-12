@@ -266,6 +266,8 @@ function parseSlackProgress(
       "destination",
       "phase",
       "message_ts",
+      "relay_attempt",
+      "function_execution_id",
       "receipt_timestamp",
       "receipt_signature",
     ])
@@ -276,6 +278,8 @@ function parseSlackProgress(
   const destination = record.destination;
   const phase = record.phase;
   const messageTs = record.message_ts;
+  const relayAttempt = record.relay_attempt;
+  const functionExecutionId = record.function_execution_id;
   const receiptTimestamp = record.receipt_timestamp;
   const receiptSignature = record.receipt_signature;
   if (
@@ -283,6 +287,11 @@ function parseSlackProgress(
     (destination !== "alerts" && destination !== "activity") ||
     (phase !== "send_started" && phase !== "delivered") ||
     typeof messageTs !== "string" ||
+    typeof relayAttempt !== "string" ||
+    !/^[1-9][0-9]{0,15}$/u.test(relayAttempt) ||
+    !Number.isSafeInteger(Number.parseInt(relayAttempt, 10)) ||
+    typeof functionExecutionId !== "string" ||
+    !/^Fx[A-Za-z0-9]{1,126}$/u.test(functionExecutionId) ||
     typeof receiptTimestamp !== "string" ||
     !authenticatedTimestampIsFresh(receiptTimestamp, now) ||
     typeof receiptSignature !== "string" ||
@@ -297,6 +306,8 @@ function parseSlackProgress(
     destination,
     phase,
     message_ts: messageTs,
+    relay_attempt: relayAttempt,
+    function_execution_id: functionExecutionId,
     receipt_timestamp: receiptTimestamp,
     receipt_signature: receiptSignature,
   };
@@ -395,6 +406,8 @@ function parseSlackReconciliation(
         "trace_id",
         "delivery_id",
         "outcome",
+        "relay_attempt",
+        "send_execution_id",
         "send_boundary_reached",
         "pre_send_failure_proven",
         "started_at_us",
@@ -407,8 +420,16 @@ function parseSlackReconciliation(
       (trace.outcome !== "pending" &&
         trace.outcome !== "success" &&
         trace.outcome !== "error") ||
+      typeof trace.relay_attempt !== "string" ||
+      !/^[1-9][0-9]{0,15}$/u.test(trace.relay_attempt) ||
+      !Number.isSafeInteger(Number.parseInt(trace.relay_attempt, 10)) ||
+      (trace.send_execution_id !== null &&
+        (typeof trace.send_execution_id !== "string" ||
+          !/^Fx[A-Za-z0-9]{1,126}$/u.test(trace.send_execution_id))) ||
       typeof trace.send_boundary_reached !== "boolean" ||
       typeof trace.pre_send_failure_proven !== "boolean" ||
+      (trace.pre_send_failure_proven === true &&
+        trace.send_execution_id === null) ||
       (trace.pre_send_failure_proven === true &&
         (trace.outcome === "success" ||
           trace.send_boundary_reached === true)) ||
@@ -428,6 +449,8 @@ function parseSlackReconciliation(
       trace_id: trace.trace_id,
       delivery_id: trace.delivery_id,
       outcome: trace.outcome,
+      relay_attempt: trace.relay_attempt,
+      send_execution_id: trace.send_execution_id,
       send_boundary_reached: trace.send_boundary_reached,
       pre_send_failure_proven: trace.pre_send_failure_proven,
       started_at_us: trace.started_at_us as number,
@@ -556,6 +579,8 @@ async function handleSlackControlRequest(
         destination: receipt.destination,
         phase: receipt.phase,
         messageTs: receipt.message_ts === "" ? null : receipt.message_ts,
+        attemptCount: Number.parseInt(receipt.relay_attempt, 10),
+        functionExecutionId: receipt.function_execution_id,
         now,
         reconcileAt: now + SLACK_RECONCILIATION_GRACE_MS,
       });
@@ -604,6 +629,8 @@ async function handleSlackControlRequest(
           traceId: trace.trace_id,
           deliveryId: trace.delivery_id,
           outcome: trace.outcome,
+          attemptCount: Number.parseInt(trace.relay_attempt, 10),
+          sendExecutionId: trace.send_execution_id,
           sendBoundaryReached: trace.send_boundary_reached,
           preSendFailureProven: trace.pre_send_failure_proven,
           startedAtUs: trace.started_at_us,
@@ -1106,6 +1133,7 @@ export async function processPrimaryMessage(
   const outboundPayload = {
     ...delivery.payload,
     destination: delivery.destination,
+    relay_attempt: String(delivery.attemptCount),
     relay_timestamp: String(Math.floor(now / 1_000)),
     relay_signature: "",
   };

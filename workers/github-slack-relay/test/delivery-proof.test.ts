@@ -26,6 +26,22 @@ import type {
 
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
 const NOW_SECONDS = String(Math.floor(NOW / 1_000));
+const TRACE_REPORT_IDENTITY = Object.freeze({
+  relay_attempt: "1",
+  send_execution_id: null,
+});
+const PRE_SEND_TRACE_REPORT_IDENTITY = Object.freeze({
+  relay_attempt: "1",
+  send_execution_id: "FxDeliveryProofTrace1",
+});
+const TRACE_STORE_IDENTITY = Object.freeze({
+  attemptCount: 1,
+  sendExecutionId: null,
+});
+const PRE_SEND_TRACE_STORE_IDENTITY = Object.freeze({
+  attemptCount: 1,
+  sendExecutionId: "FxDeliveryProofTrace1",
+});
 const REVISION = "a".repeat(40);
 const ACTIVATION_ID = "1".repeat(64);
 const SCHEMA_REVISION = "0004_confirm_slack_delivery";
@@ -138,11 +154,13 @@ async function progressRequest(
   overrides: Partial<Omit<SignedSlackProgress, "receipt_signature">> = {},
   secret = TEST_RELAY_SIGNING_SECRET_NEXT,
 ): Promise<Request> {
-  const unsigned = {
+  const unsigned: Omit<SignedSlackProgress, "receipt_signature"> = {
     delivery_id: "receipt-delivery-1",
     destination: "alerts" as const,
     phase: "delivered" as const,
     message_ts: "1785758400.000001",
+    relay_attempt: "1",
+    function_execution_id: "FxDeliveryProof1",
     receipt_timestamp: NOW_SECONDS,
     ...overrides,
   };
@@ -293,12 +311,14 @@ describe("authenticated Slack delivery proof", () => {
           destination: "alerts",
           phase: "delivered",
           message_ts: "1785758400.000001",
+          relay_attempt: "1",
+          function_execution_id: "FxDeliveryProof1",
           receipt_timestamp: "1785758400",
         },
         TEST_RELAY_SIGNING_SECRET,
       ),
     ).resolves.toBe(
-      "24c40d3b01cd4f50fcacc9cdae12953a8650f3e29056a1fea8656aedaba720f9",
+      "9cf3766466fa858cd43666850015dec2a7150c3bbf376c51e040d58580164d96",
     );
     await expect(
       signSlackReconciliation(
@@ -310,6 +330,7 @@ describe("authenticated Slack delivery proof", () => {
               trace_id: "TrSafeRetry1",
               delivery_id: "trace-safe-retry",
               outcome: "error",
+              ...PRE_SEND_TRACE_REPORT_IDENTITY,
               send_boundary_reached: false,
               pre_send_failure_proven: true,
               started_at_us: 1_785_758_399_999_990,
@@ -320,15 +341,17 @@ describe("authenticated Slack delivery proof", () => {
         TEST_RELAY_SIGNING_SECRET,
       ),
     ).resolves.toBe(
-      "57755ca181dcdbd50b36855f1a18b3d2ca6552fa97c81c781eda42499f8895c2",
+      "ead3322c7cbb003dd8c5a99a164a114c99e3dd14a6b7892837ac70181019724c",
     );
   });
 
   it("records delivery_id and message_ts idempotently without a state downgrade", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
-    store.seed("receipt-delivery-1", "accepted_by_trigger", NOW, {
+    store.seed("receipt-delivery-1", "send_started", NOW, {
+      attemptCount: 1,
       nextAttemptAt: NOW + 20 * 60 * 1_000,
+      slackSendExecutionId: "FxDeliveryProofSend1",
       triggerAcceptedAt: NOW,
     });
     const env = makeEnv(queue);
@@ -365,7 +388,10 @@ describe("authenticated Slack delivery proof", () => {
   it("retries a receipt whose D1 CAS response was lost without another delivery mutation", async () => {
     const store = new ProgressResponseLossStore();
     const env = makeEnv(new FakeQueue());
-    store.seed("receipt-delivery-1", "accepted_by_trigger", NOW);
+    store.seed("receipt-delivery-1", "send_started", NOW, {
+      attemptCount: 1,
+      slackSendExecutionId: "FxDeliveryProofSend1",
+    });
 
     const lost = await handleFetch(await progressRequest(), env, {
       store,
@@ -390,6 +416,7 @@ describe("authenticated Slack delivery proof", () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     store.seed("receipt-delivery-1", "manual_review", NOW, {
+      attemptCount: 1,
       lastError: "slack_trigger_request_outcome_ambiguous",
     });
 
@@ -411,6 +438,7 @@ describe("authenticated Slack delivery proof", () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     store.seed("receipt-delivery-1", "manual_review", NOW, {
+      attemptCount: 1,
       lastError: "maximum_delivery_attempts_reached",
     });
 
@@ -431,7 +459,10 @@ describe("authenticated Slack delivery proof", () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const env = makeEnv(queue);
-    store.seed("receipt-delivery-1", "accepted_by_trigger", NOW);
+    store.seed("receipt-delivery-1", "send_started", NOW, {
+      attemptCount: 1,
+      slackSendExecutionId: "FxDeliveryProofSend1",
+    });
 
     const forged = await handleFetch(
       await progressRequest({}, "forged-secret-that-is-at-least-32-bytes"),
@@ -461,7 +492,10 @@ describe("authenticated Slack delivery proof", () => {
       now: () => NOW,
     });
     expect(valid.status).toBe(200);
-    store.seed("receipt-delivery-2", "accepted_by_trigger", NOW);
+    store.seed("receipt-delivery-2", "send_started", NOW, {
+      attemptCount: 1,
+      slackSendExecutionId: "FxDeliveryProofSend2",
+    });
     const reused = await handleFetch(
       await progressRequest({ delivery_id: "receipt-delivery-2" }),
       env,
@@ -474,7 +508,10 @@ describe("authenticated Slack delivery proof", () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const nextSecret = "vitest-next-relay-signing-secret-32";
-    store.seed("receipt-delivery-1", "accepted_by_trigger", NOW);
+    store.seed("receipt-delivery-1", "send_started", NOW, {
+      attemptCount: 1,
+      slackSendExecutionId: "FxDeliveryProofSend1",
+    });
 
     const response = await handleFetch(
       await progressRequest({}, nextSecret),
@@ -509,6 +546,7 @@ describe("fail-closed Slack trace reconciliation", () => {
     const queue = new FakeQueue();
     const env = makeEnv(queue);
     store.seed("trace-safe-retry", "accepted_by_trigger", NOW, {
+      attemptCount: 1,
       nextAttemptAt: NOW + 20 * 60 * 1_000,
     });
     const report = {
@@ -519,6 +557,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrSafeRetry1",
           delivery_id: "trace-safe-retry",
           outcome: "error" as const,
+          ...PRE_SEND_TRACE_REPORT_IDENTITY,
           send_boundary_reached: false,
           pre_send_failure_proven: true,
           started_at_us: NOW * 1_000 - 10,
@@ -554,9 +593,15 @@ describe("fail-closed Slack trace reconciliation", () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
     const env = makeEnv(queue);
-    store.seed("trace-ambiguous", "accepted_by_trigger", NOW);
-    store.seed("trace-incomplete", "accepted_by_trigger", NOW);
-    store.seed("trace-no-receipt", "accepted_by_trigger", NOW);
+    store.seed("trace-ambiguous", "accepted_by_trigger", NOW, {
+      attemptCount: 1,
+    });
+    store.seed("trace-incomplete", "accepted_by_trigger", NOW, {
+      attemptCount: 1,
+    });
+    store.seed("trace-no-receipt", "accepted_by_trigger", NOW, {
+      attemptCount: 1,
+    });
     const report = {
       checkpoint_us: NOW * 1_000,
       report_timestamp: NOW_SECONDS,
@@ -565,6 +610,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrAmbiguous1",
           delivery_id: "trace-ambiguous",
           outcome: "error" as const,
+          ...PRE_SEND_TRACE_REPORT_IDENTITY,
           send_boundary_reached: true,
           pre_send_failure_proven: false,
           started_at_us: NOW * 1_000 - 20,
@@ -574,6 +620,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrIncomplete1",
           delivery_id: "trace-incomplete",
           outcome: "error" as const,
+          ...TRACE_REPORT_IDENTITY,
           send_boundary_reached: false,
           pre_send_failure_proven: false,
           started_at_us: NOW * 1_000 - 15,
@@ -583,6 +630,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrNoReceipt1",
           delivery_id: "trace-no-receipt",
           outcome: "success" as const,
+          ...TRACE_REPORT_IDENTITY,
           send_boundary_reached: true,
           pre_send_failure_proven: false,
           started_at_us: NOW * 1_000 - 9,
@@ -615,6 +663,7 @@ describe("fail-closed Slack trace reconciliation", () => {
     const queue = new FakeQueue();
     const env = makeEnv(queue);
     store.seed("trace-network-ambiguous", "manual_review", NOW, {
+      attemptCount: 1,
       lastError: "slack_trigger_request_outcome_ambiguous",
     });
     const report = {
@@ -625,6 +674,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrNetworkSafe1",
           delivery_id: "trace-network-ambiguous",
           outcome: "error" as const,
+          ...PRE_SEND_TRACE_REPORT_IDENTITY,
           send_boundary_reached: false,
           pre_send_failure_proven: true,
           started_at_us: NOW * 1_000 - 1,
@@ -651,11 +701,12 @@ describe("fail-closed Slack trace reconciliation", () => {
     const queue = new FakeQueue();
     const env = makeEnv(queue);
     const deliveryId = "trace-late-memory-proof";
-    store.seed(deliveryId, "accepted_by_trigger", NOW);
+    store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
     const baseTrace = {
       trace_id: "TrMemoryLateProof1",
       delivery_id: deliveryId,
       outcome: "error" as const,
+      ...TRACE_REPORT_IDENTITY,
       send_boundary_reached: false,
       started_at_us: NOW * 1_000 - 1,
       completed_at_us: NOW * 1_000,
@@ -681,7 +732,13 @@ describe("fail-closed Slack trace reconciliation", () => {
       await reconciliationRequest({
         checkpoint_us: NOW * 1_000,
         report_timestamp: NOW_SECONDS,
-        traces: [{ ...baseTrace, pre_send_failure_proven: true }],
+        traces: [
+          {
+            ...baseTrace,
+            ...PRE_SEND_TRACE_REPORT_IDENTITY,
+            pre_send_failure_proven: true,
+          },
+        ],
       }),
       env,
       { store, now: () => NOW + 1 },
@@ -692,6 +749,70 @@ describe("fail-closed Slack trace reconciliation", () => {
       lastError: "slack_workflow_failed_before_send_boundary",
       slackTraceId: baseTrace.trace_id,
     });
+  });
+
+  it("does not quarantine a later memory attempt when an earlier trace gains a boundary", async () => {
+    const store = new MemoryDeliveryStore();
+    const deliveryId = "trace-late-memory-boundary-old-attempt";
+    store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
+    const trace = {
+      traceId: "TrMemoryLateBoundary1",
+      deliveryId,
+      outcome: "error" as const,
+      ...PRE_SEND_TRACE_STORE_IDENTITY,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      startedAtUs: NOW * 1_000 - 1,
+      completedAtUs: NOW * 1_000,
+    };
+
+    await store.recordSlackTrace(trace, NOW);
+    await store.markQueued(deliveryId, NOW + 1);
+    await store.claimForSlack(deliveryId, NOW + 2);
+    await store.markAcceptedByTrigger(deliveryId, NOW + 2, NOW + 60_000);
+    await store.recordSlackTrace(
+      {
+        ...trace,
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+      },
+      NOW + 3,
+    );
+
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "accepted_by_trigger",
+      attemptCount: 2,
+      lastError: null,
+    });
+  });
+
+  it("reapplies a memory pre-send trace after the trigger leaves sending", async () => {
+    const store = new MemoryDeliveryStore();
+    const deliveryId = "trace-memory-sending-before-acceptance";
+    store.seed(deliveryId, "sending", NOW, { attemptCount: 1 });
+    const trace = {
+      traceId: "TrMemorySendingPreSend1",
+      deliveryId,
+      outcome: "error" as const,
+      ...PRE_SEND_TRACE_STORE_IDENTITY,
+      sendBoundaryReached: false,
+      preSendFailureProven: true,
+      startedAtUs: NOW * 1_000 - 1,
+      completedAtUs: NOW * 1_000,
+    };
+
+    await store.recordSlackTrace(trace, NOW);
+    expect(store.slackTraces.get(trace.traceId)?.applied).toBe(false);
+    await store.markAcceptedByTrigger(deliveryId, NOW + 1, NOW + 60_000);
+    await store.recordSlackTrace(trace, NOW + 2);
+
+    expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "pending",
+      attemptCount: 1,
+      slackTraceId: trace.traceId,
+      lastError: "slack_workflow_failed_before_send_boundary",
+    });
+    expect(store.slackTraces.get(trace.traceId)?.applied).toBe(true);
   });
 
   it("keeps the memory checkpoint behind a live accepted retry with an old trace", async () => {
@@ -708,13 +829,14 @@ describe("fail-closed Slack trace reconciliation", () => {
   it("does not attach an error trace without a send boundary to a delivered memory row", async () => {
     const store = new MemoryDeliveryStore();
     const deliveryId = "trace-delivered-unrelated-error";
-    store.seed(deliveryId, "delivered", NOW);
+    store.seed(deliveryId, "delivered", NOW, { attemptCount: 1 });
 
     await store.recordSlackTrace(
       {
         traceId: "TrDeliveredError1",
         deliveryId,
         outcome: "error",
+        ...PRE_SEND_TRACE_STORE_IDENTITY,
         sendBoundaryReached: false,
         preSendFailureProven: true,
         startedAtUs: NOW * 1_000 - 1,
@@ -739,6 +861,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrUnknown1",
           delivery_id: "missing-delivery",
           outcome: "error" as const,
+          ...PRE_SEND_TRACE_REPORT_IDENTITY,
           send_boundary_reached: false,
           pre_send_failure_proven: true,
           started_at_us: NOW * 1_000 - 1,
@@ -760,7 +883,7 @@ describe("fail-closed Slack trace reconciliation", () => {
     const queue = new FakeQueue();
     const env = makeEnv(queue);
     const deliveryId = "trace-reconciliation-response-loss";
-    store.seed(deliveryId, "accepted_by_trigger", NOW);
+    store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
     store.slackActivityCheckpoint = NOW * 1_000 - 100;
     const report = {
       checkpoint_us: NOW * 1_000,
@@ -770,6 +893,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrReconciliationResponseLoss1",
           delivery_id: deliveryId,
           outcome: "error" as const,
+          ...PRE_SEND_TRACE_REPORT_IDENTITY,
           send_boundary_reached: false,
           pre_send_failure_proven: true,
           started_at_us: NOW * 1_000 - 1,
@@ -808,6 +932,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrReconciliationPersistenceFailure1",
           delivery_id: "missing-delivery",
           outcome: "error" as const,
+          ...PRE_SEND_TRACE_REPORT_IDENTITY,
           send_boundary_reached: false,
           pre_send_failure_proven: true,
           started_at_us: NOW * 1_000 - 1,
@@ -830,7 +955,7 @@ describe("fail-closed Slack trace reconciliation", () => {
     const queue = new FakeQueue();
     const env = makeEnv(queue);
     const deliveryId = "trace-checkpoint-response-loss";
-    store.seed(deliveryId, "accepted_by_trigger", NOW);
+    store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
     store.slackActivityCheckpoint = NOW * 1_000 - 100;
     const report = {
       checkpoint_us: NOW * 1_000,
@@ -840,6 +965,7 @@ describe("fail-closed Slack trace reconciliation", () => {
           trace_id: "TrCheckpointResponseLoss1",
           delivery_id: deliveryId,
           outcome: "error" as const,
+          ...PRE_SEND_TRACE_REPORT_IDENTITY,
           send_boundary_reached: false,
           pre_send_failure_proven: true,
           started_at_us: NOW * 1_000 - 1,

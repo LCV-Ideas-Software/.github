@@ -31,6 +31,7 @@ const RELAY_SIGNED_FIELDS = [
   "event",
   "action",
   "destination",
+  "relay_attempt",
   "relay_timestamp",
 ];
 const EXECUTION_EVENT_TYPES = new Set([
@@ -120,13 +121,15 @@ function checkpointCanonical(request) {
 
 function reconciliationCanonical(report) {
   return JSON.stringify([
-    "slack_activity_reconciliation_v1",
+    "slack_activity_reconciliation_v2",
     report.checkpoint_us,
     report.report_timestamp,
     report.traces.map((trace) => [
       trace.trace_id,
       trace.delivery_id,
       trace.outcome,
+      trace.relay_attempt,
+      trace.send_execution_id,
       trace.send_boundary_reached,
       trace.pre_send_failure_proven,
       trace.started_at_us,
@@ -294,6 +297,7 @@ function authenticatedStepEvidence(
   stepOutcome,
   secrets,
   activityCreatedUs,
+  functionExecutionId,
 ) {
   if (inputs === null) return null;
   const deliveryId = inputs.delivery_id;
@@ -301,6 +305,14 @@ function authenticatedStepEvidence(
     return null;
   }
   const relayTimestamp = inputs.relay_timestamp;
+  const relayAttempt = inputs.relay_attempt;
+  if (
+    typeof relayAttempt !== "string" ||
+    !/^[1-9][0-9]{0,15}$/u.test(relayAttempt) ||
+    !Number.isSafeInteger(Number.parseInt(relayAttempt, 10))
+  ) {
+    return null;
+  }
   if (typeof relayTimestamp !== "string" || !/^\d{10}$/u.test(relayTimestamp)) {
     return null;
   }
@@ -321,14 +333,24 @@ function authenticatedStepEvidence(
       return null;
     }
     const canonical = JSON.stringify([
-      "slack_progress_authorization_v1",
+      "slack_progress_authorization_v2",
       deliveryId,
       destination,
+      relayAttempt,
       relayTimestamp,
     ]);
     if (!verifiedHmac(secrets, canonical, inputs.progress_token)) return null;
+    const sendExecutionId =
+      phase === "send_started" &&
+      typeof functionExecutionId === "string" &&
+      /^Fx[A-Za-z0-9]{1,126}$/u.test(functionExecutionId)
+        ? functionExecutionId
+        : null;
+    if (phase === "send_started" && sendExecutionId === null) return null;
     return {
       deliveryId,
+      relayAttempt,
+      sendExecutionId,
       sendBoundaryReached:
         phase === "delivered" ||
         (phase === "send_started" && stepOutcome === "Success"),
@@ -350,8 +372,18 @@ function authenticatedStepEvidence(
   if (!verifiedHmac(secrets, canonical, inputs.relay_signature)) return null;
   return {
     deliveryId,
+    relayAttempt,
+    sendExecutionId:
+      stepOutcome === "Error" &&
+      typeof functionExecutionId === "string" &&
+      /^Fx[A-Za-z0-9]{1,126}$/u.test(functionExecutionId)
+        ? functionExecutionId
+        : null,
     sendBoundaryReached: false,
-    preSendFailureProven: stepOutcome === "Error",
+    preSendFailureProven:
+      stepOutcome === "Error" &&
+      typeof functionExecutionId === "string" &&
+      /^Fx[A-Za-z0-9]{1,126}$/u.test(functionExecutionId),
   };
 }
 
@@ -393,6 +425,8 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
       trace = {
         traceId,
         deliveryId: null,
+        relayAttempt: null,
+        sendExecutionId: null,
         outcome: "pending",
         sendBoundaryReached: false,
         preSendFailureProven: false,
@@ -441,6 +475,7 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
         stepOutcome,
         relaySigningSecrets,
         created,
+        payload?.function_execution_id,
       );
       if (evidence !== null) {
         const deliveryId = evidence.deliveryId;
@@ -448,6 +483,23 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
           throw new Error("Slack trace contains conflicting delivery IDs.");
         }
         trace.deliveryId = deliveryId;
+        if (
+          trace.relayAttempt !== null &&
+          trace.relayAttempt !== evidence.relayAttempt
+        ) {
+          throw new Error("Slack trace contains conflicting relay attempts.");
+        }
+        trace.relayAttempt = evidence.relayAttempt;
+        if (
+          trace.sendExecutionId !== null &&
+          evidence.sendExecutionId !== null &&
+          trace.sendExecutionId !== evidence.sendExecutionId
+        ) {
+          throw new Error(
+            "Slack trace contains conflicting send execution IDs.",
+          );
+        }
+        trace.sendExecutionId ??= evidence.sendExecutionId;
         trace.sendBoundaryReached ||= evidence.sendBoundaryReached;
         trace.preSendFailureProven ||=
           evidence.preSendFailureProven && !trace.sendBoundaryReached;
@@ -460,6 +512,7 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
   for (const trace of traces.values()) {
     if (
       trace.deliveryId !== null &&
+      trace.relayAttempt !== null &&
       trace.startedAtUs !== null &&
       (trace.outcome === "pending" || trace.completedAtUs !== null)
     ) {
@@ -467,6 +520,8 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
         trace_id: trace.traceId,
         delivery_id: trace.deliveryId,
         outcome: trace.outcome,
+        relay_attempt: trace.relayAttempt,
+        send_execution_id: trace.sendExecutionId,
         send_boundary_reached: trace.sendBoundaryReached,
         pre_send_failure_proven:
           trace.preSendFailureProven && !trace.sendBoundaryReached,

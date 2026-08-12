@@ -6,6 +6,8 @@ export interface SignedSlackProgress {
   destination: RelayDestination;
   phase: SlackProgressPhase;
   message_ts: string;
+  relay_attempt: string;
+  function_execution_id: string;
   receipt_timestamp: string;
   receipt_signature: string;
 }
@@ -14,6 +16,8 @@ export interface SignedSlackTrace {
   trace_id: string;
   delivery_id: string;
   outcome: SlackTraceOutcome;
+  relay_attempt: string;
+  send_execution_id: string | null;
   send_boundary_reached: boolean;
   pre_send_failure_proven: boolean;
   started_at_us: number;
@@ -133,6 +137,7 @@ export function canonicalSlackRelayPayload(
     payload.event,
     payload.action,
     payload.destination,
+    payload.relay_attempt,
     payload.relay_timestamp,
   ]);
 }
@@ -214,11 +219,13 @@ export function canonicalSlackProgress(
   receipt: Omit<SignedSlackProgress, "receipt_signature">,
 ): string {
   return JSON.stringify([
-    "slack_delivery_progress_v1",
+    "slack_delivery_progress_v2",
     receipt.delivery_id,
     receipt.destination,
     receipt.phase,
     receipt.message_ts,
+    receipt.relay_attempt,
+    receipt.function_execution_id,
     receipt.receipt_timestamp,
   ]);
 }
@@ -245,13 +252,15 @@ export function canonicalSlackReconciliation(
   report: Omit<SignedSlackReconciliation, "report_signature">,
 ): string {
   return JSON.stringify([
-    "slack_activity_reconciliation_v1",
+    "slack_activity_reconciliation_v2",
     report.checkpoint_us,
     report.report_timestamp,
     report.traces.map((trace) => [
       trace.trace_id,
       trace.delivery_id,
       trace.outcome,
+      trace.relay_attempt,
+      trace.send_execution_id,
       trace.send_boundary_reached,
       trace.pre_send_failure_proven,
       trace.started_at_us,

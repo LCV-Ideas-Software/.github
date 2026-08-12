@@ -86,9 +86,10 @@ route.
 ### Cloudflare to Slack
 
 Possession of a Slack trigger URL is not sufficient to forge a channel message.
-Immediately before each POST, the relay adds a fixed `destination`, an
-epoch-second `relay_timestamp`, and an HMAC-SHA256 `relay_signature` over the
-canonical flat fields. The first step of each Deno workflow validates:
+Immediately before each POST, the relay adds a fixed `destination`, the current
+durable D1 `relay_attempt`, an epoch-second `relay_timestamp`, and an HMAC-SHA256
+`relay_signature` over the canonical flat fields. The first step of each Deno
+workflow validates:
 
 1. the HMAC with current or the separately staged `SLACK_RELAY_SIGNING_SECRET_NEXT`;
 2. the expected destination for that trigger;
@@ -100,14 +101,26 @@ Only then does the coded workflow authenticate the send boundary with
 posts an idempotent HMAC receipt containing the GitHub `delivery_id`, fixed
 destination, and Slack `message_timestamp`. Trigger acceptance remains
 `accepted_by_trigger`; only the post-message receipt creates `delivered`.
+The pre-send CAS binds that signed attempt to the Slack
+`event.function_execution_id`. A retry by the same execution can confirm a lost
+response, but a different workflow execution is rejected before it receives the
+message output. The safe-retry delivery transition and trace-applied marker are
+committed together in one D1 batch.
 The activity monitor later attaches Slack's actual `trace_id` without sending
 raw workflow inputs to Cloudflare. It accepts signed validator or progress
 inputs only when their original `relay_timestamp` is also inside the same
 five-minute/60-second window around that Slack step activity's own timestamp;
 an old valid HMAC cannot be replayed into a later trace.
 
+Slack's activity result supplies the custom function's `function_execution_id`.
+The monitor carries that identifier plus the signed `relay_attempt` in its HMAC
+v2 reconciliation report. D1 may release a pre-send failure only when the
+attempt matches and, once a send lease exists, the reported execution is its
+exact owner. A competing workflow or an older-attempt trace is durably applied
+without releasing, attaching to, or making purgable the current delivery.
+
 The validator emits a domain-separated progress token bound to the validated
-`delivery_id`, destination and original timestamp. Both progress steps must
+`delivery_id`, destination, relay attempt, and original timestamp. Both progress steps must
 verify it, so an independently invoked Slack custom function cannot sign
 arbitrary evidence. During key overlap current or `NEXT` may authenticate the
 inbound relay, but only the separately staged `NEXT` key can issue the progress
@@ -639,8 +652,9 @@ Monitoring and recovery are layered:
   guarantee that 25 Slack HTTP POSTs occurred; a claimed cycle can fail while
   reading configuration or generating the signature before any POST;
 - only receipt-confirmed `delivered` rows are deleted after 30 days, and only
-  when their applied successful trace also predates the durable activity
-  checkpoint minus its 20-minute overlap. Trigger acceptances,
+  when their applied terminal success or boundary-error trace also predates the
+  durable activity checkpoint minus its 20-minute overlap. The boundary-error
+  case covers a committed delivery receipt whose reply was lost. Trigger acceptances,
   legacy-unverified and manual-review rows are retained;
 - the scheduled Slack monitor obtains an authenticated D1 watermark, queries
   `apps.activities.list` at `info` level every 15 minutes, follows every
@@ -653,7 +667,7 @@ Monitoring and recovery are layered:
   correlated traces are persisted before the watermark advances, so an
   arbitrarily late-indexed terminal observation cannot be skipped and cannot forget an earlier
   successful send-boundary step. The monitor correlates a delivery only from a
-  validator input whose 14-field relay HMAC verifies under the monitor's
+  validator input whose 15-field relay HMAC verifies under the monitor's
   available key, or from a progress input whose `NEXT` authorization token
   verifies. A relay admitted by hosted current becomes correlatable at its first
   `NEXT` progress step; rejected or unauthenticated trigger inputs are ignored.

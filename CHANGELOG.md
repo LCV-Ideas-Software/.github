@@ -193,11 +193,20 @@ evidence is the execution trail recorded in
   Slack POST or D1 delivery attempt. Deterministic reconciliation conflicts
   return 409 while persistence failure or a response lost after a write returns
   retryable 503. Competing receipt/progress writes converge only after an exact
-  reread, and authenticated proof that a failed pre-send progress step never
+  reread. Each dispatch attempt is signed into the Slack workflow, and a durable
+  lease on Slack's `function_execution_id` lets only one workflow execution
+  cross `SendMessage`; retries by that same execution remain idempotent. The
+  safe-retry delivery transition and terminal-trace marker commit in one D1
+  batch, so a lost response cannot let the old trace release a later attempt.
+  The activity monitor reports the signed attempt and Slack step
+  `function_execution_id`; D1 requires both to match the live lease before a
+  trace can release, attach to, or make purgable a delivery. Authenticated proof
+  that a failed pre-send progress step never
   reached `SendMessage` safely releases even a locally recorded `send_started`
   CAS. Late trace evidence is merged, delivered rows without a Slack trace are
   retained, and purging cannot cross the durable activity checkpoint minus its
-  overlap window.
+  overlap window; a delivered row remains eligible when its applied terminal
+  trace is success or a boundary-confirmed error caused by a lost receipt reply.
   Terminally contradictory traces are rejected before any reconciliation
   mutation; empty activity scans cannot advance to wall clock; D1 causally clamps
   the monitor checkpoint behind uncorrelated live attempts; and the known ID has

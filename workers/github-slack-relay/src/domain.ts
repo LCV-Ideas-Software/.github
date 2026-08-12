@@ -113,6 +113,7 @@ export interface SlackWorkflowPayload {
   event: string;
   action: string;
   destination: RelayDestination;
+  relay_attempt: string;
   relay_timestamp: string;
   relay_signature: string;
 }
@@ -324,6 +325,7 @@ function normalizeWorkflowRun(
         nestedString(run, "updated_at") || nestedString(run, "created_at"),
       ),
       destination: "alerts",
+      relay_attempt: "",
       relay_timestamp: "",
       relay_signature: "",
     },
@@ -407,6 +409,7 @@ function normalizeDeployment(
       url,
       occurred_at: occurredAt,
       destination: "alerts",
+      relay_attempt: "",
       relay_timestamp: "",
       relay_signature: "",
     },
@@ -479,6 +482,7 @@ function normalizeDependabot(
         nestedString(alert, "updated_at") || nestedString(alert, "created_at"),
       ),
       destination: "alerts",
+      relay_attempt: "",
       relay_timestamp: "",
       relay_signature: "",
     },
@@ -542,6 +546,7 @@ function normalizeCodeScanning(
         nestedString(alert, "updated_at") || nestedString(alert, "created_at"),
       ),
       destination: "alerts",
+      relay_attempt: "",
       relay_timestamp: "",
       relay_signature: "",
     },
@@ -607,6 +612,7 @@ function normalizeSecretScanning(
         nestedString(alert, "updated_at") || nestedString(alert, "created_at"),
       ),
       destination: "alerts",
+      relay_attempt: "",
       relay_timestamp: "",
       relay_signature: "",
     },
@@ -656,6 +662,7 @@ function activityResult(input: {
       url: githubUrl(input.url ?? "", input.repository),
       occurred_at: validOccurredAt(input.occurredAt ?? ""),
       destination: "activity",
+      relay_attempt: "",
       relay_timestamp: "",
       relay_signature: "",
     },

@@ -32,6 +32,14 @@ CREATE TABLE deliveries_next (
   delivered_at INTEGER,
   slack_message_ts TEXT,
   slack_trace_id TEXT,
+  slack_send_execution_id TEXT CHECK (
+    slack_send_execution_id IS NULL
+    OR (
+      length(slack_send_execution_id) BETWEEN 3 AND 128
+      AND slack_send_execution_id GLOB 'Fx[A-Za-z0-9]*'
+      AND slack_send_execution_id NOT GLOB '*[^A-Za-z0-9]*'
+    )
+  ),
   legacy_unverified INTEGER NOT NULL DEFAULT 0
     CHECK (legacy_unverified IN (0, 1)),
   CHECK (
@@ -121,6 +129,15 @@ CREATE TABLE slack_workflow_traces (
   trace_id TEXT PRIMARY KEY NOT NULL,
   delivery_id TEXT NOT NULL REFERENCES deliveries(delivery_id) ON DELETE CASCADE,
   outcome TEXT NOT NULL CHECK (outcome IN ('pending', 'success', 'error')),
+  relay_attempt INTEGER NOT NULL CHECK (relay_attempt > 0),
+  send_execution_id TEXT CHECK (
+    send_execution_id IS NULL
+    OR (
+      length(send_execution_id) BETWEEN 3 AND 128
+      AND send_execution_id GLOB 'Fx[A-Za-z0-9]*'
+      AND send_execution_id NOT GLOB '*[^A-Za-z0-9]*'
+    )
+  ),
   send_boundary_reached INTEGER NOT NULL DEFAULT 0
     CHECK (send_boundary_reached IN (0, 1)),
   pre_send_failure_proven INTEGER NOT NULL DEFAULT 0
@@ -129,7 +146,8 @@ CREATE TABLE slack_workflow_traces (
   completed_at_us INTEGER,
   updated_at INTEGER NOT NULL,
   applied_at INTEGER,
-  CHECK (send_boundary_reached = 0 OR pre_send_failure_proven = 0)
+  CHECK (send_boundary_reached = 0 OR pre_send_failure_proven = 0),
+  CHECK (pre_send_failure_proven = 0 OR send_execution_id IS NOT NULL)
 );
 
 CREATE INDEX idx_slack_workflow_traces_delivery

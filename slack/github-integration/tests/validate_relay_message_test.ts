@@ -38,143 +38,160 @@ function inputs(): RelayMessageInputs {
     event: "workflow_run",
     action: "failure",
     destination: "alerts",
+    relay_attempt: "1",
     relay_timestamp: String(NOW),
     relay_signature: "",
     expected_destination: "alerts",
   };
 }
 
-Deno.test("accepts only a fresh HMAC for the expected destination", async () => {
-  const value = inputs();
-  value.relay_signature = await signRelayMessage(TEST_KEY, value);
-  assert(
-    await verifyRelayMessage(TEST_KEY, value, NOW),
-    "valid relay was rejected",
-  );
-
-  value.title = "forged";
-  assert(
-    !(await verifyRelayMessage(TEST_KEY, value, NOW)),
-    "forged relay was accepted",
-  );
-});
-
-Deno.test("rejects stale signed messages, cross-channel routing, and malformed signatures", async () => {
-  const value = inputs();
-  value.relay_signature = await signRelayMessage(TEST_KEY, value);
-
-  assert(
-    !(await verifyRelayMessage(TEST_KEY, value, NOW + 301)),
-    "stale relay was accepted",
-  );
-  value.expected_destination = "activity";
-  assert(
-    !(await verifyRelayMessage(TEST_KEY, value, NOW)),
-    "cross-channel relay was accepted",
-  );
-  value.expected_destination = "alerts";
-  value.relay_signature = "not-a-signature";
-  assert(
-    !(await verifyRelayMessage(TEST_KEY, value, NOW)),
-    "malformed signature was accepted",
-  );
-});
-
-Deno.test("accepts the current or staged next secret during verifier overlap", async () => {
-  const current = inputs();
-  current.relay_signature = await signRelayMessage(TEST_KEY, current);
-  const nextTestKey = testKey(0x02);
-  const next = inputs();
-  next.relay_signature = await signRelayMessage(nextTestKey, next);
-
-  assert(
-    await verifyRelayMessageWithSecrets([TEST_KEY, nextTestKey], current, NOW),
-    "current secret was rejected during rotation",
-  );
-  assert(
-    await verifyRelayMessageWithSecrets([TEST_KEY, nextTestKey], next, NOW),
-    "staged next secret was rejected during rotation",
-  );
-  assert(
-    !(await verifyRelayMessageWithSecrets(
-      [
-        TEST_KEY,
-        testKey(0x03),
-      ],
-      next,
-      NOW,
-    )),
-    "unknown secret was accepted during rotation",
-  );
-  const progressToken = await signProgressAuthorization(nextTestKey, next);
-  assert(
-    /^[0-9a-f]{64}$/.test(progressToken),
-    "validator did not issue a bounded progress authorization",
-  );
-});
-
-Deno.test("uses staged NEXT for progress after authenticating either inbound verifier", async () => {
-  const nextTestKey = testKey(0x02);
-  for (const inboundSecret of [TEST_KEY, nextTestKey]) {
+Deno.test(
+  "accepts only a fresh HMAC for the expected destination",
+  async () => {
     const value = inputs();
-    value.relay_signature = await signRelayMessage(inboundSecret, value);
+    value.relay_signature = await signRelayMessage(TEST_KEY, value);
     assert(
-      await relayProgressSigningSecret(
-        [TEST_KEY, nextTestKey],
-        value,
-        NOW,
-      ) === nextTestKey,
-      "progress did not select the staged NEXT signer",
+      await verifyRelayMessage(TEST_KEY, value, NOW),
+      "valid relay was rejected",
     );
-  }
 
-  const currentOnly = inputs();
-  currentOnly.relay_signature = await signRelayMessage(TEST_KEY, currentOnly);
-  assert(
-    await relayProgressSigningSecret([TEST_KEY], currentOnly, NOW) === null,
-    "progress was authorized without a distinct staged NEXT signer",
-  );
-  assert(
-    await relayProgressSigningSecret(
-      [TEST_KEY, TEST_KEY],
-      currentOnly,
-      NOW,
-    ) === null,
-    "progress accepted identical current and NEXT signers",
-  );
-});
+    value.title = "forged";
+    assert(
+      !(await verifyRelayMessage(TEST_KEY, value, NOW)),
+      "forged relay was accepted",
+    );
+  },
+);
 
-Deno.test("formats a bounded GitHub-only message without authentication fields", () => {
-  const value = inputs();
-  value.relay_signature = "a".repeat(64);
-  const message = formatRelayMessage(value);
-  assert(message !== null, "valid GitHub message was rejected");
-  assert(message.includes("Open in GitHub"), "GitHub link is missing");
-  assert(
-    !message.includes(value.relay_signature),
-    "signature leaked into message",
-  );
-  assert(
-    !message.includes(value.relay_timestamp),
-    "relay timestamp leaked into message",
-  );
-  assert(
-    message.includes("03/08/2026 às 09:00:00"),
-    "event time was not rendered in pt-BR and Brasília UTC−03:00",
-  );
-  assert(
-    !message.includes("Horário Oficial de Brasília") &&
-      !message.includes("UTC−03:00"),
-    "technical timezone suffix leaked into the user-facing message",
-  );
-  assert(
-    !message.includes(value.occurred_at),
-    "raw ISO-8601 event time leaked into message",
-  );
+Deno.test(
+  "rejects stale signed messages, cross-channel routing, and malformed signatures",
+  async () => {
+    const value = inputs();
+    value.relay_signature = await signRelayMessage(TEST_KEY, value);
 
-  value.url = "https://example.com/forged";
-  assert(formatRelayMessage(value) === null, "non-GitHub URL was accepted");
-});
+    assert(
+      !(await verifyRelayMessage(TEST_KEY, value, NOW + 301)),
+      "stale relay was accepted",
+    );
+    value.expected_destination = "activity";
+    assert(
+      !(await verifyRelayMessage(TEST_KEY, value, NOW)),
+      "cross-channel relay was accepted",
+    );
+    value.expected_destination = "alerts";
+    value.relay_signature = "not-a-signature";
+    assert(
+      !(await verifyRelayMessage(TEST_KEY, value, NOW)),
+      "malformed signature was accepted",
+    );
+  },
+);
+
+Deno.test(
+  "accepts the current or staged next secret during verifier overlap",
+  async () => {
+    const current = inputs();
+    current.relay_signature = await signRelayMessage(TEST_KEY, current);
+    const nextTestKey = testKey(0x02);
+    const next = inputs();
+    next.relay_signature = await signRelayMessage(nextTestKey, next);
+
+    assert(
+      await verifyRelayMessageWithSecrets(
+        [TEST_KEY, nextTestKey],
+        current,
+        NOW,
+      ),
+      "current secret was rejected during rotation",
+    );
+    assert(
+      await verifyRelayMessageWithSecrets([TEST_KEY, nextTestKey], next, NOW),
+      "staged next secret was rejected during rotation",
+    );
+    assert(
+      !(await verifyRelayMessageWithSecrets(
+        [TEST_KEY, testKey(0x03)],
+        next,
+        NOW,
+      )),
+      "unknown secret was accepted during rotation",
+    );
+    const progressToken = await signProgressAuthorization(nextTestKey, next);
+    assert(
+      /^[0-9a-f]{64}$/.test(progressToken),
+      "validator did not issue a bounded progress authorization",
+    );
+  },
+);
+
+Deno.test(
+  "uses staged NEXT for progress after authenticating either inbound verifier",
+  async () => {
+    const nextTestKey = testKey(0x02);
+    for (const inboundSecret of [TEST_KEY, nextTestKey]) {
+      const value = inputs();
+      value.relay_signature = await signRelayMessage(inboundSecret, value);
+      assert(
+        (await relayProgressSigningSecret(
+          [TEST_KEY, nextTestKey],
+          value,
+          NOW,
+        )) === nextTestKey,
+        "progress did not select the staged NEXT signer",
+      );
+    }
+
+    const currentOnly = inputs();
+    currentOnly.relay_signature = await signRelayMessage(TEST_KEY, currentOnly);
+    assert(
+      (await relayProgressSigningSecret([TEST_KEY], currentOnly, NOW)) === null,
+      "progress was authorized without a distinct staged NEXT signer",
+    );
+    assert(
+      (await relayProgressSigningSecret(
+        [TEST_KEY, TEST_KEY],
+        currentOnly,
+        NOW,
+      )) === null,
+      "progress accepted identical current and NEXT signers",
+    );
+  },
+);
+
+Deno.test(
+  "formats a bounded GitHub-only message without authentication fields",
+  () => {
+    const value = inputs();
+    value.relay_signature = "a".repeat(64);
+    const message = formatRelayMessage(value);
+    assert(message !== null, "valid GitHub message was rejected");
+    assert(message.includes("Open in GitHub"), "GitHub link is missing");
+    assert(
+      !message.includes(value.relay_signature),
+      "signature leaked into message",
+    );
+    assert(
+      !message.includes(value.relay_timestamp),
+      "relay timestamp leaked into message",
+    );
+    assert(
+      message.includes("03/08/2026 às 09:00:00"),
+      "event time was not rendered in pt-BR and Brasília UTC−03:00",
+    );
+    assert(
+      !message.includes("Horário Oficial de Brasília") &&
+        !message.includes("UTC−03:00"),
+      "technical timezone suffix leaked into the user-facing message",
+    );
+    assert(
+      !message.includes(value.occurred_at),
+      "raw ISO-8601 event time leaked into message",
+    );
+
+    value.url = "https://example.com/forged";
+    assert(formatRelayMessage(value) === null, "non-GitHub URL was accepted");
+  },
+);
 
 Deno.test("keeps the displayed event time fixed at Brasília UTC−03:00", () => {
   const value = inputs();
@@ -195,34 +212,38 @@ Deno.test("keeps the displayed event time fixed at Brasília UTC−03:00", () =>
   );
 });
 
-Deno.test("does not leak an empty, ambiguous, or invalid event timestamp", () => {
-  for (
-    const occurredAt of [
-      "",
-      "not-a-timestamp",
-      "0",
-      "2026-08-03",
-      "08/03/2026",
-    ]
-  ) {
-    const value = inputs();
-    value.occurred_at = occurredAt;
-    const message = formatRelayMessage(value);
-    assert(message !== null, "message without a valid event time was rejected");
-    assert(
-      message.includes("Data e hora do evento: não informadas"),
-      "missing event-time fallback was not rendered in pt-BR",
-    );
-    assert(
-      !message.includes("<!date"),
-      "viewer-localized Slack date syntax leaked into the message",
-    );
-    const deliveryLine = message.split("\n").at(-1) ?? "";
-    assert(
-      deliveryLine.endsWith(
-        " · Data e hora do evento: não informadas",
-      ),
-      "invalid timestamp leaked into the delivery line",
-    );
-  }
-});
+Deno.test(
+  "does not leak an empty, ambiguous, or invalid event timestamp",
+  () => {
+    for (
+      const occurredAt of [
+        "",
+        "not-a-timestamp",
+        "0",
+        "2026-08-03",
+        "08/03/2026",
+      ]
+    ) {
+      const value = inputs();
+      value.occurred_at = occurredAt;
+      const message = formatRelayMessage(value);
+      assert(
+        message !== null,
+        "message without a valid event time was rejected",
+      );
+      assert(
+        message.includes("Data e hora do evento: não informadas"),
+        "missing event-time fallback was not rendered in pt-BR",
+      );
+      assert(
+        !message.includes("<!date"),
+        "viewer-localized Slack date syntax leaked into the message",
+      );
+      const deliveryLine = message.split("\n").at(-1) ?? "";
+      assert(
+        deliveryLine.endsWith(" · Data e hora do evento: não informadas"),
+        "invalid timestamp leaked into the delivery line",
+      );
+    }
+  },
+);

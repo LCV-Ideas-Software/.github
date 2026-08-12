@@ -60,10 +60,15 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   ID, revision, and schema. One byte-identical retry may confirm the same CAS read-only after a lost
   response; a new ID, changed tuple, post-contract request, downgrade, wrong revision, wrong key,
   partial deploy, or incomplete schema fails closed. Deterministic reconciliation conflicts are 409;
-  ambiguous persistence is retryable 503. A retry is released only by authenticated proof that the
+  ambiguous persistence is retryable 503. Every signed relay carries its durable attempt number;
+  D1 leases the pre-send boundary to one Slack `function_execution_id`, so only that execution may
+  release `SendMessage` while a retry of the same execution remains idempotent. The retry transition
+  and trace-applied marker are one atomic D1 batch. A retry is released only by authenticated proof that the
   failed pre-send step did not execute `SendMessage`, even if its D1 `send_started` CAS committed, and
-  delivered rows remain retained until their applied successful trace is older than both retention
-  cutoff and the durable activity-checkpoint overlap;
+  the report must bind that proof to the same relay attempt and Slack send-function execution that owns
+  the durable lease; a competing or stale trace cannot release or attach to another attempt. The
+  delivered rows remain retained until their applied terminal success or boundary-error trace is older
+  than both retention cutoff and the durable activity-checkpoint overlap;
 - external credentials assigned by purpose to protected environments restricted to `main`.
   `SLACK_SERVICE_TOKEN` and the production relay signer are held in `slack-production`. Before the
   receipt-protocol expand rollout, the same newly generated signer must be provisioned under the

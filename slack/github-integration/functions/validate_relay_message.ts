@@ -16,6 +16,7 @@ export interface RelayMessageInputs {
   event: string;
   action: string;
   destination: string;
+  relay_attempt: string;
   relay_timestamp: string;
   relay_signature: string;
   expected_destination: RelayDestination;
@@ -35,6 +36,7 @@ const SIGNED_FIELD_NAMES = [
   "event",
   "action",
   "destination",
+  "relay_attempt",
   "relay_timestamp",
 ] as const;
 
@@ -54,7 +56,7 @@ const BRASILIA_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("pt-BR", {
 });
 
 export function canonicalRelayMessage(
-  inputs: Pick<RelayMessageInputs, typeof SIGNED_FIELD_NAMES[number]>,
+  inputs: Pick<RelayMessageInputs, (typeof SIGNED_FIELD_NAMES)[number]>,
 ): string {
   return JSON.stringify(SIGNED_FIELD_NAMES.map((name) => inputs[name]));
 }
@@ -83,7 +85,7 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
 
 export async function signRelayMessage(
   secret: string,
-  inputs: Pick<RelayMessageInputs, typeof SIGNED_FIELD_NAMES[number]>,
+  inputs: Pick<RelayMessageInputs, (typeof SIGNED_FIELD_NAMES)[number]>,
 ): Promise<string> {
   const bytes = new Uint8Array(
     await crypto.subtle.sign(
@@ -103,12 +105,19 @@ export async function verifyRelayMessage(
   nowSeconds = Math.floor(Date.now() / 1_000),
 ): Promise<boolean> {
   if (
-    secret.length < 32 || inputs.destination !== inputs.expected_destination
+    secret.length < 32 ||
+    inputs.destination !== inputs.expected_destination
   ) {
     return false;
   }
 
-  if (!/^\d{10}$/.test(inputs.relay_timestamp)) return false;
+  if (
+    !/^[1-9][0-9]{0,15}$/.test(inputs.relay_attempt) ||
+    !Number.isSafeInteger(Number.parseInt(inputs.relay_attempt, 10)) ||
+    !/^\d{10}$/.test(inputs.relay_timestamp)
+  ) {
+    return false;
+  }
   const timestamp = Number.parseInt(inputs.relay_timestamp, 10);
   if (
     timestamp < nowSeconds - MAX_AGE_SECONDS ||
@@ -134,9 +143,9 @@ export async function verifyRelayMessageWithSecrets(
   nowSeconds = Math.floor(Date.now() / 1_000),
 ): Promise<boolean> {
   const results = await Promise.all(
-    secrets.slice(0, 2).map((secret) =>
-      verifyRelayMessage(secret, inputs, nowSeconds)
-    ),
+    secrets
+      .slice(0, 2)
+      .map((secret) => verifyRelayMessage(secret, inputs, nowSeconds)),
   );
   return results.some(Boolean);
 }
@@ -156,7 +165,7 @@ export async function relayProgressSigningSecret(
   ) {
     return null;
   }
-  return await verifyRelayMessageWithSecrets(candidates, inputs, nowSeconds)
+  return (await verifyRelayMessageWithSecrets(candidates, inputs, nowSeconds))
     ? next
     : null;
 }
@@ -164,13 +173,14 @@ export async function relayProgressSigningSecret(
 export function canonicalProgressAuthorization(
   inputs: Pick<
     RelayMessageInputs,
-    "delivery_id" | "destination" | "relay_timestamp"
+    "delivery_id" | "destination" | "relay_attempt" | "relay_timestamp"
   >,
 ): string {
   return JSON.stringify([
-    "slack_progress_authorization_v1",
+    "slack_progress_authorization_v2",
     inputs.delivery_id,
     inputs.destination,
+    inputs.relay_attempt,
     inputs.relay_timestamp,
   ]);
 }
@@ -179,7 +189,7 @@ export async function signProgressAuthorization(
   secret: string,
   inputs: Pick<
     RelayMessageInputs,
-    "delivery_id" | "destination" | "relay_timestamp"
+    "delivery_id" | "destination" | "relay_attempt" | "relay_timestamp"
   >,
 ): Promise<string> {
   const bytes = new Uint8Array(
@@ -234,8 +244,12 @@ export function formatBrasiliaDateTime(value: string): string | null {
   const second = parts.get("second");
 
   if (
-    day === undefined || month === undefined || year === undefined ||
-    hour === undefined || minute === undefined || second === undefined
+    day === undefined ||
+    month === undefined ||
+    year === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined
   ) {
     return null;
   }
@@ -258,7 +272,10 @@ export function formatRelayMessage(inputs: RelayMessageInputs): string | null {
     heading,
     `Repository: ${inputs.repository.slice(0, 200)}`,
     `Source: ${inputs.source.slice(0, 50)} / ${inputs.event.slice(0, 64)}:${
-      inputs.action.slice(0, 64)
+      inputs.action.slice(
+        0,
+        64,
+      )
     }`,
     `Branch: ${inputs.branch.slice(0, 255)}`,
     `Actor: ${inputs.actor.slice(0, 100)}`,
@@ -290,6 +307,7 @@ export const ValidateRelayMessageDefinition = DefineFunction({
       event: text,
       action: text,
       destination: text,
+      relay_attempt: text,
       relay_timestamp: text,
       relay_signature: text,
       expected_destination: text,
@@ -308,6 +326,7 @@ export const ValidateRelayMessageDefinition = DefineFunction({
       "event",
       "action",
       "destination",
+      "relay_attempt",
       "relay_timestamp",
       "relay_signature",
       "expected_destination",

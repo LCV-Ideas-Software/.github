@@ -130,6 +130,7 @@ describe("Slack queue delivery", () => {
       Object.values(sentPayload).every((value) => typeof value === "string"),
     ).toBe(true);
     expect(sentPayload.destination).toBe("alerts");
+    expect(sentPayload.relay_attempt).toBe("1");
     expect(sentPayload.relay_timestamp).toBe(String(Math.floor(NOW / 1_000)));
     expect(sentPayload.relay_signature).toMatch(/^[0-9a-f]{64}$/u);
     expect(sentPayload.relay_signature).toBe(
@@ -634,12 +635,16 @@ describe("scheduled recovery and retention", () => {
     const queue = new FakeQueue();
     const day = 24 * 60 * 60 * 1_000;
     store.seed("old-delivered", "delivered", NOW - 31 * day, {
+      attemptCount: 1,
       deliveredAt: NOW - 31 * day,
       slackTraceId: "TrOldDelivered1",
+      slackSendExecutionId: "FxOldDeliveredSend1",
     });
     store.seed("recent-delivered", "delivered", NOW - 29 * day, {
+      attemptCount: 1,
       deliveredAt: NOW - 29 * day,
       slackTraceId: "TrRecentDelivered1",
+      slackSendExecutionId: "FxRecentDeliveredSend1",
     });
     for (const [deliveryId, traceId, completedAt] of [
       ["old-delivered", "TrOldDelivered1", NOW - 31 * day],
@@ -650,6 +655,11 @@ describe("scheduled recovery and retention", () => {
           traceId,
           deliveryId,
           outcome: "success",
+          attemptCount: 1,
+          sendExecutionId:
+            deliveryId === "old-delivered"
+              ? "FxOldDeliveredSend1"
+              : "FxRecentDeliveredSend1",
           sendBoundaryReached: true,
           preSendFailureProven: false,
           startedAtUs: completedAt * 1_000 - 1,

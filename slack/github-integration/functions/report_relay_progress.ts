@@ -9,6 +9,7 @@ export interface RelayProgressInputs {
   phase: string;
   message_ts: string;
   message: string;
+  relay_attempt: string;
   relay_timestamp: string;
   progress_token: string;
 }
@@ -26,16 +27,20 @@ interface UnsignedProgress {
   destination: "alerts" | "activity";
   phase: RelayProgressPhase;
   message_ts: string;
+  relay_attempt: string;
+  function_execution_id: string;
   receipt_timestamp: string;
 }
 
 export function canonicalRelayProgress(progress: UnsignedProgress): string {
   return JSON.stringify([
-    "slack_delivery_progress_v1",
+    "slack_delivery_progress_v2",
     progress.delivery_id,
     progress.destination,
     progress.phase,
     progress.message_ts,
+    progress.relay_attempt,
+    progress.function_execution_id,
     progress.receipt_timestamp,
   ]);
 }
@@ -58,8 +63,9 @@ async function signRelayProgress(
       new TextEncoder().encode(canonicalRelayProgress(progress)),
     ),
   );
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 function signatureBytes(signature: string): Uint8Array<ArrayBuffer> | null {
@@ -108,15 +114,19 @@ async function authorizedSigningSecret(
     }),
   );
   const index = results.findIndex(Boolean);
-  return index < 0 ? null : candidates[index] ?? null;
+  return index < 0 ? null : (candidates[index] ?? null);
 }
 
 function validatedProgress(
   inputs: RelayProgressInputs,
+  functionExecutionId: string,
   now: number,
 ): UnsignedProgress | null {
   if (
     !DELIVERY_ID_PATTERN.test(inputs.delivery_id) ||
+    !/^[1-9][0-9]{0,15}$/.test(inputs.relay_attempt) ||
+    !Number.isSafeInteger(Number.parseInt(inputs.relay_attempt, 10)) ||
+    !/^Fx[A-Za-z0-9]{1,126}$/.test(functionExecutionId) ||
     (inputs.destination !== "alerts" && inputs.destination !== "activity") ||
     (inputs.phase !== "send_started" && inputs.phase !== "delivered") ||
     !Number.isSafeInteger(now) ||
@@ -132,6 +142,8 @@ function validatedProgress(
     destination: inputs.destination,
     phase: inputs.phase,
     message_ts: inputs.message_ts,
+    relay_attempt: inputs.relay_attempt,
+    function_execution_id: functionExecutionId,
     receipt_timestamp: String(Math.floor(now / 1_000)),
   };
 }
@@ -139,6 +151,7 @@ function validatedProgress(
 export async function reportRelayProgress(
   inputs: RelayProgressInputs,
   signingSecret: string,
+  functionExecutionId: string,
   options: {
     fetchImpl?: typeof fetch;
     now?: () => number;
@@ -147,7 +160,7 @@ export async function reportRelayProgress(
   const now = (options.now ?? Date.now)();
   const secret = await authorizedSigningSecret(inputs, [signingSecret], now);
   if (secret === null) return { ok: false };
-  const progress = validatedProgress(inputs, now);
+  const progress = validatedProgress(inputs, functionExecutionId, now);
   if (progress === null) return { ok: false };
   const body = JSON.stringify({
     ...progress,
@@ -212,6 +225,7 @@ export const ReportRelayProgressDefinition = DefineFunction({
       phase: text,
       message_ts: text,
       message: text,
+      relay_attempt: text,
       relay_timestamp: text,
       progress_token: text,
     },
@@ -221,6 +235,7 @@ export const ReportRelayProgressDefinition = DefineFunction({
       "phase",
       "message_ts",
       "message",
+      "relay_attempt",
       "relay_timestamp",
       "progress_token",
     ],
@@ -233,10 +248,11 @@ export const ReportRelayProgressDefinition = DefineFunction({
 
 export default SlackFunction(
   ReportRelayProgressDefinition,
-  async ({ inputs, env }) => {
+  async ({ inputs, env, event }) => {
     const result = await reportRelayProgress(
       inputs as RelayProgressInputs,
       env["SLACK_RELAY_SIGNING_SECRET_NEXT"] ?? "",
+      event.function_execution_id,
     );
     return result.ok
       ? { outputs: { message: result.message } }
