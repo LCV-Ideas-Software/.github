@@ -40,13 +40,35 @@ const DATABASE_ID_PATTERN =
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const PRODUCTION_DATABASE_ID = "cf070eb0-32d9-4ee0-9516-d469833cdc77";
 const API_TIMEOUT_MS = 15_000;
+export const MAX_CLOUDFLARE_JSON_BYTES = 4_000_000;
 const WRANGLER_TIMEOUT_MS = 120_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
 const CREATE_RECONCILIATION_ATTEMPTS = 5;
 const CREATION_CLOCK_SKEW_MS = 5 * 60_000;
 export const STALE_DATABASE_AGE_MS = 60 * 60_000;
-const DATABASE_LIST_PAGE_SIZE = 1_000;
-const DATABASE_LIST_PAGE_CAP = 100;
+// Cloudflare documents 50,000 D1 databases for Workers Paid accounts and a
+// maximum list page size of 10,000. Keep these values coupled to the bounded
+// workflow budget and its focused contract test.
+export const D1_DATABASE_ACCOUNT_LIMIT = 50_000;
+export const REAPER_DATABASE_LIST_PAGE_SIZE = 10_000;
+export const REAPER_DATABASE_LIST_PAGE_CAP = Math.ceil(
+  D1_DATABASE_ACCOUNT_LIMIT / REAPER_DATABASE_LIST_PAGE_SIZE,
+);
+export const REAPER_MAX_DATABASES_PER_RUN = 1;
+export const REAPER_WORKFLOW_TIMEOUT_MS = 10 * 60_000;
+const REAPER_API_REQUESTS_PER_DATABASE =
+  1 + 2 * DELETE_CONFIRMATION_ATTEMPTS + 1 + 2 * DELETE_CONFIRMATION_ATTEMPTS;
+const REAPER_RETRY_DELAY_BUDGET_MS =
+  2 *
+  Array.from(
+    { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
+    (_, attempt) => 250 * 2 ** attempt,
+  ).reduce((total, delay) => total + delay, 0);
+export const REAPER_WORST_CASE_RUNTIME_MS =
+  (REAPER_DATABASE_LIST_PAGE_CAP +
+    REAPER_MAX_DATABASES_PER_RUN * REAPER_API_REQUESTS_PER_DATABASE) *
+    API_TIMEOUT_MS +
+  REAPER_MAX_DATABASES_PER_RUN * REAPER_RETRY_DELAY_BUDGET_MS;
 const WRANGLER_ENV_KEYS = Object.freeze([
   "APPDATA",
   "FORCE_COLOR",
@@ -90,14 +112,14 @@ function readConfiguration(environment) {
   };
 }
 
-async function readJsonResponse(response) {
-  const text = await response.text();
+export async function readJsonResponse(response) {
+  const bytes = await response.arrayBuffer();
   invariant(
-    text.length <= 1_000_000,
+    bytes.byteLength <= MAX_CLOUDFLARE_JSON_BYTES,
     "Cloudflare returned an oversized response.",
   );
   try {
-    return JSON.parse(text);
+    return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     throw new Error(`Cloudflare returned non-JSON HTTP ${response.status}.`);
   }
@@ -325,10 +347,10 @@ function validateCompleteD1Inventory(databases, expectedTotal) {
 async function listAllD1Databases(configuration) {
   const databases = [];
   let expectedTotal;
-  for (let page = 1; page <= DATABASE_LIST_PAGE_CAP; page += 1) {
+  for (let page = 1; page <= REAPER_DATABASE_LIST_PAGE_CAP; page += 1) {
     const search = new URLSearchParams({
       page: String(page),
-      per_page: String(DATABASE_LIST_PAGE_SIZE),
+      per_page: String(REAPER_DATABASE_LIST_PAGE_SIZE),
     });
     const { payload, response } = await cloudflareRequest(
       configuration,
@@ -476,21 +498,30 @@ export function selectStaleDisposableDatabases(databases, nowMs) {
     .filter((database) => {
       if (
         typeof database?.name !== "string" ||
-        !DISPOSABLE_DATABASE_NAME_PATTERN.test(database.name) ||
-        typeof database.uuid !== "string" ||
-        !DATABASE_ID_PATTERN.test(database.uuid) ||
-        database.uuid === PRODUCTION_DATABASE_ID
-      ) {
+        !database.name.startsWith(DATABASE_NAME_PREFIX)
+      )
         return false;
-      }
       const createdAt = Date.parse(database.created_at);
+      invariant(
+        DISPOSABLE_DATABASE_NAME_PATTERN.test(database.name) &&
+          typeof database.uuid === "string" &&
+          DATABASE_ID_PATTERN.test(database.uuid) &&
+          database.uuid !== PRODUCTION_DATABASE_ID &&
+          Number.isFinite(createdAt),
+        "Disposable D1 inventory item is incomplete or malformed.",
+      );
       return Number.isFinite(createdAt) && createdAt <= cutoff;
     })
     .map((database) => ({
       createdAt: Date.parse(database.created_at),
       id: database.uuid,
       name: database.name,
-    }));
+    }))
+    .sort(
+      (left, right) =>
+        left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+    )
+    .slice(0, REAPER_MAX_DATABASES_PER_RUN);
 }
 
 export async function reapStaleDisposableDatabases(
@@ -501,18 +532,37 @@ export async function reapStaleDisposableDatabases(
     await listAllD1Databases(configuration),
     nowMs,
   );
+  return reapSelectedStaleDatabases(
+    stale,
+    nowMs,
+    {
+      inspect: getDisposableDatabase,
+      remove: deleteDisposableDatabase,
+    },
+    configuration,
+  );
+}
+
+export async function reapSelectedStaleDatabases(
+  stale,
+  nowMs,
+  operations,
+  configuration = {},
+) {
+  let removed = 0;
   for (const database of stale) {
     const target = { ...configuration, databaseName: database.name };
-    const owned = await getDisposableDatabase(target, database.id);
+    const owned = await operations.inspect(target, database.id);
+    if (owned === undefined) continue;
     invariant(
-      owned !== undefined &&
-        owned.createdAt === database.createdAt &&
+      owned.createdAt === database.createdAt &&
         owned.createdAt <= nowMs - STALE_DATABASE_AGE_MS,
       "Stale disposable D1 ownership changed before reaping.",
     );
-    await deleteDisposableDatabase(target, database.id);
+    await operations.remove(target, database.id);
+    removed += 1;
   }
-  return stale.length;
+  return removed;
 }
 
 async function disposableDatabasePresence(configuration, databaseId) {

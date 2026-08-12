@@ -7,6 +7,7 @@ import {
 } from "./required-contexts-policy.mjs";
 
 const sources = await readRequiredContextSources();
+const D1_REAPER_WORKFLOW = ".github/workflows/slack-d1-disposable-reaper.yml";
 
 function mutated(path, before, after) {
   const source = sources[path];
@@ -41,6 +42,39 @@ test("the privileged Slack monitor job cannot lose its bounded execution budget"
     ".github/workflows/slack-github-integration.yml",
     "    timeout-minutes: 240",
     "    timeout-minutes: 5",
+  );
+});
+
+test("the standalone D1 reaper workflow is protected as one exact privileged contract", () => {
+  assert.equal(typeof sources[D1_REAPER_WORKFLOW], "string");
+  for (const [before, after] of [
+    ['    - cron: "37 * * * *"', '    - cron: "* * * * *"'],
+    ["permissions: {}", "permissions:\n  contents: write"],
+    ["  cancel-in-progress: false", "  cancel-in-progress: true"],
+    [
+      "  group: slack-d1-disposable-proof-${{ github.repository }}",
+      "  group: unrelated-${{ github.repository }}",
+    ],
+    [
+      "    if: github.ref == 'refs/heads/main'",
+      "    if: github.event_name == 'workflow_dispatch'",
+    ],
+    ["      contents: read", "      contents: write"],
+    [
+      "          persist-credentials: false",
+      "          persist-credentials: true",
+    ],
+    [
+      "        run: node scripts/verify-slack-relay-d1-remote.mjs --reap-stale",
+      "        run: echo skipped",
+    ],
+  ]) {
+    rejectsMutation(D1_REAPER_WORKFLOW, before, after);
+  }
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "      group: slack-d1-disposable-proof-${{ github.repository }}",
+    "      group: unrelated-${{ github.repository }}",
   );
 });
 

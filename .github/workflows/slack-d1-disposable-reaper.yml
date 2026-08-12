@@ -8,12 +8,13 @@ on:
 permissions: {}
 
 concurrency:
-  group: slack-d1-disposable-reaper-${{ github.repository }}
+  group: slack-d1-disposable-proof-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   reap:
     name: Reap stale Slack D1 proof databases
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
     runs-on: ubuntu-latest

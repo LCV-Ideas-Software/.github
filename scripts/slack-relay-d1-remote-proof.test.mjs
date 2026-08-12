@@ -8,7 +8,16 @@ import {
   buildDisposableWranglerConfiguration,
   buildMigrationPlan,
   classifyDatabaseCreationResponse,
+  D1_DATABASE_ACCOUNT_LIMIT,
+  MAX_CLOUDFLARE_JSON_BYTES,
+  readJsonResponse,
   reconcileAmbiguousDatabaseCreation,
+  reapSelectedStaleDatabases,
+  REAPER_DATABASE_LIST_PAGE_CAP,
+  REAPER_DATABASE_LIST_PAGE_SIZE,
+  REAPER_MAX_DATABASES_PER_RUN,
+  REAPER_WORKFLOW_TIMEOUT_MS,
+  REAPER_WORST_CASE_RUNTIME_MS,
   selectStaleDisposableDatabases,
   STALE_DATABASE_AGE_MS,
   waitForDisposableDatabaseDeletion,
@@ -104,15 +113,21 @@ test("only a well-formed Cloudflare 4xx envelope is a definitive create failure"
 test("the out-of-process reaper selects only stale capability names", () => {
   const now = Date.parse("2026-08-12T14:00:00.000Z");
   const staleCreatedAt = new Date(now - STALE_DATABASE_AGE_MS).toISOString();
+  const olderCreatedAt = new Date(
+    now - STALE_DATABASE_AGE_MS - 1,
+  ).toISOString();
   const recentCreatedAt = new Date(
     now - STALE_DATABASE_AGE_MS + 1,
   ).toISOString();
   const staleId = "11111111-2222-4333-8444-555555555555";
   const staleName = `tmp-slack-relay-171-${staleId}`;
+  const olderId = "22222222-3333-4444-8555-666666666666";
+  const olderName = `tmp-slack-relay-171-${olderId}`;
   assert.deepEqual(
     selectStaleDisposableDatabases(
       [
         { created_at: staleCreatedAt, name: staleName, uuid: staleId },
+        { created_at: olderCreatedAt, name: olderName, uuid: olderId },
         {
           created_at: recentCreatedAt,
           name: "tmp-slack-relay-171-66666666-7777-4888-8999-aaaaaaaaaaaa",
@@ -125,13 +140,95 @@ test("the out-of-process reaper selects only stale capability names", () => {
         },
         {
           created_at: staleCreatedAt,
-          name: "tmp-slack-relay-171-not-a-capability",
+          name: "unrelated-database",
           uuid: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
         },
       ],
       now,
     ),
-    [{ createdAt: Date.parse(staleCreatedAt), id: staleId, name: staleName }],
+    [{ createdAt: Date.parse(olderCreatedAt), id: olderId, name: olderName }],
+  );
+});
+
+test("a competing cleanup after inventory is an idempotent reaper success", async () => {
+  const stale = [
+    {
+      createdAt: Date.parse("2026-08-12T12:00:00.000Z"),
+      id: "11111111-2222-4333-8444-555555555555",
+      name: "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555",
+    },
+  ];
+  let deletes = 0;
+  const removed = await reapSelectedStaleDatabases(
+    stale,
+    Date.parse("2026-08-12T14:00:00.000Z"),
+    {
+      inspect: async () => undefined,
+      remove: async () => {
+        deletes += 1;
+      },
+    },
+  );
+  assert.equal(removed, 0);
+  assert.equal(deletes, 0);
+});
+
+test("the reaper rejects an incomplete disposable inventory item", () => {
+  assert.throws(
+    () =>
+      selectStaleDisposableDatabases(
+        [
+          {
+            name: "tmp-slack-relay-171-11111111-2222-4333-8444-555555555555",
+            uuid: "11111111-2222-4333-8444-555555555555",
+          },
+        ],
+        Date.parse("2026-08-12T14:00:00.000Z"),
+      ),
+    /incomplete or malformed/,
+  );
+});
+
+test("the bounded JSON reader accepts one maximum-size official-shaped D1 list page", async () => {
+  const item = {
+    created_at: "2026-08-12T14:00:00.000Z",
+    jurisdiction: "eu",
+    name: "my-database",
+    uuid: "11111111-2222-4333-8444-555555555555",
+    version: "production",
+  };
+  const source = JSON.stringify({
+    result: Array.from({ length: REAPER_DATABASE_LIST_PAGE_SIZE }, () => item),
+    result_info: {
+      count: REAPER_DATABASE_LIST_PAGE_SIZE,
+      page: 1,
+      per_page: REAPER_DATABASE_LIST_PAGE_SIZE,
+      total_count: D1_DATABASE_ACCOUNT_LIMIT,
+    },
+    success: true,
+  });
+  assert.ok(Buffer.byteLength(source, "utf8") > 1_000_000);
+  assert.ok(Buffer.byteLength(source, "utf8") < MAX_CLOUDFLARE_JSON_BYTES);
+  const payload = await readJsonResponse(new Response(source));
+  assert.equal(payload.result.length, REAPER_DATABASE_LIST_PAGE_SIZE);
+  await assert.rejects(
+    readJsonResponse(new Response("x".repeat(MAX_CLOUDFLARE_JSON_BYTES + 1))),
+    /oversized response/,
+  );
+});
+
+test("the reaper worst-case API budget fits the workflow timeout", () => {
+  assert.equal(D1_DATABASE_ACCOUNT_LIMIT, 50_000);
+  assert.equal(REAPER_DATABASE_LIST_PAGE_SIZE, 10_000);
+  assert.equal(REAPER_DATABASE_LIST_PAGE_CAP, 5);
+  assert.equal(
+    REAPER_DATABASE_LIST_PAGE_SIZE * REAPER_DATABASE_LIST_PAGE_CAP,
+    D1_DATABASE_ACCOUNT_LIMIT,
+  );
+  assert.equal(REAPER_MAX_DATABASES_PER_RUN, 1);
+  assert.equal(REAPER_WORST_CASE_RUNTIME_MS, 348_500);
+  assert.ok(
+    REAPER_WORST_CASE_RUNTIME_MS <= REAPER_WORKFLOW_TIMEOUT_MS - 4 * 60_000,
   );
 });
 
@@ -149,8 +246,16 @@ test("a default-branch schedule reaps stale proof databases out of process", () 
   ]);
   assert.deepEqual(workflow.on.schedule, [{ cron: "37 * * * *" }]);
   assert.deepEqual(workflow.permissions, {});
+  assert.deepEqual(workflow.concurrency, {
+    group: "slack-d1-disposable-proof-${{ github.repository }}",
+    "cancel-in-progress": false,
+  });
   assert.equal(workflow.jobs.reap.environment, "cloudflare-production");
-  assert.equal(workflow.jobs.reap["timeout-minutes"], 10);
+  assert.equal(workflow.jobs.reap.if, "github.ref == 'refs/heads/main'");
+  assert.equal(
+    workflow.jobs.reap["timeout-minutes"] * 60_000,
+    REAPER_WORKFLOW_TIMEOUT_MS,
+  );
   const step = workflow.jobs.reap.steps.find(
     (candidate) =>
       candidate.name === "Reap stale disposable D1 proof databases",

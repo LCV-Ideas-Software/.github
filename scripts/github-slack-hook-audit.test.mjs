@@ -168,6 +168,7 @@ function assertRecoveryEnvironmentIsolation(workflows) {
     ["github-slack-integration.yml", "deploy_slack", "slack-production"],
     ["github-slack-webhook-redelivery.yml", "redeliver", "webhook-recovery"],
     ["pages.yml", "deploy", "github-pages"],
+    ["slack-d1-disposable-reaper.yml", "reap", "cloudflare-production"],
     ["slack-github-integration.yml", "monitor", "slack-production"],
   ]);
   assert.deepEqual(credentialReferences, [

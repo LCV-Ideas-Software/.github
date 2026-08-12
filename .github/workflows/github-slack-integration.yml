@@ -133,6 +133,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: cloudflare-production
+    concurrency:
+      group: slack-d1-disposable-proof-${{ github.repository }}
+      cancel-in-progress: false
     steps:
       - name: Checkout verified revision without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
