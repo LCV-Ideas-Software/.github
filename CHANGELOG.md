@@ -115,6 +115,13 @@ evidence is the execution trail recorded in
 
 ### Fixed
 
+- Segregated the organization-webhook recovery App into the dedicated, protected
+  `webhook-recovery` environment. A YAML-parsed inventory now fixes every workflow job/environment
+  tuple and rejects any second job or workflow that references the App Client ID or private key;
+  the temporary rollback copies in `cloudflare-production` are removed only after exact-`main`
+  recovery canaries succeed
+  ([#175](https://github.com/LCV-Ideas-Software/.github/issues/175),
+  [#179](https://github.com/LCV-Ideas-Software/.github/pull/179)).
 - Closed the one-line structural regression escape shared by all seven repository-local required contexts. A single
   YAML-parsed contract now fixes the exact `pull_request` and `merge_group` triggers, context names
   and conditions, complete required-job structures, critical Actions, commands, inputs and paths,
