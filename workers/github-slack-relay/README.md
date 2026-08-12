@@ -74,6 +74,7 @@ The two Slack trigger URLs are bearer credentials, but knowing a URL does not
 authorize a message. Immediately before every trigger POST, the Worker adds:
 
 - the persisted internal `destination`;
+- the current durable D1 `relay_attempt`;
 - an epoch-second `relay_timestamp`;
 - a lowercase HMAC-SHA256 `relay_signature`.
 
@@ -81,7 +82,7 @@ The signature input is exactly this UTF-8 JSON string, preserving field order
 and JavaScript JSON escaping:
 
 ```text
-JSON.stringify([source,severity,repository,title,details,actor,branch,url,occurred_at,delivery_id,event,action,destination,relay_timestamp])
+JSON.stringify([source,severity,repository,title,details,actor,branch,url,occurred_at,delivery_id,event,action,destination,relay_attempt,relay_timestamp])
 ```
 
 The Deno app's first workflow step validates the signature, expected
