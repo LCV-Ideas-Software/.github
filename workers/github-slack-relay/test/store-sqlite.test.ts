@@ -1100,6 +1100,43 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     });
   });
 
+  it("lets authenticated pre-send failure proof override a lost send-started response", async () => {
+    const { d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-send-started-response-lost";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      now: NOW + 1,
+      reconcileAt: NOW + 1_000,
+    });
+
+    await store.recordSlackTrace(
+      {
+        traceId: "TrSendStartedResponseLost1",
+        deliveryId,
+        outcome: "error",
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "pending",
+      lastError: "slack_workflow_failed_before_send_boundary",
+      slackTraceId: "TrSendStartedResponseLost1",
+    });
+  });
+
   it("merges late send-boundary evidence after a terminal trace was applied", async () => {
     const { d1 } = databaseWithMigrations(true);
     const store = new D1DeliveryStore(d1);
@@ -1196,6 +1233,13 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       },
       NOW + 2,
     );
+    database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_activity_checkpoint_us = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(NOW * 1_000 + 20 * 60 * 1_000 * 1_000 + 2);
 
     await expect(store.purgeDeliveredBefore(NOW + 2)).resolves.toBe(1);
     expect(
@@ -1206,6 +1250,49 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         .prepare("SELECT COUNT(*) AS count FROM slack_workflow_traces")
         .get(),
     ).toEqual({ count: 0 });
+  });
+
+  it("retains a delivered row whose trace is still inside checkpoint overlap", async () => {
+    const { database, d1 } = databaseWithMigrations(true);
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-delivered-checkpoint-overlap";
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.000199",
+      now: NOW + 1,
+      reconcileAt: NOW + 1_000,
+    });
+    await store.recordSlackTrace(
+      {
+        traceId: "TrRetentionOverlap1",
+        deliveryId,
+        outcome: "success",
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      },
+      NOW + 2,
+    );
+    database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_activity_checkpoint_us = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(NOW * 1_000 + 20 * 60 * 1_000 * 1_000);
+
+    await expect(store.purgeDeliveredBefore(NOW + 2)).resolves.toBe(0);
+    await expect(store.get(deliveryId)).resolves.toMatchObject({
+      status: "delivered",
+      slackTraceId: "TrRetentionOverlap1",
+    });
   });
 
   it("retries a trigger ambiguity only after complete pre-send trace proof", async () => {

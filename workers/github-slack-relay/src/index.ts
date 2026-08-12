@@ -25,6 +25,7 @@ import {
   SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION,
   SlackDeliveryProtocolActivationConflictError,
   SlackProgressConflictError,
+  SlackReconciliationConflictError,
   type DeliveryStore,
   type QueueJob,
   type StoredDelivery,
@@ -75,7 +76,6 @@ interface SchedulerResult {
 interface RelaySigningConfiguration {
   active: string;
   next: string | null;
-  secrets: readonly string[];
 }
 
 function jsonResponse(body: Record<string, unknown>, status: number): Response {
@@ -465,19 +465,10 @@ async function relaySigningConfiguration(
     return {
       active: slot === "next" ? (next as string) : current,
       next,
-      secrets: next === null ? [current] : [current, next],
     };
   } catch {
     return null;
   }
-}
-
-async function verifyWithAnyRelayKey(
-  secrets: readonly string[],
-  verifier: (secret: string) => Promise<boolean>,
-): Promise<boolean> {
-  const results = await Promise.all(secrets.map((secret) => verifier(secret)));
-  return results.some(Boolean);
 }
 
 async function handleSlackControlRequest(
@@ -556,11 +547,7 @@ async function handleSlackControlRequest(
     if (receipt === null) {
       return jsonResponse({ error: "invalid_request" }, 400);
     }
-    if (
-      !(await verifyWithAnyRelayKey(signing.secrets, (secret) =>
-        verifySlackProgress(receipt, secret),
-      ))
-    ) {
+    if (!(await verifySlackProgress(receipt, signing.active))) {
       return jsonResponse({ error: "invalid_signature" }, 401);
     }
     try {
@@ -587,9 +574,7 @@ async function handleSlackControlRequest(
       return jsonResponse({ error: "invalid_request" }, 400);
     }
     if (
-      !(await verifyWithAnyRelayKey(signing.secrets, (secret) =>
-        verifySlackCheckpointRequest(checkpointRequest, secret),
-      ))
+      !(await verifySlackCheckpointRequest(checkpointRequest, signing.active))
     ) {
       return jsonResponse({ error: "invalid_signature" }, 401);
     }
@@ -609,11 +594,7 @@ async function handleSlackControlRequest(
   if (report === null) {
     return jsonResponse({ error: "invalid_request" }, 400);
   }
-  if (
-    !(await verifyWithAnyRelayKey(signing.secrets, (secret) =>
-      verifySlackReconciliation(report, secret),
-    ))
-  ) {
+  if (!(await verifySlackReconciliation(report, signing.active))) {
     return jsonResponse({ error: "invalid_signature" }, 401);
   }
   try {
@@ -643,8 +624,11 @@ async function handleSlackControlRequest(
       },
       200,
     );
-  } catch {
-    return jsonResponse({ error: "reconciliation_conflict" }, 409);
+  } catch (error) {
+    if (error instanceof SlackReconciliationConflictError) {
+      return jsonResponse({ error: "reconciliation_conflict" }, 409);
+    }
+    return jsonResponse({ error: "persistence_unavailable" }, 503);
   }
 }
 

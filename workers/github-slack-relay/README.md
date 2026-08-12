@@ -89,9 +89,11 @@ destination, five-minute freshness window and GitHub-only URL. It then passes a
 bounded formatted message to Slack's native `SendMessage` function. The Slack
 validator accepts `SLACK_RELAY_SIGNING_SECRET` and, only while a separately
 controlled transition is staged, `SLACK_RELAY_SIGNING_SECRET_NEXT`. The Worker
-and monitor understand the same two slots. This expand selects staged `NEXT`
-for new Worker and monitor traffic while retaining current for in-flight
-verification; it makes no removal or zero-loss claim without a proved drain.
+control plane and monitor both verify only staged `NEXT`.
+After current or `NEXT` admits an inbound relay, the Slack validator re-keys its
+progress authorization to `NEXT`, so every new callback and monitor trace is
+verifiable without recovering old current into GitHub. This expand makes no
+removal or zero-loss claim without a proved drain.
 
 `occurred_at` remains ISO 8601 inside the canonical signed record. At the final
 human-presentation boundary, the Deno app converts a valid value to
@@ -161,7 +163,9 @@ be stored under `SLACK_RELAY_SIGNING_SECRET` in both protected GitHub production
 environments. The rollout writes that value to each hosted runtime's distinct
 `NEXT` slot, deploys the Worker with `SLACK_RELAY_SIGNING_ACTIVE_SLOT=next`, and
 uses it for activation and monitor signatures. The old hosted current remains
-available only for in-flight compatibility and is never read back into GitHub.
+stored during expand, but only Slack accepts it for inbound in-flight relay
+compatibility; the Worker control plane accepts `NEXT` only. It is never read
+back into GitHub.
 
 Create or update values only through Wrangler's interactive prompt. Never use
 `--value` or put values in `.dev.vars`, command history, GitHub variables, logs
@@ -228,8 +232,10 @@ Production verification and deployment are owned by
 2. checks npm and Deno dependency signatures and advisories;
 3. verifies committed bindings, formats, lints, type-checks, runs both test
    suites, and creates a strict Worker dry-run bundle;
-4. applies remote D1 migrations and stages Cloudflare runtime `NEXT`;
-5. deploys the verified Worker revision with active slot `next` but delivery
+4. applies remote D1 migrations, reads the activation tuple, and refuses to
+   replace an already activated Worker with another SHA;
+5. stages Cloudflare runtime `NEXT` and deploys the verified Worker revision
+   with active slot `next` but delivery
    still closed;
 6. in a dependent job on the same SHA, stages Slack runtime `NEXT`, deploys the
    Slack app, verifies the protected triggers, and activates delivery.
@@ -243,6 +249,11 @@ attempt count, or issuing a trigger POST; the recovery cron also leaves durable
 delivery state untouched. Old-Worker writes to `accepted_by_slack` remain
 schema-compatible but an expand trigger immediately quarantines them with
 `legacy_unverified = 1`.
+
+The activation-tuple preflight accepts only the initial inactive state or an
+already activated exact revision. It therefore permits an exact-SHA rerun but
+blocks any later SHA before secret staging or Worker replacement. The separate
+contract must remove this expand-only guard together with the activation path.
 
 After the Worker deploy succeeds, the dependent protected Slack job uses the
 same checkout and SHA, stages Slack `NEXT`, deploys the app, and verifies the
@@ -305,17 +316,20 @@ both trigger/channel paths.
 
 ## Staged HMAC overlap
 
-The checked-in runtime accepts current and staged `NEXT` signatures in the
-Worker and Slack validator. Slack signs each callback with the same slot that
-authenticated its inbound record; the monitor selects one explicit active
-slot. This expand sets the Worker and monitor active slot to `next` only after
-Cloudflare `NEXT` is staged; protocol activation remains closed until Slack
-`NEXT`, app deployment and trigger inventory succeed. Do not overwrite current
-or remove either verifier as part of this change.
+The checked-in Slack validator accepts current and staged `NEXT` inbound relay
+signatures. After either one authenticates a relay, Slack issues its progress
+token and callbacks only with `NEXT`; the Worker control plane and monitor also
+verify only `NEXT`. This expand sets the Worker signer and monitor to `next` only
+after Cloudflare `NEXT` is staged; protocol activation remains closed until
+Slack `NEXT`, app deployment and trigger inventory succeed. A
+current-authenticated execution becomes correlatable at its first `NEXT`
+progress step. Do not overwrite either hosted current value as part of this
+change.
 
 A later reviewed contract must prove there
 are no nonlegacy `sending`, `accepted_by_slack`, `accepted_by_trigger`, or
-`send_started` records and no unsettled monitor traces signed under current.
+`send_started` records and no unsettled monitor traces lacking authenticated
+`NEXT` progress evidence.
 Only then may a separate change promote the already selected `NEXT` value to
 hosted current, run one authorized canary per channel, observe the full
 receipt/trace gate, and eventually remove the old slot. Without that drain
@@ -372,16 +386,25 @@ proves the next Slack execution, while every live attempt continues clamping
 the watermark. It persists correlated incomplete traces before advancing the checkpoint and
 extracts only bounded `delivery_id`, `trace_id`, outcome, timestamps, the
 send-boundary flag and the explicit pre-send-failure proof bit. A delivery is
-correlated only after the 14-field relay signature or the derived progress
-authorization verifies under current/`NEXT`, and the signed relay timestamp is
+correlated only after the 14-field relay signature verifies under an available
+monitor key or the derived `NEXT` progress authorization verifies, and the
+signed relay timestamp is
 within the validator's five-minute/60-second window around the Slack step
 activity itself. Rejected or replayed trigger inputs are ignored. Raw activities
 and private workflow inputs are never sent to D1 or logged. The checkpoint
 advances only after all pages and every normalized trace are durably accepted. A
 terminal error with an authenticated explicit failed validator or pre-send step
-and no send boundary is the sole automatic resend case. Success without a
+and no send boundary is the sole automatic resend case. If a `send_started` CAS
+committed but both callback responses were lost, the authenticated failed
+pre-send step proves that its dependent `SendMessage` never executed and permits
+the same safe retry. Success without a
 receipt, any post-boundary failure, missing proof, incomplete evidence or a
 conflicting trace fails closed.
+
+Retention is also checkpoint-aware: a receipt-confirmed row is purged only when
+its applied successful trace predates both the 30-day cutoff and the durable
+activity checkpoint minus the 20-minute overlap. A still-queryable Slack trace
+therefore cannot outlive the D1 delivery correlation it names.
 
 Migration `0004_confirm_slack_delivery.sql` is expand-only: it retains the old
 `accepted_at` column and `accepted_by_slack` value so the previously deployed

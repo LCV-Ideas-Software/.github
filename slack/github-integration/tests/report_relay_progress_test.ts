@@ -143,12 +143,12 @@ Deno.test("fails closed before network on malformed progress or a short secret",
   assert(calls === 0, "invalid progress reached the network");
 });
 
-Deno.test("rejects an independently invoked progress function and selects NEXT during rotation", async () => {
+Deno.test("rejects an independently invoked progress function and requires NEXT during rotation", async () => {
   let calls = 0;
   const forged = inputs("send_started");
   forged.progress_token = "a".repeat(64);
   assert(
-    !(await reportRelayProgress(forged, [SECRET], {
+    !(await reportRelayProgress(forged, SECRET, {
       now: () => NOW,
       fetchImpl: () => {
         calls += 1;
@@ -159,10 +159,22 @@ Deno.test("rejects an independently invoked progress function and selects NEXT d
   );
 
   const nextSecret = "deno-test-next-relay-signing-secret";
+  const currentAuthorized = await authorizedInputs("delivered", SECRET);
+  assert(
+    !(await reportRelayProgress(currentAuthorized, nextSecret, {
+      now: () => NOW,
+      fetchImpl: () => {
+        calls += 1;
+        return Promise.resolve(Response.json({ ok: true }));
+      },
+    })).ok,
+    "current-authorized progress was accepted after NEXT became mandatory",
+  );
+
   const rotated = await authorizedInputs("delivered", nextSecret);
   const result = await reportRelayProgress(
     rotated,
-    [SECRET, nextSecret],
+    nextSecret,
     {
       now: () => NOW,
       fetchImpl: async (_url, init) => {
@@ -178,7 +190,7 @@ Deno.test("rejects an independently invoked progress function and selects NEXT d
     },
   );
   assert(result.ok, "NEXT-authorized progress was rejected");
-  assert(calls === 1, "forged progress reached the network");
+  assert(calls === 1, "forged or current progress reached the network");
 });
 
 async function createProgressSignatureForTest(

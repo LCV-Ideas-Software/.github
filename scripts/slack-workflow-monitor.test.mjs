@@ -46,10 +46,12 @@ function jsonResponse(body, { status = 200, headers = {} } = {}) {
   });
 }
 
+function hmacWithSecret(canonical, secret) {
+  return createHmac("sha256", secret).update(canonical, "utf8").digest("hex");
+}
+
 function hmac(canonical) {
-  return createHmac("sha256", environment.SLACK_RELAY_SIGNING_SECRET)
-    .update(canonical, "utf8")
-    .digest("hex");
+  return hmacWithSecret(canonical, environment.SLACK_RELAY_SIGNING_SECRET);
 }
 
 function signedProgressInputs(
@@ -57,19 +59,21 @@ function signedProgressInputs(
   phase = "send_started",
   destination = "alerts",
   relayTimestamp = "1785830400",
+  secret = environment.SLACK_RELAY_SIGNING_SECRET,
 ) {
   return {
     delivery_id: deliveryId,
     destination,
     phase,
     relay_timestamp: relayTimestamp,
-    progress_token: hmac(
+    progress_token: hmacWithSecret(
       JSON.stringify([
         "slack_progress_authorization_v1",
         deliveryId,
         destination,
         relayTimestamp,
       ]),
+      secret,
     ),
   };
 }
@@ -78,6 +82,7 @@ function signedValidatorInputs(
   deliveryId,
   destination = "alerts",
   relayTimestamp = "1785830400",
+  secret = environment.SLACK_RELAY_SIGNING_SECRET,
 ) {
   const inputs = {
     source: "github",
@@ -98,7 +103,7 @@ function signedValidatorInputs(
   };
   return {
     ...inputs,
-    relay_signature: hmac(
+    relay_signature: hmacWithSecret(
       JSON.stringify([
         inputs.source,
         inputs.severity,
@@ -115,6 +120,7 @@ function signedValidatorInputs(
         inputs.destination,
         inputs.relay_timestamp,
       ]),
+      secret,
     ),
   };
 }
@@ -632,6 +638,68 @@ test("persists an incomplete trace so later pages cannot forget its send boundar
     },
   ]);
   assert.ok(!JSON.stringify(result).includes("must-not-leak"));
+});
+
+test("correlates a current-authenticated relay through its NEXT-only progress evidence", () => {
+  const created = Date.parse("2026-08-04T08:00:00.000Z") * 1_000;
+  const oldCurrentSecret = "monitor-test-only-old-current-signing-secret";
+  const deliveryId = "delivery-current-inbound-next-progress";
+  const result = reconcileSlackActivities(
+    [
+      {
+        level: "info",
+        event_type: "workflow_execution_started",
+        created,
+        trace_id: "TrCurrentInboundNextProgress1",
+        payload: {},
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 1,
+        trace_id: "TrCurrentInboundNextProgress1",
+        payload: {
+          exec_outcome: "Success",
+          inputs: signedValidatorInputs(
+            deliveryId,
+            "alerts",
+            "1785830400",
+            oldCurrentSecret,
+          ),
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_step_execution_result",
+        created: created + 2,
+        trace_id: "TrCurrentInboundNextProgress1",
+        payload: {
+          exec_outcome: "Success",
+          inputs: signedProgressInputs(deliveryId),
+        },
+      },
+      {
+        level: "info",
+        event_type: "workflow_execution_result",
+        created: created + 3,
+        trace_id: "TrCurrentInboundNextProgress1",
+        payload: { exec_outcome: "Success" },
+      },
+    ],
+    [environment.SLACK_RELAY_SIGNING_SECRET],
+  );
+
+  assert.deepEqual(result.traces, [
+    {
+      trace_id: "TrCurrentInboundNextProgress1",
+      delivery_id: deliveryId,
+      outcome: "success",
+      send_boundary_reached: true,
+      pre_send_failure_proven: false,
+      started_at_us: created,
+      completed_at_us: created + 3,
+    },
+  ]);
 });
 
 test("persists explicit pre-send failure proof before the terminal result arrives", () => {

@@ -168,22 +168,36 @@ evidence is the execution trail recorded in
   previously deployed Worker; its in-window acceptances are trigger-quarantined.
   Production rollout is now one same-SHA workflow. Its required predecessor
   verifies both the Worker and the complete Slack app candidate before the
-  serialized migration, Cloudflare `NEXT` staging, inactive Worker deploy,
+  serialized migration, activation-tuple preflight, Cloudflare `NEXT` staging,
+  inactive Worker deploy,
   Slack `NEXT` staging, Slack deploy, protected-trigger inventory, and
   activation. The same newly generated
   value must first be stored under `SLACK_RELAY_SIGNING_SECRET` in both protected
   GitHub environments; the jobs write it only in request bodies to the two
   external `NEXT` slots and never recover or log the old current value. The
-  Worker and monitor select `NEXT` for new traffic while both hosted runtimes
-  retain current as an in-flight verifier. A `NEXT`-key HMAC binds the exact main
+  Worker and monitor select `NEXT` for new traffic. Both hosted stores retain
+  current during expand, but only the Slack validator accepts it for inbound
+  relay compatibility; the Worker control plane accepts `NEXT` only. A relay
+  admitted by either Slack verifier receives progress authorization and
+  callbacks only under `NEXT`, so the monitor correlates it without recovering
+  old current into GitHub. Before either hosted deploy, the activation-tuple
+  preflight permits only the initial inactive state or the already activated
+  exact SHA, preventing a later revision from replacing the live Worker until a
+  reviewed contract removes the expand latch. A
+  `NEXT`-key HMAC binds the exact main
   SHA to the Worker's immutable version tag, proves the expanded schema, and
   performs a one-way activation CAS that persists an activation ID derived from
   that SHA and schema. One byte-identical retry can confirm a response lost after
   CAS without another mutation, while a new ID, changed tuple, post-contract
   request, partial deploy, wrong key/SHA, or downgrade remains closed without a
-  Slack POST or D1 delivery attempt. Ambiguous D1 writes now return retryable 5xx,
-  competing receipt/progress writes converge only after an exact reread, late
-  trace evidence is merged, and delivered rows without a Slack trace are retained.
+  Slack POST or D1 delivery attempt. Deterministic reconciliation conflicts
+  return 409 while persistence failure or a response lost after a write returns
+  retryable 503. Competing receipt/progress writes converge only after an exact
+  reread, and authenticated proof that a failed pre-send progress step never
+  reached `SendMessage` safely releases even a locally recorded `send_started`
+  CAS. Late trace evidence is merged, delivered rows without a Slack trace are
+  retained, and purging cannot cross the durable activity checkpoint minus its
+  overlap window.
   Terminally contradictory traces are rejected before any reconciliation
   mutation; empty activity scans cannot advance to wall clock; D1 causally clamps
   the monitor checkpoint behind uncorrelated live attempts; and the known ID has

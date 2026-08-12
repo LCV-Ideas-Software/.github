@@ -141,17 +141,24 @@ export async function verifyRelayMessageWithSecrets(
   return results.some(Boolean);
 }
 
-export async function relayMessageSigningSecret(
+export async function relayProgressSigningSecret(
   secrets: readonly string[],
   inputs: RelayMessageInputs,
   nowSeconds = Math.floor(Date.now() / 1_000),
 ): Promise<string | null> {
   const candidates = secrets.slice(0, 2);
-  const results = await Promise.all(
-    candidates.map((secret) => verifyRelayMessage(secret, inputs, nowSeconds)),
-  );
-  const index = results.findIndex(Boolean);
-  return index < 0 ? null : candidates[index] ?? null;
+  const next = candidates[1];
+  if (
+    candidates.length !== 2 ||
+    typeof next !== "string" ||
+    new TextEncoder().encode(next).byteLength < 32 ||
+    candidates[0] === next
+  ) {
+    return null;
+  }
+  return await verifyRelayMessageWithSecrets(candidates, inputs, nowSeconds)
+    ? next
+    : null;
 }
 
 export function canonicalProgressAuthorization(
@@ -320,7 +327,10 @@ export default SlackFunction(
       env["SLACK_RELAY_SIGNING_SECRET_NEXT"] ?? "",
     ];
     const typedInputs = inputs as RelayMessageInputs;
-    const signingSecret = await relayMessageSigningSecret(secrets, typedInputs);
+    const signingSecret = await relayProgressSigningSecret(
+      secrets,
+      typedInputs,
+    );
     if (signingSecret === null) {
       return { error: "GitHub relay authentication failed" };
     }

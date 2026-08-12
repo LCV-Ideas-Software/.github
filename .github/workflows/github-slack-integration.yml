@@ -16,6 +16,8 @@ on:
       - "scripts/slack-workflow-monitor.test.mjs"
       - "scripts/provision-cloudflare-relay-secret.mjs"
       - "scripts/provision-slack-relay-secret.mjs"
+      - "scripts/slack-delivery-protocol-preflight.mjs"
+      - "scripts/slack-delivery-protocol-preflight.test.mjs"
       - "scripts/slack-relay-secret-rollout.test.mjs"
       - "slack/github-integration/**"
       - "workers/github-slack-relay/**"
@@ -88,6 +90,7 @@ jobs:
           scripts/github-slack-webhook-redelivery.test.mjs
           scripts/slack-workflow-monitor.test.mjs
           scripts/slack-relay-secret-rollout.test.mjs
+          scripts/slack-delivery-protocol-preflight.test.mjs
 
       - name: Verify Cloudflare relay
         working-directory: workers/github-slack-relay
@@ -159,6 +162,21 @@ jobs:
           workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
             --remote \
             --config workers/github-slack-relay/wrangler.jsonc
+
+      - name: Refuse to replace an already activated relay revision
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          workers/github-slack-relay/node_modules/.bin/wrangler d1 execute github-slack-alerts-db \
+            --remote \
+            --config workers/github-slack-relay/wrangler.jsonc \
+            --command "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1" \
+            --json \
+            | node scripts/slack-delivery-protocol-preflight.mjs
 
       - name: Stage the new relay signer as Cloudflare NEXT
         env:

@@ -57,6 +57,21 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
     "          scripts/slack-workflow-monitor.test.mjs\n",
     "",
   );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "          scripts/slack-delivery-protocol-preflight.test.mjs\n",
+    "",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "      - name: Refuse to replace an already activated relay revision",
+    "      - name: Skip the activated relay revision preflight",
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1",
+    "SELECT 0",
+  );
 });
 
 test("every required workflow keeps pull_request and merge_group exact", () => {

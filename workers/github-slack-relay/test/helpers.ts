@@ -4,6 +4,8 @@ import type { SlackWorkflowPayload } from "../src/domain";
 import {
   SlackDeliveryProtocolActivationConflictError,
   SlackProgressConflictError,
+  SlackReconciliationConflictError,
+  SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US,
   type DeliveryInput,
   type DeliveryStatus,
   type DeliveryStore,
@@ -33,6 +35,8 @@ type MemorySlackTrace = {
   outcome: SlackTraceReconciliation["outcome"];
   sendBoundaryReached: boolean;
   preSendFailureProven: boolean;
+  startedAtUs: number;
+  completedAtUs: number | null;
   applied: boolean;
 };
 
@@ -439,17 +443,29 @@ export class MemoryDeliveryStore implements DeliveryStore {
     trace: SlackTraceReconciliation,
     now: number,
   ): Promise<void> {
-    const delivery = this.require(trace.deliveryId);
+    if (trace.outcome !== "pending" && trace.completedAtUs === null) {
+      throw new SlackReconciliationConflictError(
+        "terminal_slack_trace_missing_completion",
+      );
+    }
+    const delivery = this.deliveries.get(trace.deliveryId);
+    if (delivery === undefined) {
+      throw new SlackReconciliationConflictError("delivery_not_found");
+    }
     const previous = this.slackTraces.get(trace.traceId);
     if (previous !== undefined && previous.deliveryId !== trace.deliveryId) {
-      throw new Error("slack_trace_delivery_conflict");
+      throw new SlackReconciliationConflictError(
+        "slack_trace_delivery_conflict",
+      );
     }
     if (
       previous !== undefined &&
       previous.outcome !== "pending" &&
       previous.outcome !== trace.outcome
     ) {
-      throw new Error("slack_trace_outcome_conflict");
+      throw new SlackReconciliationConflictError(
+        "slack_trace_outcome_conflict",
+      );
     }
     const sendBoundaryReached =
       (previous?.sendBoundaryReached ?? false) || trace.sendBoundaryReached;
@@ -466,6 +482,11 @@ export class MemoryDeliveryStore implements DeliveryStore {
       outcome: trace.outcome,
       sendBoundaryReached,
       preSendFailureProven,
+      startedAtUs: Math.min(
+        previous?.startedAtUs ?? trace.startedAtUs,
+        trace.startedAtUs,
+      ),
+      completedAtUs: trace.completedAtUs ?? previous?.completedAtUs ?? null,
       applied: previous?.applied ?? false,
     };
     this.slackTraces.set(trace.traceId, effectiveTrace);
@@ -511,8 +532,8 @@ export class MemoryDeliveryStore implements DeliveryStore {
     }
     if (
       effectiveTrace.sendBoundaryReached ||
-      delivery.status === "send_started" ||
-      (delivery.legacyUnverified && !effectiveTrace.preSendFailureProven)
+      (!effectiveTrace.preSendFailureProven &&
+        (delivery.status === "send_started" || delivery.legacyUnverified))
     ) {
       delivery.status = "manual_review";
       delivery.lastError = "slack_workflow_failed_after_send_boundary";
@@ -549,6 +570,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
     if (
       delivery.status === "accepted_by_trigger" ||
       delivery.status === "accepted_by_slack" ||
+      delivery.status === "send_started" ||
       retryableManualAmbiguity ||
       sameTraceMayReleaseMissingProof
     ) {
@@ -572,6 +594,11 @@ export class MemoryDeliveryStore implements DeliveryStore {
   }
 
   async advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number> {
+    if (!Number.isSafeInteger(checkpointUs) || checkpointUs < 0) {
+      throw new SlackReconciliationConflictError(
+        "invalid_slack_activity_checkpoint",
+      );
+    }
     const unresolved = [...this.deliveries.values()]
       .filter(
         (delivery) =>
@@ -600,14 +627,29 @@ export class MemoryDeliveryStore implements DeliveryStore {
 
   async purgeDeliveredBefore(cutoff: number): Promise<number> {
     let purged = 0;
+    const retainedActivityBoundary = Math.max(
+      0,
+      this.slackActivityCheckpoint - SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US,
+    );
     for (const [deliveryId, delivery] of this.deliveries) {
+      const trace =
+        delivery.slackTraceId === null
+          ? undefined
+          : this.slackTraces.get(delivery.slackTraceId);
       if (
         delivery.status === "delivered" &&
         delivery.deliveredAt !== null &&
         delivery.slackTraceId !== null &&
-        delivery.deliveredAt < cutoff
+        delivery.deliveredAt < cutoff &&
+        trace?.deliveryId === deliveryId &&
+        trace.outcome === "success" &&
+        trace.applied &&
+        trace.completedAtUs !== null &&
+        trace.startedAtUs < retainedActivityBoundary &&
+        trace.completedAtUs < retainedActivityBoundary
       ) {
         this.deliveries.delete(deliveryId);
+        this.slackTraces.delete(delivery.slackTraceId);
         purged += 1;
       }
     }

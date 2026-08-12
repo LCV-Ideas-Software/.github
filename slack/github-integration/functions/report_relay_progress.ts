@@ -138,15 +138,14 @@ function validatedProgress(
 
 export async function reportRelayProgress(
   inputs: RelayProgressInputs,
-  secrets: readonly string[] | string,
+  signingSecret: string,
   options: {
     fetchImpl?: typeof fetch;
     now?: () => number;
   } = {},
 ): Promise<{ ok: true; message: string } | { ok: false }> {
   const now = (options.now ?? Date.now)();
-  const candidates = typeof secrets === "string" ? [secrets] : secrets;
-  const secret = await authorizedSigningSecret(inputs, candidates, now);
+  const secret = await authorizedSigningSecret(inputs, [signingSecret], now);
   if (secret === null) return { ok: false };
   const progress = validatedProgress(inputs, now);
   if (progress === null) return { ok: false };
@@ -237,10 +236,7 @@ export default SlackFunction(
   async ({ inputs, env }) => {
     const result = await reportRelayProgress(
       inputs as RelayProgressInputs,
-      [
-        env["SLACK_RELAY_SIGNING_SECRET"] ?? "",
-        env["SLACK_RELAY_SIGNING_SECRET_NEXT"] ?? "",
-      ],
+      env["SLACK_RELAY_SIGNING_SECRET_NEXT"] ?? "",
     );
     return result.ok
       ? { outputs: { message: result.message } }

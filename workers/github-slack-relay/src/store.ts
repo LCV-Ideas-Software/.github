@@ -78,6 +78,7 @@ export interface StoredDelivery {
 
 export const SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION =
   "0004_confirm_slack_delivery";
+export const SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US = 20 * 60 * 1_000 * 1_000;
 export type SlackDeliveryProtocolActivationResult =
   "applied" | "already_applied";
 
@@ -99,6 +100,13 @@ export class SlackProgressConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SlackProgressConflictError";
+  }
+}
+
+export class SlackReconciliationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlackReconciliationConflictError";
   }
 }
 
@@ -916,12 +924,14 @@ export class D1DeliveryStore implements DeliveryStore {
     now: number,
   ): Promise<void> {
     if (trace.outcome !== "pending" && trace.completedAtUs === null) {
-      throw new Error("terminal_slack_trace_missing_completion");
+      throw new SlackReconciliationConflictError(
+        "terminal_slack_trace_missing_completion",
+      );
     }
 
     const delivery = await this.get(trace.deliveryId);
     if (delivery === null) {
-      throw new Error("delivery_not_found");
+      throw new SlackReconciliationConflictError("delivery_not_found");
     }
 
     const existingTrace = await this.#database
@@ -943,14 +953,18 @@ export class D1DeliveryStore implements DeliveryStore {
       existingTrace !== null &&
       existingTrace.delivery_id !== trace.deliveryId
     ) {
-      throw new Error("slack_trace_delivery_conflict");
+      throw new SlackReconciliationConflictError(
+        "slack_trace_delivery_conflict",
+      );
     }
     if (
       existingTrace !== null &&
       existingTrace.outcome !== "pending" &&
       existingTrace.outcome !== trace.outcome
     ) {
-      throw new Error("slack_trace_outcome_conflict");
+      throw new SlackReconciliationConflictError(
+        "slack_trace_outcome_conflict",
+      );
     }
     await this.#database
       .prepare(
@@ -1039,7 +1053,7 @@ export class D1DeliveryStore implements DeliveryStore {
 
     const current = await this.get(trace.deliveryId);
     if (current === null) {
-      throw new Error("delivery_not_found");
+      throw new SlackReconciliationConflictError("delivery_not_found");
     }
 
     const sameTraceMayReleaseMissingProof =
@@ -1124,8 +1138,8 @@ export class D1DeliveryStore implements DeliveryStore {
 
     const mayHaveSent =
       sendBoundaryReached ||
-      current.status === "send_started" ||
-      (current.legacyUnverified && !preSendFailureProven);
+      (!preSendFailureProven &&
+        (current.status === "send_started" || current.legacyUnverified));
     if (mayHaveSent) {
       await this.markManualReview(
         trace.deliveryId,
@@ -1166,7 +1180,9 @@ export class D1DeliveryStore implements DeliveryStore {
              slack_trace_id = ?, legacy_unverified = 0
          WHERE delivery_id = ?
            AND (
-             status IN ('accepted_by_slack', 'accepted_by_trigger')
+             status IN (
+               'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+             )
              OR (
                status = 'manual_review'
                AND (
@@ -1237,7 +1253,9 @@ export class D1DeliveryStore implements DeliveryStore {
 
   async advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number> {
     if (!Number.isSafeInteger(checkpointUs) || checkpointUs < 0) {
-      throw new Error("invalid_slack_activity_checkpoint");
+      throw new SlackReconciliationConflictError(
+        "invalid_slack_activity_checkpoint",
+      );
     }
     const state = await this.#database
       .prepare(
@@ -1285,9 +1303,31 @@ export class D1DeliveryStore implements DeliveryStore {
          WHERE status = 'delivered'
            AND delivered_at IS NOT NULL
            AND slack_trace_id IS NOT NULL
-           AND delivered_at < ?`,
+           AND delivered_at < ?
+           AND EXISTS (
+             SELECT 1
+             FROM slack_workflow_traces AS trace
+             JOIN relay_state AS state ON state.singleton_id = 1
+             WHERE trace.trace_id = deliveries.slack_trace_id
+               AND trace.delivery_id = deliveries.delivery_id
+               AND trace.outcome = 'success'
+               AND trace.applied_at IS NOT NULL
+               AND trace.completed_at_us IS NOT NULL
+               AND trace.started_at_us < MAX(
+                 0,
+                 state.slack_activity_checkpoint_us - ?
+               )
+               AND trace.completed_at_us < MAX(
+                 0,
+                 state.slack_activity_checkpoint_us - ?
+               )
+           )`,
       )
-      .bind(cutoff)
+      .bind(
+        cutoff,
+        SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US,
+        SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US,
+      )
       .run();
 
     return result.meta.changes ?? 0;

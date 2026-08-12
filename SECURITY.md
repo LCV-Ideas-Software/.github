@@ -48,13 +48,22 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   lost ID stays in manual review until an exact, audited, explicitly authorized one-time recovery.
   Expand rollout starts with delivery disabled and is serialized in one exact-SHA workflow. Queue
   consumers back off without D1 attempts or a Slack POST while Cloudflare and Slack receive the same
-  new value only in their runtime `NEXT` slots. The new Worker and monitor select `NEXT`; both hosted
-  runtimes retain the old current key only for in-flight compatibility. Only after the Slack deploy
+  new value only in their runtime `NEXT` slots. The new Worker control plane and monitor accept only
+  `NEXT`; both hosted stores retain the old current key during expand, but only the Slack validator
+  accepts it for inbound relay compatibility. Slack issues every new progress authorization and
+  callback only with `NEXT`, so current never has to be recovered into GitHub. After migration and
+  before either hosted deploy, a D1 preflight permits only the initial inactive tuple or the already
+  activated exact SHA; a later revision cannot replace the Worker until the reviewed contract removes
+  that expand guard. Only after the Slack deploy
   and exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack revision, and expanded
   schema and perform the only permitted false-to-true CAS while persisting an immutable activation
   ID, revision, and schema. One byte-identical retry may confirm the same CAS read-only after a lost
   response; a new ID, changed tuple, post-contract request, downgrade, wrong revision, wrong key,
-  partial deploy, or incomplete schema fails closed;
+  partial deploy, or incomplete schema fails closed. Deterministic reconciliation conflicts are 409;
+  ambiguous persistence is retryable 503. A retry is released only by authenticated proof that the
+  failed pre-send step did not execute `SendMessage`, even if its D1 `send_started` CAS committed, and
+  delivered rows remain retained until their applied successful trace is older than both retention
+  cutoff and the durable activity-checkpoint overlap;
 - external credentials assigned by purpose to protected environments restricted to `main`.
   `SLACK_SERVICE_TOKEN` and the production relay signer are held in `slack-production`. Before the
   receipt-protocol expand rollout, the same newly generated signer must be provisioned under the

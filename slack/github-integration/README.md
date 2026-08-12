@@ -41,13 +41,16 @@ The validator also issues a five-minute, domain-separated progress token bound
 to `delivery_id`, destination, and the original relay timestamp. The progress
 function must verify that token before it can sign either callback, so invoking
 the custom function independently cannot manufacture delivery evidence. During a
-staged rotation, the callback uses whichever of the current or `NEXT` keys
-validated the original relay.
+staged rotation, current or `NEXT` may authenticate the inbound relay, but the
+validator issues the progress token only with the distinct staged `NEXT` key.
+Both progress callbacks therefore use `NEXT`.
 
-The Worker and activity monitor also understand both slots. This expand selects
-the newly staged `NEXT` signer for new Worker and monitor traffic but preserves
-old current for callbacks already in flight. A later contract requires a
-separately reviewed drain and canary gate before promotion or removal.
+The Worker control plane and activity monitor both verify only staged `NEXT`. A
+current-authenticated execution becomes correlatable at its first `NEXT`
+progress step without recovering old current into GitHub. If an execution never
+produces authenticated `NEXT` progress, it stays unresolved and cannot authorize
+an automatic retry. A later contract requires a separately reviewed drain and
+canary gate before promotion or removal.
 
 Production deployment is serialized inside one `GitHub Slack Integration`
 workflow and one exact `main` SHA. Its required predecessor checks the Slack

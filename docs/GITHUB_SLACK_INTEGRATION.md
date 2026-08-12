@@ -109,8 +109,12 @@ an old valid HMAC cannot be replayed into a later trace.
 The validator emits a domain-separated progress token bound to the validated
 `delivery_id`, destination and original timestamp. Both progress steps must
 verify it, so an independently invoked Slack custom function cannot sign
-arbitrary evidence. During key overlap it remembers whether current or `NEXT`
-authenticated the original relay and uses that same key for the callback.
+arbitrary evidence. During key overlap current or `NEXT` may authenticate the
+inbound relay, but only the separately staged `NEXT` key can issue the progress
+token or either callback. The GitHub monitor therefore needs only `NEXT` to
+correlate a current-authenticated execution after its first progress step. An
+execution that never produces authenticated `NEXT` progress remains unresolved
+and cannot authorize an automatic retry.
 
 The old current value exists only in the Cloudflare Secrets Store and deployed
 Slack app; it is encrypted and cannot be recovered for GitHub. Before this
@@ -121,8 +125,11 @@ value as a write-only source for each hosted runtime's distinct `NEXT` slot.
 After Cloudflare `NEXT` is staged, the new Worker selects `NEXT` but remains
 protocol-inactive; after Slack `NEXT` is staged, the app is deployed and the
 trigger inventory passes, activation and the monitor also sign with `NEXT`.
-Both hosted runtimes retain current for in-flight compatibility. Neither value
-is committed, stored as a repository variable, passed in argv, or logged.
+Both hosted stores retain current during expand, but only the Slack validator
+accepts it for inbound relay compatibility; the Worker control plane and monitor
+accept `NEXT` only. GitHub deliberately does not recover or store current.
+Neither value is committed, stored as a repository variable, passed in argv, or
+logged.
 
 ### Human-facing date and time
 
@@ -319,10 +326,13 @@ and the [Slack CLI trigger reference][slack-trigger].
 
 ### Staged relay HMAC overlap
 
-The Worker, Slack validator and monitor understand current and distinct `NEXT`
-slots. Slack signs each callback with the same key that authenticated the
-original record, while the Worker verifies both. This receipt-protocol expand
-selects `NEXT` for all new Worker and monitor traffic without deleting current:
+The Slack validator accepts current and distinct `NEXT` inbound relay
+signatures. After either verifier authenticates a relay, the validator issues
+its progress authorization only with `NEXT`; the progress function accepts only
+that authorization and signs every new callback with `NEXT`. The Worker control
+plane and GitHub monitor both verify only active `NEXT`. This receipt-protocol
+expand therefore correlates current-authenticated in-flight records through
+their first `NEXT` progress step without recovering old current into GitHub:
 
 1. before merge, generate one new value and store the same value under the
    final GitHub secret name `SLACK_RELAY_SIGNING_SECRET` in both protected
@@ -333,8 +343,10 @@ selects `NEXT` for all new Worker and monitor traffic without deleting current:
    rewrites `NEXT` before deploying the Worker with active slot `next`;
 4. delivery remains closed while the Slack job always sets hosted `NEXT`,
    verifies its name, redeploys the app, and verifies both protected triggers;
-5. activation and the monitor sign only with the new GitHub value, mapped to
-   `NEXT`; both runtimes still accept current callbacks already in flight;
+5. activation, every new progress callback, and the monitor sign only with the
+   new GitHub value mapped to `NEXT`; both hosted stores retain current, but only
+   the Slack validator accepts it as an inbound verifier and current alone
+   cannot create new progress evidence;
 6. only a separate reviewed contract may promote that same value to hosted
    current, prove the old-key drain and authorized canaries, remove the old
    verifier and `NEXT`, and remove the temporary Cloudflare GitHub copy.
@@ -473,7 +485,11 @@ ingestion therefore requires an intentional webhook action as well.
   dependency audit in the same required predecessor. Only after that combined
   check succeeds does it apply the expand-only D1 migration, stage Cloudflare
   runtime `NEXT`, and deploy the relay from `main` with `--tag "$GITHUB_SHA"`
-  when the gate is `true`. Its dependent `deploy_slack` job then stages Slack
+  when the gate is `true`. After migration and before either hosted deploy, it
+  reads the D1 activation tuple and permits only the initial inactive state or
+  the already activated exact SHA. A later SHA therefore fails before secret
+  staging or Worker replacement until the reviewed contract removes this
+  expand-only preflight. Its dependent `deploy_slack` job then stages Slack
   runtime `NEXT`, deploys the same checked-out SHA with an explicitly addressed,
   checksum-verified Slack CLI, and verifies both protected trigger IDs against
   the exact app and workspace. It streams the structured
@@ -523,10 +539,13 @@ return read-only `already_applied` while confirmation is open. That is
 idempotent confirmation of the original CAS, not replay of activation; it
 cannot change time, attempts, or any delivery. A new ID, changed tuple, wrong
 key/SHA/schema, incomplete schema, downgrade, or missing activation record fails
-closed. Once rollout evidence is complete, a separately reviewed contract
-change must irreversibly close confirmation and remove the workflow activation
-step and endpoint before any later integration-path deploy. After contract,
-even the original tuple is rejected; there is no public status endpoint.
+closed. The deployment preflight independently refuses to replace an already
+activated revision with any other SHA; an exact-SHA workflow rerun remains
+allowed. Once rollout evidence is complete, a separately reviewed contract
+change must irreversibly close confirmation and remove the workflow preflight,
+activation step, and endpoint before any later integration-path deploy. After
+contract, even the original activation tuple is rejected; there is no public
+status endpoint.
 
 Slack's official guidance for these mechanisms is available in [Deploying to
 Slack][slack-deploy], [Slack CLI CI/CD authorization][slack-cli-auth], and
@@ -619,8 +638,10 @@ Monitoring and recovery are layered:
   `claimForSlack` dispatch claims. This is a processing-claim ceiling, not a
   guarantee that 25 Slack HTTP POSTs occurred; a claimed cycle can fail while
   reading configuration or generating the signature before any POST;
-- only receipt-confirmed `delivered` rows are deleted after 30 days; trigger
-  acceptances, legacy-unverified and manual-review rows are retained;
+- only receipt-confirmed `delivered` rows are deleted after 30 days, and only
+  when their applied successful trace also predates the durable activity
+  checkpoint minus its 20-minute overlap. Trigger acceptances,
+  legacy-unverified and manual-review rows are retained;
 - the scheduled Slack monitor obtains an authenticated D1 watermark, queries
   `apps.activities.list` at `info` level every 15 minutes, follows every
   pagination cursor in ascending timestamp order, and uses a 20-minute
@@ -632,11 +653,15 @@ Monitoring and recovery are layered:
   correlated traces are persisted before the watermark advances, so an
   arbitrarily late-indexed terminal observation cannot be skipped and cannot forget an earlier
   successful send-boundary step. The monitor correlates a delivery only from a
-  validator input whose 14-field relay HMAC verifies, or from a progress input
-  whose authorization token verifies, under current/`NEXT`; rejected or
-  unauthenticated trigger inputs are ignored. A terminal error is retryable only
-  when that authenticated trace also contains an explicit failed validator or
-  pre-send step; absence of a boundary event alone remains ambiguous;
+  validator input whose 14-field relay HMAC verifies under the monitor's
+  available key, or from a progress input whose `NEXT` authorization token
+  verifies. A relay admitted by hosted current becomes correlatable at its first
+  `NEXT` progress step; rejected or unauthenticated trigger inputs are ignored.
+  A terminal error is retryable only when that authenticated trace also contains
+  an explicit failed validator or pre-send step; absence of a boundary event
+  alone remains ambiguous. If a pre-send progress CAS committed but both HTTP
+  responses were lost, the authenticated failed step proves that its dependent
+  `SendMessage` never ran and safely overrides the local `send_started` marker;
 - only bounded `delivery_id`, `trace_id`, outcome, send-boundary flag,
   explicit pre-send-failure proof bit and microsecond timestamps leave the
   monitor. The complete activities
@@ -805,8 +830,10 @@ Before merge, both protected GitHub environments must contain the same newly
 generated value under `SLACK_RELAY_SIGNING_SECRET`. The rollout maps it to the
 external `NEXT` slot in Cloudflare and Slack; activation and the protected
 monitor map that GitHub name to `SLACK_RELAY_SIGNING_SECRET_NEXT` and explicitly
-select `next`. The old external current value remains verifier-only for
-in-flight records and is neither required nor recoverable in GitHub.
+select `next`. The old Slack current value remains an inbound verifier for
+in-flight records; the old Cloudflare binding remains staged but is not accepted
+by the Worker control plane. Neither old value is required or recoverable in
+GitHub.
 
 ## Verification checklist
 

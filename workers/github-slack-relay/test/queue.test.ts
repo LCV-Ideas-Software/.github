@@ -641,6 +641,24 @@ describe("scheduled recovery and retention", () => {
       deliveredAt: NOW - 29 * day,
       slackTraceId: "TrRecentDelivered1",
     });
+    for (const [deliveryId, traceId, completedAt] of [
+      ["old-delivered", "TrOldDelivered1", NOW - 31 * day],
+      ["recent-delivered", "TrRecentDelivered1", NOW - 29 * day],
+    ] as const) {
+      await store.recordSlackTrace(
+        {
+          traceId,
+          deliveryId,
+          outcome: "success",
+          sendBoundaryReached: true,
+          preSendFailureProven: false,
+          startedAtUs: completedAt * 1_000 - 1,
+          completedAtUs: completedAt * 1_000,
+        },
+        completedAt,
+      );
+    }
+    await store.advanceSlackActivityCheckpoint(NOW * 1_000);
     store.seed("old-trigger-accepted", "accepted_by_trigger", NOW - 60 * day, {
       legacyUnverified: true,
     });

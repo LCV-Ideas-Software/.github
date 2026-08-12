@@ -1,7 +1,7 @@
 import {
   formatRelayMessage,
   RelayMessageInputs,
-  relayMessageSigningSecret,
+  relayProgressSigningSecret,
   signProgressAuthorization,
   signRelayMessage,
   verifyRelayMessage,
@@ -106,15 +106,41 @@ Deno.test("accepts the current or staged next secret during verifier overlap", a
     )),
     "unknown secret was accepted during rotation",
   );
-  assert(
-    await relayMessageSigningSecret([TEST_KEY, nextTestKey], next, NOW) ===
-      nextTestKey,
-    "validator did not retain the key that authenticated the relay",
-  );
   const progressToken = await signProgressAuthorization(nextTestKey, next);
   assert(
     /^[0-9a-f]{64}$/.test(progressToken),
     "validator did not issue a bounded progress authorization",
+  );
+});
+
+Deno.test("uses staged NEXT for progress after authenticating either inbound verifier", async () => {
+  const nextTestKey = testKey(0x02);
+  for (const inboundSecret of [TEST_KEY, nextTestKey]) {
+    const value = inputs();
+    value.relay_signature = await signRelayMessage(inboundSecret, value);
+    assert(
+      await relayProgressSigningSecret(
+        [TEST_KEY, nextTestKey],
+        value,
+        NOW,
+      ) === nextTestKey,
+      "progress did not select the staged NEXT signer",
+    );
+  }
+
+  const currentOnly = inputs();
+  currentOnly.relay_signature = await signRelayMessage(TEST_KEY, currentOnly);
+  assert(
+    await relayProgressSigningSecret([TEST_KEY], currentOnly, NOW) === null,
+    "progress was authorized without a distinct staged NEXT signer",
+  );
+  assert(
+    await relayProgressSigningSecret(
+      [TEST_KEY, TEST_KEY],
+      currentOnly,
+      NOW,
+    ) === null,
+    "progress accepted identical current and NEXT signers",
   );
 });
 
