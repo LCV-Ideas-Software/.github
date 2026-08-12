@@ -1449,7 +1449,6 @@ test("leaves correlated errors to durable relay novelty and retains uncorrelated
       },
     ],
     [],
-    created,
   );
 
   assert.equal(recovered.errors, 1);
