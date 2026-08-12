@@ -1,5 +1,12 @@
-import { randomBytes } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,12 +21,14 @@ const WRANGLER_ENTRYPOINT = join(
   "bin",
   "wrangler.js",
 );
-const MIGRATION_NAMES = Object.freeze([
+const TARGET_MIGRATION_NAME = "0004_confirm_slack_delivery.sql";
+const BASELINE_MIGRATION_NAMES = Object.freeze([
   "0001_initial.sql",
   "0002_add_destination.sql",
   "0003_rename_delivery_acceptance.sql",
-  "0004_confirm_slack_delivery.sql",
+  TARGET_MIGRATION_NAME,
 ]);
+const MIGRATION_NAME_PATTERN = /^(?<number>[0-9]+)_[0-9A-Za-z_-]+\.sql$/u;
 const KNOWN_LOSS_ID = "de345e40-95b1-11f1-8d38-fac15f0bb4cd";
 const ISSUE_COMMENT_PREFIX =
   "https://github.com/LCV-Ideas-Software/.github/issues/171#issuecomment-";
@@ -31,6 +40,8 @@ const PRODUCTION_DATABASE_ID = "cf070eb0-32d9-4ee0-9516-d469833cdc77";
 const API_TIMEOUT_MS = 15_000;
 const WRANGLER_TIMEOUT_MS = 120_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
+const CREATE_RECONCILIATION_ATTEMPTS = 5;
+const CREATION_CLOCK_SKEW_MS = 5 * 60_000;
 const WRANGLER_ENV_KEYS = Object.freeze([
   "APPDATA",
   "FORCE_COLOR",
@@ -56,13 +67,6 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function safeIdentifierPart(value, fallback, maximumLength) {
-  const normalized = String(value ?? "")
-    .replace(/[^0-9A-Za-z-]/gu, "")
-    .slice(0, maximumLength);
-  return normalized === "" ? fallback : normalized;
-}
-
 function readConfiguration(environment) {
   const accountId = environment.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = environment.CLOUDFLARE_API_TOKEN;
@@ -74,13 +78,10 @@ function readConfiguration(environment) {
     typeof apiToken === "string" && apiToken.length >= 32,
     "CLOUDFLARE_API_TOKEN is missing or malformed.",
   );
-  const run = safeIdentifierPart(environment.GITHUB_RUN_ID, "local", 14);
-  const attempt = safeIdentifierPart(environment.GITHUB_RUN_ATTEMPT, "1", 3);
-  const suffix = randomBytes(3).toString("hex");
   return {
     accountId,
     apiToken,
-    databaseName: `${DATABASE_NAME_PREFIX}${run}-${attempt}-${suffix}`,
+    databaseName: `${DATABASE_NAME_PREFIX}${randomUUID()}`,
   };
 }
 
@@ -128,7 +129,82 @@ async function cloudflareRequest(configuration, path, init) {
   return { payload, response };
 }
 
+export async function reconcileAmbiguousDatabaseCreation(
+  lookup,
+  cleanup,
+  delay = (milliseconds) =>
+    new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+) {
+  let finalLookupError;
+  for (
+    let attempt = 0;
+    attempt < CREATE_RECONCILIATION_ATTEMPTS;
+    attempt += 1
+  ) {
+    try {
+      const databaseId = await lookup();
+      finalLookupError = undefined;
+      if (databaseId !== undefined) {
+        await cleanup(databaseId);
+        return;
+      }
+    } catch (error) {
+      finalLookupError = error;
+    }
+    if (attempt + 1 < CREATE_RECONCILIATION_ATTEMPTS) {
+      await delay(250 * 2 ** attempt);
+    }
+  }
+  if (finalLookupError !== undefined) {
+    throw new Error(
+      "Disposable D1 creation reconciliation could not prove absence.",
+      { cause: finalLookupError },
+    );
+  }
+}
+
+export function classifyDatabaseCreationResponse(response, payload) {
+  const payloadIsObject = typeof payload === "object" && payload !== null;
+  if (response.ok && payloadIsObject && payload.success === true) {
+    return "success";
+  }
+  if (
+    response.status >= 400 &&
+    response.status < 500 &&
+    payloadIsObject &&
+    payload.success === false &&
+    Array.isArray(payload.errors)
+  ) {
+    return "definitive_failure";
+  }
+  return "ambiguous";
+}
+
+async function rejectAmbiguousDatabaseCreation(
+  configuration,
+  cause,
+  ownershipWindow,
+) {
+  const creationError = new Error(
+    `Disposable D1 creation had an ambiguous response. Exact temporary name: ${configuration.databaseName}`,
+    { cause },
+  );
+  try {
+    await reconcileAmbiguousDatabaseCreation(
+      () => findDisposableDatabase(configuration, ownershipWindow),
+      (databaseId) => deleteDisposableDatabase(configuration, databaseId),
+    );
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [creationError, cleanupError],
+      "Disposable D1 creation response was ambiguous and cleanup could not be proven.",
+    );
+  }
+  throw creationError;
+}
+
 async function createDisposableDatabase(configuration) {
+  const requestStartedAt = Date.now();
   let result;
   try {
     result = await cloudflareRequest(configuration, "/d1/database", {
@@ -136,33 +212,50 @@ async function createDisposableDatabase(configuration) {
       body: JSON.stringify({ name: configuration.databaseName }),
     });
   } catch (error) {
-    throw new Error(
-      `Disposable D1 creation had an ambiguous response. Inspect the exact temporary name before manual cleanup: ${configuration.databaseName}`,
-      { cause: error },
-    );
+    return rejectAmbiguousDatabaseCreation(configuration, error, {
+      notAfterMs: Date.now(),
+      notBeforeMs: requestStartedAt,
+    });
   }
   const { payload, response } = result;
-  invariant(
-    response.ok && payload.success === true,
-    `Disposable D1 creation failed: ${cloudflareErrors(payload)}`,
-  );
+  const classification = classifyDatabaseCreationResponse(response, payload);
+  if (classification !== "success") {
+    if (classification === "ambiguous") {
+      return rejectAmbiguousDatabaseCreation(
+        configuration,
+        new Error(`Cloudflare returned ambiguous HTTP ${response.status}.`),
+        {
+          notAfterMs: Date.now(),
+          notBeforeMs: requestStartedAt,
+        },
+      );
+    }
+    throw new Error(
+      `Disposable D1 creation failed: ${cloudflareErrors(payload)}`,
+    );
+  }
   const id = payload.result?.uuid;
   const name = payload.result?.name;
-  invariant(
-    typeof id === "string" &&
-      DATABASE_ID_PATTERN.test(id) &&
-      id !== PRODUCTION_DATABASE_ID,
-    "Disposable D1 creation returned an invalid database ID.",
-  );
-  invariant(
-    name === configuration.databaseName &&
-      name.startsWith(DATABASE_NAME_PREFIX),
-    "Disposable D1 creation returned an unexpected database name.",
-  );
+  if (
+    typeof id !== "string" ||
+    !DATABASE_ID_PATTERN.test(id) ||
+    id === PRODUCTION_DATABASE_ID ||
+    name !== configuration.databaseName ||
+    !name.startsWith(DATABASE_NAME_PREFIX)
+  ) {
+    return rejectAmbiguousDatabaseCreation(
+      configuration,
+      new Error("Disposable D1 creation returned invalid ownership metadata."),
+      {
+        notAfterMs: Date.now(),
+        notBeforeMs: requestStartedAt,
+      },
+    );
+  }
   return id;
 }
 
-async function findDisposableDatabase(configuration) {
+async function listDisposableDatabaseId(configuration) {
   const search = new URLSearchParams({
     name: configuration.databaseName,
     page: "1",
@@ -199,7 +292,22 @@ async function findDisposableDatabase(configuration) {
   return id;
 }
 
-async function getDisposableDatabase(configuration, databaseId) {
+async function findDisposableDatabase(configuration, ownershipWindow) {
+  const id = await listDisposableDatabaseId(configuration);
+  if (id === undefined) return undefined;
+  const owned = await getDisposableDatabase(configuration, id, ownershipWindow);
+  invariant(
+    owned !== undefined,
+    "Disposable D1 exact-name lookup disappeared before ownership read-back.",
+  );
+  return owned.id;
+}
+
+async function getDisposableDatabase(
+  configuration,
+  databaseId,
+  ownershipWindow,
+) {
   invariant(
     DATABASE_ID_PATTERN.test(databaseId) &&
       databaseId !== PRODUCTION_DATABASE_ID,
@@ -217,13 +325,22 @@ async function getDisposableDatabase(configuration, databaseId) {
   );
   const id = payload.result?.uuid;
   const name = payload.result?.name;
+  const createdAt = Date.parse(payload.result?.created_at);
   invariant(
     id === databaseId &&
       name === configuration.databaseName &&
-      name.startsWith(DATABASE_NAME_PREFIX),
+      name.startsWith(DATABASE_NAME_PREFIX) &&
+      Number.isFinite(createdAt),
     "Disposable D1 read-back did not prove exact UUID/name ownership.",
   );
-  return { id, name };
+  if (ownershipWindow !== undefined) {
+    invariant(
+      createdAt >= ownershipWindow.notBeforeMs - CREATION_CLOCK_SKEW_MS &&
+        createdAt <= ownershipWindow.notAfterMs + CREATION_CLOCK_SKEW_MS,
+      "Disposable D1 creation time is outside the ambiguous request window.",
+    );
+  }
+  return { createdAt, id, name };
 }
 
 export async function waitForDisposableDatabaseDeletion(
@@ -231,9 +348,15 @@ export async function waitForDisposableDatabaseDeletion(
   delay = (milliseconds) =>
     new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
 ) {
+  let consecutiveAbsences = 0;
   for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
     const remaining = await lookup();
-    if (remaining === undefined) return;
+    if (remaining === undefined) {
+      consecutiveAbsences += 1;
+      if (consecutiveAbsences === 2) return;
+    } else {
+      consecutiveAbsences = 0;
+    }
     if (attempt + 1 < DELETE_CONFIRMATION_ATTEMPTS) {
       await delay(250 * 2 ** attempt);
     }
@@ -250,7 +373,9 @@ async function deleteDisposableDatabase(configuration, databaseId) {
       databaseId !== PRODUCTION_DATABASE_ID,
     "Refusing to delete a D1 database outside the disposable proof scope.",
   );
-  const ownedDatabase = await getDisposableDatabase(configuration, databaseId);
+  const ownedDatabase = await waitForDisposableDatabaseOwnership(() =>
+    disposableDatabasePresence(configuration, databaseId),
+  );
   if (ownedDatabase === undefined) return;
   let deletionError;
   try {
@@ -270,7 +395,7 @@ async function deleteDisposableDatabase(configuration, databaseId) {
 
   try {
     await waitForDisposableDatabaseDeletion(() =>
-      getDisposableDatabase(configuration, databaseId),
+      disposableDatabasePresence(configuration, databaseId),
     );
   } catch (confirmationError) {
     if (deletionError === undefined) throw confirmationError;
@@ -279,6 +404,39 @@ async function deleteDisposableDatabase(configuration, databaseId) {
       "Disposable D1 deletion and confirmation both failed.",
     );
   }
+}
+
+async function disposableDatabasePresence(configuration, databaseId) {
+  const listedId = await listDisposableDatabaseId(configuration);
+  invariant(
+    listedId === undefined || listedId === databaseId,
+    "Disposable D1 name was rebound to a different UUID.",
+  );
+  const byId = await getDisposableDatabase(configuration, databaseId);
+  if (listedId === undefined && byId === undefined) return undefined;
+  if (listedId === databaseId && byId !== undefined) return byId;
+  return { id: databaseId, pendingConsistency: true };
+}
+
+export async function waitForDisposableDatabaseOwnership(
+  lookup,
+  delay = (milliseconds) =>
+    new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+) {
+  for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    const presence = await lookup();
+    if (presence === undefined) {
+      await waitForDisposableDatabaseDeletion(lookup, delay);
+      return undefined;
+    }
+    if (presence.pendingConsistency !== true) return presence;
+    if (attempt + 1 < DELETE_CONFIRMATION_ATTEMPTS) {
+      await delay(250 * 2 ** attempt);
+    }
+  }
+  throw new Error(
+    "Disposable D1 ownership did not converge before bounded cleanup.",
+  );
 }
 
 async function d1Query(configuration, databaseId, sql, params = []) {
@@ -359,19 +517,87 @@ function runWrangler(configuration, args) {
   );
 }
 
-async function prepareMigrationDirectories(root, databaseName, databaseId) {
+function compareMigrationNames(left, right) {
+  const leftMatch = MIGRATION_NAME_PATTERN.exec(left);
+  const rightMatch = MIGRATION_NAME_PATTERN.exec(right);
+  invariant(leftMatch !== null, `Invalid D1 migration filename: ${left}`);
+  invariant(rightMatch !== null, `Invalid D1 migration filename: ${right}`);
+  const numericDifference =
+    Number.parseInt(leftMatch.groups.number, 10) -
+    Number.parseInt(rightMatch.groups.number, 10);
+  if (numericDifference !== 0) return numericDifference;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+export function buildMigrationPlan(candidateNames) {
+  const names = [...candidateNames];
+  for (const name of names) {
+    invariant(
+      MIGRATION_NAME_PATTERN.test(name),
+      `Invalid D1 migration filename: ${name}`,
+    );
+  }
+  names.sort(compareMigrationNames);
+  invariant(names.length > 0, "No D1 migrations were found for remote proof.");
+  invariant(
+    BASELINE_MIGRATION_NAMES.every((name, index) => names[index] === name),
+    "The historical D1 migration prefix changed unexpectedly.",
+  );
+  const numbers = names.map((name) =>
+    Number.parseInt(MIGRATION_NAME_PATTERN.exec(name).groups.number, 10),
+  );
+  invariant(
+    new Set(numbers).size === numbers.length,
+    "D1 migration numeric prefixes must be unique.",
+  );
+  const targetIndex = names.indexOf(TARGET_MIGRATION_NAME);
+  return {
+    fullNames: names,
+    preNames: names.slice(0, targetIndex),
+  };
+}
+
+async function migrationPlan() {
+  const entries = await readdir(join(RELAY_ROOT, "migrations"), {
+    withFileTypes: true,
+  });
+  return buildMigrationPlan(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+      .map((entry) => entry.name),
+  );
+}
+
+async function prepareMigrationDirectories(root, databaseName, plan) {
   const preRoot = join(root, "pre");
   const fullRoot = join(root, "full");
   await mkdir(join(preRoot, "migrations"), { recursive: true });
   await mkdir(join(fullRoot, "migrations"), { recursive: true });
 
-  for (const [index, name] of MIGRATION_NAMES.entries()) {
+  for (const name of plan.fullNames) {
     const source = join(RELAY_ROOT, "migrations", name);
     await copyFile(source, join(fullRoot, "migrations", name));
-    if (index < 3) await copyFile(source, join(preRoot, "migrations", name));
+    if (plan.preNames.includes(name)) {
+      await copyFile(source, join(preRoot, "migrations", name));
+    }
   }
 
-  const config = JSON.stringify(
+  const config = buildDisposableWranglerConfiguration(databaseName);
+  const preConfig = join(preRoot, "wrangler.json");
+  const fullConfig = join(fullRoot, "wrangler.json");
+  await writeFile(preConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
+  await writeFile(fullConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
+  return { fullConfig, preConfig };
+}
+
+export function buildDisposableWranglerConfiguration(databaseName) {
+  invariant(
+    databaseName.startsWith(DATABASE_NAME_PREFIX),
+    "Refusing to configure a database outside the disposable proof scope.",
+  );
+  return JSON.stringify(
     {
       name: databaseName,
       compatibility_date: "2026-08-03",
@@ -379,7 +605,6 @@ async function prepareMigrationDirectories(root, databaseName, databaseId) {
         {
           binding: "DB",
           database_name: databaseName,
-          database_id: databaseId,
           migrations_dir: "migrations",
         },
       ],
@@ -387,11 +612,6 @@ async function prepareMigrationDirectories(root, databaseName, databaseId) {
     null,
     2,
   );
-  const preConfig = join(preRoot, "wrangler.json");
-  const fullConfig = join(fullRoot, "wrangler.json");
-  await writeFile(preConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
-  await writeFile(fullConfig, `${config}\n`, { encoding: "utf8", mode: 0o600 });
-  return { fullConfig, preConfig };
 }
 
 function applyMigrations(configuration, configPath) {
@@ -404,6 +624,22 @@ function applyMigrations(configuration, configPath) {
     "--config",
     configPath,
   ]);
+}
+
+async function applyMigrationsToOwnedDatabase(
+  configuration,
+  databaseId,
+  configPath,
+) {
+  invariant(
+    (await findDisposableDatabase(configuration)) === databaseId,
+    "Disposable D1 name no longer resolves to the created UUID before migration.",
+  );
+  applyMigrations(configuration, configPath);
+  invariant(
+    (await findDisposableDatabase(configuration)) === databaseId,
+    "Disposable D1 name no longer resolves to the created UUID after migration.",
+  );
 }
 
 const OLD_DELIVERY_INSERT = `INSERT INTO deliveries (
@@ -487,7 +723,7 @@ function exactRows(actual, expected, label) {
   );
 }
 
-async function proveMigratedState(configuration, databaseId) {
+async function proveMigratedState(configuration, databaseId, names) {
   const migrations = await d1Query(
     configuration,
     databaseId,
@@ -495,7 +731,7 @@ async function proveMigratedState(configuration, databaseId) {
   );
   exactRows(
     migrations.results,
-    MIGRATION_NAMES.map((name) => ({ name })),
+    names.map((name) => ({ name })),
     "Migration inventory",
   );
 
@@ -885,6 +1121,7 @@ async function proveOneWayProtocol(configuration, databaseId) {
 
 export async function runRemoteMigrationProof(environment = process.env) {
   const configuration = readConfiguration(environment);
+  const plan = await migrationPlan();
   const temporaryRoot = await mkdtemp(join(tmpdir(), "lcv-slack-d1-proof-"));
   let databaseId;
   let primaryError;
@@ -899,12 +1136,12 @@ export async function runRemoteMigrationProof(environment = process.env) {
     const { fullConfig, preConfig } = await prepareMigrationDirectories(
       temporaryRoot,
       configuration.databaseName,
-      databaseId,
+      plan,
     );
-    applyMigrations(configuration, preConfig);
+    await applyMigrationsToOwnedDatabase(configuration, databaseId, preConfig);
     await seedOldSchema(configuration, databaseId);
-    applyMigrations(configuration, fullConfig);
-    await proveMigratedState(configuration, databaseId);
+    await applyMigrationsToOwnedDatabase(configuration, databaseId, fullConfig);
+    await proveMigratedState(configuration, databaseId, plan.fullNames);
     await proveSchemaInventory(configuration, databaseId);
     await proveOldWorkerQuarantine(configuration, databaseId);
     await proveTraceConstraints(configuration, databaseId);
