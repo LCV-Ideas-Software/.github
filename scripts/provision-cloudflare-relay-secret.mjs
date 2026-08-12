@@ -84,7 +84,8 @@ function validRelaySecretMetadata(secret, storeId) {
     /^[0-9a-f]{32}$/u.test(secret.id) &&
     Array.isArray(secret.scopes) &&
     secret.scopes.length === 1 &&
-    secret.scopes[0] === "workers"
+    secret.scopes[0] === "workers" &&
+    (secret.comment === undefined || typeof secret.comment === "string")
   );
 }
 

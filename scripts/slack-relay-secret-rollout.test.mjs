@@ -197,6 +197,32 @@ test("Cloudflare refuses a multi-scope CURRENT before any write", async () => {
   assert.equal(writes, 0);
 });
 
+test("Cloudflare refuses a CURRENT with a null comment before any write", async () => {
+  let writes = 0;
+  await assert.rejects(
+    provisionCloudflareNextSecret({
+      environment: cloudflareEnvironment,
+      fetchImpl: async (_url, init = {}) => {
+        if (init.method === "POST" || init.method === "PATCH") writes += 1;
+        return json({
+          success: true,
+          result: [
+            cloudflareSecret({
+              id: CURRENT_ID,
+              name: "github-slack-relay-signing-secret",
+              comment: null,
+            }),
+          ],
+          result_info: { page: 1, per_page: 100, count: 1, total_count: 1 },
+        });
+      },
+      sleep: async () => {},
+    }),
+    /current relay secret metadata is invalid/,
+  );
+  assert.equal(writes, 0);
+});
+
 test("Cloudflare refuses a multi-scope NEXT even with the exact fingerprint", async () => {
   let writes = 0;
   await assert.rejects(
