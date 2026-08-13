@@ -33,7 +33,7 @@
     "check": "deno fmt --check && deno lint && deno check manifest.ts functions/*.ts scripts/*.ts tests/*.ts triggers/*.ts workflows/*.ts && deno test --allow-read=README.md,package.json,deno.json,deno.jsonc,deno.lock,.slack/hooks.json,../package.json,../deno.json,../deno.jsonc,../../package.json,../../deno.json,../../deno.jsonc,../../.github/workflows/github-slack-integration.yml && deno task --frozen hooks:verify && deno task --frozen build:verify"
   },
   "imports": {
-    "npm:esbuild@0.24.2": "npm:esbuild@0.25.0",
+    "npm:esbuild@0.24.2": "npm:esbuild@0.28.1",
     "deno-slack-sdk/mod.ts": "jsr:@slack/sdk@2.15.2",
     "deno-slack-sdk/types.ts": "jsr:@slack/sdk@2.15.2/types.ts",
     "deno-slack-api/mod.ts": "jsr:@slack/api@2.9.3"

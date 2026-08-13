@@ -25,6 +25,23 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 13/08/2026 — Slack esbuild dependency maintenance
+
+### Security
+
+- Advanced the exact Deno import-map target from `esbuild@0.25.0` to the
+  reviewed patched release `esbuild@0.28.1`, regenerated the frozen lockfile,
+  and expanded the fail-closed integrity inventory from 25 to all 26 platform
+  packages, including `@esbuild/openharmony-arm64`. The upstream Slack hook
+  remains byte-for-byte pinned and unmodified, while candidate verification
+  continues to execute both the complete official build and its official
+  `EsbuildBundler` fallback against the two production function entry points.
+  This target is outside the active `GHSA-g7r4-m6w7-qqqr` range and includes
+  the upstream Deno binary-integrity hardening; the corresponding global
+  `GHSA-gv7w-rqvm-qjhr` record was withdrawn and is not treated as an active npm
+  advisory.
+  Evidence: #191.
+
 ## 13/08/2026 — Zizmor consumer policy recovery
 
 ### Fixed
