@@ -12,7 +12,10 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { validateSlackDeliveryProtocolPreflight } from "./slack-delivery-protocol-preflight.mjs";
+import {
+  SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+  validateSlackDeliveryProtocolPreflight,
+} from "./slack-delivery-protocol-preflight.mjs";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RELAY_ROOT = join(REPOSITORY_ROOT, "workers", "github-slack-relay");
@@ -112,10 +115,10 @@ export const REAPER_WORST_CASE_RUNTIME_MS =
   REAPER_API_REQUEST_CAP * API_TIMEOUT_MS +
   REAPER_MAX_DATABASES_PER_RUN * REAPER_RETRY_DELAY_BUDGET_MS;
 const REMOTE_PROOF_OWNERSHIP_BARRIERS = 6;
-// Successful proof path: one absence preflight, one create, 27 seed/assertion
+// Successful proof path: one absence preflight, one create, 28 seed/assertion
 // queries, six ownership barriers, and one bounded deletion. Wrangler's own
 // remote calls stay inside its three separately bounded subprocesses.
-const REMOTE_PROOF_SQL_API_REQUESTS = 27;
+const REMOTE_PROOF_SQL_API_REQUESTS = 28;
 const OWNERSHIP_RETRY_DELAY_BUDGET_MS = Array.from(
   { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
   (_, attempt) => 250 * 2 ** attempt,
@@ -1575,6 +1578,26 @@ async function activateProtocolBridgeSource(configuration, databaseId) {
   );
 }
 
+export async function proveProductionParityPreflight(
+  configuration,
+  databaseId,
+  query = d1Query,
+) {
+  const preflight = await query(
+    configuration,
+    databaseId,
+    SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+  );
+  invariant(
+    validateSlackDeliveryProtocolPreflight(
+      JSON.stringify([{ success: true, results: preflight.results }]),
+      PROTOCOL_TARGET_REVISION,
+      PROTOCOL_PROOF_SIGNING_SECRET,
+    ).state === "active_bridge_source",
+    "Production-parity bridge source did not pass the exact deployment preflight.",
+  );
+}
+
 function exactRows(actual, expected, label) {
   invariant(
     JSON.stringify(actual) === JSON.stringify(expected),
@@ -1673,15 +1696,6 @@ async function proveMigratedState(configuration, databaseId, names) {
     ],
     "Production-parity bridge source state",
   );
-  invariant(
-    validateSlackDeliveryProtocolPreflight(
-      JSON.stringify([{ success: true, results: state.results }]),
-      PROTOCOL_TARGET_REVISION,
-      PROTOCOL_PROOF_SIGNING_SECRET,
-    ).state === "active_bridge_source",
-    "Production-parity bridge source did not pass the exact deployment preflight.",
-  );
-
   const quickCheck = await d1Query(
     configuration,
     databaseId,
@@ -1690,8 +1704,12 @@ async function proveMigratedState(configuration, databaseId, names) {
   exactRows(quickCheck.results, [{ quick_check: "ok" }], "D1 quick_check");
 }
 
-async function proveSchemaInventory(configuration, databaseId) {
-  const schema = await d1Query(
+export async function proveSchemaInventory(
+  configuration,
+  databaseId,
+  query = d1Query,
+) {
+  const schema = await query(
     configuration,
     databaseId,
     `SELECT type, name
@@ -1710,8 +1728,8 @@ async function proveSchemaInventory(configuration, databaseId) {
       { type: "index", name: "idx_deliveries_slack_message" },
       { type: "index", name: "idx_deliveries_slack_send_execution" },
       { type: "index", name: "idx_slack_workflow_traces_delivery" },
-      { type: "index", name: "idx_slack_workflow_traces_send_execution" },
       { type: "index", name: "idx_slack_workflow_traces_message" },
+      { type: "index", name: "idx_slack_workflow_traces_send_execution" },
       { type: "table", name: "d1_migrations" },
       { type: "table", name: "deliveries" },
       { type: "table", name: "relay_state" },
@@ -1738,7 +1756,7 @@ async function proveSchemaInventory(configuration, databaseId) {
     "Schema inventory",
   );
 
-  const deliveryColumns = await d1Query(
+  const deliveryColumns = await query(
     configuration,
     databaseId,
     `SELECT name FROM pragma_table_info('deliveries') ORDER BY cid`,
@@ -1770,7 +1788,7 @@ async function proveSchemaInventory(configuration, databaseId) {
     "Delivery column inventory",
   );
 
-  const traceColumns = await d1Query(
+  const traceColumns = await query(
     configuration,
     databaseId,
     `SELECT name FROM pragma_table_info('slack_workflow_traces') ORDER BY cid`,
@@ -2069,6 +2087,7 @@ export async function runRemoteMigrationProof(environment = process.env) {
       sourceConfig,
     );
     await activateProtocolBridgeSource(configuration, databaseId);
+    await proveProductionParityPreflight(configuration, databaseId);
     await applyMigrationsToOwnedDatabase(
       configuration,
       databaseId,

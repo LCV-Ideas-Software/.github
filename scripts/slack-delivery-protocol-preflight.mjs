@@ -20,6 +20,9 @@ const EXPECTED_ROW_KEYS = [
   "slack_delivery_protocol_schema_revision",
 ].sort();
 
+export const SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL =
+  "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open, (SELECT COUNT(*) FROM (SELECT slack_send_execution_id FROM deliveries WHERE slack_send_execution_id IS NOT NULL GROUP BY slack_send_execution_id HAVING COUNT(*) > 1)) AS duplicate_delivery_execution_id_groups, (SELECT COUNT(*) FROM (SELECT send_execution_id FROM slack_workflow_traces WHERE send_execution_id IS NOT NULL GROUP BY send_execution_id HAVING COUNT(*) > 1)) AS duplicate_slack_trace_execution_id_groups FROM relay_state WHERE singleton_id = 1";
+
 function fail(reason) {
   throw new Error(`Slack delivery protocol preflight ${reason}.`);
 }
