@@ -476,35 +476,46 @@ test("case-colliding Git tree paths are rejected independently", async () => {
   }
 });
 
-test("nested Dependabot and pre-commit inputs cannot introduce an unreviewed ignore", async () => {
-  const fixture = await repository({
-    ".github/zizmor.yml": "rules: {}\n",
-    "nested/.pre-commit-hooks.yml":
-      "- id: unsafe # zizmor: ignore[template-injection]\n",
-    "nested/.pre-commit-config.yaml":
-      "repos: [] # zizmor: ignore[template-injection]\n",
-    "nested/dependabot.yml":
-      "version: 2 # zizmor: ignore[dependabot-cooldown]\n",
-  });
-  const policy = manifest([
-    {
-      path: ".github/zizmor.yml",
-      mode: "100644",
-      blob_shas: [fixture.entries[".github/zizmor.yml"].blob],
-      kind: "config",
-    },
-  ]);
-  assert.throws(() =>
-    validateBaseline({
-      manifest: policy,
-      repository: REPOSITORY,
-      baseDir: fixture.directory,
-      baseSha: fixture.sha,
-      candidateDir: fixture.directory,
-      candidateSha: fixture.sha,
-    }),
-  );
-  await rm(fixture.directory, { recursive: true, force: true });
+test("every Zizmor YAML input class rejects ignores in isolation", async () => {
+  for (const path of [
+    ".github/workflows/unsafe.yml",
+    ".github/workflows/unsafe.yaml",
+    "nested/action.yml",
+    "nested/action.yaml",
+    "nested/dependabot.yml",
+    "nested/dependabot.yaml",
+    "nested/.pre-commit-config.yml",
+    "nested/.pre-commit-config.yaml",
+    "nested/.pre-commit-hooks.yml",
+    "nested/.pre-commit-hooks.yaml",
+  ]) {
+    const fixture = await repository({
+      ".github/zizmor.yml": "rules: {}\n",
+      [path]: "name: unsafe # zizmor: ignore[template-injection]\n",
+    });
+    const policy = manifest([
+      {
+        path: ".github/zizmor.yml",
+        mode: "100644",
+        blob_shas: [fixture.entries[".github/zizmor.yml"].blob],
+        kind: "config",
+      },
+    ]);
+    try {
+      assert.throws(() =>
+        validateBaseline({
+          manifest: policy,
+          repository: REPOSITORY,
+          baseDir: fixture.directory,
+          baseSha: fixture.sha,
+          candidateDir: fixture.directory,
+          candidateSha: fixture.sha,
+        }),
+      );
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  }
 });
 
 test("symlinks and Git replace refs cannot redirect an audited snapshot", async () => {
