@@ -309,6 +309,36 @@ test("baseline accepts only reviewed Git blobs and rejects new ignore directives
   );
 });
 
+test("a CR-only YAML document cannot hide an unauthorized ignore", async () => {
+  const fixture = await repository({
+    ".github/zizmor.yml": "rules: {}\r",
+    ".github/workflows/new.yml":
+      "name: new\rpermissions: read-all # zizmor: ignore[excessive-permissions]\rjobs: {}\r",
+  });
+  const policy = manifest([
+    {
+      path: ".github/zizmor.yml",
+      mode: "100644",
+      blob_shas: [fixture.entries[".github/zizmor.yml"].blob],
+      kind: "config",
+    },
+  ]);
+  try {
+    assert.throws(() =>
+      validateBaseline({
+        manifest: policy,
+        repository: REPOSITORY,
+        baseDir: fixture.directory,
+        baseSha: fixture.sha,
+        candidateDir: fixture.directory,
+        candidateSha: fixture.sha,
+      }),
+    );
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("every shadow configuration name is rejected in isolation", async () => {
   for (const shadow of [".github/zizmor.yaml", "zizmor.yml", "zizmor.yaml"]) {
     const fixture = await repository({

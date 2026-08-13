@@ -256,6 +256,7 @@ function hasZizmorIgnore(bytes) {
   }
   return text
     .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
     .split("\n")
     .some((line) => IGNORE.test(line));
 }
