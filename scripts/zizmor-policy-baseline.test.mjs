@@ -431,6 +431,51 @@ test("every audited YAML path must remain a regular non-executable Git blob", as
   await rm(fixture.directory, { recursive: true, force: true });
 });
 
+test("case-colliding Git tree paths are rejected independently", async () => {
+  const fixture = await repository({
+    ".github/zizmor.yml": "rules: {}\n",
+  });
+  const blob = run(fixture.directory, ["hash-object", "-w", "--stdin"], {
+    input: "name: collision\n",
+  });
+  run(fixture.directory, [
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `100644,${blob},.github/workflows/Case.yml`,
+  ]);
+  run(fixture.directory, [
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `100644,${blob},.github/workflows/case.yml`,
+  ]);
+  run(fixture.directory, ["commit", "--quiet", "-m", "case collision"]);
+  const collisionSha = run(fixture.directory, ["rev-parse", "HEAD"]);
+  const policy = manifest([
+    {
+      path: ".github/zizmor.yml",
+      mode: "100644",
+      blob_shas: [fixture.entries[".github/zizmor.yml"].blob],
+      kind: "config",
+    },
+  ]);
+  try {
+    assert.throws(() =>
+      validateBaseline({
+        manifest: policy,
+        repository: REPOSITORY,
+        baseDir: fixture.directory,
+        baseSha: collisionSha,
+        candidateDir: fixture.directory,
+        candidateSha: collisionSha,
+      }),
+    );
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("nested Dependabot and pre-commit inputs cannot introduce an unreviewed ignore", async () => {
   const fixture = await repository({
     ".github/zizmor.yml": "rules: {}\n",
