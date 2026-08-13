@@ -1,4 +1,8 @@
 import type { RelayDestination, SlackWorkflowPayload } from "./domain";
+import {
+  exactSlackDeliveryProtocolGuardDefinitions,
+  SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS,
+} from "./slack-delivery-protocol-guards";
 
 export type DeliveryStatus =
   | "pending"
@@ -87,28 +91,12 @@ export interface StoredDelivery {
 
 export const SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION =
   "0005_reconcile_live_slack_receipts";
-export const SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION =
-  "0004_confirm_slack_delivery";
-export const SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION =
-  "afe5250504d37543845b07f44af7bfc30a548feb";
+export const SLACK_DELIVERY_PROTOCOL_SEALED_REVISION =
+  "e0131a758123cf210d9cc9e7e537b72dc0441a90";
+export const SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATED_AT = 1_786_579_752_661;
+export const SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATION_ID =
+  "18a94ba84d6bac0f8ae396996a5cd6ac026eb336be5eef702b92b3b6a60d4ff7";
 export const SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US = 20 * 60 * 1_000 * 1_000;
-export type SlackDeliveryProtocolActivationResult =
-  "applied" | "already_applied";
-
-export interface SlackDeliveryProtocolActivation {
-  activationId: string;
-  bridgeSourceActivationId: string;
-  revision: string;
-  schemaRevision: string;
-  now: number;
-}
-
-export class SlackDeliveryProtocolActivationConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SlackDeliveryProtocolActivationConflictError";
-  }
-}
 
 export class SlackProgressConflictError extends Error {
   constructor(message: string) {
@@ -126,9 +114,6 @@ export class SlackReconciliationConflictError extends Error {
 
 export interface DeliveryStore {
   isSlackDeliveryProtocolActive(expectedRevision: string): Promise<boolean>;
-  activateSlackDeliveryProtocol(
-    activation: SlackDeliveryProtocolActivation,
-  ): Promise<SlackDeliveryProtocolActivationResult>;
   insert(input: DeliveryInput): Promise<boolean>;
   get(deliveryId: string): Promise<StoredDelivery | null>;
   markQueued(deliveryId: string, now: number): Promise<void>;
@@ -261,9 +246,7 @@ interface SlackDeliveryProtocolRow {
 }
 
 const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
-const ACTIVATION_ID_PATTERN = /^[0-9a-f]{64}$/u;
 const SLACK_FUNCTION_EXECUTION_ID_PATTERN = /^Fx[A-Za-z0-9]{1,126}$/u;
-const REQUIRED_PROTOCOL_SCHEMA_ARTIFACTS = 10;
 const SLACK_RECONCILIATION_RETRY_DELAY_MS =
   SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US / 1_000;
 const SLACK_TRACE_RESOLUTION_SNAPSHOT_PREDICATE = `EXISTS (
@@ -361,6 +344,22 @@ export class D1DeliveryStore implements DeliveryStore {
     this.#database = database;
   }
 
+  async #hasExactSlackDeliveryProtocolSeal(): Promise<boolean> {
+    const result = await this.#database
+      .prepare(
+        `SELECT name, tbl_name, sql
+         FROM sqlite_schema
+         WHERE type = 'trigger'
+           AND tbl_name = 'relay_state'
+         ORDER BY name`,
+      )
+      .all<{ name: string; tbl_name: string; sql: string | null }>();
+    return exactSlackDeliveryProtocolGuardDefinitions(
+      result.results,
+      SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS,
+    );
+  }
+
   async isSlackDeliveryProtocolActive(
     expectedRevision: string,
   ): Promise<boolean> {
@@ -382,202 +381,25 @@ export class D1DeliveryStore implements DeliveryStore {
     if (state === null) {
       throw new Error("slack_delivery_protocol_state_missing");
     }
-
-    if (state.slack_delivery_protocol_active === 0) {
-      if (
-        state.slack_delivery_protocol_revision !== null ||
-        state.slack_delivery_protocol_activated_at !== null ||
-        state.slack_delivery_protocol_activation_id !== null ||
-        state.slack_delivery_protocol_schema_revision !== null ||
-        state.slack_delivery_protocol_confirmation_open !== 1
-      ) {
-        throw new Error("slack_delivery_protocol_state_inconsistent");
-      }
-      return false;
-    }
-
-    const isTargetSchema =
-      state.slack_delivery_protocol_schema_revision ===
-      SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION;
-    const isExactBridgeSource =
-      state.slack_delivery_protocol_revision ===
-        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION &&
-      state.slack_delivery_protocol_schema_revision ===
-        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION &&
-      state.slack_delivery_protocol_confirmation_open === 1;
     if (
       state.slack_delivery_protocol_active !== 1 ||
-      state.slack_delivery_protocol_revision === null ||
-      !WORKER_REVISION_PATTERN.test(state.slack_delivery_protocol_revision) ||
-      !Number.isSafeInteger(state.slack_delivery_protocol_activated_at) ||
-      (state.slack_delivery_protocol_activated_at as number) <= 0 ||
-      state.slack_delivery_protocol_activation_id === null ||
-      !ACTIVATION_ID_PATTERN.test(
-        state.slack_delivery_protocol_activation_id,
-      ) ||
-      (!isTargetSchema && !isExactBridgeSource) ||
-      (state.slack_delivery_protocol_confirmation_open !== 0 &&
-        state.slack_delivery_protocol_confirmation_open !== 1)
+      state.slack_delivery_protocol_revision !==
+        SLACK_DELIVERY_PROTOCOL_SEALED_REVISION ||
+      state.slack_delivery_protocol_activated_at !==
+        SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATED_AT ||
+      state.slack_delivery_protocol_activation_id !==
+        SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATION_ID ||
+      state.slack_delivery_protocol_schema_revision !==
+        SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION ||
+      state.slack_delivery_protocol_confirmation_open !== 0
     ) {
       throw new Error("slack_delivery_protocol_state_inconsistent");
     }
-    return (
-      isTargetSchema &&
-      state.slack_delivery_protocol_revision === expectedRevision
-    );
-  }
 
-  async activateSlackDeliveryProtocol(
-    activation: SlackDeliveryProtocolActivation,
-  ): Promise<SlackDeliveryProtocolActivationResult> {
-    const isTargetActivation =
-      activation.schemaRevision === SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION;
-    const isExactBridgeSourceReplay =
-      activation.revision === SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION &&
-      activation.schemaRevision ===
-        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION &&
-      activation.activationId === activation.bridgeSourceActivationId;
-    if (
-      !ACTIVATION_ID_PATTERN.test(activation.activationId) ||
-      !ACTIVATION_ID_PATTERN.test(activation.bridgeSourceActivationId) ||
-      !WORKER_REVISION_PATTERN.test(activation.revision) ||
-      (!isTargetActivation && !isExactBridgeSourceReplay) ||
-      !Number.isSafeInteger(activation.now) ||
-      activation.now <= 0
-    ) {
-      throw new SlackDeliveryProtocolActivationConflictError(
-        "invalid_slack_delivery_protocol_activation",
-      );
+    if (!(await this.#hasExactSlackDeliveryProtocolSeal())) {
+      throw new Error("slack_delivery_protocol_seal_incomplete");
     }
-
-    const schema = await this.#database
-      .prepare(
-        `SELECT COUNT(*) AS artifact_count
-         FROM sqlite_master
-         WHERE (
-           type = 'table'
-           AND name IN (
-             'slack_workflow_traces',
-             'slack_delivery_recovery_audit'
-           )
-         ) OR (
-           type = 'trigger'
-           AND name IN (
-             'quarantine_old_worker_acceptance',
-             'validate_known_slack_delivery_recovery',
-             'release_known_slack_delivery_recovery',
-             'enforce_one_time_slack_delivery_protocol_revision_bridge',
-             'enforce_one_way_slack_delivery_protocol_confirmation'
-           )
-         ) OR (
-           type = 'index'
-           AND name IN (
-             'idx_deliveries_slack_send_execution',
-             'idx_slack_workflow_traces_send_execution',
-             'idx_slack_workflow_traces_message'
-           )
-         )`,
-      )
-      .first<{ artifact_count: number }>();
-    if (schema?.artifact_count !== REQUIRED_PROTOCOL_SCHEMA_ARTIFACTS) {
-      throw new SlackDeliveryProtocolActivationConflictError(
-        "slack_delivery_protocol_schema_incomplete",
-      );
-    }
-
-    const activated = await this.#database
-      .prepare(
-        `UPDATE relay_state
-         SET slack_delivery_protocol_active = 1,
-             slack_delivery_protocol_revision = ?,
-             slack_delivery_protocol_activated_at = ?,
-             slack_delivery_protocol_activation_id = ?,
-             slack_delivery_protocol_schema_revision = ?
-         WHERE singleton_id = 1
-           AND (
-             (
-               slack_delivery_protocol_active = 0
-               AND slack_delivery_protocol_revision IS NULL
-               AND slack_delivery_protocol_activated_at IS NULL
-               AND slack_delivery_protocol_activation_id IS NULL
-               AND slack_delivery_protocol_schema_revision IS NULL
-             )
-             OR (
-               slack_delivery_protocol_active = 1
-               AND slack_delivery_protocol_revision = ?
-               AND ? != slack_delivery_protocol_revision
-               AND slack_delivery_protocol_activated_at < ?
-               AND slack_delivery_protocol_activation_id = ?
-               AND slack_delivery_protocol_schema_revision = ?
-             )
-           )
-           AND slack_delivery_protocol_confirmation_open = 1
-         RETURNING slack_delivery_protocol_active,
-                   slack_delivery_protocol_revision,
-                   slack_delivery_protocol_activated_at,
-                   slack_delivery_protocol_activation_id,
-                   slack_delivery_protocol_schema_revision,
-                   slack_delivery_protocol_confirmation_open`,
-      )
-      .bind(
-        activation.revision,
-        activation.now,
-        activation.activationId,
-        activation.schemaRevision,
-        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION,
-        activation.revision,
-        activation.now,
-        activation.bridgeSourceActivationId,
-        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION,
-      )
-      .first<SlackDeliveryProtocolRow>();
-    if (activated !== null) {
-      if (
-        activated.slack_delivery_protocol_active !== 1 ||
-        activated.slack_delivery_protocol_revision !== activation.revision ||
-        activated.slack_delivery_protocol_activated_at !== activation.now ||
-        activated.slack_delivery_protocol_activation_id !==
-          activation.activationId ||
-        activated.slack_delivery_protocol_schema_revision !==
-          activation.schemaRevision ||
-        activated.slack_delivery_protocol_confirmation_open !== 1
-      ) {
-        throw new SlackDeliveryProtocolActivationConflictError(
-          "slack_delivery_protocol_activation_conflict",
-        );
-      }
-      return "applied";
-    }
-
-    const existing = await this.#database
-      .prepare(
-        `SELECT slack_delivery_protocol_active,
-                slack_delivery_protocol_revision,
-                slack_delivery_protocol_activated_at,
-                slack_delivery_protocol_activation_id,
-                slack_delivery_protocol_schema_revision,
-                slack_delivery_protocol_confirmation_open
-         FROM relay_state
-         WHERE singleton_id = 1`,
-      )
-      .first<SlackDeliveryProtocolRow>();
-    if (
-      existing === null ||
-      existing.slack_delivery_protocol_active !== 1 ||
-      existing.slack_delivery_protocol_revision !== activation.revision ||
-      existing.slack_delivery_protocol_activation_id !==
-        activation.activationId ||
-      existing.slack_delivery_protocol_schema_revision !==
-        activation.schemaRevision ||
-      existing.slack_delivery_protocol_confirmation_open !== 1 ||
-      !Number.isSafeInteger(existing.slack_delivery_protocol_activated_at) ||
-      (existing.slack_delivery_protocol_activated_at as number) <= 0
-    ) {
-      throw new SlackDeliveryProtocolActivationConflictError(
-        "slack_delivery_protocol_activation_conflict",
-      );
-    }
-    return "already_applied";
+    return true;
   }
 
   async insert(input: DeliveryInput): Promise<boolean> {
@@ -2399,14 +2221,20 @@ export class D1DeliveryStore implements DeliveryStore {
            AND length(slack_delivery_protocol_revision) = 40
            AND slack_delivery_protocol_revision NOT GLOB '*[^0-9a-f]*'
            AND typeof(slack_delivery_protocol_activated_at) = 'integer'
-           AND slack_delivery_protocol_activated_at > 0
+           AND slack_delivery_protocol_activated_at = ?
            AND typeof(slack_delivery_protocol_activation_id) = 'text'
+           AND slack_delivery_protocol_activation_id = ?
            AND length(slack_delivery_protocol_activation_id) = 64
            AND slack_delivery_protocol_activation_id NOT GLOB '*[^0-9a-f]*'
            AND slack_delivery_protocol_schema_revision = ?
-           AND slack_delivery_protocol_confirmation_open IN (0, 1)`,
+           AND slack_delivery_protocol_confirmation_open = 0`,
       )
-      .bind(expectedRevision, SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION)
+      .bind(
+        SLACK_DELIVERY_PROTOCOL_SEALED_REVISION,
+        SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATED_AT,
+        SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATION_ID,
+        SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION,
+      )
       .first<{
         next_slack_at: number;
         slack_activity_checkpoint_us: number;
@@ -2439,6 +2267,7 @@ export class D1DeliveryStore implements DeliveryStore {
       state !== null &&
       Number.isSafeInteger(state.next_slack_at) &&
       Number.isSafeInteger(state.slack_activity_checkpoint_us) &&
+      (await this.#hasExactSlackDeliveryProtocolSeal()) &&
       unresolved === null
     );
   }

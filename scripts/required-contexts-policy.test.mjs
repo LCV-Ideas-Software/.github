@@ -101,7 +101,7 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
-    "          scripts/slack-delivery-protocol-preflight.test.mjs\n",
+    "          scripts/slack-delivery-protocol-contract.test.mjs\n",
     "",
   );
   rejectsMutation(
@@ -116,18 +116,23 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
-    "      - name: Refuse to replace an already activated relay revision",
-    "      - name: Skip the activated relay revision preflight",
+    "      - name: Verify the sealed Slack delivery protocol contract",
+    "      - name: Skip the sealed Slack delivery protocol contract",
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
-    "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open FROM relay_state WHERE singleton_id = 1",
-    "SELECT 0",
+    '          CONTRACT_SQL="$(node scripts/slack-delivery-protocol-contract.mjs --print-sql)"',
+    '          CONTRACT_SQL="SELECT 0"',
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
-    "          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}\n",
-    "",
+    '            --command "$CONTRACT_SQL" \\',
+    '            --command "SELECT 0" \\',
+  );
+  rejectsMutation(
+    ".github/workflows/github-slack-integration.yml",
+    "            | node scripts/slack-delivery-protocol-contract.mjs",
+    "            | cat",
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",

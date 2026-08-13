@@ -101,10 +101,10 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Verify GitHub Slack relay"],
     policyRunner: false,
     nodeOptions: "--no-deprecation",
-    digest: "6cf8e9b558e1a392b3fd771de1105c87c5d1378dfb7eb8cbb5229b7b693d04e0",
+    digest: "42b26219d91044164abfdc4d4943f00003c05b30df702971be51813772695b08",
     privilegedJobIds: ["prove_remote_d1", "deploy", "deploy_slack"],
     privilegedDigest:
-      "a3520b2024e341cf1bcf70e595bb6b54e3a18dff318943f9ebd827a674fb5e38",
+      "f6d78e0d28ecff1e715c3a84e7b88613761725b13c435b13dfacc7567cc76ddd",
   },
   {
     path: ".github/workflows/slack-github-integration.yml",

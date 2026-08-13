@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { createHmac } from "node:crypto";
 
 import { handleFetch } from "../src/index";
 import {
@@ -18,8 +17,6 @@ import {
   TEST_RELAY_SIGNING_SECRET_NEXT,
 } from "./helpers";
 import type {
-  SlackDeliveryProtocolActivation,
-  SlackDeliveryProtocolActivationResult,
   SlackProgressInput,
   SlackProgressResult,
   SlackTraceReconciliation,
@@ -48,51 +45,6 @@ const PRE_SEND_TRACE_STORE_IDENTITY = Object.freeze({
   slackChannelId: null,
   messageTs: null,
 });
-const REVISION = "a".repeat(40);
-const SCHEMA_REVISION = "0005_reconcile_live_slack_receipts";
-const BRIDGE_SOURCE_SCHEMA_REVISION = "0004_confirm_slack_delivery";
-const ACTIVATION_SECRET = "staged-next-activation-key-for-tests";
-const BRIDGE_SOURCE_REVISION = "afe5250504d37543845b07f44af7bfc30a548feb";
-
-function activationIdFor(
-  revision: string,
-  secret = ACTIVATION_SECRET,
-  schemaRevision = SCHEMA_REVISION,
-): string {
-  return createHmac("sha256", secret)
-    .update(
-      JSON.stringify([
-        "slack_delivery_protocol_activation_id_v1",
-        revision,
-        schemaRevision,
-      ]),
-      "utf8",
-    )
-    .digest("hex");
-}
-
-const ACTIVATION_ID = activationIdFor(REVISION);
-const BRIDGE_SOURCE_ACTIVATION_ID = activationIdFor(
-  BRIDGE_SOURCE_REVISION,
-  ACTIVATION_SECRET,
-  BRIDGE_SOURCE_SCHEMA_REVISION,
-);
-
-class ActivationResponseLossStore extends MemoryDeliveryStore {
-  #loseFirstResponse = true;
-
-  override async activateSlackDeliveryProtocol(
-    activation: SlackDeliveryProtocolActivation,
-  ): Promise<SlackDeliveryProtocolActivationResult> {
-    const result = await super.activateSlackDeliveryProtocol(activation);
-    if (this.#loseFirstResponse) {
-      this.#loseFirstResponse = false;
-      throw new Error("simulated_d1_response_loss_after_activation_cas");
-    }
-    return result;
-  }
-}
-
 class ProgressResponseLossStore extends MemoryDeliveryStore {
   #loseFirstResponse = true;
 
@@ -143,43 +95,6 @@ class CheckpointResponseLossStore extends MemoryDeliveryStore {
     }
     return result;
   }
-}
-
-function activationRequest({
-  activationId = ACTIVATION_ID,
-  expectedRevision = REVISION,
-  schemaRevision = SCHEMA_REVISION,
-  secret = ACTIVATION_SECRET,
-}: {
-  activationId?: string;
-  expectedRevision?: string;
-  schemaRevision?: string;
-  secret?: string;
-} = {}): Request {
-  const unsigned = {
-    activation_id: activationId,
-    expected_revision: expectedRevision,
-    schema_revision: schemaRevision,
-  };
-  const activationSignature = createHmac("sha256", secret)
-    .update(
-      JSON.stringify([
-        "slack_delivery_protocol_activation_v1",
-        unsigned.activation_id,
-        unsigned.expected_revision,
-        unsigned.schema_revision,
-      ]),
-      "utf8",
-    )
-    .digest("hex");
-  return new Request("https://relay.example/slack/protocol/activate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...unsigned,
-      activation_signature: activationSignature,
-    }),
-  });
 }
 
 async function progressRequest(
@@ -241,157 +156,26 @@ async function reconciliationRequestV2(
 }
 
 describe("authenticated Slack delivery proof", () => {
-  it("activates the exact deployed protocol revision once and rejects mismatches", async () => {
-    const store = new MemoryDeliveryStore();
-    (
-      store as MemoryDeliveryStore & {
-        slackDeliveryProtocolActive: boolean;
-      }
-    ).slackDeliveryProtocolActive = false;
-    const queue = new FakeQueue();
-    const env = makeEnv(queue, {
-      relaySigningSecretNext: ACTIVATION_SECRET,
-    });
-    (env as Env & { WORKER_VERSION: WorkerVersionMetadata }).WORKER_VERSION = {
-      id: "version-id",
-      tag: REVISION,
-      timestamp: "2026-08-03T12:00:00.000Z",
-    };
+  it.each(["GET", "POST"])(
+    "does not expose the retired protocol activation endpoint over %s",
+    async (method) => {
+      const response = await handleFetch(
+        new Request("https://relay.example/slack/protocol/activate", {
+          method,
+          ...(method === "POST"
+            ? {
+                headers: { "Content-Type": "application/json" },
+                body: "{}",
+              }
+            : {}),
+        }),
+        {} as Env,
+      );
 
-    const wrongKey = await handleFetch(
-      activationRequest({
-        secret: "wrong-activation-key-that-is-long-enough",
-      }),
-      env,
-      { store, now: () => NOW },
-    );
-    expect(wrongKey.status).toBe(401);
-
-    const currentKeyCannotActivate = await handleFetch(
-      activationRequest({ secret: TEST_RELAY_SIGNING_SECRET }),
-      env,
-      { store, now: () => NOW },
-    );
-    expect(currentKeyCannotActivate.status).toBe(401);
-
-    const wrongRevision = await handleFetch(
-      activationRequest({ expectedRevision: "b".repeat(40) }),
-      env,
-      { store, now: () => NOW },
-    );
-    expect(wrongRevision.status).toBe(409);
-
-    const activated = await handleFetch(activationRequest(), env, {
-      store,
-      now: () => NOW,
-    });
-    expect(activated.status).toBe(200);
-    expect(await activated.json()).toEqual({
-      ok: true,
-      activation_status: "applied",
-      activation_id: ACTIVATION_ID,
-      activated_revision: REVISION,
-      schema_revision: SCHEMA_REVISION,
-    });
-
-    const confirmation = await handleFetch(activationRequest(), env, {
-      store,
-      now: () => NOW,
-    });
-    expect(confirmation.status).toBe(200);
-    expect(await confirmation.json()).toEqual({
-      ok: true,
-      activation_status: "already_applied",
-      activation_id: ACTIVATION_ID,
-      activated_revision: REVISION,
-      schema_revision: SCHEMA_REVISION,
-    });
-
-    const newId = await handleFetch(
-      activationRequest({ activationId: "2".repeat(64) }),
-      env,
-      { store, now: () => NOW },
-    );
-    expect(newId.status).toBe(409);
-
-    const changedSchema = await handleFetch(
-      activationRequest({ schemaRevision: "0006_modified_payload" }),
-      env,
-      { store, now: () => NOW },
-    );
-    expect(changedSchema.status).toBe(409);
-
-    store.slackDeliveryProtocolConfirmationOpen = false;
-    const postContractReplay = await handleFetch(activationRequest(), env, {
-      store,
-      now: () => NOW,
-    });
-    expect(postContractReplay.status).toBe(409);
-  });
-
-  it("returns a retryable failure when D1 loses the activation CAS response", async () => {
-    const store = new ActivationResponseLossStore();
-    store.slackDeliveryProtocolActive = false;
-    const env = makeEnv(new FakeQueue(), {
-      relaySigningSecretNext: ACTIVATION_SECRET,
-      workerRevision: REVISION,
-    });
-
-    const lost = await handleFetch(activationRequest(), env, {
-      store,
-      now: () => NOW,
-    });
-    expect(lost.status).toBe(503);
-    expect(await lost.json()).toEqual({ error: "persistence_unavailable" });
-
-    const confirmation = await handleFetch(activationRequest(), env, {
-      store,
-      now: () => NOW + 1,
-    });
-    expect(confirmation.status).toBe(200);
-    expect(await confirmation.json()).toMatchObject({
-      activation_status: "already_applied",
-      activation_id: ACTIVATION_ID,
-    });
-  });
-
-  it("rotates an active revision only while the reviewed confirmation window remains open", async () => {
-    const oldRevision = BRIDGE_SOURCE_REVISION;
-    const store = new MemoryDeliveryStore();
-    store.slackDeliveryProtocolActive = true;
-    store.slackDeliveryProtocolRevision = oldRevision;
-    store.slackDeliveryProtocolActivatedAt = NOW - 1_000;
-    store.slackDeliveryProtocolActivationId = BRIDGE_SOURCE_ACTIVATION_ID;
-    store.slackDeliveryProtocolSchemaRevision = BRIDGE_SOURCE_SCHEMA_REVISION;
-    store.slackDeliveryProtocolConfirmationOpen = true;
-    const env = makeEnv(new FakeQueue(), {
-      relaySigningSecretNext: ACTIVATION_SECRET,
-      workerRevision: REVISION,
-    });
-
-    const rotated = await handleFetch(activationRequest(), env, {
-      store,
-      now: () => NOW,
-    });
-    expect(rotated.status).toBe(200);
-    expect(await rotated.json()).toMatchObject({
-      activation_status: "applied",
-      activation_id: ACTIVATION_ID,
-      activated_revision: REVISION,
-    });
-    expect(store.slackDeliveryProtocolRevision).toBe(REVISION);
-    expect(store.slackDeliveryProtocolActivationId).toBe(ACTIVATION_ID);
-
-    store.slackDeliveryProtocolRevision = oldRevision;
-    store.slackDeliveryProtocolActivationId = BRIDGE_SOURCE_ACTIVATION_ID;
-    store.slackDeliveryProtocolConfirmationOpen = false;
-    const closed = await handleFetch(activationRequest(), env, {
-      store,
-      now: () => NOW + 1,
-    });
-    expect(closed.status).toBe(409);
-    expect(store.slackDeliveryProtocolRevision).toBe(oldRevision);
-  });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "not_found" });
+    },
+  );
 
   it("matches the cross-runtime HMAC golden vectors", async () => {
     await expect(

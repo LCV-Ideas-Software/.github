@@ -16,8 +16,10 @@ on:
       - "scripts/slack-workflow-monitor.test.mjs"
       - "scripts/provision-cloudflare-relay-secret.mjs"
       - "scripts/provision-slack-relay-secret.mjs"
-      - "scripts/slack-delivery-protocol-preflight.mjs"
-      - "scripts/slack-delivery-protocol-preflight.test.mjs"
+      - "scripts/verify-slack-relay-signer.mjs"
+      - "scripts/verify-slack-relay-signer.test.mjs"
+      - "scripts/slack-delivery-protocol-contract.mjs"
+      - "scripts/slack-delivery-protocol-contract.test.mjs"
       - "scripts/slack-relay-d1-remote-proof.test.mjs"
       - "scripts/slack-relay-secret-rollout.test.mjs"
       - "scripts/verify-slack-relay-d1-remote.mjs"
@@ -91,8 +93,9 @@ jobs:
           scripts/github-slack-hook-audit.test.mjs
           scripts/github-slack-webhook-redelivery.test.mjs
           scripts/slack-workflow-monitor.test.mjs
+          scripts/verify-slack-relay-signer.test.mjs
           scripts/slack-relay-secret-rollout.test.mjs
-          scripts/slack-delivery-protocol-preflight.test.mjs
+          scripts/slack-delivery-protocol-contract.test.mjs
           scripts/slack-relay-d1-remote-proof.test.mjs
 
       - name: Verify Cloudflare relay
@@ -207,22 +210,6 @@ jobs:
           expected_wrangler="$(node -p "require('./workers/github-slack-relay/package.json').devDependencies.wrangler")"
           test "$(workers/github-slack-relay/node_modules/.bin/wrangler --version)" = "$expected_wrangler"
 
-      - name: Refuse to replace an already activated relay revision
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          EXPECTED_REVISION: ${{ github.sha }}
-          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          workers/github-slack-relay/node_modules/.bin/wrangler d1 execute github-slack-alerts-db \
-            --remote \
-            --config workers/github-slack-relay/wrangler.jsonc \
-            --command "SELECT slack_delivery_protocol_active, slack_delivery_protocol_revision, slack_delivery_protocol_activated_at, slack_delivery_protocol_activation_id, slack_delivery_protocol_schema_revision, slack_delivery_protocol_confirmation_open, (SELECT COUNT(*) FROM (SELECT slack_send_execution_id FROM deliveries WHERE slack_send_execution_id IS NOT NULL GROUP BY slack_send_execution_id HAVING COUNT(*) > 1)) AS duplicate_delivery_execution_id_groups, (SELECT COUNT(*) FROM (SELECT send_execution_id FROM slack_workflow_traces WHERE send_execution_id IS NOT NULL GROUP BY send_execution_id HAVING COUNT(*) > 1)) AS duplicate_slack_trace_execution_id_groups FROM relay_state WHERE singleton_id = 1" \
-            --json \
-            | node scripts/slack-delivery-protocol-preflight.mjs
-
       - name: Apply durable inbox migrations
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -231,6 +218,21 @@ jobs:
           workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
             --remote \
             --config workers/github-slack-relay/wrangler.jsonc
+
+      - name: Verify the sealed Slack delivery protocol contract
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONTRACT_SQL="$(node scripts/slack-delivery-protocol-contract.mjs --print-sql)"
+          workers/github-slack-relay/node_modules/.bin/wrangler d1 execute github-slack-alerts-db \
+            --remote \
+            --config workers/github-slack-relay/wrangler.jsonc \
+            --command "$CONTRACT_SQL" \
+            --json \
+            | node scripts/slack-delivery-protocol-contract.mjs
 
       - name: Stage the new relay signer as Cloudflare NEXT
         env:
@@ -280,6 +282,11 @@ jobs:
         with:
           node-version: 24
           check-latest: true
+
+      - name: Prove the slack-production signer against the deployed relay
+        env:
+          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
+        run: node scripts/verify-slack-relay-signer.mjs
 
       - name: Install verified Slack CLI 4.6.0
         id: install-slack-cli
@@ -458,14 +465,3 @@ jobs:
             exit 1
           fi
           rm -f "$inventory_error"
-
-      - name: Activate the exact receipt-aware delivery protocol with NEXT
-        working-directory: slack/github-integration
-        env:
-          EXPECTED_REVISION: ${{ github.sha }}
-          SLACK_RELAY_SIGNING_SECRET_NEXT: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
-        run: >-
-          deno run --frozen --no-prompt
-          --allow-env=EXPECTED_REVISION,SLACK_RELAY_SIGNING_SECRET_NEXT
-          --allow-net=github-slack-alerts.lcv.workers.dev
-          scripts/activate_delivery_protocol.ts

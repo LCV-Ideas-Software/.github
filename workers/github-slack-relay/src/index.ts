@@ -8,27 +8,19 @@ import {
   TARGET_ORGANIZATION,
 } from "./domain";
 import {
-  deriveSlackProtocolActivationId,
   readSecret,
   signSlackRelayPayload,
   type SignedSlackCheckpointRequest,
   type SignedSlackProgress,
-  type SignedSlackProtocolActivation,
   type SignedSlackReconciliation,
   verifySlackCheckpointRequest,
   verifySlackProgress,
-  verifySlackProtocolActivation,
-  verifySlackProtocolActivationId,
   verifySlackReconciliation,
   verifySlackReconciliationV2,
   verifyGitHubSignature,
 } from "./security";
 import {
   D1DeliveryStore,
-  SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION,
-  SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION,
-  SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION,
-  SlackDeliveryProtocolActivationConflictError,
   SlackProgressConflictError,
   SlackReconciliationConflictError,
   type DeliveryStore,
@@ -41,7 +33,6 @@ const HEALTH_PATH = "/healthz";
 const SLACK_PROGRESS_PATH = "/slack/progress";
 const SLACK_RECONCILIATION_PATH = "/slack/reconciliation";
 const SLACK_CHECKPOINT_PATH = "/slack/reconciliation/checkpoint";
-const SLACK_PROTOCOL_ACTIVATION_PATH = "/slack/protocol/activate";
 const ALERT_QUEUE_NAME = "github-slack-alerts";
 const ALERT_DEAD_LETTER_QUEUE = "github-slack-alerts-dlq";
 const ACTIVITY_QUEUE_NAME = "github-slack-activity";
@@ -62,8 +53,6 @@ const AUTHENTICATED_REQUEST_MAX_FUTURE_SECONDS = 60;
 const SLACK_MESSAGE_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
 const SLACK_TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/u;
 const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
-const ACTIVATION_ID_PATTERN = /^[0-9a-f]{64}$/u;
-const SCHEMA_REVISION_PATTERN = /^[a-z0-9_]{1,64}$/u;
 
 export interface RuntimeOverrides {
   store?: DeliveryStore;
@@ -341,43 +330,6 @@ function parseSlackCheckpointRequest(
   };
 }
 
-function parseSlackProtocolActivation(
-  record: Record<string, unknown>,
-): SignedSlackProtocolActivation | null {
-  if (
-    !exactKeys(record, [
-      "activation_id",
-      "expected_revision",
-      "schema_revision",
-      "activation_signature",
-    ])
-  ) {
-    return null;
-  }
-  const activationId = record.activation_id;
-  const expectedRevision = record.expected_revision;
-  const schemaRevision = record.schema_revision;
-  const activationSignature = record.activation_signature;
-  if (
-    typeof activationId !== "string" ||
-    !ACTIVATION_ID_PATTERN.test(activationId) ||
-    typeof expectedRevision !== "string" ||
-    !WORKER_REVISION_PATTERN.test(expectedRevision) ||
-    typeof schemaRevision !== "string" ||
-    !SCHEMA_REVISION_PATTERN.test(schemaRevision) ||
-    typeof activationSignature !== "string" ||
-    !/^[0-9a-f]{64}$/u.test(activationSignature)
-  ) {
-    return null;
-  }
-  return {
-    activation_id: activationId,
-    expected_revision: expectedRevision,
-    schema_revision: schemaRevision,
-    activation_signature: activationSignature,
-  };
-}
-
 function parseSlackReconciliation(
   record: Record<string, unknown>,
   now: number,
@@ -630,74 +582,6 @@ async function handleSlackControlRequest(
     return jsonResponse({ error: "authentication_unavailable" }, 503);
   }
 
-  if (path === SLACK_PROTOCOL_ACTIVATION_PATH) {
-    const activation = parseSlackProtocolActivation(record);
-    if (activation === null) {
-      return jsonResponse({ error: "invalid_request" }, 400);
-    }
-    if (signing.next === null) {
-      return jsonResponse({ error: "authentication_unavailable" }, 503);
-    }
-    if (!(await verifySlackProtocolActivation(activation, signing.next))) {
-      return jsonResponse({ error: "invalid_signature" }, 401);
-    }
-
-    const deployedRevision = env.WORKER_VERSION?.tag;
-    if (
-      typeof deployedRevision !== "string" ||
-      !WORKER_REVISION_PATTERN.test(deployedRevision) ||
-      deployedRevision !== activation.expected_revision
-    ) {
-      return jsonResponse({ error: "deployed_revision_mismatch" }, 409);
-    }
-    if (
-      activation.schema_revision !== SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION
-    ) {
-      return jsonResponse({ error: "schema_revision_mismatch" }, 409);
-    }
-    if (
-      !(await verifySlackProtocolActivationId(
-        activation.activation_id,
-        activation.expected_revision,
-        activation.schema_revision,
-        signing.next,
-      ))
-    ) {
-      return jsonResponse({ error: "activation_id_mismatch" }, 409);
-    }
-
-    try {
-      const bridgeSourceActivationId = await deriveSlackProtocolActivationId(
-        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_REVISION,
-        SLACK_DELIVERY_PROTOCOL_BRIDGE_SOURCE_SCHEMA_REVISION,
-        signing.next,
-      );
-      const activationStatus =
-        await dependencies.store.activateSlackDeliveryProtocol({
-          activationId: activation.activation_id,
-          bridgeSourceActivationId,
-          revision: activation.expected_revision,
-          schemaRevision: activation.schema_revision,
-          now,
-        });
-      return jsonResponse(
-        {
-          ok: true,
-          activation_status: activationStatus,
-          activation_id: activation.activation_id,
-          activated_revision: activation.expected_revision,
-          schema_revision: activation.schema_revision,
-        },
-        200,
-      );
-    } catch (error) {
-      if (error instanceof SlackDeliveryProtocolActivationConflictError) {
-        return jsonResponse({ error: "protocol_activation_conflict" }, 409);
-      }
-      return jsonResponse({ error: "persistence_unavailable" }, 503);
-    }
-  }
-
   if (path === SLACK_PROGRESS_PATH) {
     const receipt = parseSlackProgress(record, now);
     if (receipt === null) {
@@ -881,8 +765,7 @@ export async function handleFetch(
   if (
     url.pathname === SLACK_PROGRESS_PATH ||
     url.pathname === SLACK_RECONCILIATION_PATH ||
-    url.pathname === SLACK_CHECKPOINT_PATH ||
-    url.pathname === SLACK_PROTOCOL_ACTIVATION_PATH
+    url.pathname === SLACK_CHECKPOINT_PATH
   ) {
     return handleSlackControlRequest(request, url.pathname, env, dependencies);
   }

@@ -23,9 +23,13 @@ GitHub variable.
 Every relay record is also authenticated with a separate HMAC secret. The
 Cloudflare Worker signs a canonical list of flat fields, and the first Slack
 workflow step validates the signature, destination, and five-minute freshness
-window before formatting or posting anything. The same secret is stored only in
-Cloudflare Secrets Store, the encrypted Slack app environment, and the protected
-`slack-production` GitHub environment used by the activity monitor.
+window before formatting or posting anything. During staged overlap, the old
+current value exists only in the hosted Cloudflare and Slack stores. The
+reviewed `NEXT` value is sourced independently from both protected GitHub
+environments, `cloudflare-production` and `slack-production`, and written to
+both hosted `NEXT` slots without readback or logging. A read-only HMAC
+checkpoint proves the two protected source values are equal before the Slack job
+mutates the app.
 
 Trigger HTTP success is not delivery proof. After validation, the
 `report_github_relay_progress` function first records an authenticated
@@ -68,24 +72,19 @@ Production deployment is serialized inside one `GitHub Slack Integration`
 workflow and one exact `main` SHA. Its required predecessor checks the Slack
 candidate's formatting, lint, types, tests and dependency audit alongside the
 Worker before either production job can run. Its dependent Slack deploy job runs
-only after D1 migration, Cloudflare `NEXT` staging, and Worker deployment
-succeed, so it cannot race them. The separate Slack workflow is verification and
-monitor only; manual dispatch there is monitor-only. The expanded Worker keeps
-delivery closed and applies only bounded Queue backoff until this job has
-deployed the Slack app, updated both existing protected trigger IDs in place
-from their versioned definitions without printing the CLI response, and verified
-the exact protected trigger inventory. A final fixed-purpose script derives an
-immutable pseudorandom `activation_id` from the exact SHA and schema revision
-under the staged `NEXT` key, then HMAC-authenticates that exact tuple with
-`NEXT`. The Worker requires the SHA to equal `WORKER_VERSION.tag`, proves the
-expanded D1 schema, and allows only an inactive-to-target activation or the
-source-pinned deployed `afe525/0004` to target/`0005` transition. If the
-response is lost after that CAS, the script repeats the byte-identical request
-once and accepts only `already_applied` for the same persisted tuple. This is
-idempotent confirmation, not a second activation or replay. A different ID,
-revision, schema, key, or a request after the reviewed contract closes
-confirmation fails closed. The activation path cannot select or recover a
-delivery.
+only after D1 migration, sealed-contract verification, Cloudflare `NEXT`
+staging, and Worker deployment succeed, so it cannot race them. The separate
+Slack workflow is verification and monitor only; manual dispatch there is
+monitor-only. Migration `0006_seal_slack_delivery_protocol.sql` preserved the
+historical `e0131a7/0005` activation tuple, irreversibly closed confirmation and
+installed permanent update, insert and delete guards. Every later deployed
+Worker requires that sealed anchor, while `WORKER_VERSION.tag` remains the
+current exact-SHA provenance and is not written into the historical tuple. This
+job deploys the Slack app, updates both existing protected trigger IDs in place
+from their versioned definitions without printing the CLI response, and verifies
+the exact protected trigger inventory. The temporary HMAC activator and
+`/slack/protocol/activate` route have been removed; there is no public protocol
+mutation or delivery-recovery path.
 
 The manifest therefore allows outbound HTTPS only to
 `github-slack-alerts.lcv.workers.dev`. The progress function retries the same

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -18,7 +17,7 @@ import {
   lookupAmbiguousDatabaseCreation,
   parseCloudflareCreatedDatabase,
   parseCloudflareDatabaseRead,
-  proveProductionParityPreflight,
+  proveSealedProtocolContract,
   proveSchemaInventory,
   D1_DATABASE_ACCOUNT_LIMIT,
   MAX_CLOUDFLARE_JSON_BYTES,
@@ -48,17 +47,31 @@ import {
   verifyRemoteProofDeadline,
 } from "./verify-slack-relay-d1-remote.mjs";
 import {
-  SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
-} from "./slack-delivery-protocol-preflight.mjs";
+  SEALED_PROTOCOL_ACTIVATED_AT,
+  SEALED_PROTOCOL_ACTIVATION_ID,
+  SEALED_PROTOCOL_MIGRATION,
+  SEALED_PROTOCOL_REVISION,
+  SEALED_PROTOCOL_SCHEMA_REVISION,
+  SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
+} from "./slack-delivery-protocol-contract.mjs";
+import { SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS } from "../workers/github-slack-relay/src/slack-delivery-protocol-guards.ts";
 
 const expandMigrationPath =
   "workers/github-slack-relay/migrations/0004_confirm_slack_delivery.sql";
 const targetMigrationPath =
   "workers/github-slack-relay/migrations/0005_reconcile_live_slack_receipts.sql";
+const sealMigrationPath =
+  "workers/github-slack-relay/migrations/0006_seal_slack_delivery_protocol.sql";
 const migrationsDirectory = "workers/github-slack-relay/migrations";
 const proofPath = "scripts/verify-slack-relay-d1-remote.mjs";
 const workflowPath = ".github/workflows/github-slack-integration.yml";
 const reaperWorkflowPath = ".github/workflows/slack-d1-disposable-reaper.yml";
+const sealedGuardSql = Object.fromEntries(
+  SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS.map(({ name, schemaSql }) => [
+    name,
+    schemaSql,
+  ]),
+);
 
 test("the remote D1 migration avoids known server-side parser and pattern limits", () => {
   const expandMigration = readFileSync(expandMigrationPath, "utf8");
@@ -107,60 +120,53 @@ test("the disposable proof dynamically includes every production migration", () 
   const targetIndex = currentNames.indexOf(
     "0005_reconcile_live_slack_receipts.sql",
   );
+  const sealIndex = currentNames.indexOf(SEALED_PROTOCOL_MIGRATION);
 
   assert.deepEqual(plan.fullNames, [...currentNames, futureName]);
   assert.deepEqual(plan.preNames, currentNames.slice(0, expandIndex));
-  assert.deepEqual(plan.sourceNames, currentNames.slice(0, targetIndex));
+  assert.deepEqual(plan.sourceNames, currentNames.slice(0, sealIndex));
   assert.ok(!plan.preNames.includes("0004_confirm_slack_delivery.sql"));
   assert.ok(plan.sourceNames.includes("0004_confirm_slack_delivery.sql"));
-  assert.ok(
-    !plan.sourceNames.includes("0005_reconcile_live_slack_receipts.sql"),
-  );
+  assert.ok(plan.sourceNames.includes("0005_reconcile_live_slack_receipts.sql"));
+  assert.ok(!plan.sourceNames.includes(SEALED_PROTOCOL_MIGRATION));
   assert.ok(!plan.preNames.includes(futureName));
   assert.ok(!plan.sourceNames.includes(futureName));
+  assert.equal(sealIndex, targetIndex + 1);
 });
 
-test("the disposable proof validates the exact production preflight row", () => {
+test("the disposable proof validates the exact sealed production contract row", () => {
   const source = readFileSync(proofPath, "utf8");
-  const preflightProof = source.slice(
-    source.indexOf("export async function proveProductionParityPreflight"),
+  const contractProof = source.slice(
+    source.indexOf("export async function proveSealedProtocolContract"),
     source.indexOf("function exactRows"),
   );
 
-  assert.match(preflightProof, /SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL/u);
+  assert.match(contractProof, /SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL/u);
   assert.doesNotMatch(
-    preflightProof,
-    /validateSlackDeliveryProtocolPreflight\([\s\S]*?state\.results/u,
+    contractProof,
+    /validateSlackDeliveryProtocolContract\([\s\S]*?contract\.results\s*,/u,
   );
   assert.match(
-    SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+    SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
     /duplicate_delivery_execution_id_groups/u,
   );
   assert.match(
-    SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL,
+    SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
     /duplicate_slack_trace_execution_id_groups/u,
   );
+  assert.match(
+    SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
+    /relay_state_guard_trigger_count/u,
+  );
+  assert.match(SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL, /transient_guard_trigger_count/u);
 });
 
-test("the production-parity proof executes and validates the canonical preflight query", async () => {
+test("the production-parity proof executes and validates the canonical sealed query", async () => {
   const configuration = Object.freeze({ marker: "configuration" });
   const databaseId = "11111111-2222-4333-8444-555555555555";
-  const sourceRevision = "afe5250504d37543845b07f44af7bfc30a548feb";
-  const sourceSchema = "0004_confirm_slack_delivery";
-  const signingSecret = "remote-proof-only-slack-protocol-signing-secret";
-  const activationId = createHmac("sha256", signingSecret)
-    .update(
-      JSON.stringify([
-        "slack_delivery_protocol_activation_id_v1",
-        sourceRevision,
-        sourceSchema,
-      ]),
-      "utf8",
-    )
-    .digest("hex");
   const calls = [];
 
-  await proveProductionParityPreflight(
+  await proveSealedProtocolContract(
     configuration,
     databaseId,
     async (...args) => {
@@ -169,13 +175,24 @@ test("the production-parity proof executes and validates the canonical preflight
         results: [
           {
             slack_delivery_protocol_active: 1,
-            slack_delivery_protocol_revision: sourceRevision,
-            slack_delivery_protocol_activated_at: 2_300,
-            slack_delivery_protocol_activation_id: activationId,
-            slack_delivery_protocol_schema_revision: sourceSchema,
-            slack_delivery_protocol_confirmation_open: 1,
+            slack_delivery_protocol_revision: SEALED_PROTOCOL_REVISION,
+            slack_delivery_protocol_activated_at: SEALED_PROTOCOL_ACTIVATED_AT,
+            slack_delivery_protocol_activation_id:
+              SEALED_PROTOCOL_ACTIVATION_ID,
+            slack_delivery_protocol_schema_revision:
+              SEALED_PROTOCOL_SCHEMA_REVISION,
+            slack_delivery_protocol_confirmation_open: 0,
             duplicate_delivery_execution_id_groups: 0,
             duplicate_slack_trace_execution_id_groups: 0,
+            relay_state_guard_trigger_count: 3,
+            sealed_delete_guard_sql:
+              sealedGuardSql.enforce_sealed_slack_delivery_protocol_delete,
+            sealed_insert_guard_sql:
+              sealedGuardSql.enforce_sealed_slack_delivery_protocol_insert,
+            sealed_update_guard_sql:
+              sealedGuardSql.enforce_sealed_slack_delivery_protocol_update,
+            transient_guard_trigger_count: 0,
+            sealed_migration_count: 1,
           },
         ],
       };
@@ -183,89 +200,83 @@ test("the production-parity proof executes and validates the canonical preflight
   );
 
   assert.deepEqual(calls, [
-    [configuration, databaseId, SLACK_DELIVERY_PROTOCOL_PREFLIGHT_SQL],
+    [configuration, databaseId, SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL],
   ]);
 });
 
-test("the production-parity preflight runs on the migrated local source before migration 0005", async () => {
+test("the sealed contract postflight runs after migration 0006 in local SQLite", async () => {
   const database = new DatabaseSync(":memory:");
-  const sourceRevision = "afe5250504d37543845b07f44af7bfc30a548feb";
-  const sourceSchema = "0004_confirm_slack_delivery";
-  const signingSecret = "remote-proof-only-slack-protocol-signing-secret";
-  const activationId = createHmac("sha256", signingSecret)
-    .update(
-      JSON.stringify([
-        "slack_delivery_protocol_activation_id_v1",
-        sourceRevision,
-        sourceSchema,
-      ]),
-      "utf8",
-    )
-    .digest("hex");
   try {
+    database.exec(
+      "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+    );
     for (const migration of [
       "0001_initial.sql",
       "0002_add_destination.sql",
       "0003_rename_delivery_acceptance.sql",
       "0004_confirm_slack_delivery.sql",
+      "0005_reconcile_live_slack_receipts.sql",
     ]) {
-      database.exec(
-        readFileSync(`${migrationsDirectory}/${migration}`, "utf8"),
-      );
+      database.exec(readFileSync(`${migrationsDirectory}/${migration}`, "utf8"));
+      database
+        .prepare("INSERT INTO d1_migrations (name) VALUES (?)")
+        .run(migration);
     }
     database
       .prepare(
         `UPDATE relay_state
          SET slack_delivery_protocol_active = 1,
              slack_delivery_protocol_revision = ?,
-             slack_delivery_protocol_activated_at = 2300,
+             slack_delivery_protocol_activated_at = ?,
              slack_delivery_protocol_activation_id = ?,
              slack_delivery_protocol_schema_revision = ?
          WHERE singleton_id = 1`,
       )
-      .run(sourceRevision, activationId, sourceSchema);
+      .run(
+        SEALED_PROTOCOL_REVISION,
+        SEALED_PROTOCOL_ACTIVATED_AT,
+        SEALED_PROTOCOL_ACTIVATION_ID,
+        SEALED_PROTOCOL_SCHEMA_REVISION,
+      );
+    database.exec(readFileSync(sealMigrationPath, "utf8"));
+    database
+      .prepare("INSERT INTO d1_migrations (name) VALUES (?)")
+      .run(SEALED_PROTOCOL_MIGRATION);
 
-    await proveProductionParityPreflight(
+    await proveSealedProtocolContract(
       Object.freeze({ marker: "configuration" }),
       "11111111-2222-4333-8444-555555555555",
       async (_configuration, _databaseId, sql) => ({
         results: database.prepare(sql).all(),
       }),
     );
-    database.exec(readFileSync(targetMigrationPath, "utf8"));
 
-    assert.deepEqual(
-      database
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_deliveries_slack_send_execution', 'idx_slack_workflow_traces_send_execution') ORDER BY name",
-        )
-        .all()
-        .map((row) => row.name),
-      [
-        "idx_deliveries_slack_send_execution",
-        "idx_slack_workflow_traces_send_execution",
-      ],
+    database.exec(`
+      DROP TRIGGER enforce_sealed_slack_delivery_protocol_update;
+      CREATE TRIGGER enforce_sealed_slack_delivery_protocol_update
+      BEFORE UPDATE ON relay_state
+      WHEN 0
+      BEGIN
+        SELECT 1;
+      END;
+    `);
+    await assert.rejects(
+      proveSealedProtocolContract(
+        Object.freeze({ marker: "configuration" }),
+        "11111111-2222-4333-8444-555555555555",
+        async (_configuration, _databaseId, sql) => ({
+          results: database.prepare(sql).all(),
+        }),
+      ),
+      /altered sealed guard definitions/u,
     );
   } finally {
     database.close();
   }
 });
 
-test("the production-parity preflight rejects duplicate source owners before migration 0005", async () => {
+test("migration 0005 rejects duplicate source owners before the irreversible seal", () => {
   const database = new DatabaseSync(":memory:");
-  const sourceRevision = "afe5250504d37543845b07f44af7bfc30a548feb";
-  const sourceSchema = "0004_confirm_slack_delivery";
-  const signingSecret = "remote-proof-only-slack-protocol-signing-secret";
-  const activationId = createHmac("sha256", signingSecret)
-    .update(
-      JSON.stringify([
-        "slack_delivery_protocol_activation_id_v1",
-        sourceRevision,
-        sourceSchema,
-      ]),
-      "utf8",
-    )
-    .digest("hex");
   try {
     for (const migration of [
       "0001_initial.sql",
@@ -277,17 +288,6 @@ test("the production-parity preflight rejects duplicate source owners before mig
         readFileSync(`${migrationsDirectory}/${migration}`, "utf8"),
       );
     }
-    database
-      .prepare(
-        `UPDATE relay_state
-         SET slack_delivery_protocol_active = 1,
-             slack_delivery_protocol_revision = ?,
-             slack_delivery_protocol_activated_at = 2300,
-             slack_delivery_protocol_activation_id = ?,
-             slack_delivery_protocol_schema_revision = ?
-         WHERE singleton_id = 1`,
-      )
-      .run(sourceRevision, activationId, sourceSchema);
     const insert = database.prepare(
       `INSERT INTO deliveries (
          delivery_id, event_type, action, repository, destination,
@@ -299,16 +299,6 @@ test("the production-parity preflight rejects duplicate source owners before mig
     insert.run("duplicate-owner-a", "FxDuplicateSourceOwner");
     insert.run("duplicate-owner-b", "FxDuplicateSourceOwner");
 
-    await assert.rejects(
-      proveProductionParityPreflight(
-        Object.freeze({ marker: "configuration" }),
-        "11111111-2222-4333-8444-555555555555",
-        async (_configuration, _databaseId, sql) => ({
-          results: database.prepare(sql).all(),
-        }),
-      ),
-      /found duplicate Slack function execution owners/u,
-    );
     assert.throws(
       () => database.exec(readFileSync(targetMigrationPath, "utf8")),
       /UNIQUE constraint failed: deliveries\.slack_send_execution_id/u,
@@ -318,7 +308,7 @@ test("the production-parity preflight rejects duplicate source owners before mig
   }
 });
 
-test("the exact post-migration schema inventory is executable before merge", async () => {
+test("the exact post-seal schema inventory is executable before merge", async () => {
   const database = new DatabaseSync(":memory:");
   try {
     database.exec(
@@ -335,6 +325,23 @@ test("the exact post-migration schema inventory is executable before merge", asy
         readFileSync(`${migrationsDirectory}/${migration}`, "utf8"),
       );
     }
+    database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_delivery_protocol_active = 1,
+             slack_delivery_protocol_revision = ?,
+             slack_delivery_protocol_activated_at = ?,
+             slack_delivery_protocol_activation_id = ?,
+             slack_delivery_protocol_schema_revision = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(
+        SEALED_PROTOCOL_REVISION,
+        SEALED_PROTOCOL_ACTIVATED_AT,
+        SEALED_PROTOCOL_ACTIVATION_ID,
+        SEALED_PROTOCOL_SCHEMA_REVISION,
+      );
+    database.exec(readFileSync(sealMigrationPath, "utf8"));
 
     await proveSchemaInventory(
       Object.freeze({ marker: "configuration" }),
@@ -1190,7 +1197,7 @@ test("the successful create identity is carried through config, barriers, and cl
   );
   assert.match(
     proof,
-    /preConfig,[\s\S]*?seedOldSchema\(configuration, databaseId\);[\s\S]*?sourceConfig,[\s\S]*?activateProtocolBridgeSource\(configuration, databaseId\);[\s\S]*?proveProductionParityPreflight\(configuration, databaseId\);[\s\S]*?fullConfig,/u,
+    /preConfig,[\s\S]*?seedOldSchema\(configuration, databaseId\);[\s\S]*?sourceConfig,[\s\S]*?prepareProtocolSealSource\(configuration, databaseId\);[\s\S]*?fullConfig,[\s\S]*?proveSealedProtocolContract\(configuration, databaseId\);/u,
   );
   assert.match(
     proof,
@@ -1213,13 +1220,13 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
   assert.deepEqual(document.errors, []);
   const proofJob = document.toJS({ maxAliasCount: 0 }).jobs.prove_remote_d1;
 
-  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 95);
+  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 94);
   assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 3);
   assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 14_000);
-  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_799_000);
+  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_784_000);
   assert.equal(REMOTE_PROOF_WORKFLOW_TIMEOUT_MS, 3_600_000);
   assert.equal(REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS, 60_000);
-  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_399_000);
+  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_384_000);
   assert.equal(
     proofJob["timeout-minutes"] * 60_000,
     REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,

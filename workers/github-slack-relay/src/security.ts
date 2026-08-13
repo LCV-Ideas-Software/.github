@@ -38,13 +38,6 @@ export interface SignedSlackCheckpointRequest {
   request_signature: string;
 }
 
-export interface SignedSlackProtocolActivation {
-  activation_id: string;
-  expected_revision: string;
-  schema_revision: string;
-  activation_signature: string;
-}
-
 interface TimingSafeSubtleCrypto extends SubtleCrypto {
   timingSafeEqual(left: BufferSource, right: BufferSource): boolean;
 }
@@ -353,70 +346,6 @@ export async function verifySlackCheckpointRequest(
   return verifyHmacSignature(
     canonicalSlackCheckpointRequest(request),
     request.request_signature,
-    secret,
-  );
-}
-
-export function canonicalSlackProtocolActivation(
-  request: Omit<SignedSlackProtocolActivation, "activation_signature">,
-): string {
-  return JSON.stringify([
-    "slack_delivery_protocol_activation_v1",
-    request.activation_id,
-    request.expected_revision,
-    request.schema_revision,
-  ]);
-}
-
-export function canonicalSlackProtocolActivationId(
-  expectedRevision: string,
-  schemaRevision: string,
-): string {
-  return JSON.stringify([
-    "slack_delivery_protocol_activation_id_v1",
-    expectedRevision,
-    schemaRevision,
-  ]);
-}
-
-export async function deriveSlackProtocolActivationId(
-  expectedRevision: string,
-  schemaRevision: string,
-  secret: string,
-): Promise<string> {
-  return hmacSignature(
-    canonicalSlackProtocolActivationId(expectedRevision, schemaRevision),
-    secret,
-  );
-}
-
-export async function verifySlackProtocolActivationId(
-  activationId: string,
-  expectedRevision: string,
-  schemaRevision: string,
-  secret: string,
-): Promise<boolean> {
-  return verifyHmacSignature(
-    canonicalSlackProtocolActivationId(expectedRevision, schemaRevision),
-    activationId,
-    secret,
-  );
-}
-
-export async function signSlackProtocolActivation(
-  request: Omit<SignedSlackProtocolActivation, "activation_signature">,
-  secret: string,
-): Promise<string> {
-  return hmacSignature(canonicalSlackProtocolActivation(request), secret);
-}
-
-export async function verifySlackProtocolActivation(
-  request: SignedSlackProtocolActivation,
-  secret: string,
-): Promise<boolean> {
-  return verifyHmacSignature(
-    canonicalSlackProtocolActivation(request),
-    request.activation_signature,
     secret,
   );
 }

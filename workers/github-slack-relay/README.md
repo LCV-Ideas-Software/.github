@@ -169,7 +169,7 @@ The old current relay-signing value must match Slack app environment
 be stored under `SLACK_RELAY_SIGNING_SECRET` in both protected GitHub production
 environments. The rollout writes that value to each hosted runtime's distinct
 `NEXT` slot, deploys the Worker with `SLACK_RELAY_SIGNING_ACTIVE_SLOT=next`, and
-uses it for activation and monitor signatures. The old hosted current remains
+uses it for progress, reconciliation and monitor signatures. The old hosted current remains
 stored during expand, but only Slack accepts it for inbound in-flight relay
 compatibility; the Worker control plane accepts `NEXT` only. It is never read
 back into GitHub.
@@ -242,52 +242,43 @@ Production verification and deployment are owned by
 2. checks npm and Deno dependency signatures and advisories;
 3. verifies committed bindings, formats, lints, type-checks, runs both test
    suites, and creates a strict Worker dry-run bundle;
-4. reads the activation tuple and authorizes only the inactive state, the exact
-   target tuple, or the reviewed one-time `afe525/0004` bridge before applying
-   remote D1 migrations;
-5. stages Cloudflare runtime `NEXT` and deploys the verified Worker revision
-   with active slot `next` but delivery
-   still closed;
-6. in a dependent job on the same SHA, stages Slack runtime `NEXT`, deploys the
-   Slack app, verifies the protected triggers, and activates delivery.
+4. when the production gate is enabled, proves migrations `0001` through `0006`
+   and the seal guards in an owned disposable remote D1, and cleans it up;
+5. applies production D1 migrations, then requires the exact sealed historical
+   `e0131a7/0005` protocol anchor, all three permanent guards, no transient
+   activation guards and no duplicate execution owners;
+6. stages Cloudflare runtime `NEXT` and deploys the verified Worker revision
+   with active slot `next`;
+7. in a dependent job on the same SHA, proves the `slack-production` signer
+   against the deployed relay before any Slack mutation, stages Slack runtime
+   `NEXT`, deploys the Slack app and verifies the protected triggers.
 
-Migration `0004_confirm_slack_delivery.sql` starts the receipt-aware delivery
-protocol closed. Migration `0005_reconcile_live_slack_receipts.sql` preserves
-that tuple, adds the live Activities receipt correlation, and permits exactly
-one transition from the deployed `afe525/0004` contract to the reviewed
-target `0005` contract. The new Worker reads its immutable `WORKER_VERSION.tag`, which
-the deploy command binds to the exact 40-character `GITHUB_SHA`. While the
-protocol is closed, primary and DLQ consumers use bounded Queue backoff without
-reading or mutating a delivery, reserving a Slack slot, increasing the D1
-attempt count, or issuing a trigger POST; the recovery cron also leaves durable
-delivery state untouched. Old-Worker writes to `accepted_by_slack` remain
-schema-compatible but an expand trigger immediately quarantines them with
-`legacy_unverified = 1`.
+Migration `0004_confirm_slack_delivery.sql` started the receipt-aware delivery
+protocol closed. Migration `0005_reconcile_live_slack_receipts.sql` added live
+Activities receipt correlation and permitted exactly one transition from the
+deployed `afe525/0004` contract to the reviewed target `0005` contract.
+Migration `0006_seal_slack_delivery_protocol.sql` accepts only the exact live
+target tuple, changes only `confirmation_open` from `1` to `0`, removes the two
+transient activation guards and installs permanent update, insert and delete
+guards. Its source and destination assertions are part of the same D1 migration
+transaction, so tuple or schema drift aborts before Worker replacement.
 
-The activation-tuple preflight reads all six persisted fields and accepts only
-the initial inactive state with all activation metadata null, the exact target
-SHA/schema tuple, or the fixed source tuple
-`afe5250504d37543845b07f44af7bfc30a548feb/0004_confirm_slack_delivery`.
-Every accepted active tuple must carry the deterministic HMAC activation ID for
-its own SHA and schema. The preflight runs before production migration, so an
-unauthorized revision cannot mutate D1. The 0005 trigger then permits only the
-single source-to-target transition and blocks every later SHA.
+The Worker reads immutable `WORKER_VERSION.tag`, which the deploy command binds
+to the current 40-character `GITHUB_SHA`, as runtime provenance. Delivery
+authorization instead requires the historical `e0131a7/0005` tuple to remain
+sealed and guarded; later deployed SHAs do not rewrite that audit anchor. An
+absent, open, changed or partially guarded anchor keeps Queue and recovery paths
+fail-closed. Old-Worker writes to `accepted_by_slack` remain schema-compatible
+but the expand quarantine trigger marks them `legacy_unverified = 1`.
 
 After the Worker deploy succeeds, the dependent protected Slack job uses the
-same checkout and SHA, stages Slack `NEXT`, deploys the app, and verifies the
-exact two production triggers. Its final step derives an immutable pseudorandom
-`activation_id` from the SHA and schema revision under `NEXT`, then sends a
-second domain-separated `NEXT` HMAC for that exact tuple to
-`/slack/protocol/activate`. The Worker requires the staged signer and the
-expected SHA to equal `WORKER_VERSION.tag`,
-proves the expanded D1 tables and triggers, and performs only an
-inactive-to-target activation or the source-pinned deployed `afe525/0004` to
-target/`0005` transition while persisting the tuple. If its response is lost, one
-byte-identical retry returns read-only `already_applied`; this is idempotent
-confirmation, not a second activation. A Slack deploy or inventory failure
-never reaches activation; a wrong key/SHA/schema, new activation ID, changed
-tuple, downgrade, or request after the contract closes confirmation fails
-closed. The path has no status, delivery selector, or recovery capability.
+same checkout and SHA and first proves its signer against the Worker's read-only
+HMAC checkpoint. It then stages Slack `NEXT`, deploys the app, and verifies the
+exact two production triggers. There is no final activation call. The temporary
+HMAC parser, store mutation, Deno script and `/slack/protocol/activate` route
+were removed after the contract was sealed; that path now receives the generic
+404 response and no public protocol status, mutation, delivery selector or
+recovery capability exists.
 
 It does not create Slack channels, Slack triggers, or the GitHub organization
 webhook. Its two fixed-purpose provisioning scripts create or idempotently
@@ -296,12 +287,12 @@ rewrite only the runtime `NEXT` signer after proving exact metadata.
 Repository variable `SLACK_GITHUB_INTEGRATION_ENABLED` is the fail-closed
 production automation gate. Keep it `false` while IDs, secrets, triggers, and
 the organization webhook are prepared. Change it to `true` only for the
-authorized serialized rollout. The deployed source Worker remains active on
-`afe525/0004` during the bridge; the target Worker remains fail-closed until the
-exact target/`0005` tuple is activated. At `true`, the variable permits the relay
+authorized serialized rollout. The sealed historical anchor remains active
+across later runtime revisions. At `true`, the variable permits the relay
 deploy, Slack-app deploy, monitor, and organization-webhook redelivery jobs;
-their verification jobs do not depend on the gate. Run the real channel
-canaries immediately after activation, and return the gate to `false` on any
+the unprivileged `verify` job does not depend on the gate; the remote D1 proof
+and production jobs do. Run the real channel
+canaries immediately after a material deployment, and return the gate to `false` on any
 failure. The variable does not disable an already deployed Worker or webhook.
 
 ## Trigger lifecycle
@@ -322,7 +313,7 @@ create, delete or display triggers. The protected workflow then updates each
 existing fixed trigger ID from its corresponding versioned definition. It
 captures and deletes the CLI response without displaying it because that output
 can contain the bearer webhook URL, and it requires the exact two-trigger
-inventory before activation.
+inventory before deployment completes.
 
 Compatible input-mapping changes use that protected in-place update. Rotate a
 trigger only for exposure, a Slack requirement, or a change that cannot safely
@@ -344,9 +335,9 @@ both trigger/channel paths.
 The checked-in Slack validator accepts current and staged `NEXT` inbound relay
 signatures. After either one authenticates a relay, Slack issues its progress
 token and callbacks only with `NEXT`; the Worker control plane and monitor also
-verify only `NEXT`. This expand sets the Worker signer and monitor to `next` only
-after Cloudflare `NEXT` is staged; protocol activation remains closed until
-Slack `NEXT`, app deployment and trigger inventory succeed. A
+verify only `NEXT`. This expand set the Worker signer and monitor to `next` only
+after Cloudflare `NEXT` was staged; its sealed D1 anchor now remains invariant
+across Slack app and trigger updates. A
 current-authenticated execution becomes correlatable at its first `NEXT`
 progress step. Do not overwrite either hosted current value as part of this
 change.
@@ -363,11 +354,12 @@ evidence, removal remains blocked.
 ## Operations and recovery
 
 `GET /healthz` returns HTTP 200 `ready` only when the receipt-aware delivery
-protocol has completed its one-way activation, the `deliveries` schema is
+protocol has its exact sealed historical anchor and all permanent guards, the `deliveries` schema is
 queryable, the `relay_state` singleton contains valid Queue and Slack activity
 checkpoints, no row is in `manual_review` or `dead_letter`, and no
 current `accepted_by_slack`, `accepted_by_trigger`, or `send_started` row has
-exceeded its reconciliation deadline. The current HMAC secret and both Slack
+exceeded its reconciliation deadline. The configured current and distinct
+`NEXT` HMAC bindings, active signer selection, and both Slack
 trigger bindings must validate. The ready reply contains only the boolean
 `legacy_unverified`, making quarantined historical debt visible without making
 it a readiness failure or exposing a count or identifier. A failed check or
@@ -464,9 +456,9 @@ orchestrator activates the exact deployed revision and persists its immutable
 activation ID and schema revision. Migration
 `0005_reconcile_live_slack_receipts.sql` replaces that trigger with the
 source-pinned `afe525/0004` to target `0005` bridge and retains the one-way
-confirmation trigger. After that single transition, only the identical tuple
-may be confirmed read-only; a contract migration closes the confirmation window
-irreversibly.
+confirmation trigger. Migration `0006_seal_slack_delivery_protocol.sql`
+validated the exact resulting tuple, closed confirmation irreversibly, removed
+both transient guards and installed permanent update, insert and delete guards.
 If a successful Slack trace is observed for an ordinary legacy row, D1 may
 attach that trace ID but preserves `accepted_by_slack` and
 `legacy_unverified = 1`; the trace alone is neither delivery proof nor a reason
