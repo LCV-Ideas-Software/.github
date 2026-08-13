@@ -128,7 +128,7 @@ const WORKFLOW_SPECS = Object.freeze([
     digest: "ea3c7e7d5d89e5071df87fa01505542f6011629da95d67d65d5b55417c896477",
     privilegedJobIds: ["monitor"],
     privilegedDigest:
-      "5ea981eb95ed1b56ac2045ae02d2883a5ed2fe4ce75dd14819b3761859fa6c94",
+      "351a5ffc11b84ad5d35c152f09bdc606f5b139dce8a9f48f5d42fbe0b70c2e07",
   },
 ]);
 
@@ -428,6 +428,11 @@ function validateRelayConfig(source) {
     config.vars,
     { SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next" },
     `${RELAY_CONFIG_PATH} relay signer selection`,
+  );
+  exact(
+    config.placement,
+    { mode: "smart" },
+    `${RELAY_CONFIG_PATH} D1 placement`,
   );
   const bindings = config.secrets_store_secrets;
   requirePolicy(

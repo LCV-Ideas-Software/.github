@@ -21,6 +21,7 @@ import {
   SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
   validateSlackDeliveryProtocolContract,
 } from "./slack-delivery-protocol-contract.mjs";
+import { SLACK_RECONCILIATION_SCHEMA_OBJECT_CONTRACT } from "../workers/github-slack-relay/src/slack-reconciliation-schema-contract.ts";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RELAY_ROOT = join(REPOSITORY_ROOT, "workers", "github-slack-relay");
@@ -92,10 +93,10 @@ export const REAPER_WORST_CASE_RUNTIME_MS =
   REAPER_API_REQUEST_CAP * API_TIMEOUT_MS +
   REAPER_MAX_DATABASES_PER_RUN * REAPER_RETRY_DELAY_BUDGET_MS;
 const REMOTE_PROOF_OWNERSHIP_BARRIERS = 6;
-// Successful proof path: one absence check, one create, 27 seed/assertion
+// Successful proof path: one absence check, one create, 32 seed/assertion
 // queries, six ownership barriers, and one bounded deletion. Wrangler's own
 // remote calls stay inside its three separately bounded subprocesses.
-const REMOTE_PROOF_SQL_API_REQUESTS = 27;
+const REMOTE_PROOF_SQL_API_REQUESTS = 32;
 const OWNERSHIP_RETRY_DELAY_BUDGET_MS = Array.from(
   { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
   (_, attempt) => 250 * 2 ** attempt,
@@ -1705,6 +1706,14 @@ export async function proveSchemaInventory(
       { type: "index", name: "idx_deliveries_retention" },
       { type: "index", name: "idx_deliveries_slack_message" },
       { type: "index", name: "idx_deliveries_slack_send_execution" },
+      {
+        type: "index",
+        name: "idx_slack_reconciliation_report_errors_report",
+      },
+      {
+        type: "index",
+        name: "idx_slack_reconciliation_reports_completed",
+      },
       { type: "index", name: "idx_slack_workflow_traces_delivery" },
       { type: "index", name: "idx_slack_workflow_traces_message" },
       { type: "index", name: "idx_slack_workflow_traces_send_execution" },
@@ -1712,6 +1721,8 @@ export async function proveSchemaInventory(
       { type: "table", name: "deliveries" },
       { type: "table", name: "relay_state" },
       { type: "table", name: "slack_delivery_recovery_audit" },
+      { type: "table", name: "slack_reconciliation_report_errors" },
+      { type: "table", name: "slack_reconciliation_reports" },
       { type: "table", name: "slack_workflow_traces" },
       {
         type: "trigger",
@@ -1793,6 +1804,144 @@ export async function proveSchemaInventory(
       "slack_message_ts",
     ].map((name) => ({ name })),
     "Slack workflow trace column inventory",
+  );
+
+  const reportColumns = await query(
+    configuration,
+    databaseId,
+    `SELECT name, type, "notnull", pk
+     FROM pragma_table_info('slack_reconciliation_reports') ORDER BY cid`,
+  );
+  exactRows(
+    reportColumns.results,
+    [
+      "report_id",
+      "trace_count",
+      "changed_error_traces",
+      "requested_checkpoint_us",
+      "checkpoint_us",
+      "completed_at",
+    ].map((name, index) => ({
+      name,
+      type: index === 0 ? "TEXT" : "INTEGER",
+      notnull: 1,
+      pk: index === 0 ? 1 : 0,
+    })),
+    "Slack reconciliation report column inventory",
+  );
+
+  const reportErrorColumns = await query(
+    configuration,
+    databaseId,
+    `SELECT name, type, "notnull", pk
+     FROM pragma_table_info('slack_reconciliation_report_errors') ORDER BY cid`,
+  );
+  exactRows(
+    reportErrorColumns.results,
+    ["trace_id", "report_id", "committed_at"].map((name, index) => ({
+      name,
+      type: index === 2 ? "INTEGER" : "TEXT",
+      notnull: 1,
+      pk: index === 0 ? 1 : 0,
+    })),
+    "Slack reconciliation error receipt column inventory",
+  );
+
+  const reconciliationIndexes = await query(
+    configuration,
+    databaseId,
+    `SELECT 'slack_reconciliation_report_errors' AS table_name,
+            indexes.name AS index_name, indexes."unique", indexes.origin,
+            indexes.partial, columns.name AS column_name
+     FROM pragma_index_list('slack_reconciliation_report_errors') AS indexes
+     JOIN pragma_index_info(indexes.name) AS columns
+     UNION ALL
+     SELECT 'slack_reconciliation_reports' AS table_name,
+            indexes.name AS index_name, indexes."unique", indexes.origin,
+            indexes.partial, columns.name AS column_name
+     FROM pragma_index_list('slack_reconciliation_reports') AS indexes
+     JOIN pragma_index_info(indexes.name) AS columns
+     ORDER BY table_name, index_name, column_name`,
+  );
+  exactRows(
+    reconciliationIndexes.results,
+    [
+      {
+        table_name: "slack_reconciliation_report_errors",
+        index_name: "idx_slack_reconciliation_report_errors_report",
+        unique: 0,
+        origin: "c",
+        partial: 0,
+        column_name: "report_id",
+      },
+      {
+        table_name: "slack_reconciliation_report_errors",
+        index_name: "sqlite_autoindex_slack_reconciliation_report_errors_1",
+        unique: 1,
+        origin: "pk",
+        partial: 0,
+        column_name: "trace_id",
+      },
+      {
+        table_name: "slack_reconciliation_reports",
+        index_name: "idx_slack_reconciliation_reports_completed",
+        unique: 0,
+        origin: "c",
+        partial: 0,
+        column_name: "completed_at",
+      },
+      {
+        table_name: "slack_reconciliation_reports",
+        index_name: "sqlite_autoindex_slack_reconciliation_reports_1",
+        unique: 1,
+        origin: "pk",
+        partial: 0,
+        column_name: "report_id",
+      },
+    ],
+    "Slack reconciliation index inventory",
+  );
+
+  const reconciliationForeignKeys = await query(
+    configuration,
+    databaseId,
+    `SELECT id, seq, "table", "from", "to", on_update, on_delete, match
+     FROM pragma_foreign_key_list('slack_reconciliation_report_errors')
+     ORDER BY id, seq`,
+  );
+  exactRows(
+    reconciliationForeignKeys.results,
+    [
+      {
+        id: 0,
+        seq: 0,
+        table: "slack_workflow_traces",
+        from: "trace_id",
+        to: "trace_id",
+        on_update: "NO ACTION",
+        on_delete: "CASCADE",
+        match: "NONE",
+      },
+    ],
+    "Slack reconciliation foreign-key inventory",
+  );
+
+  const reconciliationSchemaObjects = await query(
+    configuration,
+    databaseId,
+    `SELECT type, name, tbl_name, sql
+     FROM sqlite_schema
+     WHERE tbl_name IN (
+       'slack_reconciliation_reports',
+       'slack_reconciliation_report_errors'
+       )
+       AND sql IS NOT NULL
+     ORDER BY type, name`,
+  );
+  exactRows(
+    reconciliationSchemaObjects.results,
+    SLACK_RECONCILIATION_SCHEMA_OBJECT_CONTRACT,
+    "Slack reconciliation schema-object inventory",
   );
 }
 

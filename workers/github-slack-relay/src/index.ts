@@ -52,6 +52,7 @@ const AUTHENTICATED_REQUEST_MAX_AGE_SECONDS = 300;
 const AUTHENTICATED_REQUEST_MAX_FUTURE_SECONDS = 60;
 const SLACK_MESSAGE_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
 const SLACK_TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/u;
+const SLACK_RECONCILIATION_TRACE_LIMIT = 25;
 const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 
 export interface RuntimeOverrides {
@@ -346,7 +347,7 @@ function parseSlackReconciliation(
     typeof record.report_timestamp !== "string" ||
     !authenticatedTimestampIsFresh(record.report_timestamp, now) ||
     !Array.isArray(record.traces) ||
-    record.traces.length > 200 ||
+    record.traces.length > SLACK_RECONCILIATION_TRACE_LIMIT ||
     typeof record.report_signature !== "string" ||
     !/^[0-9a-f]{64}$/u.test(record.report_signature)
   ) {
@@ -456,7 +457,7 @@ function parseSlackReconciliationV2(
     typeof record.report_timestamp !== "string" ||
     !authenticatedTimestampIsFresh(record.report_timestamp, now) ||
     !Array.isArray(record.traces) ||
-    record.traces.length > 200 ||
+    record.traces.length > SLACK_RECONCILIATION_TRACE_LIMIT ||
     typeof record.report_signature !== "string" ||
     !/^[0-9a-f]{64}$/u.test(record.report_signature)
   ) {
@@ -658,7 +659,29 @@ async function handleSlackControlRequest(
     return jsonResponse({ error: "invalid_signature" }, 401);
   }
   try {
-    let changedErrorTraces = 0;
+    const replay = await dependencies.store.getSlackReconciliationReport(
+      report.report_signature,
+    );
+    if (replay !== null) {
+      if (
+        replay.traceCount !== report.traces.length ||
+        replay.requestedCheckpointUs !== report.checkpoint_us
+      ) {
+        throw new SlackReconciliationConflictError(
+          "slack_reconciliation_report_conflict",
+        );
+      }
+      return jsonResponse(
+        {
+          ok: true,
+          traces: replay.traceCount,
+          changed_error_traces: replay.changedErrorTraces,
+          checkpoint_us: replay.checkpointUs,
+        },
+        200,
+      );
+    }
+    const errorTraceIds: string[] = [];
     for (const trace of report.traces) {
       let deliveryId = trace.delivery_id;
       let attemptCount =
@@ -712,7 +735,7 @@ async function handleSlackControlRequest(
           "slack_trace_destination_conflict",
         );
       }
-      const traceResult = await dependencies.store.recordSlackTrace(
+      await dependencies.store.recordSlackTrace(
         {
           traceId: trace.trace_id,
           deliveryId,
@@ -729,20 +752,21 @@ async function handleSlackControlRequest(
         },
         now,
       );
-      if (trace.outcome === "error" && traceResult === "changed") {
-        changedErrorTraces += 1;
-      }
+      if (trace.outcome === "error") errorTraceIds.push(trace.trace_id);
     }
-    const checkpointUs =
-      await dependencies.store.advanceSlackActivityCheckpoint(
-        report.checkpoint_us,
-      );
+    const result = await dependencies.store.finalizeSlackReconciliationReport(
+      report.report_signature,
+      report.traces.length,
+      errorTraceIds,
+      report.checkpoint_us,
+      now,
+    );
     return jsonResponse(
       {
         ok: true,
-        traces: report.traces.length,
-        changed_error_traces: changedErrorTraces,
-        checkpoint_us: checkpointUs,
+        traces: result.traceCount,
+        changed_error_traces: result.changedErrorTraces,
+        checkpoint_us: result.checkpointUs,
       },
       200,
     );

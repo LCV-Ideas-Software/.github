@@ -3,6 +3,17 @@ import {
   exactSlackDeliveryProtocolGuardDefinitions,
   SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS,
 } from "./slack-delivery-protocol-guards";
+import {
+  SLACK_RECONCILIATION_REPORT_COLUMN_CONTRACT,
+  SLACK_RECONCILIATION_REPORT_ERROR_COLUMN_CONTRACT,
+  SLACK_RECONCILIATION_REPORT_ERROR_INDEX_CONTRACT,
+  SLACK_RECONCILIATION_REPORT_ERRORS_REPORT_INDEX_SQL,
+  SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
+  SLACK_RECONCILIATION_REPORT_FOREIGN_KEY_CONTRACT,
+  SLACK_RECONCILIATION_REPORT_INDEX_CONTRACT,
+  SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL,
+  SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+} from "./slack-reconciliation-schema-contract";
 
 export type DeliveryStatus =
   | "pending"
@@ -33,6 +44,13 @@ export type SlackProgressResult = "recorded" | "duplicate";
 
 export type SlackTraceOutcome = "pending" | "success" | "error";
 export type SlackTraceRecordResult = "changed" | "duplicate";
+
+export interface SlackReconciliationReportResult {
+  traceCount: number;
+  changedErrorTraces: number;
+  requestedCheckpointUs: number;
+  checkpointUs: number;
+}
 
 export interface SlackTraceReconciliation {
   traceId: string;
@@ -166,14 +184,22 @@ export interface DeliveryStore {
     trace: SlackTraceReconciliation,
     now: number,
   ): Promise<SlackTraceRecordResult>;
-  resolveSlackTraceIdentityBySendExecutionId(
-    sendExecutionId: string,
-  ): Promise<{
+  resolveSlackTraceIdentityBySendExecutionId(sendExecutionId: string): Promise<{
     deliveryId: string;
     destination: RelayDestination;
     attemptCount: number;
   } | null>;
   getSlackActivityCheckpoint(): Promise<number>;
+  getSlackReconciliationReport(
+    reportId: string,
+  ): Promise<SlackReconciliationReportResult | null>;
+  finalizeSlackReconciliationReport(
+    reportId: string,
+    traceCount: number,
+    errorTraceIds: readonly string[],
+    checkpointUs: number,
+    now: number,
+  ): Promise<SlackReconciliationReportResult>;
   advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number>;
   purgeDeliveredBefore(cutoff: number): Promise<number>;
   healthcheck(now: number, expectedRevision: string): Promise<boolean>;
@@ -246,6 +272,10 @@ interface SlackDeliveryProtocolRow {
 }
 
 const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
+const SLACK_RECONCILIATION_REPORT_ID_PATTERN = /^[0-9a-f]{64}$/u;
+const SLACK_TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/u;
+const SLACK_RECONCILIATION_TRACE_LIMIT = 25;
+const SLACK_RECONCILIATION_REPORT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const SLACK_FUNCTION_EXECUTION_ID_PATTERN = /^Fx[A-Za-z0-9]{1,126}$/u;
 const SLACK_RECONCILIATION_RETRY_DELAY_MS =
   SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US / 1_000;
@@ -357,6 +387,141 @@ export class D1DeliveryStore implements DeliveryStore {
     return exactSlackDeliveryProtocolGuardDefinitions(
       result.results,
       SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS,
+    );
+  }
+
+  async #hasExactSlackReconciliationSchema(): Promise<boolean> {
+    const row = await this.#database
+      .prepare(
+        `SELECT
+           (
+             SELECT group_concat(
+               name || ':' || type || ':' || "notnull" || ':' || pk,
+               ','
+             )
+             FROM (
+               SELECT name, type, "notnull", pk
+               FROM pragma_table_info('slack_reconciliation_reports')
+               ORDER BY cid
+             )
+           ) AS report_column_contract,
+           (
+             SELECT group_concat(
+               name || ':' || type || ':' || "notnull" || ':' || pk,
+               ','
+             )
+             FROM (
+               SELECT name, type, "notnull", pk
+               FROM pragma_table_info('slack_reconciliation_report_errors')
+               ORDER BY cid
+             )
+           ) AS error_column_contract,
+           (
+             SELECT group_concat(
+               name || ':' || "unique" || ':' || origin || ':' || partial,
+               ','
+             )
+             FROM (
+               SELECT name, "unique", origin, partial
+               FROM pragma_index_list('slack_reconciliation_reports')
+               ORDER BY name
+             )
+           ) AS report_index_contract,
+           (
+             SELECT group_concat(
+               name || ':' || "unique" || ':' || origin || ':' || partial,
+               ','
+             )
+             FROM (
+               SELECT name, "unique", origin, partial
+               FROM pragma_index_list('slack_reconciliation_report_errors')
+               ORDER BY name
+             )
+           ) AS error_index_contract,
+           (
+             SELECT group_concat(
+               id || ':' || seq || ':' || "table" || ':' || "from" || ':' ||
+               "to" || ':' || on_update || ':' || on_delete || ':' || match,
+               ','
+             )
+             FROM (
+               SELECT id, seq, "table", "from", "to", on_update, on_delete,
+                      match
+               FROM pragma_foreign_key_list(
+                 'slack_reconciliation_report_errors'
+               )
+               ORDER BY id, seq
+             )
+           ) AS foreign_key_contract,
+           (
+             SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'index'
+               AND name = 'idx_slack_reconciliation_reports_completed'
+               AND tbl_name = 'slack_reconciliation_reports'
+           ) AS report_index_sql,
+           (
+             SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'index'
+               AND name = 'idx_slack_reconciliation_report_errors_report'
+               AND tbl_name = 'slack_reconciliation_report_errors'
+           ) AS error_index_sql,
+           (
+             SELECT COUNT(*)
+             FROM sqlite_schema
+             WHERE tbl_name IN (
+               'slack_reconciliation_reports',
+               'slack_reconciliation_report_errors'
+             )
+               AND sql IS NOT NULL
+           ) AS schema_object_count,
+           (
+             SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'table'
+               AND name = 'slack_reconciliation_reports'
+               AND tbl_name = 'slack_reconciliation_reports'
+           ) AS report_sql,
+           (
+             SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'table'
+               AND name = 'slack_reconciliation_report_errors'
+               AND tbl_name = 'slack_reconciliation_report_errors'
+           ) AS error_sql`,
+      )
+      .first<{
+        report_column_contract: string | null;
+        error_column_contract: string | null;
+        report_index_contract: string | null;
+        error_index_contract: string | null;
+        foreign_key_contract: string | null;
+        report_index_sql: string | null;
+        error_index_sql: string | null;
+        schema_object_count: number;
+        report_sql: string | null;
+        error_sql: string | null;
+      }>();
+    return (
+      row !== null &&
+      row.report_column_contract ===
+        SLACK_RECONCILIATION_REPORT_COLUMN_CONTRACT &&
+      row.error_column_contract ===
+        SLACK_RECONCILIATION_REPORT_ERROR_COLUMN_CONTRACT &&
+      row.report_index_contract ===
+        SLACK_RECONCILIATION_REPORT_INDEX_CONTRACT &&
+      row.error_index_contract ===
+        SLACK_RECONCILIATION_REPORT_ERROR_INDEX_CONTRACT &&
+      row.foreign_key_contract ===
+        SLACK_RECONCILIATION_REPORT_FOREIGN_KEY_CONTRACT &&
+      row.report_index_sql ===
+        SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL &&
+      row.error_index_sql ===
+        SLACK_RECONCILIATION_REPORT_ERRORS_REPORT_INDEX_SQL &&
+      row.schema_object_count === 4 &&
+      row.report_sql === SLACK_RECONCILIATION_REPORTS_TABLE_SQL &&
+      row.error_sql === SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL
     );
   }
 
@@ -918,10 +1083,10 @@ export class D1DeliveryStore implements DeliveryStore {
     } catch (error) {
       const current = await this.get(input.deliveryId);
       if (
-          current?.destination === input.destination &&
-          current.status === "delivered" &&
-          current.attemptCount === input.attemptCount &&
-          current.slackMessageTs === input.messageTs
+        current?.destination === input.destination &&
+        current.status === "delivered" &&
+        current.attemptCount === input.attemptCount &&
+        current.slackMessageTs === input.messageTs
       ) {
         return "duplicate";
       }
@@ -1073,8 +1238,7 @@ export class D1DeliveryStore implements DeliveryStore {
           trace.preSendFailureProven ||
           destination === null ||
           (destination === "alerts" && slackChannelId !== "C0BMUK793NV") ||
-          (destination === "activity" &&
-            slackChannelId !== "C0BMQMW3L4E") ||
+          (destination === "activity" && slackChannelId !== "C0BMQMW3L4E") ||
           !/^\d{10,13}\.\d{6}$/u.test(messageTs)))
     ) {
       throw new SlackReconciliationConflictError("invalid_slack_trace_attempt");
@@ -1428,9 +1592,9 @@ export class D1DeliveryStore implements DeliveryStore {
       trace.outcome === "pending" && effectiveTrace.outcome !== "pending"
         ? "duplicate"
         : existingTrace === null ||
-      (existingTrace.outcome === "pending" && appliedTraceGainedEvidence)
-        ? "changed"
-        : "duplicate";
+            (existingTrace.outcome === "pending" && appliedTraceGainedEvidence)
+          ? "changed"
+          : "duplicate";
     if (effectiveTrace.outcome === "pending") {
       return observationResult;
     }
@@ -2080,6 +2244,178 @@ export class D1DeliveryStore implements DeliveryStore {
     return state.slack_activity_checkpoint_us;
   }
 
+  async getSlackReconciliationReport(
+    reportId: string,
+  ): Promise<SlackReconciliationReportResult | null> {
+    if (!SLACK_RECONCILIATION_REPORT_ID_PATTERN.test(reportId)) {
+      throw new SlackReconciliationConflictError(
+        "invalid_slack_reconciliation_report_id",
+      );
+    }
+    const row = await this.#database
+      .prepare(
+        `SELECT trace_count, changed_error_traces,
+                requested_checkpoint_us, checkpoint_us
+         FROM slack_reconciliation_reports
+         WHERE report_id = ?`,
+      )
+      .bind(reportId)
+      .first<{
+        trace_count: number;
+        changed_error_traces: number;
+        requested_checkpoint_us: number;
+        checkpoint_us: number;
+      }>();
+    if (row === null) return null;
+    if (
+      !Number.isSafeInteger(row.trace_count) ||
+      row.trace_count < 0 ||
+      row.trace_count > SLACK_RECONCILIATION_TRACE_LIMIT ||
+      !Number.isSafeInteger(row.changed_error_traces) ||
+      row.changed_error_traces < 0 ||
+      row.changed_error_traces > row.trace_count ||
+      !Number.isSafeInteger(row.requested_checkpoint_us) ||
+      row.requested_checkpoint_us < 0 ||
+      !Number.isSafeInteger(row.checkpoint_us) ||
+      row.checkpoint_us < 0 ||
+      row.checkpoint_us > row.requested_checkpoint_us
+    ) {
+      throw new Error("slack_reconciliation_report_unavailable");
+    }
+    return {
+      traceCount: row.trace_count,
+      changedErrorTraces: row.changed_error_traces,
+      requestedCheckpointUs: row.requested_checkpoint_us,
+      checkpointUs: row.checkpoint_us,
+    };
+  }
+
+  async finalizeSlackReconciliationReport(
+    reportId: string,
+    traceCount: number,
+    errorTraceIds: readonly string[],
+    checkpointUs: number,
+    now: number,
+  ): Promise<SlackReconciliationReportResult> {
+    if (
+      !SLACK_RECONCILIATION_REPORT_ID_PATTERN.test(reportId) ||
+      !Number.isSafeInteger(traceCount) ||
+      traceCount < 0 ||
+      traceCount > SLACK_RECONCILIATION_TRACE_LIMIT ||
+      errorTraceIds.length > traceCount ||
+      new Set(errorTraceIds).size !== errorTraceIds.length ||
+      errorTraceIds.some((traceId) => !SLACK_TRACE_ID_PATTERN.test(traceId)) ||
+      !Number.isSafeInteger(checkpointUs) ||
+      checkpointUs < 0 ||
+      !Number.isSafeInteger(now) ||
+      now <= 0
+    ) {
+      throw new SlackReconciliationConflictError(
+        "invalid_slack_reconciliation_report",
+      );
+    }
+
+    const replay = await this.getSlackReconciliationReport(reportId);
+    if (replay !== null) {
+      if (
+        replay.traceCount !== traceCount ||
+        replay.requestedCheckpointUs !== checkpointUs
+      ) {
+        throw new SlackReconciliationConflictError(
+          "slack_reconciliation_report_conflict",
+        );
+      }
+      return replay;
+    }
+
+    const purgeExpiredReports = this.#database
+      .prepare(
+        `DELETE FROM slack_reconciliation_reports
+         WHERE completed_at < ?`,
+      )
+      .bind(now - SLACK_RECONCILIATION_REPORT_RETENTION_MS);
+    const errorPlaceholders = errorTraceIds.map(() => "?").join(", ");
+    const reserveErrors =
+      errorTraceIds.length === 0
+        ? this.#database.prepare(`SELECT 1 WHERE 0`)
+        : this.#database
+            .prepare(
+              `INSERT INTO slack_reconciliation_report_errors (
+                 trace_id, report_id, committed_at
+               )
+               SELECT trace_id, ?, ?
+               FROM slack_workflow_traces
+               WHERE trace_id IN (${errorPlaceholders})
+                 AND outcome = 'error'
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM slack_reconciliation_report_errors AS reported
+                   WHERE reported.trace_id = slack_workflow_traces.trace_id
+                 )
+               ON CONFLICT(trace_id) DO NOTHING`,
+            )
+            .bind(reportId, now, ...errorTraceIds);
+    const advanceCheckpoint = this.#database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_activity_checkpoint_us = MAX(
+           slack_activity_checkpoint_us,
+           MIN(
+             ?,
+             COALESCE(
+               (
+                 SELECT MIN(updated_at * 1000)
+                 FROM deliveries
+                 WHERE legacy_unverified = 0
+                   AND (
+                     status IN (
+                       'pending', 'enqueueing', 'queued', 'sending',
+                       'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+                     )
+                     OR slack_trace_id IS NULL
+                   )
+               ),
+               ?
+             )
+           )
+         )
+         WHERE singleton_id = 1`,
+      )
+      .bind(checkpointUs, checkpointUs);
+    const journalReport = this.#database
+      .prepare(
+        `INSERT INTO slack_reconciliation_reports (
+           report_id, trace_count, changed_error_traces,
+           requested_checkpoint_us, checkpoint_us, completed_at
+         )
+         SELECT ?, ?,
+                (SELECT COUNT(*)
+                 FROM slack_reconciliation_report_errors
+                 WHERE report_id = ?),
+                ?, MIN(slack_activity_checkpoint_us, ?), ?
+         FROM relay_state
+         WHERE singleton_id = 1
+         ON CONFLICT(report_id) DO NOTHING`,
+      )
+      .bind(reportId, traceCount, reportId, checkpointUs, checkpointUs, now);
+
+    await this.#database.batch([
+      purgeExpiredReports,
+      reserveErrors,
+      advanceCheckpoint,
+      journalReport,
+    ]);
+    const result = await this.getSlackReconciliationReport(reportId);
+    if (
+      result === null ||
+      result.traceCount !== traceCount ||
+      result.requestedCheckpointUs !== checkpointUs
+    ) {
+      throw new Error("slack_reconciliation_report_unavailable");
+    }
+    return result;
+  }
+
   async advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number> {
     if (!Number.isSafeInteger(checkpointUs) || checkpointUs < 0) {
       throw new SlackReconciliationConflictError(
@@ -2099,10 +2435,10 @@ export class D1DeliveryStore implements DeliveryStore {
                  FROM deliveries
                  WHERE legacy_unverified = 0
                    AND (
-                      status IN (
-                        'pending', 'enqueueing', 'queued', 'sending',
-                        'accepted_by_slack', 'accepted_by_trigger', 'send_started'
-                      )
+                     status IN (
+                       'pending', 'enqueueing', 'queued', 'sending',
+                       'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+                     )
                      OR slack_trace_id IS NULL
                    )
                ),
@@ -2268,6 +2604,7 @@ export class D1DeliveryStore implements DeliveryStore {
       Number.isSafeInteger(state.next_slack_at) &&
       Number.isSafeInteger(state.slack_activity_checkpoint_us) &&
       (await this.#hasExactSlackDeliveryProtocolSeal()) &&
+      (await this.#hasExactSlackReconciliationSchema()) &&
       unresolved === null
     );
   }

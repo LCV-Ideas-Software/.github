@@ -8,6 +8,9 @@
   "preview_urls": false,
   "minify": true,
   "upload_source_maps": true,
+  "placement": {
+    "mode": "smart",
+  },
   "vars": {
     "SLACK_RELAY_SIGNING_ACTIVE_SLOT": "next",
   },

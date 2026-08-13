@@ -75,6 +75,14 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   than both retention cutoff and the durable activity-checkpoint overlap. The monitor timeout covers
   its bounded 100-page request, retry and reconciliation-report budget plus setup margin, preventing
   allowed throttling from starving every durable checkpoint update;
+- authenticated reconciliation reports contain at most 25 traces. Their trace
+  mutations remain individually idempotent; D1 separately finalizes novel
+  terminal-error receipts, the clamped activity checkpoint and the immutable
+  response journal in one transaction. Replaying an identical fresh signed
+  report after a lost response returns the original result without repeating an
+  alert. No receipt is inferred for a historical error; report journals become
+  eligible for deletion after 24 hours and the next finalized report removes
+  them. Smart Placement reduces cross-region D1 latency;
 - external credentials assigned by purpose to protected environments restricted to `main`.
   `SLACK_SERVICE_TOKEN` and the production relay signer are held in `slack-production`. Before the
   receipt-protocol expand rollout, the same newly generated signer must be provisioned under the

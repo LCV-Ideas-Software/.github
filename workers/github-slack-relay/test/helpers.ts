@@ -16,6 +16,7 @@ import {
   type RecoveryClaim,
   type SlackProgressInput,
   type SlackProgressResult,
+  type SlackReconciliationReportResult,
   type SlackTraceReconciliation,
   type SlackTraceRecordResult,
   type StoredDelivery,
@@ -50,6 +51,11 @@ type MemorySlackTrace = {
 export class MemoryDeliveryStore implements DeliveryStore {
   readonly deliveries = new Map<string, StoredDelivery>();
   readonly slackTraces = new Map<string, MemorySlackTrace>();
+  readonly slackReconciliationReports = new Map<
+    string,
+    SlackReconciliationReportResult
+  >();
+  readonly reportedSlackErrorTraces = new Map<string, string | null>();
   nextSlackAt = 0;
   slackActivityCheckpoint = 0;
   slackDeliveryProtocolActive = true;
@@ -325,7 +331,8 @@ export class MemoryDeliveryStore implements DeliveryStore {
       }
       const releasedPreSendRetry =
         (["pending", "enqueueing", "queued", "dead_letter"] as const).includes(
-          delivery.status as "pending" | "enqueueing" | "queued" | "dead_letter",
+          delivery.status as
+            "pending" | "enqueueing" | "queued" | "dead_letter",
         ) &&
         delivery.slackTraceId !== null &&
         delivery.slackSendExecutionId === input.functionExecutionId;
@@ -402,8 +409,8 @@ export class MemoryDeliveryStore implements DeliveryStore {
         "accepted_by_trigger",
         "send_started",
         "manual_review",
-      ].includes(delivery.status)
-      && !releasedPreSendRetry
+      ].includes(delivery.status) &&
+      !releasedPreSendRetry
     ) {
       throw new SlackProgressConflictError(
         "delivery_not_awaiting_slack_progress",
@@ -415,12 +422,11 @@ export class MemoryDeliveryStore implements DeliveryStore {
         : this.slackTraces.get(delivery.slackTraceId);
     const retainedTraceId =
       linkedTrace?.deliveryId === delivery.deliveryId &&
-        linkedTrace.attemptCount === delivery.attemptCount &&
-        linkedTrace.sendExecutionId === delivery.slackSendExecutionId &&
-        linkedTrace.applied &&
-        (linkedTrace.outcome === "success" ||
-          (linkedTrace.outcome === "error" &&
-            linkedTrace.sendBoundaryReached))
+      linkedTrace.attemptCount === delivery.attemptCount &&
+      linkedTrace.sendExecutionId === delivery.slackSendExecutionId &&
+      linkedTrace.applied &&
+      (linkedTrace.outcome === "success" ||
+        (linkedTrace.outcome === "error" && linkedTrace.sendBoundaryReached))
         ? delivery.slackTraceId
         : null;
     delivery.status = "delivered";
@@ -528,9 +534,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
       trace.attemptCount <= 0 ||
       (trace.sendExecutionId !== null &&
         !/^Fx[A-Za-z0-9]{1,126}$/u.test(trace.sendExecutionId)) ||
-      (trace.preSendFailureProven && trace.sendExecutionId === null)
-      || ((slackChannelId === null) !== (messageTs === null))
-      || (messageTs !== null &&
+      (trace.preSendFailureProven && trace.sendExecutionId === null) ||
+      (slackChannelId === null) !== (messageTs === null) ||
+      (messageTs !== null &&
         (trace.sendExecutionId === null ||
           !trace.sendBoundaryReached ||
           trace.preSendFailureProven ||
@@ -552,15 +558,16 @@ export class MemoryDeliveryStore implements DeliveryStore {
     }
     if (trace.sendExecutionId !== null) {
       const owner = [...this.deliveries.values()].find(
-        (candidate) =>
-          candidate.slackSendExecutionId === trace.sendExecutionId,
+        (candidate) => candidate.slackSendExecutionId === trace.sendExecutionId,
       );
       if (
         owner !== undefined &&
         (owner.deliveryId !== trace.deliveryId ||
           owner.attemptCount !== trace.attemptCount)
       ) {
-        throw new SlackReconciliationConflictError("slack_trace_owner_conflict");
+        throw new SlackReconciliationConflictError(
+          "slack_trace_owner_conflict",
+        );
       }
       const traceOwner = [...this.slackTraces.entries()].find(
         ([traceId, candidate]) =>
@@ -686,9 +693,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
       trace.outcome === "pending" && effectiveTrace.outcome !== "pending"
         ? "duplicate"
         : previous === undefined ||
-      (previous.outcome === "pending" && gainedEvidence)
-        ? "changed"
-        : "duplicate";
+            (previous.outcome === "pending" && gainedEvidence)
+          ? "changed"
+          : "duplicate";
     this.slackTraces.set(trace.traceId, effectiveTrace);
     if (effectiveTrace.outcome === "pending") return observationResult;
     if (previous?.applied && !gainedEvidence) return observationResult;
@@ -815,9 +822,10 @@ export class MemoryDeliveryStore implements DeliveryStore {
     if (
       delivery.status === "accepted_by_trigger" ||
       delivery.status === "accepted_by_slack" ||
-      (["pending", "enqueueing", "queued", "dead_letter"] as const).includes(
+      ((["pending", "enqueueing", "queued", "dead_letter"] as const).includes(
         delivery.status as "pending" | "enqueueing" | "queued" | "dead_letter",
-      ) && delivery.slackTraceId === null ||
+      ) &&
+        delivery.slackTraceId === null) ||
       retryableManualAmbiguity ||
       sameTraceMayReleaseMissingProof
     ) {
@@ -861,6 +869,103 @@ export class MemoryDeliveryStore implements DeliveryStore {
 
   async getSlackActivityCheckpoint(): Promise<number> {
     return this.slackActivityCheckpoint;
+  }
+
+  async getSlackReconciliationReport(
+    reportId: string,
+  ): Promise<SlackReconciliationReportResult | null> {
+    if (!/^[0-9a-f]{64}$/u.test(reportId)) {
+      throw new SlackReconciliationConflictError(
+        "invalid_slack_reconciliation_report_id",
+      );
+    }
+    const report = this.slackReconciliationReports.get(reportId);
+    return report === undefined ? null : { ...report };
+  }
+
+  async finalizeSlackReconciliationReport(
+    reportId: string,
+    traceCount: number,
+    errorTraceIds: readonly string[],
+    checkpointUs: number,
+    now: number,
+  ): Promise<SlackReconciliationReportResult> {
+    if (
+      !/^[0-9a-f]{64}$/u.test(reportId) ||
+      !Number.isSafeInteger(traceCount) ||
+      traceCount < 0 ||
+      traceCount > 25 ||
+      errorTraceIds.length > traceCount ||
+      new Set(errorTraceIds).size !== errorTraceIds.length ||
+      errorTraceIds.some(
+        (traceId) => !/^Tr[A-Za-z0-9_-]{1,125}$/u.test(traceId),
+      ) ||
+      !Number.isSafeInteger(checkpointUs) ||
+      checkpointUs < 0 ||
+      !Number.isSafeInteger(now) ||
+      now <= 0
+    ) {
+      throw new SlackReconciliationConflictError(
+        "invalid_slack_reconciliation_report",
+      );
+    }
+    const replay = this.slackReconciliationReports.get(reportId);
+    if (replay !== undefined) {
+      if (
+        replay.traceCount !== traceCount ||
+        replay.requestedCheckpointUs !== checkpointUs
+      ) {
+        throw new SlackReconciliationConflictError(
+          "slack_reconciliation_report_conflict",
+        );
+      }
+      return { ...replay };
+    }
+    for (const traceId of errorTraceIds) {
+      if (this.slackTraces.get(traceId)?.outcome !== "error") {
+        throw new SlackReconciliationConflictError(
+          "slack_reconciliation_error_trace_missing",
+        );
+      }
+    }
+    const novelErrorTraceIds = errorTraceIds.filter(
+      (traceId) => !this.reportedSlackErrorTraces.has(traceId),
+    );
+    const unresolved = [...this.deliveries.values()]
+      .filter(
+        (delivery) =>
+          !delivery.legacyUnverified &&
+          ([
+            "pending",
+            "enqueueing",
+            "queued",
+            "sending",
+            "accepted_by_slack",
+            "accepted_by_trigger",
+            "send_started",
+          ].includes(delivery.status) ||
+            delivery.slackTraceId === null),
+      )
+      .reduce(
+        (minimum, delivery) => Math.min(minimum, delivery.updatedAt * 1_000),
+        checkpointUs,
+      );
+    const committedCheckpoint = Math.max(
+      this.slackActivityCheckpoint,
+      Math.min(checkpointUs, unresolved),
+    );
+    const result: SlackReconciliationReportResult = {
+      traceCount,
+      changedErrorTraces: novelErrorTraceIds.length,
+      requestedCheckpointUs: checkpointUs,
+      checkpointUs: Math.min(committedCheckpoint, checkpointUs),
+    };
+    for (const traceId of novelErrorTraceIds) {
+      this.reportedSlackErrorTraces.set(traceId, reportId);
+    }
+    this.slackActivityCheckpoint = committedCheckpoint;
+    this.slackReconciliationReports.set(reportId, result);
+    return { ...result };
   }
 
   async advanceSlackActivityCheckpoint(checkpointUs: number): Promise<number> {

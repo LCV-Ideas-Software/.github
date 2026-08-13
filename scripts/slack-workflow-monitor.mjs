@@ -8,9 +8,12 @@ const RECONCILIATION_URL = `${RELAY_BASE_URL}/slack/reconciliation`;
 const INITIAL_LOOKBACK_US = 20 * 60 * 1_000 * 1_000;
 const CHECKPOINT_OVERLAP_US = 20 * 60 * 1_000 * 1_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+const RELAY_CHECKPOINT_TIMEOUT_MS = 10_000;
+const RELAY_REPORT_TIMEOUT_MS = 15_000;
+const RELAY_REPORT_REPLAY_TIMEOUT_MS = 5_000;
 const MAX_RETRY_AFTER_SECONDS = 30;
 const MAX_PAGES = 100;
-const REPORT_TRACE_LIMIT = 100;
+const REPORT_TRACE_LIMIT = 25;
 const MAX_RELAY_AGE_SECONDS = 300;
 const MAX_RELAY_CLOCK_SKEW_SECONDS = 60;
 const MAX_ACTIVITIES_PER_PAGE = 100;
@@ -52,10 +55,10 @@ const EXECUTION_EVENT_TYPES = new Set([
 ]);
 
 export const SLACK_MONITOR_WORST_CASE_NETWORK_MS =
-  REQUEST_TIMEOUT_MS +
+  RELAY_CHECKPOINT_TIMEOUT_MS +
   MAX_PAGES * (REQUEST_TIMEOUT_MS * 2 + MAX_RETRY_AFTER_SECONDS * 1_000) +
   Math.ceil((MAX_PAGES * MAX_ACTIVITIES_PER_PAGE) / REPORT_TRACE_LIMIT) *
-    REQUEST_TIMEOUT_MS;
+    (RELAY_REPORT_TIMEOUT_MS + RELAY_REPORT_REPLAY_TIMEOUT_MS);
 
 function requiredEnvironmentValue(environment, name) {
   const value = environment[name];
@@ -200,35 +203,77 @@ async function parsedJsonResponse(response, service) {
   return responseBody;
 }
 
-async function relayPost(fetchImpl, url, body) {
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(body),
-      redirect: "error",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    throw new Error("Relay reconciliation endpoint could not be reached.", {
-      cause: error,
-    });
+async function relayPost(
+  fetchImpl,
+  url,
+  body,
+  phase,
+  timeoutMs,
+  { retryAmbiguous = false, replayTimeoutMs = timeoutMs } = {},
+) {
+  const encodedBody = JSON.stringify(body);
+  const attempts = retryAmbiguous ? 2 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const attemptPhase = attempt === 0 ? phase : `${phase} replay`;
+    const attemptTimeout = attempt === 0 ? timeoutMs : replayTimeoutMs;
+    let response;
+    try {
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: encodedBody,
+        redirect: "error",
+        signal: AbortSignal.timeout(attemptTimeout),
+      });
+    } catch (error) {
+      if (attempt === 0 && retryAmbiguous) continue;
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+        throw new Error(
+          `${attemptPhase} timed out after ${attemptTimeout}ms.`,
+          {
+            cause: error,
+          },
+        );
+      }
+      throw new Error(`${attemptPhase} could not be reached.`, {
+        cause: error,
+      });
+    }
+    if (!response.ok) {
+      if (
+        attempt === 0 &&
+        retryAmbiguous &&
+        (response.status === 408 || response.status >= 500)
+      ) {
+        continue;
+      }
+      throw httpFailure(attemptPhase, response);
+    }
+    try {
+      return await parsedJsonResponse(response, attemptPhase);
+    } catch (error) {
+      if (attempt === 0 && retryAmbiguous) continue;
+      throw error;
+    }
   }
-  if (!response.ok)
-    throw httpFailure("Relay reconciliation endpoint", response);
-  return await parsedJsonResponse(response, "Relay reconciliation endpoint");
+  throw new Error(`${phase} returned no response.`);
 }
 
 async function readCheckpoint(fetchImpl, configuration, reportTimestamp) {
   const unsigned = { request_timestamp: reportTimestamp };
-  const response = await relayPost(fetchImpl, CHECKPOINT_URL, {
-    ...unsigned,
-    request_signature: signature(
-      configuration.relaySigningSecret,
-      checkpointCanonical(unsigned),
-    ),
-  });
+  const response = await relayPost(
+    fetchImpl,
+    CHECKPOINT_URL,
+    {
+      ...unsigned,
+      request_signature: signature(
+        configuration.relaySigningSecret,
+        checkpointCanonical(unsigned),
+      ),
+    },
+    "Relay reconciliation checkpoint",
+    RELAY_CHECKPOINT_TIMEOUT_MS,
+  );
   const currentShape = hasExactKeys(response, [
     "checkpoint_us",
     "reconciliation_version",
@@ -850,9 +895,9 @@ async function postReconciliation({
   fetchImpl,
   now,
   reconciliationVersion,
+  uncorrelatedErrors,
 }) {
   const chunks = [];
-  let changedErrorTraces = 0;
   for (let index = 0; index < traces.length; index += REPORT_TRACE_LIMIT) {
     chunks.push(traces.slice(index, index + REPORT_TRACE_LIMIT));
   }
@@ -870,13 +915,23 @@ async function postReconciliation({
       report_timestamp: reportTimestamp,
       traces: chunks[index],
     };
-    const response = await relayPost(fetchImpl, RECONCILIATION_URL, {
-      ...unsigned,
-      report_signature: signature(
-        configuration.relaySigningSecret,
-        reconciliationCanonical(unsigned, reconciliationVersion),
-      ),
-    });
+    const response = await relayPost(
+      fetchImpl,
+      RECONCILIATION_URL,
+      {
+        ...unsigned,
+        report_signature: signature(
+          configuration.relaySigningSecret,
+          reconciliationCanonical(unsigned, reconciliationVersion),
+        ),
+      },
+      `Relay reconciliation report ${index + 1}/${chunks.length}`,
+      RELAY_REPORT_TIMEOUT_MS,
+      {
+        retryAmbiguous: true,
+        replayTimeoutMs: RELAY_REPORT_REPLAY_TIMEOUT_MS,
+      },
+    );
     const currentShape = hasExactKeys(response, [
       "ok",
       "traces",
@@ -901,11 +956,22 @@ async function postReconciliation({
     ) {
       throw new Error("Relay reconciliation report returned invalid counts.");
     }
-    changedErrorTraces += currentShape
+    const changedErrorTraces = currentShape
       ? response.changed_error_traces
       : chunks[index].filter((trace) => trace.outcome === "error").length;
+    if (changedErrorTraces > 0) {
+      throw slackWorkflowError(
+        changedErrorTraces + (final ? uncorrelatedErrors : 0),
+      );
+    }
   }
-  return changedErrorTraces;
+}
+
+function slackWorkflowError(errors) {
+  const noun = errors === 1 ? "error" : "errors";
+  return new Error(
+    `Slack recorded ${errors} new or uncorrelated workflow ${noun}; activity payloads withheld after durable reconciliation.`,
+  );
 }
 
 function bridgeCompatibleTrace(trace) {
@@ -1027,7 +1093,7 @@ export async function monitorSlackWorkflow({
       ? reconciliation.traces.filter((trace) => !bridgeCompatibleTrace(trace))
           .length
       : 0;
-  const changedErrorTraces = await postReconciliation({
+  await postReconciliation({
     checkpointUs: reportCheckpointUs,
     previousCheckpointUs,
     traces: reportTraces,
@@ -1035,14 +1101,11 @@ export async function monitorSlackWorkflow({
     fetchImpl,
     now,
     reconciliationVersion: checkpoint.reconciliationVersion,
+    uncorrelatedErrors: reconciliation.errors,
   });
 
-  const errors = reconciliation.errors + changedErrorTraces;
-  if (errors > 0) {
-    const noun = errors === 1 ? "error" : "errors";
-    throw new Error(
-      `Slack recorded ${errors} new or uncorrelated workflow ${noun}; activity payloads withheld after durable reconciliation.`,
-    );
+  if (reconciliation.errors > 0) {
+    throw slackWorkflowError(reconciliation.errors);
   }
   if (withheldBridgeTraces > 0) {
     const noun = withheldBridgeTraces === 1 ? "trace" : "traces";

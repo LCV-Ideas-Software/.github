@@ -394,12 +394,18 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   );
   assert.match(requiredVerifyJob, /- name: Setup Deno 2\.9\.5/);
   assert.match(requiredVerifyJob, /- name: Check Slack workflow app/);
-  assert.match(requiredVerifyJob, /deno task --config=deno\.jsonc --frozen check/);
+  assert.match(
+    requiredVerifyJob,
+    /deno task --config=deno\.jsonc --frozen check/,
+  );
   assert.match(
     requiredVerifyJob,
     /- name: Audit Slack workflow app dependencies/,
   );
-  assert.match(requiredVerifyJob, /run: deno task --config=deno\.jsonc --frozen audit/);
+  assert.match(
+    requiredVerifyJob,
+    /run: deno task --config=deno\.jsonc --frozen audit/,
+  );
   assert.match(
     requiredVerifyJob,
     /scripts\/slack-workflow-monitor\.test\.mjs/,
@@ -418,7 +424,7 @@ test("the monitor job can finish its bounded worst-case network plan", () => {
   assert.notEqual(timeout, null);
   const timeoutMs = Number.parseInt(timeout[1], 10) * 60_000;
   const setupAndProcessingMarginMs = 30 * 60_000;
-  assert.equal(SLACK_MONITOR_WORST_CASE_NETWORK_MS, 12_030_000);
+  assert.equal(SLACK_MONITOR_WORST_CASE_NETWORK_MS, 17_010_000);
   assert.ok(
     timeoutMs >=
       SLACK_MONITOR_WORST_CASE_NETWORK_MS + setupAndProcessingMarginMs,
@@ -587,6 +593,202 @@ test("monitor uses the durable checkpoint and posts an authenticated empty repor
 
   assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
   assert.deepEqual(calls, [CHECKPOINT_URL, SLACK_URL, RECONCILIATION_URL]);
+});
+
+test("identifies a checkpoint timeout without exposing authenticated material", async () => {
+  const timeout = Object.assign(new Error("upstream included a secret"), {
+    name: "TimeoutError",
+  });
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+      fetchImpl: async (input) => {
+        assert.equal(input, CHECKPOINT_URL);
+        throw timeout;
+      },
+    }),
+    (error) => {
+      assert.equal(
+        error.message,
+        "Relay reconciliation checkpoint timed out after 10000ms.",
+      );
+      assert.doesNotMatch(
+        error.message,
+        /service-token-never-log|monitor-test-only/u,
+      );
+      return true;
+    },
+  );
+});
+
+test("keeps the Slack API timeout distinct from relay phases", async () => {
+  const timeout = Object.assign(new Error("private Slack response"), {
+    name: "AbortError",
+  });
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+      fetchImpl: async (input) => {
+        if (input === CHECKPOINT_URL) return checkpointResponse(0);
+        assert.equal(input, SLACK_URL);
+        throw timeout;
+      },
+    }),
+    (error) => {
+      assert.equal(
+        error.message,
+        "Slack activity API timed out after 30000ms.",
+      );
+      assert.doesNotMatch(error.message, /private Slack response/u);
+      return true;
+    },
+  );
+});
+
+test("replays the exact signed report after an ambiguous response loss", async () => {
+  const timeout = Object.assign(new Error("signed report body"), {
+    name: "TimeoutError",
+  });
+  const reportBodies = [];
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) return checkpointResponse(0);
+      if (input === SLACK_URL) {
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      assert.equal(input, RECONCILIATION_URL);
+      reportBodies.push(init.body);
+      if (reportBodies.length === 1) throw timeout;
+      return acceptedReconciliationResponse(JSON.parse(init.body));
+    },
+  });
+  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.equal(reportBodies.length, 2);
+  assert.equal(reportBodies[1], reportBodies[0]);
+});
+
+test("identifies a reconciliation replay that also times out", async () => {
+  const timeout = Object.assign(new Error("signed report body"), {
+    name: "TimeoutError",
+  });
+  let reportRequests = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+      fetchImpl: async (input) => {
+        if (input === CHECKPOINT_URL) return checkpointResponse(0);
+        if (input === SLACK_URL) {
+          return jsonResponse({
+            ok: true,
+            activities: [],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        assert.equal(input, RECONCILIATION_URL);
+        reportRequests += 1;
+        throw timeout;
+      },
+    }),
+    (error) => {
+      assert.equal(
+        error.message,
+        "Relay reconciliation report 1/1 replay timed out after 5000ms.",
+      );
+      assert.doesNotMatch(error.message, /signed report body/u);
+      return true;
+    },
+  );
+  assert.equal(reportRequests, 2);
+});
+
+test("replays the exact signed report after an ambiguous HTTP 503", async () => {
+  const reportBodies = [];
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) return checkpointResponse(0);
+      if (input === SLACK_URL) {
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      assert.equal(input, RECONCILIATION_URL);
+      reportBodies.push(init.body);
+      if (reportBodies.length === 1) {
+        return new Response("withheld", { status: 503 });
+      }
+      return acceptedReconciliationResponse(JSON.parse(init.body));
+    },
+  });
+  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(reportBodies, [reportBodies[0], reportBodies[0]]);
+});
+
+test("replays the exact signed report after an ambiguous HTTP 408", async () => {
+  const reportBodies = [];
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) return checkpointResponse(0);
+      if (input === SLACK_URL) {
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      assert.equal(input, RECONCILIATION_URL);
+      reportBodies.push(init.body);
+      if (reportBodies.length === 1) {
+        return new Response("withheld", { status: 408 });
+      }
+      return acceptedReconciliationResponse(JSON.parse(init.body));
+    },
+  });
+  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(reportBodies, [reportBodies[0], reportBodies[0]]);
+});
+
+test("replays the exact signed report after an ambiguous invalid JSON response", async () => {
+  const reportBodies = [];
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) return checkpointResponse(0);
+      if (input === SLACK_URL) {
+        return jsonResponse({
+          ok: true,
+          activities: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      assert.equal(input, RECONCILIATION_URL);
+      reportBodies.push(init.body);
+      if (reportBodies.length === 1) {
+        return new Response("{", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return acceptedReconciliationResponse(JSON.parse(init.body));
+    },
+  });
+  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(reportBodies, [reportBodies[0], reportBodies[0]]);
 });
 
 test("rejects a checkpoint error envelope before reading Slack activities", async () => {
@@ -1035,6 +1237,7 @@ test("refreshes the authenticated report timestamp after long pagination and bet
     activities.slice(200),
   ];
   const reportTimestamps = [];
+  const reportSizes = [];
   let page = 0;
 
   const result = await monitorSlackWorkflow({
@@ -1060,6 +1263,7 @@ test("refreshes the authenticated report timestamp after long pagination and bet
       assert.equal(input, RECONCILIATION_URL);
       const report = assertReconciliationRequest(init);
       reportTimestamps.push(report.report_timestamp);
+      reportSizes.push(report.traces.length);
       assert.equal(report.report_timestamp, String(Math.floor(clock / 1_000)));
       if (reportTimestamps.length === 1) clock += 301_000;
       return acceptedReconciliationResponse(report);
@@ -1067,7 +1271,22 @@ test("refreshes the authenticated report timestamp after long pagination and bet
   });
 
   assert.deepEqual(result, { errors: 0, pages: 3, traces: 101 });
-  assert.deepEqual(reportTimestamps, ["1785830701", "1785831002"]);
+  assert.deepEqual(reportSizes, [25, 25, 25, 25, 1]);
+  assert.deepEqual(reportTimestamps, [
+    "1785830701",
+    "1785831002",
+    "1785831002",
+    "1785831002",
+    "1785831002",
+  ]);
+});
+
+test("places the relay Worker near its D1 backend", () => {
+  assert.match(
+    relayWranglerSource,
+    /"placement":\s*\{\s*"mode":\s*"smart",?\s*\}/u,
+    "the relay must not execute a sequential D1 reconciliation batch at an arbitrary edge colo",
+  );
 });
 
 test("persists an incomplete trace so later pages cannot forget its send boundary", () => {
@@ -2187,6 +2406,203 @@ test("reports a late-indexed error trace once and accepts its durable replay", a
     monitorSlackWorkflow({ environment, fetchImpl, now: () => now }),
   );
   assert.equal(reportAttempt, 2);
+});
+
+test("finalizes the checkpoint before surfacing an uncorrelated Slack error", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  let reportRequests = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) return checkpointResponse(0);
+        if (input === SLACK_URL) {
+          return jsonResponse({
+            ok: true,
+            activities: [
+              {
+                level: "error",
+                event_type: "workflow_execution_result",
+                created,
+                trace_id: "TrUncorrelatedError001",
+                payload: { exec_outcome: "Error" },
+              },
+            ],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        assert.equal(input, RECONCILIATION_URL);
+        reportRequests += 1;
+        const report = assertReconciliationRequest(init);
+        assert.deepEqual(report.traces, []);
+        assert.equal(report.checkpoint_us, created);
+        return acceptedReconciliationResponse(report);
+      },
+    }),
+    /recorded 1 new or uncorrelated workflow error/,
+  );
+  assert.equal(reportRequests, 1);
+});
+
+test("surfaces journaled and uncorrelated errors together after the final checkpoint", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  let reportRequests = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) return checkpointResponse(0);
+        if (input === SLACK_URL) {
+          return jsonResponse({
+            ok: true,
+            activities: [
+              {
+                level: "info",
+                event_type: "workflow_execution_started",
+                created,
+                trace_id: "TrCombinedCorrelated001",
+                payload: {},
+              },
+              {
+                level: "error",
+                event_type: "workflow_step_execution_result",
+                created: created + 1,
+                trace_id: "TrCombinedCorrelated001",
+                payload: {
+                  exec_outcome: "Error",
+                  function_execution_id: "FxCombinedCorrelated001",
+                  inputs: signedProgressInputs(
+                    "delivery-combined-correlated-001",
+                  ),
+                },
+              },
+              {
+                level: "error",
+                event_type: "workflow_execution_result",
+                created: created + 2,
+                trace_id: "TrCombinedCorrelated001",
+                payload: { exec_outcome: "Error" },
+              },
+              {
+                level: "error",
+                event_type: "workflow_execution_result",
+                created: created + 3,
+                trace_id: "TrCombinedUncorrelated001",
+                payload: { exec_outcome: "Error" },
+              },
+            ],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        assert.equal(input, RECONCILIATION_URL);
+        reportRequests += 1;
+        const report = assertReconciliationRequest(init);
+        assert.equal(report.traces.length, 1);
+        assert.equal(report.traces[0].trace_id, "TrCombinedCorrelated001");
+        assert.equal(report.checkpoint_us, created + 3);
+        return acceptedReconciliationResponse(report, 1);
+      },
+    }),
+    /recorded 2 new or uncorrelated workflow errors/,
+  );
+  assert.equal(reportRequests, 1);
+});
+
+test("surfaces a journaled error before a later reconciliation chunk can fail", async () => {
+  const now = Date.parse("2026-08-04T08:00:00.000Z");
+  const created = now * 1_000 - 10;
+  const activities = [
+    {
+      level: "info",
+      event_type: "workflow_execution_started",
+      created,
+      trace_id: "TrAChunkError001",
+      payload: {},
+    },
+    {
+      level: "error",
+      event_type: "workflow_step_execution_result",
+      created: created + 1,
+      trace_id: "TrAChunkError001",
+      payload: {
+        exec_outcome: "Error",
+        function_execution_id: "FxAChunkError001",
+        inputs: signedProgressInputs("delivery-a-chunk-error-001"),
+      },
+    },
+    {
+      level: "error",
+      event_type: "workflow_execution_result",
+      created: created + 2,
+      trace_id: "TrAChunkError001",
+      payload: { exec_outcome: "Error" },
+    },
+    {
+      level: "error",
+      event_type: "workflow_execution_result",
+      created: created + 3,
+      trace_id: "TrAChunkUncorrelated001",
+      payload: { exec_outcome: "Error" },
+    },
+    ...Array.from({ length: 25 }, (_, index) => {
+      const suffix = String(index + 1).padStart(3, "0");
+      const traceId = `TrBChunkPending${suffix}`;
+      return [
+        {
+          level: "info",
+          event_type: "workflow_execution_started",
+          created,
+          trace_id: traceId,
+          payload: {},
+        },
+        {
+          level: "info",
+          event_type: "workflow_step_execution_result",
+          created: created + 1,
+          trace_id: traceId,
+          payload: {
+            exec_outcome: "Success",
+            function_execution_id: `FxBChunkPending${suffix}`,
+            inputs: signedProgressInputs(`delivery-b-chunk-pending-${suffix}`),
+          },
+        },
+      ];
+    }).flat(),
+  ];
+  let reportRequests = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) return checkpointResponse(0);
+        if (input === SLACK_URL) {
+          return jsonResponse({
+            ok: true,
+            activities,
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        assert.equal(input, RECONCILIATION_URL);
+        reportRequests += 1;
+        const report = assertReconciliationRequest(init);
+        if (reportRequests > 1) {
+          throw Object.assign(new Error("second chunk unavailable"), {
+            name: "TimeoutError",
+          });
+        }
+        assert.equal(report.traces.length, 25);
+        assert.equal(report.traces[0].trace_id, "TrAChunkError001");
+        return acceptedReconciliationResponse(report, 1);
+      },
+    }),
+    /recorded 1 new or uncorrelated workflow error/,
+  );
+  assert.equal(reportRequests, 1);
 });
 
 test("repeated pagination cursors fail before advancing the checkpoint", async () => {

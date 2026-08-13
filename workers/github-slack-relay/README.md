@@ -242,7 +242,7 @@ Production verification and deployment are owned by
 2. checks npm and Deno dependency signatures and advisories;
 3. verifies committed bindings, formats, lints, type-checks, runs both test
    suites, and creates a strict Worker dry-run bundle;
-4. when the production gate is enabled, proves migrations `0001` through `0006`
+4. when the production gate is enabled, proves migrations `0001` through `0007`
    and the seal guards in an owned disposable remote D1, and cleans it up;
 5. applies production D1 migrations, then requires the exact sealed historical
    `e0131a7/0005` protocol anchor, all three permanent guards, no transient
@@ -262,6 +262,12 @@ target tuple, changes only `confirmation_open` from `1` to `0`, removes the two
 transient activation guards and installs permanent update, insert and delete
 guards. Its source and destination assertions are part of the same D1 migration
 transaction, so tuple or schema drift aborts before Worker replacement.
+Migration `0007_journal_slack_reconciliation_reports.sql` adds exact
+authenticated-report replay without inferring historical error receipts.
+Trace updates stay individually idempotent; novel-error reservation, checkpoint
+clamping and immutable response journaling alone finalize atomically in one D1
+batch. Report journals become eligible for deletion after 24 hours and are
+removed by the next finalized report, while receipts follow the trace lifetime.
 
 The Worker reads immutable `WORKER_VERSION.tag`, which the deploy command binds
 to the current 40-character `GITHUB_SHA`, as runtime provenance. Delivery
@@ -393,7 +399,9 @@ ORDER BY updated_at ASC;
 
 The separate Slack app workflow queries `apps.activities.list` every 15 minutes
 at `info` level, follows every `response_metadata.next_cursor`, and starts from
-an authenticated D1 checkpoint with a 20-minute overlap. An empty query keeps
+an authenticated D1 checkpoint with a 20-minute overlap. The Worker uses
+Cloudflare Smart Placement so reconciliation executes near the D1 primary
+instead of paying cross-region latency for every trace. An empty query keeps
 its previous evidence boundary (or anchors the initial lower bound); it never
 advances to wall-clock time. D1 additionally clamps every proposed advance
 behind the earliest nonlegacy live attempt until a trace is correlated. It
@@ -412,8 +420,17 @@ monitor key or the derived `NEXT` progress authorization verifies, and the
 signed relay timestamp is
 within the validator's five-minute/60-second window around the Slack step
 activity itself. Rejected or replayed trigger inputs are ignored. Raw activities
-and private workflow inputs are never sent to D1 or logged. The checkpoint
-advances only after all pages and every normalized trace are durably accepted. A
+and private workflow inputs are never sent to D1 or logged. Reports contain at
+most 25 traces. Trace mutations are individually idempotent, after which one D1
+batch atomically commits novel terminal-error receipts, the clamped checkpoint
+and an immutable response journal. Replaying the same signed body after a lost
+HTTP response returns exactly the original result; a later overlapping report
+cannot announce the same error again. Migration `0007` deliberately infers no
+receipt for historical errors: only an authenticated post-migration report
+establishes novelty. Per-trace receipts follow their traces. Replay journals
+become eligible for deletion after 24 hours and are removed by the next
+finalized report. The checkpoint advances only after all pages and every
+normalized trace are durably accepted. A
 terminal error with an authenticated failure of the signed validator step and
 no send boundary is the sole automatic resend case. An Activities `Error` from
 the send-boundary callback remains ambiguous even when no callback success was
@@ -459,6 +476,9 @@ source-pinned `afe525/0004` to target `0005` bridge and retains the one-way
 confirmation trigger. Migration `0006_seal_slack_delivery_protocol.sql`
 validated the exact resulting tuple, closed confirmation irreversibly, removed
 both transient guards and installed permanent update, insert and delete guards.
+Migration `0007_journal_slack_reconciliation_reports.sql` then added the
+bounded reconciliation journal without fabricating historical error receipts
+or changing the sealed activation tuple.
 If a successful Slack trace is observed for an ordinary legacy row, D1 may
 attach that trace ID but preserves `accepted_by_slack` and
 `legacy_unverified = 1`; the trace alone is neither delivery proof nor a reason
@@ -535,3 +555,5 @@ to write and revoked after the job. The built-in `GITHUB_TOKEN` grants only
 - [Cloudflare Secrets Store bindings](https://developers.cloudflare.com/secrets-store/integrations/workers/)
 - [Cloudflare Queues dead-letter queues](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/)
 - [Cloudflare D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
+- [Cloudflare D1 batch transactions](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+- [Cloudflare Smart Placement](https://developers.cloudflare.com/workers/configuration/placement/)
