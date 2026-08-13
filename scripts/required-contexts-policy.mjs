@@ -76,7 +76,7 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Run zizmor"],
     policyRunner: false,
     nodeOptions: undefined,
-    digest: "83e11ec5107f9769554f90fe1ca62de517024a08b3c275f3ed180e67159ebb67",
+    digest: "5582b7ccc7c0ef37d8cf12f333acdc8e5783859a3f62b845ff03d36c5a445499",
   },
   {
     path: ".github/workflows/pages.yml",

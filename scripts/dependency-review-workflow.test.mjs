@@ -185,6 +185,21 @@ test("reusable Zizmor validates immutable policy snapshots before analysis", () 
     );
   }
 
+  const identity = zizmorWorkflow.indexOf(
+    "      - name: Verify reusable workflow identity",
+  );
+  const toolingCheckout = zizmorWorkflow.indexOf(
+    "      - name: Checkout this reusable workflow's immutable tooling source",
+  );
+  assert.ok(
+    identity >= 0 && identity < toolingCheckout,
+    "the called-workflow identity must fail closed before any checkout",
+  );
+  assert.match(
+    zizmorWorkflow,
+    /TOOLING_REPOSITORY: \$\{\{ job\.workflow_repository \}\}\n\s+TOOLING_SHA: \$\{\{ job\.workflow_sha \}\}[\s\S]*test "\$TOOLING_REPOSITORY" = "LCV-Ideas-Software\/.github"[\s\S]*\[\[ "\$TOOLING_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u,
+  );
+
   const resolve = zizmorWorkflow.indexOf(
     "      - name: Resolve immutable Zizmor policy snapshots",
   );

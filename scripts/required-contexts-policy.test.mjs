@@ -345,6 +345,14 @@ test("the Zizmor policy baseline cannot be removed, redirected, or weakened", ()
       "  workflow_call:\n    inputs:\n      bypass:\n        type: boolean\n  push:",
     ],
     [
+      '          test "$TOOLING_REPOSITORY" = "LCV-Ideas-Software/.github"',
+      '          test "$TOOLING_REPOSITORY" = "$GITHUB_REPOSITORY"',
+    ],
+    [
+      '          [[ "$TOOLING_SHA" =~ ^[0-9a-f]{40}$ ]]',
+      '          test -n "$TOOLING_SHA"',
+    ],
+    [
       "      - name: Resolve immutable Zizmor policy snapshots",
       "      - name: Skip immutable Zizmor policy snapshots",
     ],
