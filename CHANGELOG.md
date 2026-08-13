@@ -228,7 +228,14 @@ evidence is the execution trail recorded in
   a fixed one-time audited release requiring separate absence proof and explicit
   ID/destination authorization before its normal receipt path. The former
   `workflow_run` checkout and `GITHUB_PATH` mutation were removed from this
-  privileged rollout
+  privileged rollout. After production reconciliation and recovery completed,
+  migration `0006_seal_slack_delivery_protocol.sql` transactionally closed the
+  confirmation window over the exact historical `e0131a7/0005` tuple and
+  installed permanent singleton guards. Current Worker SHAs now use that tuple
+  as an immutable protocol anchor rather than replacing its historical
+  revision. The temporary activation preflight, HMAC script, Worker route and
+  store mutation API were removed; subsequent deployments require the sealed
+  anchor after migrations and before either hosted replacement
   ([#171](https://github.com/LCV-Ideas-Software/.github/issues/171)).
 
 ### Issues discovered during this audit

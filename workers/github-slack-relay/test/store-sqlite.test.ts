@@ -7,6 +7,10 @@ import { unstable_splitSqlQuery } from "wrangler";
 
 import { handleFetch } from "../src/index";
 import {
+  SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS,
+  TRANSIENT_SLACK_DELIVERY_PROTOCOL_GUARDS,
+} from "../src/slack-delivery-protocol-guards";
+import {
   D1DeliveryStore,
   type DeliveryInput,
   type DeliveryStore,
@@ -22,6 +26,19 @@ import {
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
 const RECONCILIATION_RETRY_DELAY_MS = 20 * 60 * 1_000;
 const TEST_REVISION = "a".repeat(40);
+const SEALED_PROTOCOL_REVISION =
+  "e0131a758123cf210d9cc9e7e537b72dc0441a90";
+const SEALED_PROTOCOL_ACTIVATED_AT = 1_786_579_752_661;
+const SEALED_PROTOCOL_ACTIVATION_ID =
+  "18a94ba84d6bac0f8ae396996a5cd6ac026eb336be5eef702b92b3b6a60d4ff7";
+const TRANSIENT_REVISION_BRIDGE_GUARD_SQL =
+  TRANSIENT_SLACK_DELIVERY_PROTOCOL_GUARDS.find(
+    ({ name }) =>
+      name === "enforce_one_time_slack_delivery_protocol_revision_bridge",
+  )?.schemaSql;
+if (TRANSIENT_REVISION_BRIDGE_GUARD_SQL === undefined) {
+  throw new Error("missing transient revision bridge guard definition");
+}
 const SEND_EXECUTION_ID = "FxStoreSqliteSend1";
 const DELIVERY_EXECUTION_ID = "FxStoreSqliteDelivery1";
 const TRACE_ATTEMPT_ONE = Object.freeze({
@@ -46,16 +63,6 @@ const SEND_TRACE_ATTEMPT_ONE = Object.freeze({
   messageTs: null,
 });
 const openDatabases: DatabaseSync[] = [];
-
-function protocolActivation(revision: string, activationId = "3".repeat(64)) {
-  return {
-    activationId,
-    bridgeSourceActivationId: "2".repeat(64),
-    revision,
-    schemaRevision: "0005_reconcile_live_slack_receipts",
-    now: NOW,
-  };
-}
 
 function migrationSource(name: string): string {
   return readFileSync(
@@ -150,6 +157,67 @@ function databaseWithMigrations(applyMigrations: boolean): {
   }
 
   return { database, d1: sqliteD1(database) };
+}
+
+function seedLiveProtocolTuple(database: DatabaseSync): void {
+  database
+    .prepare(
+      `UPDATE relay_state
+       SET slack_delivery_protocol_active = 1,
+           slack_delivery_protocol_revision = ?,
+           slack_delivery_protocol_activated_at = ?,
+           slack_delivery_protocol_activation_id = ?,
+           slack_delivery_protocol_schema_revision =
+             '0005_reconcile_live_slack_receipts'
+       WHERE singleton_id = 1`,
+    )
+    .run(
+      SEALED_PROTOCOL_REVISION,
+      SEALED_PROTOCOL_ACTIVATED_AT,
+      SEALED_PROTOCOL_ACTIVATION_ID,
+    );
+}
+
+function applyMigrationAtomically(
+  database: DatabaseSync,
+  migration: string,
+): void {
+  database.exec("BEGIN IMMEDIATE TRANSACTION;");
+  try {
+    database.exec(migrationSource(migration));
+    database.exec("COMMIT;");
+  } catch (error) {
+    database.exec("ROLLBACK;");
+    throw error;
+  }
+}
+
+function databaseReadyToSeal(): {
+  database: DatabaseSync;
+  d1: D1Database;
+} {
+  const result = databaseWithMigrations(true);
+  result.database.exec(
+    "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+  );
+  seedLiveProtocolTuple(result.database);
+  return result;
+}
+
+function protocolGuardRows(
+  database: DatabaseSync,
+  names: readonly string[],
+): unknown[] {
+  const placeholders = names.map(() => "?").join(", ");
+  return database
+    .prepare(
+      `SELECT name, tbl_name, sql
+       FROM sqlite_schema
+       WHERE type = 'trigger'
+         AND name IN (${placeholders})
+       ORDER BY name`,
+    )
+    .all(...names);
 }
 
 function pauseOnDeliveryRead(
@@ -416,6 +484,499 @@ afterEach(() => {
 });
 
 describe("D1 schema and constraint behavior on real SQLite", () => {
+  it("keeps migration guard SQL byte-exact with the runtime definitions", () => {
+    const { database } = databaseReadyToSeal();
+    const orderedTransient = [...TRANSIENT_SLACK_DELIVERY_PROTOCOL_GUARDS].sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+
+    expect(
+      protocolGuardRows(
+        database,
+        orderedTransient.map(({ name }) => name),
+      ),
+    ).toEqual(
+      orderedTransient.map(({ name, tableName, schemaSql }) => ({
+        name,
+        tbl_name: tableName,
+        sql: schemaSql,
+      })),
+    );
+
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
+    );
+    const orderedSealed = [...SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS].sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    expect(
+      protocolGuardRows(
+        database,
+        orderedSealed.map(({ name }) => name),
+      ),
+    ).toEqual(
+      orderedSealed.map(({ name, tableName, schemaSql }) => ({
+        name,
+        tbl_name: tableName,
+        sql: schemaSql,
+      })),
+    );
+  });
+
+  it("seals only the exact live protocol tuple and permits new valid Worker revisions", async () => {
+    const { database, d1 } = databaseReadyToSeal();
+
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
+    );
+    const store = new D1DeliveryStore(d1);
+
+    await expect(
+      store.isSlackDeliveryProtocolActive("b".repeat(40)),
+    ).resolves.toBe(true);
+    await expect(store.healthcheck(NOW, "b".repeat(40))).resolves.toBe(true);
+    await expect(
+      store.isSlackDeliveryProtocolActive("not-a-worker-revision"),
+    ).resolves.toBe(false);
+    await expect(
+      store.healthcheck(NOW, "not-a-worker-revision"),
+    ).resolves.toBe(false);
+
+    expect(
+      database
+        .prepare(
+          `SELECT slack_delivery_protocol_active,
+                  slack_delivery_protocol_revision,
+                  slack_delivery_protocol_activated_at,
+                  slack_delivery_protocol_activation_id,
+                  slack_delivery_protocol_schema_revision,
+                  slack_delivery_protocol_confirmation_open
+           FROM relay_state WHERE singleton_id = 1`,
+        )
+        .get(),
+    ).toEqual({
+      slack_delivery_protocol_active: 1,
+      slack_delivery_protocol_revision: SEALED_PROTOCOL_REVISION,
+      slack_delivery_protocol_activated_at: SEALED_PROTOCOL_ACTIVATED_AT,
+      slack_delivery_protocol_activation_id: SEALED_PROTOCOL_ACTIVATION_ID,
+      slack_delivery_protocol_schema_revision:
+        "0005_reconcile_live_slack_receipts",
+      slack_delivery_protocol_confirmation_open: 0,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'trigger'
+             AND name LIKE 'enforce_%slack_delivery_protocol%'
+           ORDER BY name`,
+        )
+        .all(),
+    ).toEqual([
+      { name: "enforce_sealed_slack_delivery_protocol_delete" },
+      { name: "enforce_sealed_slack_delivery_protocol_insert" },
+      { name: "enforce_sealed_slack_delivery_protocol_update" },
+    ]);
+
+    database
+      .prepare("UPDATE relay_state SET next_slack_at = ? WHERE singleton_id = 1")
+      .run(NOW + 1);
+    for (const mutation of [
+      "singleton_id = 2",
+      "slack_delivery_protocol_active = 0",
+      `slack_delivery_protocol_revision = '${"b".repeat(40)}'`,
+      `slack_delivery_protocol_activated_at = ${SEALED_PROTOCOL_ACTIVATED_AT + 1}`,
+      `slack_delivery_protocol_activation_id = '${"2".repeat(64)}'`,
+      "slack_delivery_protocol_schema_revision = '0004_confirm_slack_delivery'",
+      "slack_delivery_protocol_confirmation_open = 1",
+    ]) {
+      expect(() =>
+        database
+          .prepare(`UPDATE relay_state SET ${mutation} WHERE singleton_id = 1`)
+          .run(),
+      ).toThrow("slack_delivery_protocol_is_sealed");
+    }
+    expect(() =>
+      database.prepare("DELETE FROM relay_state WHERE singleton_id = 1").run(),
+    ).toThrow("slack_delivery_protocol_is_sealed");
+    expect(() =>
+      database
+        .prepare(
+          `INSERT INTO relay_state (singleton_id, next_slack_at)
+           VALUES (1, 0)`,
+        )
+        .run(),
+    ).toThrow("slack_delivery_protocol_is_sealed");
+    expect(() =>
+      database
+        .prepare(
+          `INSERT OR REPLACE INTO relay_state (
+             singleton_id, next_slack_at, slack_activity_checkpoint_us,
+             slack_delivery_protocol_active,
+             slack_delivery_protocol_revision,
+             slack_delivery_protocol_activated_at,
+             slack_delivery_protocol_activation_id,
+             slack_delivery_protocol_schema_revision,
+             slack_delivery_protocol_confirmation_open
+           ) VALUES (1, 0, 0, 1, ?, ?, ?,
+             '0005_reconcile_live_slack_receipts', 0)`,
+        )
+        .run(
+          SEALED_PROTOCOL_REVISION,
+          SEALED_PROTOCOL_ACTIVATED_AT,
+          SEALED_PROTOCOL_ACTIVATION_ID,
+        ),
+    ).toThrow("slack_delivery_protocol_is_sealed");
+  });
+
+  it("rolls the seal migration back atomically for any divergent source tuple", () => {
+    const { database } = databaseWithMigrations(true);
+    database.exec(
+      "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+    );
+    database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_delivery_protocol_active = 1,
+             slack_delivery_protocol_revision = ?,
+             slack_delivery_protocol_activated_at = ?,
+             slack_delivery_protocol_activation_id = ?,
+             slack_delivery_protocol_schema_revision =
+               '0005_reconcile_live_slack_receipts'
+         WHERE singleton_id = 1`,
+      )
+      .run("c".repeat(40), NOW, "4".repeat(64));
+
+    expect(() =>
+      applyMigrationAtomically(
+        database,
+        "0006_seal_slack_delivery_protocol.sql",
+      ),
+    ).toThrow();
+    expect(
+      database
+        .prepare(
+          `SELECT slack_delivery_protocol_revision,
+                  slack_delivery_protocol_confirmation_open
+           FROM relay_state WHERE singleton_id = 1`,
+        )
+        .get(),
+    ).toEqual({
+      slack_delivery_protocol_revision: "c".repeat(40),
+      slack_delivery_protocol_confirmation_open: 1,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'trigger'
+             AND name IN (
+               'enforce_one_time_slack_delivery_protocol_revision_bridge',
+               'enforce_one_way_slack_delivery_protocol_confirmation'
+             ) ORDER BY name`,
+        )
+        .all(),
+    ).toHaveLength(2);
+    expect(
+      database
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'trigger'
+             AND name LIKE 'enforce_sealed_slack_delivery_protocol_%'`,
+        )
+        .all(),
+    ).toEqual([]);
+  });
+
+  it("allows a sealed replay only when D1 recorded migration 0006", () => {
+    const { database } = databaseReadyToSeal();
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
+    );
+
+    expect(() =>
+      applyMigrationAtomically(
+        database,
+        "0006_seal_slack_delivery_protocol.sql",
+      ),
+    ).toThrow();
+    database
+      .prepare("INSERT INTO d1_migrations (id, name) VALUES (6, ?)")
+      .run("0006_seal_slack_delivery_protocol.sql");
+    expect(() =>
+      applyMigrationAtomically(
+        database,
+        "0006_seal_slack_delivery_protocol.sql",
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects a ledger-backed replay when a permanent guard kept its name but changed its body", () => {
+    const { database } = databaseReadyToSeal();
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
+    );
+    database
+      .prepare("INSERT INTO d1_migrations (id, name) VALUES (6, ?)")
+      .run("0006_seal_slack_delivery_protocol.sql");
+    database.exec(`
+      DROP TRIGGER enforce_sealed_slack_delivery_protocol_update;
+      CREATE TRIGGER enforce_sealed_slack_delivery_protocol_update
+      BEFORE UPDATE ON relay_state
+      WHEN 0
+      BEGIN
+        SELECT 1;
+      END;
+    `);
+
+    expect(() =>
+      applyMigrationAtomically(
+        database,
+        "0006_seal_slack_delivery_protocol.sql",
+      ),
+    ).toThrow();
+    expect(
+      database
+        .prepare(
+          `SELECT sql FROM sqlite_schema
+           WHERE type = 'trigger'
+             AND name = 'enforce_sealed_slack_delivery_protocol_update'`,
+        )
+        .get(),
+    ).toEqual({
+      sql: expect.stringContaining("WHEN 0"),
+    });
+  });
+
+  it("rolls back instead of hiding a missing transient source guard", () => {
+    const { database } = databaseReadyToSeal();
+    database.exec(
+      "DROP TRIGGER enforce_one_way_slack_delivery_protocol_confirmation",
+    );
+
+    expect(() =>
+      applyMigrationAtomically(
+        database,
+        "0006_seal_slack_delivery_protocol.sql",
+      ),
+    ).toThrow();
+    expect(
+      database
+        .prepare(
+          `SELECT slack_delivery_protocol_confirmation_open
+           FROM relay_state WHERE singleton_id = 1`,
+        )
+        .get(),
+    ).toEqual({ slack_delivery_protocol_confirmation_open: 1 });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS guard_count FROM sqlite_master
+           WHERE type = 'trigger'
+             AND name LIKE 'enforce_sealed_slack_delivery_protocol_%'`,
+        )
+        .get(),
+    ).toEqual({ guard_count: 0 });
+  });
+
+  it.each([
+    {
+      drift: "an inert body",
+      name: "enforce_one_way_slack_delivery_protocol_confirmation",
+      sql: `CREATE TRIGGER enforce_one_way_slack_delivery_protocol_confirmation
+BEFORE UPDATE OF slack_delivery_protocol_confirmation_open ON relay_state
+WHEN 0
+BEGIN
+  SELECT 1;
+END`,
+    },
+    {
+      drift: "a whitespace-only body change",
+      name: "enforce_one_time_slack_delivery_protocol_revision_bridge",
+      sql: TRANSIENT_REVISION_BRIDGE_GUARD_SQL.replace(
+        "BEFORE UPDATE OF",
+        "BEFORE  UPDATE OF",
+      ),
+    },
+  ])(
+    "rolls back instead of replacing a transient source guard with $drift",
+    ({ name, sql }) => {
+      const { database } = databaseReadyToSeal();
+      database.exec(`DROP TRIGGER ${name};\n${sql};`);
+
+      expect(() =>
+        applyMigrationAtomically(
+          database,
+          "0006_seal_slack_delivery_protocol.sql",
+        ),
+      ).toThrow();
+      expect(
+        database
+          .prepare(
+            `SELECT slack_delivery_protocol_confirmation_open
+             FROM relay_state WHERE singleton_id = 1`,
+          )
+          .get(),
+      ).toEqual({ slack_delivery_protocol_confirmation_open: 1 });
+      expect(
+        database
+          .prepare(
+            `SELECT sql FROM sqlite_schema
+             WHERE type = 'trigger' AND name = ?`,
+          )
+          .get(name),
+      ).toEqual({ sql });
+      expect(
+        database
+          .prepare(
+            `SELECT COUNT(*) AS guard_count FROM sqlite_schema
+             WHERE type = 'trigger'
+               AND name GLOB 'enforce_sealed_slack_delivery_protocol_*'`,
+          )
+          .get(),
+      ).toEqual({ guard_count: 0 });
+    },
+  );
+
+  it("rolls back when an unrelated trigger also targets relay_state", () => {
+    const { database } = databaseReadyToSeal();
+    database.exec(`
+      CREATE TRIGGER unexpected_relay_state_blocker
+      BEFORE UPDATE ON relay_state
+      WHEN 0
+      BEGIN
+        SELECT 1;
+      END;
+    `);
+
+    expect(() =>
+      applyMigrationAtomically(
+        database,
+        "0006_seal_slack_delivery_protocol.sql",
+      ),
+    ).toThrow();
+    expect(
+      database
+        .prepare(
+          `SELECT slack_delivery_protocol_confirmation_open
+           FROM relay_state WHERE singleton_id = 1`,
+        )
+        .get(),
+    ).toEqual({ slack_delivery_protocol_confirmation_open: 1 });
+    expect(
+      database
+        .prepare(
+          `SELECT sql FROM sqlite_schema
+           WHERE type = 'trigger' AND name = 'unexpected_relay_state_blocker'`,
+        )
+        .get(),
+    ).toEqual({ sql: expect.stringContaining("WHEN 0") });
+  });
+
+  it("rejects a missing permanent seal guard", async () => {
+    const { database, d1 } = databaseReadyToSeal();
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
+    );
+    database.exec("DROP TRIGGER enforce_sealed_slack_delivery_protocol_delete");
+    const store = new D1DeliveryStore(d1);
+
+    await expect(
+      store.isSlackDeliveryProtocolActive(TEST_REVISION),
+    ).rejects.toThrow("slack_delivery_protocol_seal_incomplete");
+    await expect(store.healthcheck(NOW, TEST_REVISION)).resolves.toBe(false);
+  });
+
+  it("rejects a permanent seal guard whose name is canonical but body is inert", async () => {
+    const { database, d1 } = databaseReadyToSeal();
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
+    );
+    database.exec(`
+      DROP TRIGGER enforce_sealed_slack_delivery_protocol_update;
+      CREATE TRIGGER enforce_sealed_slack_delivery_protocol_update
+      BEFORE UPDATE ON relay_state
+      WHEN 0
+      BEGIN
+        SELECT 1;
+      END;
+    `);
+    const store = new D1DeliveryStore(d1);
+
+    await expect(
+      store.isSlackDeliveryProtocolActive(TEST_REVISION),
+    ).rejects.toThrow("slack_delivery_protocol_seal_incomplete");
+    await expect(store.healthcheck(NOW, TEST_REVISION)).resolves.toBe(false);
+  });
+
+  it("rejects any unexpected fourth trigger on relay_state", async () => {
+    const { database, d1 } = databaseReadyToSeal();
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
+    );
+    database.exec(`
+      CREATE TRIGGER unexpected_relay_state_blocker
+      BEFORE UPDATE ON relay_state
+      WHEN 0
+      BEGIN
+        SELECT 1;
+      END;
+    `);
+    const store = new D1DeliveryStore(d1);
+
+    await expect(
+      store.isSlackDeliveryProtocolActive(TEST_REVISION),
+    ).rejects.toThrow("slack_delivery_protocol_seal_incomplete");
+    await expect(store.healthcheck(NOW, TEST_REVISION)).resolves.toBe(false);
+  });
+
+  it("rejects open, divergent, and missing protocol state", async () => {
+    const open = databaseReadyToSeal();
+    const openStore = new D1DeliveryStore(open.d1);
+    await expect(
+      openStore.isSlackDeliveryProtocolActive(TEST_REVISION),
+    ).rejects.toThrow("slack_delivery_protocol_state_inconsistent");
+    await expect(openStore.healthcheck(NOW, TEST_REVISION)).resolves.toBe(
+      false,
+    );
+
+    const divergent = databaseWithMigrations(true);
+    divergent.database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_delivery_protocol_active = 1,
+             slack_delivery_protocol_revision = ?,
+             slack_delivery_protocol_activated_at = ?,
+             slack_delivery_protocol_activation_id = ?,
+             slack_delivery_protocol_schema_revision =
+               '0005_reconcile_live_slack_receipts'
+         WHERE singleton_id = 1`,
+      )
+      .run("c".repeat(40), NOW, "4".repeat(64));
+    const divergentStore = new D1DeliveryStore(divergent.d1);
+    await expect(
+      divergentStore.isSlackDeliveryProtocolActive(TEST_REVISION),
+    ).rejects.toThrow("slack_delivery_protocol_state_inconsistent");
+    await expect(divergentStore.healthcheck(NOW, TEST_REVISION)).resolves.toBe(
+      false,
+    );
+
+    const missing = databaseWithMigrations(true);
+    missing.database.exec("DELETE FROM relay_state");
+    await expect(
+      new D1DeliveryStore(missing.d1).isSlackDeliveryProtocolActive(
+        TEST_REVISION,
+      ),
+    ).rejects.toThrow("slack_delivery_protocol_state_missing");
+  });
+
   it("binds each Slack function execution to one trace while allowing absent execution IDs", async () => {
     const { database, d1 } = databaseWithMigrations(true);
     const store = new D1DeliveryStore(d1);
@@ -613,182 +1174,6 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       trigger_accepted_at: NOW + 1,
       legacy_unverified: 1,
     });
-  });
-
-  it("applies one activation and confirms only its identical tuple", async () => {
-    const { database, d1 } = databaseWithMigrations(true);
-    const store = new D1DeliveryStore(d1);
-    const revision = "c".repeat(40);
-    const activation = protocolActivation(revision);
-
-    await expect(store.isSlackDeliveryProtocolActive(revision)).resolves.toBe(
-      false,
-    );
-    await expect(store.healthcheck(NOW, revision)).resolves.toBe(false);
-    const concurrent = await Promise.all([
-      store.activateSlackDeliveryProtocol(activation),
-      store.activateSlackDeliveryProtocol(activation),
-    ]);
-    expect(concurrent.sort()).toEqual(["already_applied", "applied"]);
-    await expect(store.isSlackDeliveryProtocolActive(revision)).resolves.toBe(
-      true,
-    );
-    await expect(store.healthcheck(NOW, revision)).resolves.toBe(true);
-    expect(
-      database
-        .prepare(
-          `SELECT slack_delivery_protocol_active,
-                slack_delivery_protocol_revision,
-                slack_delivery_protocol_activated_at,
-                slack_delivery_protocol_activation_id,
-                slack_delivery_protocol_schema_revision,
-                slack_delivery_protocol_confirmation_open
-         FROM relay_state WHERE singleton_id = 1`,
-        )
-        .get(),
-    ).toEqual({
-      slack_delivery_protocol_active: 1,
-      slack_delivery_protocol_revision: revision,
-      slack_delivery_protocol_activated_at: NOW,
-      slack_delivery_protocol_activation_id: activation.activationId,
-      slack_delivery_protocol_schema_revision: activation.schemaRevision,
-      slack_delivery_protocol_confirmation_open: 1,
-    });
-
-    await expect(
-      store.activateSlackDeliveryProtocol({
-        ...activation,
-        activationId: "4".repeat(64),
-      }),
-    ).rejects.toThrow("slack_delivery_protocol_activation_conflict");
-
-    database
-      .prepare(
-        `UPDATE relay_state
-       SET slack_delivery_protocol_confirmation_open = 0
-       WHERE singleton_id = 1`,
-      )
-      .run();
-    await expect(
-      store.activateSlackDeliveryProtocol(activation),
-    ).rejects.toThrow("slack_delivery_protocol_activation_conflict");
-    expect(() =>
-      database
-        .prepare(
-          `UPDATE relay_state
-         SET slack_delivery_protocol_confirmation_open = 1
-         WHERE singleton_id = 1`,
-        )
-        .run(),
-    ).toThrow("slack_delivery_protocol_confirmation_is_one_way");
-    expect(() =>
-      database
-        .prepare(
-          `UPDATE relay_state
-         SET slack_delivery_protocol_active = 0,
-             slack_delivery_protocol_revision = NULL,
-             slack_delivery_protocol_activated_at = NULL
-         WHERE singleton_id = 1`,
-        )
-        .run(),
-    ).toThrow("slack_delivery_protocol_activation_is_one_way");
-  });
-
-  it("bridges the exact deployed source once through the D1 store CAS", async () => {
-    const { database, d1 } = databaseWithMigrations(false);
-    for (const migration of [
-      "0001_initial.sql",
-      "0002_add_destination.sql",
-      "0003_rename_delivery_acceptance.sql",
-      "0004_confirm_slack_delivery.sql",
-    ]) {
-      database.exec(migrationSource(migration));
-    }
-    const sourceRevision = "afe5250504d37543845b07f44af7bfc30a548feb";
-    const sourceActivationId = "2".repeat(64);
-    database
-      .prepare(
-        `UPDATE relay_state
-         SET slack_delivery_protocol_active = 1,
-             slack_delivery_protocol_revision = ?,
-             slack_delivery_protocol_activated_at = ?,
-             slack_delivery_protocol_activation_id = ?,
-             slack_delivery_protocol_schema_revision = ?
-         WHERE singleton_id = 1`,
-      )
-      .run(
-        sourceRevision,
-        NOW - 1_000,
-        sourceActivationId,
-        "0004_confirm_slack_delivery",
-      );
-    database.exec(migrationSource("0005_reconcile_live_slack_receipts.sql"));
-    const store = new D1DeliveryStore(d1);
-
-    await expect(
-      store.activateSlackDeliveryProtocol({
-        activationId: sourceActivationId,
-        bridgeSourceActivationId: sourceActivationId,
-        revision: sourceRevision,
-        schemaRevision: "0004_confirm_slack_delivery",
-        now: NOW,
-      }),
-    ).resolves.toBe("already_applied");
-
-    const target = protocolActivation("d".repeat(40), "4".repeat(64));
-    await expect(
-      store.activateSlackDeliveryProtocol({
-        ...target,
-        bridgeSourceActivationId: "5".repeat(64),
-      }),
-    ).rejects.toThrow("slack_delivery_protocol_activation_conflict");
-    await expect(
-      store.isSlackDeliveryProtocolActive(sourceRevision),
-    ).resolves.toBe(false);
-
-    await expect(
-      store.activateSlackDeliveryProtocol({
-        ...target,
-        bridgeSourceActivationId: sourceActivationId,
-      }),
-    ).resolves.toBe("applied");
-    const activatedState = database
-      .prepare(
-        `SELECT slack_delivery_protocol_revision,
-                slack_delivery_protocol_schema_revision
-         FROM relay_state WHERE singleton_id = 1`,
-      )
-      .get();
-    expect(activatedState).toEqual({
-      slack_delivery_protocol_revision: "d".repeat(40),
-      slack_delivery_protocol_schema_revision:
-        "0005_reconcile_live_slack_receipts",
-    });
-    await expect(
-      store.activateSlackDeliveryProtocol({
-        ...target,
-        bridgeSourceActivationId: sourceActivationId,
-      }),
-    ).resolves.toBe("already_applied");
-    await expect(
-      store.activateSlackDeliveryProtocol({
-        ...protocolActivation("e".repeat(40), "6".repeat(64)),
-        bridgeSourceActivationId: sourceActivationId,
-      }),
-    ).rejects.toThrow("slack_delivery_protocol_activation_conflict");
-  });
-
-  it("refuses activation when an expanded schema artifact is absent", async () => {
-    const { database, d1 } = databaseWithMigrations(true);
-    database.exec("DROP TRIGGER quarantine_old_worker_acceptance");
-    const store = new D1DeliveryStore(d1);
-
-    await expect(
-      store.activateSlackDeliveryProtocol(protocolActivation("d".repeat(40))),
-    ).rejects.toThrow("slack_delivery_protocol_schema_incomplete");
-    await expect(
-      store.isSlackDeliveryProtocolActive("d".repeat(40)),
-    ).resolves.toBe(false);
   });
 
   it("backfills old trigger acceptances as unverified and isolates the known lost delivery", async () => {
@@ -1107,13 +1492,14 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
     ).resolves.toBe((secondAttemptAt + 1) * 1_000);
   });
 
-  it("recognizes the migrated schema only after protocol activation", async () => {
-    const { d1 } = databaseWithMigrations(true);
+  it("recognizes the migrated schema only after protocol sealing", async () => {
+    const { database, d1 } = databaseReadyToSeal();
     const store = new D1DeliveryStore(d1);
 
     await expect(store.healthcheck(NOW, "e".repeat(40))).resolves.toBe(false);
-    await store.activateSlackDeliveryProtocol(
-      protocolActivation("e".repeat(40)),
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
     );
     await expect(store.healthcheck(NOW, "e".repeat(40))).resolves.toBe(true);
   });
@@ -2320,8 +2706,13 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       legacyUnverified: true,
       slackTraceId: "TrLegacySuccess1",
     });
-    await store.activateSlackDeliveryProtocol(
-      protocolActivation(TEST_REVISION),
+    database.exec(
+      "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+    );
+    seedLiveProtocolTuple(database);
+    applyMigrationAtomically(
+      database,
+      "0006_seal_slack_delivery_protocol.sql",
     );
     await expect(store.healthcheck(NOW + 2, TEST_REVISION)).resolves.toBe(true);
   });

@@ -2,17 +2,18 @@ import { vi } from "vitest";
 
 import type { SlackWorkflowPayload } from "../src/domain";
 import {
-  SlackDeliveryProtocolActivationConflictError,
   SlackProgressConflictError,
   SlackReconciliationConflictError,
   SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US,
+  SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION,
+  SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATED_AT,
+  SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATION_ID,
+  SLACK_DELIVERY_PROTOCOL_SEALED_REVISION,
   type DeliveryInput,
   type DeliveryStatus,
   type DeliveryStore,
   type QueueJob,
   type RecoveryClaim,
-  type SlackDeliveryProtocolActivation,
-  type SlackDeliveryProtocolActivationResult,
   type SlackProgressInput,
   type SlackProgressResult,
   type SlackTraceReconciliation,
@@ -52,93 +53,34 @@ export class MemoryDeliveryStore implements DeliveryStore {
   nextSlackAt = 0;
   slackActivityCheckpoint = 0;
   slackDeliveryProtocolActive = true;
-  slackDeliveryProtocolRevision: string | null = null;
-  slackDeliveryProtocolActivatedAt: number | null = null;
-  slackDeliveryProtocolActivationId: string | null = null;
-  slackDeliveryProtocolSchemaRevision: string | null = null;
-  slackDeliveryProtocolConfirmationOpen = true;
+  slackDeliveryProtocolRevision: string | null =
+    SLACK_DELIVERY_PROTOCOL_SEALED_REVISION;
+  slackDeliveryProtocolActivatedAt: number | null =
+    SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATED_AT;
+  slackDeliveryProtocolActivationId: string | null =
+    SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATION_ID;
+  slackDeliveryProtocolSchemaRevision: string | null =
+    SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION;
+  slackDeliveryProtocolConfirmationOpen = false;
+  slackDeliveryProtocolSealGuardsPresent = true;
   healthy = true;
 
   async isSlackDeliveryProtocolActive(
     expectedRevision: string,
   ): Promise<boolean> {
     return (
+      /^[0-9a-f]{40}$/u.test(expectedRevision) &&
       this.slackDeliveryProtocolActive &&
-      (this.slackDeliveryProtocolRevision ?? expectedRevision) ===
-        expectedRevision
-    );
-  }
-
-  async activateSlackDeliveryProtocol(
-    activation: SlackDeliveryProtocolActivation,
-  ): Promise<SlackDeliveryProtocolActivationResult> {
-    const isTargetActivation =
-      activation.schemaRevision === "0005_reconcile_live_slack_receipts";
-    const isExactBridgeSourceReplay =
-      activation.revision ===
-        "afe5250504d37543845b07f44af7bfc30a548feb" &&
-      activation.schemaRevision === "0004_confirm_slack_delivery" &&
-      activation.activationId === activation.bridgeSourceActivationId;
-    const valid =
-      /^[0-9a-f]{64}$/u.test(activation.activationId) &&
-      /^[0-9a-f]{64}$/u.test(activation.bridgeSourceActivationId) &&
-      /^[0-9a-f]{40}$/u.test(activation.revision) &&
-      (isTargetActivation || isExactBridgeSourceReplay) &&
-      Number.isSafeInteger(activation.now) &&
-      activation.now > 0;
-    if (!valid) {
-      throw new SlackDeliveryProtocolActivationConflictError(
-        "slack_delivery_protocol_activation_conflict",
-      );
-    }
-    if (!this.slackDeliveryProtocolActive) {
-      if (
-        this.slackDeliveryProtocolRevision !== null ||
-        this.slackDeliveryProtocolActivatedAt !== null ||
-        this.slackDeliveryProtocolActivationId !== null ||
-        this.slackDeliveryProtocolSchemaRevision !== null ||
-        !this.slackDeliveryProtocolConfirmationOpen
-      ) {
-        throw new SlackDeliveryProtocolActivationConflictError(
-          "slack_delivery_protocol_activation_conflict",
-        );
-      }
-      this.slackDeliveryProtocolActive = true;
-      this.slackDeliveryProtocolRevision = activation.revision;
-      this.slackDeliveryProtocolActivatedAt = activation.now;
-      this.slackDeliveryProtocolActivationId = activation.activationId;
-      this.slackDeliveryProtocolSchemaRevision = activation.schemaRevision;
-      return "applied";
-    }
-
-    if (
-      this.slackDeliveryProtocolConfirmationOpen &&
-      this.slackDeliveryProtocolRevision === activation.revision &&
-      this.slackDeliveryProtocolActivationId === activation.activationId &&
-      this.slackDeliveryProtocolSchemaRevision === activation.schemaRevision
-    ) {
-      return "already_applied";
-    }
-    if (
-      this.slackDeliveryProtocolConfirmationOpen &&
       this.slackDeliveryProtocolRevision ===
-        "afe5250504d37543845b07f44af7bfc30a548feb" &&
+        SLACK_DELIVERY_PROTOCOL_SEALED_REVISION &&
+      this.slackDeliveryProtocolActivatedAt ===
+        SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATED_AT &&
       this.slackDeliveryProtocolActivationId ===
-        activation.bridgeSourceActivationId &&
+        SLACK_DELIVERY_PROTOCOL_SEALED_ACTIVATION_ID &&
       this.slackDeliveryProtocolSchemaRevision ===
-        "0004_confirm_slack_delivery" &&
-      this.slackDeliveryProtocolActivatedAt !== null &&
-      activation.now > this.slackDeliveryProtocolActivatedAt &&
-      this.slackDeliveryProtocolActivationId !== activation.activationId
-    ) {
-      this.slackDeliveryProtocolRevision = activation.revision;
-      this.slackDeliveryProtocolActivatedAt = activation.now;
-      this.slackDeliveryProtocolActivationId = activation.activationId;
-      this.slackDeliveryProtocolSchemaRevision = activation.schemaRevision;
-      return "applied";
-    }
-    throw new SlackDeliveryProtocolActivationConflictError(
-      "slack_delivery_protocol_activation_conflict",
+        SLACK_DELIVERY_PROTOCOL_SCHEMA_REVISION &&
+      !this.slackDeliveryProtocolConfirmationOpen &&
+      this.slackDeliveryProtocolSealGuardsPresent
     );
   }
 
@@ -991,9 +933,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
   async healthcheck(now: number, expectedRevision: string): Promise<boolean> {
     return (
       this.healthy &&
-      this.slackDeliveryProtocolActive &&
-      (this.slackDeliveryProtocolRevision ?? expectedRevision) ===
-        expectedRevision &&
+      (await this.isSlackDeliveryProtocolActive(expectedRevision)) &&
       ![...this.deliveries.values()].some(
         (delivery) =>
           delivery.status === "manual_review" ||

@@ -46,28 +46,21 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   never automatically resent. Dead letters and active manual review fail readiness; quarantined
   historical rows remain visibly `legacy_unverified` without authorizing a resend. The one known
   lost ID stays in manual review until an exact, audited, explicitly authorized one-time recovery.
-  Expand rollout is serialized in one exact-SHA workflow. A fresh inactive deployment starts
-  closed; in the live bridge, the source Worker remains active on `afe525/0004` and the target Worker
-  stays fail-closed until target/`0005` activation. Target Queue consumers back off without D1
-  attempts or a Slack POST while Cloudflare and Slack receive the same
-  new value only in their runtime `NEXT` slots. The new Worker control plane and monitor accept only
-  `NEXT`; both hosted stores retain the old current key during expand, but only the Slack validator
-  accepts it for inbound relay compatibility. Slack issues every new progress authorization and
-  callback only with `NEXT`, so current never has to be recovered into GitHub. Before any production
-  migration or hosted deploy, a D1 preflight reads all six persisted activation fields and checks
-  that both delivery and trace execution IDs have zero duplicate groups. It permits
-  only the initial inactive tuple, the fixed deployed `afe525/0004` bridge source, or the exact
-  target tuple whose SHA, schema and deterministic HMAC activation ID match the staged signer; a
-  later or partially written revision cannot replace
-  the Worker until the reviewed contract removes that expand guard. After the Slack deploy, the workflow updates both fixed protected trigger IDs
+  The completed expand rollout is serialized in one exact-SHA workflow. Cloudflare and Slack retain
+  the reviewed signer only in their hosted secret slots; the Worker control plane and monitor accept
+  `NEXT`, and only the Slack validator accepts the retained old current key for inbound relay
+  compatibility. Slack issues every new progress authorization and callback only with `NEXT`, so
+  current never has to be recovered into GitHub. D1 retains the original activation revision,
+  timestamp, HMAC activation ID and `0005` schema as a sealed audit anchor. Migration `0006` validated
+  that exact tuple transactionally, set `confirmation_open=0`, removed the transient activation
+  triggers and installed permanent update, insert and delete guards. Every deployment validates this
+  sealed anchor, its guards and zero duplicate execution-ID groups after migrations and before any
+  hosted replacement. The current Worker version tag remains exact-SHA provenance but cannot rewrite
+  the historical anchor. After the Slack deploy, the workflow updates both fixed protected trigger IDs
   from their versioned definitions while suppressing the CLI response because it can contain bearer
-  URLs. Only after the exact trigger inventory does a `NEXT`-key HMAC prove the Worker tag, Slack
-  revision, and expanded
-  schema and perform only an inactive-to-target activation or the source-pinned deployed
-  `afe525/0004` to target/`0005` transition while persisting an immutable activation
-  ID, revision, and schema. One byte-identical retry may confirm the same CAS read-only after a lost
-  response; a new ID, changed tuple, post-contract request, downgrade, wrong revision, wrong key,
-  partial deploy, or incomplete schema fails closed. Deterministic reconciliation conflicts are 409;
+  URLs. The temporary activation script, parser and `/slack/protocol/activate` route were removed;
+  that path now returns the generic 404 response and no public protocol mutation API remains. A
+  missing, open, changed or partially written anchor fails closed. Deterministic reconciliation conflicts are 409;
   ambiguous persistence is retryable 503. Every signed relay carries its durable attempt number;
   D1 leases the send boundary to one Slack `function_execution_id`, so only that execution may
   release `SendMessage` while a retry of the same execution remains idempotent. The retry transition

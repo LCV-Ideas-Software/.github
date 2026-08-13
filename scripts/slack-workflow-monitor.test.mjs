@@ -246,7 +246,7 @@ test("deployment verifies both protected triggers without logging their details"
   assert.match(relayWorkflowSource, /rm -f "\$inventory_error"/);
 });
 
-test("deployment updates both protected trigger definitions before inventory and activation", () => {
+test("deployment updates both protected trigger definitions before inventory without activation", () => {
   const deployJob = relayWorkflowSource.slice(
     relayWorkflowSource.indexOf("  deploy_slack:"),
   );
@@ -257,16 +257,13 @@ test("deployment updates both protected trigger definitions before inventory and
   const verifyTriggers = deployJob.indexOf(
     "scripts/verify_trigger_inventory.ts",
   );
-  const activateProtocol = deployJob.indexOf(
-    "scripts/activate_delivery_protocol.ts",
-  );
 
   assert.ok(
     deploySlack >= 0 &&
       updateStepStart > deploySlack &&
-      verifyTriggers > updateStepStart &&
-      activateProtocol > verifyTriggers,
+      verifyTriggers > updateStepStart,
   );
+  assert.doesNotMatch(deployJob, /activate_delivery_protocol\.ts/u);
 
   const updateStepEnd = deployJob.indexOf(
     "\n      - name:",
@@ -314,23 +311,22 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   );
   assert.match(remoteProofJob, /needs: verify/);
   assert.match(relayDeployJob, /needs: prove_remote_d1/);
-  const productionPreflight = relayDeployJob.indexOf(
-    "scripts/slack-delivery-protocol-preflight.mjs",
-  );
   const productionMigration = relayDeployJob.indexOf(
     "wrangler d1 migrations apply github-slack-alerts-db",
   );
-  assert.ok(
-    productionPreflight >= 0 && productionPreflight < productionMigration,
-    "the active tuple must authorize the exact bridge before production D1 mutates",
+  const sealedPostflight = relayDeployJob.indexOf(
+    "scripts/slack-delivery-protocol-contract.mjs",
   );
-  assert.match(relayDeployJob, /slack_delivery_protocol_activated_at/);
-  assert.match(relayDeployJob, /slack_delivery_protocol_activation_id/);
-  assert.match(relayDeployJob, /slack_delivery_protocol_schema_revision/);
+  assert.ok(
+    productionMigration >= 0 && sealedPostflight > productionMigration,
+    "the exact sealed tuple must be verified after production D1 migrates",
+  );
   assert.match(
     relayDeployJob,
-    /SLACK_RELAY_SIGNING_SECRET: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
+    /slack-delivery-protocol-contract\.mjs --print-sql/u,
   );
+  assert.match(relayDeployJob, /--command "\$CONTRACT_SQL"/u);
+  assert.doesNotMatch(relayDeployJob, /EXPECTED_REVISION:/u);
   assert.match(deployJob, /needs: deploy/);
   assert.match(deployJob, /environment: slack-production/);
   assert.match(deployJob, /github\.event_name == 'push'/);
@@ -343,36 +339,17 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     /- "\.github\/workflows\/slack-github-integration\.yml"/,
   );
   const deploySlack = deployJob.indexOf('"$SLACK_BIN" deploy');
+  const proveSigner = deployJob.indexOf(
+    "node scripts/verify-slack-relay-signer.mjs",
+  );
+  const installSlackCli = deployJob.indexOf(
+    "      - name: Install verified Slack CLI 4.6.0",
+  );
   const verifyTriggers = deployJob.indexOf(
     "scripts/verify_trigger_inventory.ts",
   );
-  const activateProtocol = deployJob.indexOf(
-    "scripts/activate_delivery_protocol.ts",
-  );
   assert.ok(deploySlack >= 0 && verifyTriggers > deploySlack);
-  assert.ok(activateProtocol > verifyTriggers);
-  const activationStepStart = deployJob.lastIndexOf(
-    "      - name:",
-    activateProtocol,
-  );
-  const activationStepEnd = deployJob.indexOf(
-    "\n      - name:",
-    activateProtocol,
-  );
-  const activationStep = deployJob.slice(
-    activationStepStart,
-    activationStepEnd === -1 ? undefined : activationStepEnd,
-  );
-  assert.match(activationStep, /EXPECTED_REVISION: \$\{\{ github\.sha \}\}/);
-  assert.match(
-    activationStep,
-    /--allow-env=EXPECTED_REVISION,SLACK_RELAY_SIGNING_SECRET_NEXT/,
-  );
-  assert.match(
-    activationStep,
-    /--allow-net=github-slack-alerts\.lcv\.workers\.dev/,
-  );
-  assert.doesNotMatch(activationStep, /if:\s*always\(\)/);
+  assert.doesNotMatch(deployJob, /activate_delivery_protocol\.ts/u);
   assert.match(relayWorkflowSource, /--tag "\$GITHUB_SHA"/);
   assert.doesNotMatch(relayWorkflowSource, /GITHUB_PATH/);
   assert.match(
@@ -387,7 +364,21 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     "scripts/provision-slack-relay-secret.mjs",
   );
   assert.ok(provisionCloudflare >= 0 && provisionCloudflare < deployWorker);
+  assert.ok(
+    proveSigner >= 0 &&
+      proveSigner < installSlackCli &&
+      installSlackCli < provisionSlack,
+    "the slack-production secret must prove equality before every Slack mutation",
+  );
   assert.ok(provisionSlack >= 0 && provisionSlack < deploySlack);
+  const proofStepStart = deployJob.lastIndexOf("      - name:", proveSigner);
+  const proofStepEnd = deployJob.indexOf("\n      - name:", proveSigner);
+  const proofStep = deployJob.slice(proofStepStart, proofStepEnd);
+  assert.match(
+    proofStep,
+    /SLACK_RELAY_SIGNING_SECRET: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/u,
+  );
+  assert.doesNotMatch(proofStep, /set -x|curl\s+(?:-[^\s]*v|--verbose)/u);
   assert.match(
     relayWorkflowSource,
     /environment: cloudflare-production[\s\S]*SLACK_RELAY_SIGNING_SECRET: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
@@ -395,10 +386,6 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   assert.match(
     deployJob,
     /SLACK_RELAY_SIGNING_SECRET: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
-  );
-  assert.match(
-    activationStep,
-    /SLACK_RELAY_SIGNING_SECRET_NEXT: \$\{\{ secrets\.SLACK_RELAY_SIGNING_SECRET \}\}/,
   );
 
   const requiredVerifyJob = relayWorkflowSource.slice(
@@ -417,6 +404,11 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
     requiredVerifyJob,
     /scripts\/slack-workflow-monitor\.test\.mjs/,
     "the privileged deploy predecessor must run the monitor candidate tests",
+  );
+  assert.match(
+    requiredVerifyJob,
+    /scripts\/verify-slack-relay-signer\.test\.mjs/,
+    "the privileged deploy predecessor must run the signer boundary tests",
   );
 });
 
