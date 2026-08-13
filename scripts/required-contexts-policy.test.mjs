@@ -303,18 +303,18 @@ test("critical actions, inputs, paths, and failure propagation stay exact", () =
     ],
     [
       ".github/workflows/github-slack-integration.yml",
-      "          deno task --frozen check",
-      "          deno task --frozen check || true",
+      "          deno task --config=deno.jsonc --frozen check",
+      "          deno task --config=deno.jsonc --frozen check || true",
     ],
     [
       ".github/workflows/github-slack-integration.yml",
-      "        run: deno task --frozen audit",
-      "        run: deno task --frozen audit || true",
+      "        run: deno task --config=deno.jsonc --frozen audit",
+      "        run: deno task --config=deno.jsonc --frozen audit || true",
     ],
     [
       ".github/workflows/slack-github-integration.yml",
-      "        run: deno task --frozen audit",
-      "        run: deno task --frozen audit || true",
+      "        run: deno task --config=deno.jsonc --frozen audit",
+      "        run: deno task --config=deno.jsonc --frozen audit || true",
     ],
   ]) {
     rejectsMutation(path, before, after);

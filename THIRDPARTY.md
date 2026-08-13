@@ -48,6 +48,7 @@ deployed bundle is built from this repository's own source.
 | @slack/sdk       | 2.15.2  | MIT     | runtime | https://jsr.io/@slack/sdk                  |
 | @slack/api       | 2.9.3   | MIT     | runtime | https://jsr.io/@slack/api                  |
 | deno_slack_hooks | 1.5.0   | MIT     | build   | https://deno.land/x/deno_slack_hooks@1.5.0 |
+| esbuild          | 0.25.0  | MIT     | build   | https://www.npmjs.com/package/esbuild      |
 
 Licenses confirmed from the upstream repositories that publish these JSR packages:
 [`slackapi/deno-slack-sdk`](https://github.com/slackapi/deno-slack-sdk) and
@@ -56,10 +57,26 @@ Licenses confirmed from the upstream repositories that publish these JSR package
 `deno_slack_hooks` is not a JSR import: it is the Slack CLI build hook, executed directly from
 `slack/github-integration/.slack/hooks.json:3` as
 `deno run -q --allow-read --allow-net https://deno.land/x/deno_slack_hooks@1.5.0/mod.ts`. Its
-version is pinned in that URL; the protection `deno.lock` adds is narrower than the whole tool, and
-worth stating exactly: the lock carries integrity hashes for nine modules of the package, but not
-for the executed `mod.ts` entry point itself. Its license comes from the upstream repository that
+version is pinned in that URL. Within the complete frozen production closure, the lock carries the
+exact integrity hashes for the 13 `deno_slack_hooks@1.5.0` source files reached by the production
+`get-hooks`, `get-manifest`, `build`, and `get-trigger` roots, including the executed `mod.ts` entry
+point and its `flags.ts` dependency. Update and local-run hooks remain deliberately
+outside this graph because every production CLI invocation uses `--skip-update` and the workflow
+never invokes `doctor`, `upgrade`, or `run`. Its license comes from the upstream repository that
 publishes it, [`slackapi/deno-slack-hooks`](https://github.com/slackapi/deno-slack-hooks), MIT.
+The official hook imports vulnerable `esbuild@0.24.2`; the project's Deno import map remaps that
+exact specifier to the first corrected release, `0.25.0`. The lockfile contains only the corrected
+package graph. Candidate verification type-checks all four production hook entry points with the
+frozen lock; `deno.jsonc` also makes that lock fail-closed for hook processes launched by the Slack
+CLI, disables local `node_modules` and vendored resolution, and limits the import-map surface to
+the three Slack aliases plus the one esbuild override. Both workflows select that config explicitly;
+the audit rejects competing Deno configs or package workspaces at every ancestor inside the checkout
+and verifies the reviewed integrity of all 25 platform packages. The daily trusted audit continues to verify
+the unmodified Slack hook source.
+Candidate verification also executes the pinned official `EsbuildBundler` directly against the
+two exact `source_file` entries declared by the source manifest, because the complete official
+build can finish through Deno's native bundler before reaching that fallback. Both generated
+modules must parse and expose the callable default handler expected by Slack.
 
 `deno.lock` additionally pins `@slack/api@2.9.0` as a transitive dependency of `@slack/sdk@2.15.2`;
 it is not imported directly by this repository.

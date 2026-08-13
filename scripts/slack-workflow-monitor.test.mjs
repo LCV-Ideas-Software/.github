@@ -394,12 +394,12 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   );
   assert.match(requiredVerifyJob, /- name: Setup Deno 2\.9\.5/);
   assert.match(requiredVerifyJob, /- name: Check Slack workflow app/);
-  assert.match(requiredVerifyJob, /deno task --frozen check/);
+  assert.match(requiredVerifyJob, /deno task --config=deno\.jsonc --frozen check/);
   assert.match(
     requiredVerifyJob,
     /- name: Audit Slack workflow app dependencies/,
   );
-  assert.match(requiredVerifyJob, /run: deno task --frozen audit/);
+  assert.match(requiredVerifyJob, /run: deno task --config=deno\.jsonc --frozen audit/);
   assert.match(
     requiredVerifyJob,
     /scripts\/slack-workflow-monitor\.test\.mjs/,

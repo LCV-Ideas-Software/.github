@@ -101,10 +101,10 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Verify GitHub Slack relay"],
     policyRunner: false,
     nodeOptions: "--no-deprecation",
-    digest: "42b26219d91044164abfdc4d4943f00003c05b30df702971be51813772695b08",
+    digest: "eeae5799c77b922a2d89c1f9212bc5186808bd61fa3cdc03481f678a4a60b81c",
     privilegedJobIds: ["prove_remote_d1", "deploy", "deploy_slack"],
     privilegedDigest:
-      "f6d78e0d28ecff1e715c3a84e7b88613761725b13c435b13dfacc7567cc76ddd",
+      "94a41f95942b9f80ce0eedd3b06ee38427e29f7053ed843e218cd4426a49ea8a",
   },
   {
     path: ".github/workflows/slack-github-integration.yml",
@@ -124,7 +124,7 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Verify Slack workflow app"],
     policyRunner: false,
     nodeOptions: undefined,
-    digest: "990bea33cb0d23d2714a5c19a88c9e87a60a352bb1b6e5dbbc6e680313f67fc7",
+    digest: "ea3c7e7d5d89e5071df87fa01505542f6011629da95d67d65d5b55417c896477",
     privilegedJobIds: ["monitor"],
     privilegedDigest:
       "5ea981eb95ed1b56ac2045ae02d2883a5ed2fe4ce75dd14819b3761859fa6c94",
