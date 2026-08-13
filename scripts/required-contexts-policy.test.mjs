@@ -232,7 +232,7 @@ test("job-level and critical-step continue-on-error are forbidden", () => {
   const jobs = [
     [".github/workflows/dependency-review.yml", "    timeout-minutes: 10"],
     [".github/workflows/codeql.yml", "    timeout-minutes: 20"],
-    [".github/workflows/zizmor.yml", "    timeout-minutes: 15"],
+    [".github/workflows/zizmor.yml", "    timeout-minutes: 20"],
     [".github/workflows/pages.yml", "    timeout-minutes: 15"],
     [
       ".github/workflows/github-slack-integration.yml",
@@ -287,11 +287,6 @@ test("critical actions, inputs, paths, and failure propagation stay exact", () =
       "          sarif-directory: ${{ runner.temp }}/missing",
     ],
     [
-      ".github/workflows/zizmor.yml",
-      "            --no-ignores \\",
-      "            --no-exit-codes \\",
-    ],
-    [
       ".github/workflows/pages.yml",
       "          path: site",
       "          path: .",
@@ -340,6 +335,62 @@ test("critical actions, inputs, paths, and failure propagation stay exact", () =
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/checkout@0000000000000000000000000000000000000000",
   );
+});
+
+test("the Zizmor policy baseline cannot be removed, redirected, or weakened", () => {
+  const path = ".github/workflows/zizmor.yml";
+  for (const [before, after] of [
+    [
+      "  workflow_call:\n  push:",
+      "  workflow_call:\n    inputs:\n      bypass:\n        type: boolean\n  push:",
+    ],
+    [
+      "      - name: Resolve immutable Zizmor policy snapshots",
+      "      - name: Skip immutable Zizmor policy snapshots",
+    ],
+    [
+      "      - name: Validate immutable Zizmor policy baseline",
+      "      - name: Skip immutable Zizmor policy baseline",
+    ],
+    [
+      "          ref: ${{ steps.policy.outputs.candidate_sha }}",
+      "          ref: ${{ github.sha }}",
+    ],
+    [
+      "          ref: ${{ steps.policy.outputs.base_sha }}",
+      "          ref: ${{ github.sha }}",
+    ],
+    ["          path: .lcv-audit-target", "          path: .lcv-audit-other"],
+    ["          path: .lcv-audit-base", "          path: .lcv-audit-other"],
+    [
+      "            .github/zizmor/policy-baselines.v1.json",
+      "            .github/zizmor/missing.json",
+    ],
+    [
+      "            scripts/zizmor-policy-baseline.mjs",
+      "            scripts/missing-policy.mjs",
+    ],
+    [
+      "          node .lcv-zizmor-tooling/scripts/zizmor-policy-baseline.mjs validate \\",
+      "          echo baseline-skipped \\",
+    ],
+    [
+      "            --offline \\",
+      "            --config=/tmp/untrusted.yml \\\n" +
+        "            --no-ignores \\\n" +
+        "            --offline \\",
+    ],
+    [
+      "      security-events: write # Upload the SARIF to GitHub code scanning.",
+      "      security-events: write # Upload the SARIF to GitHub code scanning.\n      id-token: write",
+    ],
+    [
+      "jobs:\n  zizmor:",
+      "jobs:\n  impostor: { runs-on: ubuntu-latest, steps: [] }\n  zizmor:",
+    ],
+  ]) {
+    rejectsMutation(path, before, after);
+  }
 });
 
 test("the two independent workflows must keep invoking and policing the contract", () => {

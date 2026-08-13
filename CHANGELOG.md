@@ -11,7 +11,7 @@ published to any registry — the Worker is deployed from this repository's sour
 `wrangler deploy`, and that field does not gate, tag or name any deployment.
 
 Two **components** hosted here are released under numbers, and their history is their tags, not this
-file: the reusable Zizmor workflow (`zizmor/v2.2.0` at the time of writing) and the CodeQL SARIF gate
+file: the reusable Zizmor workflow (`zizmor/v2.3.0` at the time of writing) and the CodeQL SARIF gate
 action (`codeql-sarif-gate/v1.0.0`). **External** consumers pin them by commit SHA, so for those a
 change takes effect only once a new tag is cut and the pin is bumped. Inside this repository the
 consumption is local and immediate: `.github/workflows/codeql.yml:60` invokes the gate as
@@ -24,6 +24,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) as f
 an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC−03:00), the
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
+
+## 13/08/2026 — Zizmor consumer policy recovery
+
+### Fixed
+
+- Restored each consumer's reviewed Zizmor policy after `zizmor/v2.2.0`
+  replaced it with a central configuration and disabled all ignores. The
+  reusable workflow now validates both the base and candidate Git snapshots
+  against a central, versioned allowlist of exact repository paths, file modes
+  and blob SHAs before allowing local configuration or inline ignores to take
+  effect. Alternative config names, unreviewed ignore comments, changed blobs,
+  symlinks and case-colliding paths fail closed. The digest-pinned Zizmor
+  runtime, offline analysis, SARIF upload and zero-active-finding enforcement
+  remain unchanged. This contract is released as `zizmor/v2.3.0`; existing
+  component tags remain immutable. Evidence: #189.
 
 ## 13/08/2026 — Slack build dependency remediation
 

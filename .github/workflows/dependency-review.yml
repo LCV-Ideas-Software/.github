@@ -37,6 +37,8 @@ jobs:
         run: node --test scripts/required-contexts-policy.test.mjs
       - name: Validate all required context contracts
         run: node scripts/required-contexts-policy.mjs
+      - name: Test immutable Zizmor policy baseline
+        run: node --test scripts/zizmor-policy-baseline.test.mjs
       - name: Test Dependency Review workflow contract
         run: node --test scripts/dependency-review-workflow.test.mjs
       - name: Test GitHub Actions pin auditor

@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    {
+      "repository": "LCV-Ideas-Software/.github",
+      "files": [
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["2c85dc8eec5619ea20c4a7a0d440ef8f9773bf58"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/.github-private",
+      "files": [
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["fd6fb4c0c820c02c9f66d6d76826150079e918e9"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/admin-app",
+      "files": [
+        {
+          "path": ".github/workflows/deploy.yml",
+          "mode": "100644",
+          "blob_shas": ["81dc018a481d24b77979cf0b9a43448a10bdfb12"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/astrologo-app",
+      "files": [
+        {
+          "path": ".github/workflows/deploy.yml",
+          "mode": "100644",
+          "blob_shas": ["897e51646cd05bbdf0d0cb42986b5287d5ee26d8"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/calculadora-app",
+      "files": [
+        {
+          "path": ".github/workflows/deploy.yml",
+          "mode": "100644",
+          "blob_shas": ["7e11f7748fa6841d0abb6b517989d2fb0f582973"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/cross-review",
+      "files": [
+        {
+          "path": ".github/actions/setup-npm-toolchain/action.yml",
+          "mode": "100644",
+          "blob_shas": ["71755d5eee03cf1ab262f88e81e39b1ea684f64e"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/auto-tag.yml",
+          "mode": "100644",
+          "blob_shas": ["e1ad88f29010bbdb11165c2ee9402e9d9533ed34"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/workflows/publish.yml",
+          "mode": "100644",
+          "blob_shas": ["68d8000827a5a046df1a3e82c2f493d04a388b1e"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["c84af5940e9e2139dbef3e80a1556da415df9bbf"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/maestro-app",
+      "files": [
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/mainsite-app",
+      "files": [
+        {
+          "path": ".github/workflows/deploy.yml",
+          "mode": "100644",
+          "blob_shas": ["18692a333b411994d70801464cc5c910733df68a"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/mtasts-motor",
+      "files": [
+        {
+          "path": ".github/workflows/deploy.yml",
+          "mode": "100644",
+          "blob_shas": ["b12dbccaf764f7da22cd9fb2d7fde07bd8f33b2b"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/oraculo-financeiro",
+      "files": [
+        {
+          "path": ".github/workflows/deploy.yml",
+          "mode": "100644",
+          "blob_shas": ["7411beda8ab8dd02c7ad4d1b5b685002724a5f94"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/sponsor-motor",
+      "files": [
+        {
+          "path": ".github/workflows/deploy.yml",
+          "mode": "100644",
+          "blob_shas": ["42af956810e8f56636d6c9d1ed52f75f2887ef12"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "kind": "config"
+        }
+      ]
+    },
+    {
+      "repository": "LCV-Ideas-Software/ultrabrain-mcp",
+      "files": [
+        {
+          "path": ".github/actions/setup-npm-toolchain/action.yml",
+          "mode": "100644",
+          "blob_shas": ["71755d5eee03cf1ab262f88e81e39b1ea684f64e"],
+          "kind": "inline-ignore"
+        },
+        {
+          "path": ".github/workflows/auto-tag.yml",
+          "mode": "100644",
+          "blob_shas": ["c3b3c6df1e090d6395e523a238de7b95af8eed4c"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/workflows/native-auto-merge.yml",
+          "mode": "100644",
+          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
+          "kind": "config-ignore-target"
+        },
+        {
+          "path": ".github/zizmor.yml",
+          "mode": "100644",
+          "blob_shas": ["2852869657da97086792d1482537f1380a752403"],
+          "kind": "config"
+        }
+      ]
+    }
+  ]
+}
