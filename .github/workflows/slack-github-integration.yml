@@ -96,7 +96,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 320
     environment: slack-production
     steps:
       - name: Checkout repository without persisted credentials

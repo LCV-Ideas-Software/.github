@@ -21,6 +21,7 @@ import type {
   SlackProgressResult,
   SlackTraceReconciliation,
   SlackTraceRecordResult,
+  SlackReconciliationReportResult,
 } from "../src/store";
 
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
@@ -82,16 +83,26 @@ class ReconciliationPersistenceFailureStore extends MemoryDeliveryStore {
   }
 }
 
-class CheckpointResponseLossStore extends MemoryDeliveryStore {
+class ReconciliationFinalizeResponseLossStore extends MemoryDeliveryStore {
   #loseFirstResponse = true;
 
-  override async advanceSlackActivityCheckpoint(
+  override async finalizeSlackReconciliationReport(
+    reportId: string,
+    traceCount: number,
+    errorTraceIds: readonly string[],
     checkpointUs: number,
-  ): Promise<number> {
-    const result = await super.advanceSlackActivityCheckpoint(checkpointUs);
+    now: number,
+  ): Promise<SlackReconciliationReportResult> {
+    const result = await super.finalizeSlackReconciliationReport(
+      reportId,
+      traceCount,
+      errorTraceIds,
+      checkpointUs,
+      now,
+    );
     if (this.#loseFirstResponse) {
       this.#loseFirstResponse = false;
-      throw new Error("simulated_d1_response_loss_after_checkpoint_write");
+      throw new Error("simulated_d1_response_loss_after_report_commit");
     }
     return result;
   }
@@ -583,6 +594,56 @@ describe("authenticated Slack delivery proof", () => {
 });
 
 describe("fail-closed Slack trace reconciliation", () => {
+  it("accepts at most 25 traces in both reconciliation protocol parsers", async () => {
+    const store = new MemoryDeliveryStore();
+    const env = makeEnv(new FakeQueue());
+    const traces = Array.from({ length: 26 }, (_, index) => {
+      const suffix = String(index + 1).padStart(2, "0");
+      const deliveryId = `trace-report-limit-${suffix}`;
+      store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
+      return {
+        trace_id: `TrReportLimit${suffix}`,
+        delivery_id: deliveryId,
+        outcome: "pending" as const,
+        relay_attempt: "1",
+        send_execution_id: null,
+        slack_channel_id: null,
+        slack_message_ts: null,
+        send_boundary_reached: false,
+        pre_send_failure_proven: false,
+        started_at_us: NOW * 1_000 - index,
+        completed_at_us: null,
+      };
+    });
+    const accepted = {
+      checkpoint_us: NOW * 1_000,
+      report_timestamp: NOW_SECONDS,
+      traces: traces.slice(0, 25),
+    };
+    const acceptedResponse = await handleFetch(
+      await reconciliationRequest(accepted),
+      env,
+      { store, now: () => NOW },
+    );
+    expect(acceptedResponse.status).toBe(200);
+    expect(await acceptedResponse.json()).toMatchObject({ traces: 25 });
+    expect(store.slackTraces.size).toBe(25);
+
+    const oversized = { ...accepted, traces };
+    for (const request of [
+      await reconciliationRequest(oversized),
+      await reconciliationRequestV2(oversized),
+    ]) {
+      const response = await handleFetch(request, env, {
+        store,
+        now: () => NOW,
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "invalid_request" });
+    }
+    expect(store.slackTraces.size).toBe(25);
+  });
+
   it("derives the owner from the authenticated send execution and records live Slack message evidence", async () => {
     const store = new MemoryDeliveryStore();
     const queue = new FakeQueue();
@@ -862,8 +923,20 @@ describe("fail-closed Slack trace reconciliation", () => {
       now: () => NOW + 1,
     });
     expect(replay.status).toBe(200);
-    expect(await replay.json()).toMatchObject({ changed_error_traces: 0 });
+    expect(await replay.json()).toMatchObject({ changed_error_traces: 1 });
     expect(store.deliveries.get("trace-safe-retry")?.status).toBe("queued");
+
+    const laterReport = {
+      ...report,
+      report_timestamp: String(Number.parseInt(NOW_SECONDS, 10) + 1),
+    };
+    const overlap = await handleFetch(
+      await reconciliationRequest(laterReport),
+      env,
+      { store, now: () => NOW + 1_000 },
+    );
+    expect(overlap.status).toBe(200);
+    expect(await overlap.json()).toMatchObject({ changed_error_traces: 0 });
   });
 
   it("never lets a stale pre-send claim override a persisted send boundary", async () => {
@@ -1271,7 +1344,11 @@ describe("fail-closed Slack trace reconciliation", () => {
     const queue = new FakeQueue();
     const env = makeEnv(queue);
     const deliveryId = "trace-reconciliation-response-loss";
+    const secondDeliveryId = "trace-reconciliation-response-loss-second";
     store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
+    store.seed(secondDeliveryId, "accepted_by_trigger", NOW, {
+      attemptCount: 1,
+    });
     store.slackActivityCheckpoint = NOW * 1_000 - 100;
     const report = {
       checkpoint_us: NOW * 1_000,
@@ -1287,6 +1364,19 @@ describe("fail-closed Slack trace reconciliation", () => {
           started_at_us: NOW * 1_000 - 1,
           completed_at_us: NOW * 1_000,
         },
+        {
+          trace_id: "TrReconciliationResponseLoss2",
+          delivery_id: secondDeliveryId,
+          outcome: "error" as const,
+          relay_attempt: "1",
+          send_execution_id: "FxDeliveryProofTrace2",
+          slack_channel_id: null,
+          slack_message_ts: null,
+          send_boundary_reached: false,
+          pre_send_failure_proven: true,
+          started_at_us: NOW * 1_000 - 1,
+          completed_at_us: NOW * 1_000,
+        },
       ],
     };
 
@@ -1297,13 +1387,19 @@ describe("fail-closed Slack trace reconciliation", () => {
     expect(first.status).toBe(503);
     expect(await first.json()).toEqual({ error: "persistence_unavailable" });
     expect(store.slackActivityCheckpoint).toBe(NOW * 1_000 - 100);
+    expect(store.slackTraces.size).toBe(1);
 
     const replay = await handleFetch(await reconciliationRequest(report), env, {
       store,
       now: () => NOW + 1,
     });
     expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ changed_error_traces: 2 });
     expect(store.deliveries.get(deliveryId)).toMatchObject({
+      status: "pending",
+      lastError: "slack_workflow_failed_before_send_boundary",
+    });
+    expect(store.deliveries.get(secondDeliveryId)).toMatchObject({
       status: "pending",
       lastError: "slack_workflow_failed_before_send_boundary",
     });
@@ -1338,8 +1434,8 @@ describe("fail-closed Slack trace reconciliation", () => {
     expect(await response.json()).toEqual({ error: "persistence_unavailable" });
   });
 
-  it("retries a lost checkpoint response without reapplying trace effects", async () => {
-    const store = new CheckpointResponseLossStore();
+  it("replays the journal after a lost finalization response without reapplying trace effects", async () => {
+    const store = new ReconciliationFinalizeResponseLossStore();
     const queue = new FakeQueue();
     const env = makeEnv(queue);
     const deliveryId = "trace-checkpoint-response-loss";
@@ -1368,12 +1464,14 @@ describe("fail-closed Slack trace reconciliation", () => {
     });
     expect(first.status).toBe(503);
     expect(await first.json()).toEqual({ error: "persistence_unavailable" });
+    expect(store.slackActivityCheckpoint).toBe(NOW * 1_000);
 
     const replay = await handleFetch(await reconciliationRequest(report), env, {
       store,
       now: () => NOW + 1,
     });
     expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ changed_error_traces: 1 });
     expect(store.deliveries.get(deliveryId)).toMatchObject({
       status: "pending",
       lastError: "slack_workflow_failed_before_send_boundary",

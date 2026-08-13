@@ -201,7 +201,7 @@ Five Secrets Store entries are bound to the Worker:
 | `SLACK_ALERTS_WORKFLOW_WEBHOOK_URL`   | `github-slack-alerts-workflow-url`       | Invoke the alerts trigger.                                    |
 | `SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL` | `github-slack-activity-workflow-url`     | Invoke the activity trigger.                                  |
 | `SLACK_RELAY_SIGNING_SECRET`          | `github-slack-relay-signing-secret`      | Old signer retained for in-flight verification during expand. |
-| `SLACK_RELAY_SIGNING_SECRET_NEXT`     | `github-slack-relay-signing-secret-next` | Signer selected by `SLACK_RELAY_SIGNING_ACTIVE_SLOT=next`.     |
+| `SLACK_RELAY_SIGNING_SECRET_NEXT`     | `github-slack-relay-signing-secret-next` | Signer selected by `SLACK_RELAY_SIGNING_ACTIVE_SLOT=next`.    |
 
 The two trigger URLs are bearer credentials. They must be entered through an
 interactive prompt, never through `--value`, a repository file, a GitHub
@@ -312,7 +312,7 @@ The production policy is therefore:
 4. Enter each returned trigger URL directly into its Cloudflare Secrets Store
    entry through an interactive prompt.
 5. Verify a signed event through each destination before bootstrap is
-considered complete.
+   considered complete.
 
 Normal `slack deploy` runs must not implicitly create, update, delete or print
 triggers. The workflow uses `--hide-triggers`, so source deployment updates
@@ -527,7 +527,7 @@ ingestion therefore requires an intentional webhook action as well.
   controller, Worker, and Slack app formatting, lint, types, tests and candidate
   dependency audit in the same required predecessor. When production automation
   is enabled, the dependent `prove_remote_d1` job first applies migrations
-  `0001` through `0006`, exercises the seal guards, and cleans up an owned
+  `0001` through `0007`, exercises the seal guards, and cleans up an owned
   disposable remote D1. Only after both jobs succeed does production apply
   pending D1 migrations. Migration
   `0006_seal_slack_delivery_protocol.sql` validates the exact historical
@@ -555,11 +555,15 @@ ingestion therefore requires an intentional webhook action as well.
   failure. The same protected GitHub secret is
   supplied to both jobs only as the source for runtime `NEXT`; the old hosted
   current value is never available to Actions.
-  The monitor job has a four-hour bound: this covers the calculated worst case
-  for its 100 pages, one bounded `Retry-After` retry per page, checkpoint and 100
-  bounded reconciliation chunks, plus 30 minutes for setup and local processing.
-  It normally completes in seconds; the larger cap prevents Slack throttling from
-  killing every run before any durable reconciliation can be posted.
+  The monitor job has a 320-minute bound: this covers the calculated 283-minute
+  and 30-second network worst case for its 100 pages, one bounded `Retry-After`
+  retry per page, a 10-second checkpoint request and up to 400 reconciliation
+  chunks of 25 traces. Each report has a 15-second deadline and one byte-exact
+  replay after a transport failure, HTTP 408, any 5xx, or invalid JSON, bounded
+  to 5 seconds, plus more than 30 minutes for
+  setup and local processing. It normally completes in seconds; the
+  larger cap prevents Slack throttling from killing every run before durable
+  reconciliation completes while still bounding each relay phase independently.
   Every deployed revision must observe the same sealed historical anchor. The
   current `WORKER_VERSION.tag` remains required as lowercase 40-character
   provenance, but it is not substituted for the immutable activation revision.
@@ -743,9 +747,17 @@ Monitoring and recovery are layered:
   explicit signed-validator-failure proof bit, channel/message evidence, and
   microsecond timestamps leave the
   monitor. The complete activities
-  collection and private step inputs are never logged or posted to D1. The
-  watermark advances only after every page and normalized trace is durably
-  accepted;
+  collection and private step inputs are never logged or posted to D1. Reports
+  contain at most 25 traces. Trace mutations remain individually idempotent; one
+  D1 batch then atomically commits the report's novel terminal-error receipts,
+  clamped checkpoint and immutable response journal. Replaying the same signed
+  body after a lost HTTP response returns its original result, while a later
+  overlapping report cannot announce the same error again. Migration `0007`
+  deliberately infers no receipt for historical errors: only an authenticated
+  post-migration report establishes novelty. Per-trace receipts follow their
+  traces. Replay journals become eligible for deletion after 24 hours and are
+  removed by the next finalized report. The watermark advances only after
+  every page and normalized trace is durably accepted;
 - the operator can inspect richer hosted logs with `slack activity`;
 - `.github/workflows/github-slack-webhook-redelivery.yml` scans the organization
   webhook every 15 minutes after a GET-only exact-configuration/active-state
@@ -831,7 +843,17 @@ then validates that exact production tuple transactionally, changes only
 `confirmation_open` from `1` to `0`, removes the transitional activation
 triggers and installs permanent update, insert and delete guards. The historical
 revision is deliberately preserved and cannot be rewritten to a later deployed
-SHA. There is no downgrade, replacement or reopening path.
+SHA. There is no downgrade, replacement or reopening path. Migration
+`0007_journal_slack_reconciliation_reports.sql` adds per-trace novelty receipts
+without fabricating a historical acknowledgement and stores the exact result
+of each authenticated report. Trace updates remain individually
+idempotent; only novel-error reservation, checkpoint clamping and response
+journaling finalize atomically in one D1 batch. The HMAC `report_signature` is
+the immutable report ID, so an identical replay recovers its original result.
+Report journals become eligible for deletion after 24 hours, beyond request
+freshness, and the next finalized report removes them; receipts remain tied to
+trace retention. If reconciliation stops, no new journal is created and the
+existing rows remain until processing resumes.
 An observed successful Slack trace for one of the ordinary legacy rows may
 attach its trace ID, but it remains `accepted_by_slack` with
 `legacy_unverified = 1`; it does not become readiness-blocking
@@ -982,12 +1004,16 @@ GitHub.
 - [Cloudflare Workers best practices][cloudflare-workers]
 - [Cloudflare Queues dead-letter queues][cloudflare-dlq]
 - [Cloudflare D1 migrations][cloudflare-d1]
+- [Cloudflare D1 batch transactions][cloudflare-d1-batch]
 - [Cloudflare Secrets Store bindings][cloudflare-secrets]
+- [Cloudflare Smart Placement][cloudflare-placement]
 - [Deno configuration and import maps][deno-config]
 - [Slack CLI hook contract][slack-hooks]
 
 [cloudflare-d1]: https://developers.cloudflare.com/d1/reference/migrations/
+[cloudflare-d1-batch]: https://developers.cloudflare.com/d1/worker-api/d1-database/#batch
 [cloudflare-dlq]: https://developers.cloudflare.com/queues/configuration/dead-letter-queues/
+[cloudflare-placement]: https://developers.cloudflare.com/workers/configuration/placement/
 [cloudflare-secrets]: https://developers.cloudflare.com/secrets-store/integrations/workers/
 [cloudflare-workers]: https://developers.cloudflare.com/workers/best-practices/workers-best-practices/
 [deno-config]: https://docs.deno.com/runtime/reference/deno_json/#dependencies

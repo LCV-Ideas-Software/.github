@@ -25,6 +25,21 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 13/08/2026 — Slack reconciliation locality and replay safety
+
+### Fixed
+
+- Addresses the cross-region timeout failure behind scheduled Slack monitor run
+  #450. The relay now uses Cloudflare Smart Placement, monitor reports are
+  bounded to 25 traces with phase-specific deadlines, and the workflow timeout
+  covers the calculated throttling worst case. D1 transactionally finalizes
+  novel error receipts, its clamped activity checkpoint and an immutable
+  response journal, so an ambiguous HTTP response can be replayed without
+  losing or duplicating an error observation. The migration does not fabricate
+  historical error receipts. Replay journals become eligible for deletion
+  after 24 hours and are removed by the next finalized report.
+  Evidence: #192.
+
 ## 13/08/2026 — Slack esbuild dependency maintenance
 
 ### Security

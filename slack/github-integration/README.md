@@ -41,6 +41,12 @@ paginated monitor later associates Slack's actual `trace_id`. If the
 post-message receipt is unavailable, the workflow fails and the relay keeps the
 row for manual review without resending the GitHub event.
 
+The monitor posts at most 25 normalized traces per authenticated report. Its
+checkpoint and report phases have separate 10-second and 15-second deadlines. If
+the relay commits D1 finalization but the response is lost, or returns HTTP 408,
+a 5xx or invalid JSON, one replay of the identical signed report returns the
+journaled error count and checkpoint; it does not repeat an error observation.
+
 The relay signs its current D1 attempt into the workflow. At the send-boundary
 callback, D1 atomically leases that attempt to Slack's
 `event.function_execution_id`: a retry from the same function execution can
@@ -84,7 +90,11 @@ job deploys the Slack app, updates both existing protected trigger IDs in place
 from their versioned definitions without printing the CLI response, and verifies
 the exact protected trigger inventory. The temporary HMAC activator and
 `/slack/protocol/activate` route have been removed; there is no public protocol
-mutation or delivery-recovery path.
+mutation or delivery-recovery path. Migration
+`0007_journal_slack_reconciliation_reports.sql` adds the response journal
+without inferring historical error receipts or altering the sealed activation
+tuple. Journals become eligible for deletion after 24 hours and the next
+finalized report removes them.
 
 The manifest therefore allows outbound HTTPS only to
 `github-slack-alerts.lcv.workers.dev`. The progress function retries the same

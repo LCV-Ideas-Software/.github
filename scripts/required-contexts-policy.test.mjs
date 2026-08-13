@@ -20,9 +20,8 @@ function mutated(path, before, after) {
 }
 
 function rejectsMutation(path, before, after) {
-  assert.throws(() =>
-    validateRequiredContextPolicy(mutated(path, before, after)),
-  );
+  const candidate = mutated(path, before, after);
+  assert.throws(() => validateRequiredContextPolicy(candidate));
 }
 
 test("the current seven required contexts satisfy one canonical contract", () => {
@@ -37,10 +36,23 @@ test("the relay required context pins NEXT as the expanded runtime signer", () =
   );
 });
 
+test("the relay cannot lose Smart Placement for its D1 reconciliation path", () => {
+  rejectsMutation(
+    "workers/github-slack-relay/wrangler.jsonc",
+    '  "placement": {\n    "mode": "smart",\n  },\n',
+    "",
+  );
+  rejectsMutation(
+    "workers/github-slack-relay/wrangler.jsonc",
+    '"mode": "smart"',
+    '"mode": "off"',
+  );
+});
+
 test("the privileged Slack monitor job cannot lose its bounded execution budget", () => {
   rejectsMutation(
     ".github/workflows/slack-github-integration.yml",
-    "    timeout-minutes: 240",
+    "    timeout-minutes: 320",
     "    timeout-minutes: 5",
   );
 });
@@ -136,8 +148,8 @@ test("the privileged relay DAG cannot bypass or drift from its required predeces
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
-    '            --trigger-id "$ACTIVITY_TRIGGER_ID" \\\n+            --trigger-def triggers/github_activity_webhook.ts \\',
-    '            --trigger-id "$ALERT_TRIGGER_ID" \\\n+            --trigger-def triggers/github_activity_webhook.ts \\',
+    '            --trigger-id "$ACTIVITY_TRIGGER_ID" \\\n            --trigger-def triggers/github_activity_webhook.ts \\',
+    '            --trigger-id "$ALERT_TRIGGER_ID" \\\n            --trigger-def triggers/github_activity_webhook.ts \\',
   );
   rejectsMutation(
     ".github/workflows/github-slack-integration.yml",
@@ -202,7 +214,7 @@ test("job names and job-level conditions cannot turn required checks green by sk
     ],
     [
       ".github/workflows/slack-github-integration.yml",
-      "    if: github.event_name != 'schedule' || github.event.schedule == '17 7 * * *'",
+      "    if: >-\n      github.event_name != 'schedule' ||\n      github.event.schedule == '17 7 * * *'",
       "    if: false",
     ],
   ];

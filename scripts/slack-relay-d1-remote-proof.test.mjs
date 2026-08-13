@@ -55,6 +55,12 @@ import {
   SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
 } from "./slack-delivery-protocol-contract.mjs";
 import { SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS } from "../workers/github-slack-relay/src/slack-delivery-protocol-guards.ts";
+import {
+  SLACK_RECONCILIATION_REPORT_ERRORS_REPORT_INDEX_SQL,
+  SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
+  SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL,
+  SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+} from "../workers/github-slack-relay/src/slack-reconciliation-schema-contract.ts";
 
 const expandMigrationPath =
   "workers/github-slack-relay/migrations/0004_confirm_slack_delivery.sql";
@@ -72,6 +78,257 @@ const sealedGuardSql = Object.fromEntries(
     schemaSql,
   ]),
 );
+const schemaProofConfiguration = Object.freeze({ marker: "configuration" });
+const schemaProofDatabaseId = "11111111-2222-4333-8444-555555555555";
+
+function createPostSealSchemaDatabase() {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(
+      "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+    );
+    for (const migration of [
+      "0001_initial.sql",
+      "0002_add_destination.sql",
+      "0003_rename_delivery_acceptance.sql",
+      "0004_confirm_slack_delivery.sql",
+      "0005_reconcile_live_slack_receipts.sql",
+    ]) {
+      database.exec(
+        readFileSync(`${migrationsDirectory}/${migration}`, "utf8"),
+      );
+    }
+    database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_delivery_protocol_active = 1,
+             slack_delivery_protocol_revision = ?,
+             slack_delivery_protocol_activated_at = ?,
+             slack_delivery_protocol_activation_id = ?,
+             slack_delivery_protocol_schema_revision = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(
+        SEALED_PROTOCOL_REVISION,
+        SEALED_PROTOCOL_ACTIVATED_AT,
+        SEALED_PROTOCOL_ACTIVATION_ID,
+        SEALED_PROTOCOL_SCHEMA_REVISION,
+      );
+    database.exec(readFileSync(sealMigrationPath, "utf8"));
+    database.exec(
+      readFileSync(
+        `${migrationsDirectory}/0007_journal_slack_reconciliation_reports.sql`,
+        "utf8",
+      ),
+    );
+    return database;
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
+function localSchemaQuery(database) {
+  return async (_configuration, _databaseId, sql) => ({
+    results: database.prepare(sql).all(),
+  });
+}
+
+async function proveLocalSchemaInventory(database) {
+  await proveSchemaInventory(
+    schemaProofConfiguration,
+    schemaProofDatabaseId,
+    localSchemaQuery(database),
+  );
+}
+
+function replaceExactSchemaFragment(source, before, after = "") {
+  const fragments = source.split(before);
+  assert.equal(
+    fragments.length,
+    2,
+    `expected exactly one canonical schema fragment: ${before}`,
+  );
+  return `${fragments[0]}${after}${fragments[1]}`;
+}
+
+function replaceReconciliationSchema(
+  database,
+  {
+    reportSql = SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+    reportErrorSql = SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
+  },
+) {
+  database.exec(`
+    DROP INDEX idx_slack_reconciliation_report_errors_report;
+    DROP TABLE slack_reconciliation_report_errors;
+    DROP INDEX idx_slack_reconciliation_reports_completed;
+    DROP TABLE slack_reconciliation_reports;
+    ${reportSql};
+    ${SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL};
+    ${reportErrorSql};
+    ${SLACK_RECONCILIATION_REPORT_ERRORS_REPORT_INDEX_SQL};
+  `);
+}
+
+const reconciliationSchemaMutations = [
+  {
+    name: "the report identifier length predicate is missing",
+    reportSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+      "    length(report_id) = 64\n    AND ",
+      "    ",
+    ),
+  },
+  {
+    name: "the report identifier hexadecimal predicate is missing",
+    reportSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+      "\n    AND report_id NOT GLOB '*[^0-9a-f]*'",
+    ),
+  },
+  {
+    name: "the report trace-count predicate is missing",
+    reportSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+      " CHECK (trace_count BETWEEN 0 AND 25)",
+    ),
+  },
+  {
+    name: "the changed-error bound predicate is missing",
+    reportSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+      " CHECK (\n    changed_error_traces BETWEEN 0 AND trace_count\n  )",
+    ),
+  },
+  {
+    name: "the requested-checkpoint predicate is missing",
+    reportSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+      " CHECK (requested_checkpoint_us >= 0)",
+    ),
+  },
+  {
+    name: "the committed-checkpoint bound predicate is missing",
+    reportSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+      " CHECK (\n    checkpoint_us BETWEEN 0 AND requested_checkpoint_us\n  )",
+    ),
+  },
+  {
+    name: "the report completion-time predicate is missing",
+    reportSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+      " CHECK (completed_at > 0)",
+    ),
+  },
+  {
+    name: "the error-receipt report identifier length predicate is missing",
+    reportErrorSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
+      "    length(report_id) = 64\n    AND ",
+      "    ",
+    ),
+  },
+  {
+    name: "the error-receipt report identifier hexadecimal predicate is missing",
+    reportErrorSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
+      "\n    AND report_id NOT GLOB '*[^0-9a-f]*'",
+    ),
+  },
+  {
+    name: "the error-receipt commit-time predicate is missing",
+    reportErrorSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
+      " CHECK (committed_at > 0)",
+    ),
+  },
+  {
+    expectedFailure: /Slack reconciliation foreign-key inventory/u,
+    name: "the error receipt gains an unreviewed report foreign key",
+    reportErrorSql: replaceExactSchemaFragment(
+      SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
+      "  report_id TEXT NOT NULL CHECK (",
+      `  report_id TEXT NOT NULL
+    REFERENCES slack_reconciliation_reports(report_id) CHECK (`,
+    ),
+  },
+];
+
+const reconciliationInventoryMutations = [
+  {
+    expectedFailure: /Slack reconciliation index inventory/u,
+    name: "the reviewed report index becomes compound",
+    mutate(database) {
+      database.exec(`
+        DROP INDEX idx_slack_reconciliation_reports_completed;
+        CREATE INDEX idx_slack_reconciliation_reports_completed
+          ON slack_reconciliation_reports (completed_at, report_id);
+      `);
+    },
+  },
+  {
+    expectedFailure: /Slack reconciliation index inventory/u,
+    name: "the reviewed report index becomes partial",
+    mutate(database) {
+      database.exec(`
+        DROP INDEX idx_slack_reconciliation_reports_completed;
+        CREATE INDEX idx_slack_reconciliation_reports_completed
+          ON slack_reconciliation_reports (completed_at)
+          WHERE completed_at > 0;
+      `);
+    },
+  },
+  {
+    expectedFailure: /Schema inventory/u,
+    name: "the reviewed report index is renamed",
+    mutate(database) {
+      database.exec(`
+        DROP INDEX idx_slack_reconciliation_reports_completed;
+        CREATE INDEX idx_unreviewed_slack_reconciliation_reports_completed
+          ON slack_reconciliation_reports (completed_at);
+      `);
+    },
+  },
+  {
+    expectedFailure: /Schema inventory/u,
+    name: "an unreviewed trigger is attached to the journal",
+    mutate(database) {
+      database.exec(`
+        CREATE TRIGGER unreviewed_slack_reconciliation_report_trigger
+        AFTER INSERT ON slack_reconciliation_reports
+        BEGIN
+          SELECT 1;
+        END;
+      `);
+    },
+  },
+  {
+    expectedFailure: /Slack reconciliation index inventory/u,
+    name: "an implicit autoindex is added to the journal",
+    mutate(database) {
+      const reportSql = replaceExactSchemaFragment(
+        SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+        "  completed_at INTEGER NOT NULL CHECK (completed_at > 0)\n)",
+        "  completed_at INTEGER NOT NULL CHECK (completed_at > 0),\n  UNIQUE (completed_at)\n)",
+      );
+      replaceReconciliationSchema(database, { reportSql });
+    },
+  },
+  {
+    expectedFailure: /Slack reconciliation schema-object inventory/u,
+    name: "canonical journal DDL whitespace drifts",
+    mutate(database) {
+      const reportSql = replaceExactSchemaFragment(
+        SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+        "  trace_count INTEGER NOT NULL",
+        "   trace_count INTEGER NOT NULL",
+      );
+      replaceReconciliationSchema(database, { reportSql });
+    },
+  },
+];
 
 test("the remote D1 migration avoids known server-side parser and pattern limits", () => {
   const expandMigration = readFileSync(expandMigrationPath, "utf8");
@@ -84,9 +341,7 @@ test("the remote D1 migration avoids known server-side parser and pattern limits
   assert.doesNotMatch(allMigrations, /\bSELECT\s+CASE\b/iu);
   assert.equal(expandMigration.match(/\bSELECT\s+\(CASE\b/giu)?.length, 2);
   assert.equal(
-    targetMigration.match(
-      /afe5250504d37543845b07f44af7bfc30a548feb/gu,
-    )?.length,
+    targetMigration.match(/afe5250504d37543845b07f44af7bfc30a548feb/gu)?.length,
     1,
   );
   assert.match(
@@ -127,7 +382,9 @@ test("the disposable proof dynamically includes every production migration", () 
   assert.deepEqual(plan.sourceNames, currentNames.slice(0, sealIndex));
   assert.ok(!plan.preNames.includes("0004_confirm_slack_delivery.sql"));
   assert.ok(plan.sourceNames.includes("0004_confirm_slack_delivery.sql"));
-  assert.ok(plan.sourceNames.includes("0005_reconcile_live_slack_receipts.sql"));
+  assert.ok(
+    plan.sourceNames.includes("0005_reconcile_live_slack_receipts.sql"),
+  );
   assert.ok(!plan.sourceNames.includes(SEALED_PROTOCOL_MIGRATION));
   assert.ok(!plan.preNames.includes(futureName));
   assert.ok(!plan.sourceNames.includes(futureName));
@@ -158,7 +415,10 @@ test("the disposable proof validates the exact sealed production contract row", 
     SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
     /relay_state_guard_trigger_count/u,
   );
-  assert.match(SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL, /transient_guard_trigger_count/u);
+  assert.match(
+    SLACK_DELIVERY_PROTOCOL_CONTRACT_SQL,
+    /transient_guard_trigger_count/u,
+  );
 });
 
 test("the production-parity proof executes and validates the canonical sealed query", async () => {
@@ -217,7 +477,9 @@ test("the sealed contract postflight runs after migration 0006 in local SQLite",
       "0004_confirm_slack_delivery.sql",
       "0005_reconcile_live_slack_receipts.sql",
     ]) {
-      database.exec(readFileSync(`${migrationsDirectory}/${migration}`, "utf8"));
+      database.exec(
+        readFileSync(`${migrationsDirectory}/${migration}`, "utf8"),
+      );
       database
         .prepare("INSERT INTO d1_migrations (name) VALUES (?)")
         .run(migration);
@@ -309,51 +571,69 @@ test("migration 0005 rejects duplicate source owners before the irreversible sea
 });
 
 test("the exact post-seal schema inventory is executable before merge", async () => {
-  const database = new DatabaseSync(":memory:");
+  const database = createPostSealSchemaDatabase();
   try {
-    database.exec(
-      "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
-    );
-    for (const migration of [
-      "0001_initial.sql",
-      "0002_add_destination.sql",
-      "0003_rename_delivery_acceptance.sql",
-      "0004_confirm_slack_delivery.sql",
-      "0005_reconcile_live_slack_receipts.sql",
-    ]) {
-      database.exec(
-        readFileSync(`${migrationsDirectory}/${migration}`, "utf8"),
-      );
-    }
-    database
-      .prepare(
-        `UPDATE relay_state
-         SET slack_delivery_protocol_active = 1,
-             slack_delivery_protocol_revision = ?,
-             slack_delivery_protocol_activated_at = ?,
-             slack_delivery_protocol_activation_id = ?,
-             slack_delivery_protocol_schema_revision = ?
-         WHERE singleton_id = 1`,
-      )
-      .run(
-        SEALED_PROTOCOL_REVISION,
-        SEALED_PROTOCOL_ACTIVATED_AT,
-        SEALED_PROTOCOL_ACTIVATION_ID,
-        SEALED_PROTOCOL_SCHEMA_REVISION,
-      );
-    database.exec(readFileSync(sealMigrationPath, "utf8"));
+    await proveLocalSchemaInventory(database);
 
-    await proveSchemaInventory(
-      Object.freeze({ marker: "configuration" }),
-      "11111111-2222-4333-8444-555555555555",
-      async (_configuration, _databaseId, sql) => ({
-        results: database.prepare(sql).all(),
-      }),
+    const reportSql = database
+      .prepare(
+        `SELECT sql FROM sqlite_schema
+         WHERE type = 'table' AND name = 'slack_reconciliation_reports'`,
+      )
+      .get().sql;
+    const integerPrimaryKey = reportSql.replace(
+      "report_id TEXT PRIMARY KEY",
+      "report_id INTEGER PRIMARY KEY",
+    );
+    assert.notEqual(integerPrimaryKey, reportSql);
+    database.exec(`
+      DROP INDEX idx_slack_reconciliation_reports_completed;
+      ALTER TABLE slack_reconciliation_reports
+        RENAME TO slack_reconciliation_reports_reviewed;
+      ${integerPrimaryKey};
+      CREATE INDEX idx_slack_reconciliation_reports_completed
+        ON slack_reconciliation_reports (completed_at);
+      DROP TABLE slack_reconciliation_reports_reviewed;
+    `);
+    await assert.rejects(
+      proveLocalSchemaInventory(database),
+      /Slack reconciliation report column inventory/u,
     );
   } finally {
     database.close();
   }
 });
+
+for (const mutation of reconciliationSchemaMutations) {
+  test(`the exact post-seal schema inventory rejects when ${mutation.name}`, async () => {
+    const database = createPostSealSchemaDatabase();
+    try {
+      replaceReconciliationSchema(database, mutation);
+      await assert.rejects(
+        proveLocalSchemaInventory(database),
+        mutation.expectedFailure ??
+          /Slack reconciliation schema-object inventory/u,
+      );
+    } finally {
+      database.close();
+    }
+  });
+}
+
+for (const mutation of reconciliationInventoryMutations) {
+  test(`the exact post-seal schema inventory rejects when ${mutation.name}`, async () => {
+    const database = createPostSealSchemaDatabase();
+    try {
+      mutation.mutate(database);
+      await assert.rejects(
+        proveLocalSchemaInventory(database),
+        mutation.expectedFailure,
+      );
+    } finally {
+      database.close();
+    }
+  });
+}
 
 test("the disposable Wrangler config binds the locally generated name to the verified UUID", () => {
   const databaseName =
@@ -1220,13 +1500,13 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
   assert.deepEqual(document.errors, []);
   const proofJob = document.toJS({ maxAliasCount: 0 }).jobs.prove_remote_d1;
 
-  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 94);
+  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 99);
   assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 3);
   assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 14_000);
-  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_784_000);
+  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_859_000);
   assert.equal(REMOTE_PROOF_WORKFLOW_TIMEOUT_MS, 3_600_000);
   assert.equal(REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS, 60_000);
-  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_384_000);
+  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_459_000);
   assert.equal(
     proofJob["timeout-minutes"] * 60_000,
     REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,
