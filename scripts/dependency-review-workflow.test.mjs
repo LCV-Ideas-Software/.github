@@ -76,6 +76,28 @@ function zizmorJobPermissions(source) {
   return block.join("\n");
 }
 
+function literalRunBlocks(source) {
+  const lines = source.replaceAll("\r\n", "\n").split("\n");
+  const blocks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(\s*)run:\s*\|\s*$/u.exec(lines[index]);
+    if (!match) continue;
+    const indentation = match[1].length;
+    const block = [];
+    for (const line of lines.slice(index + 1)) {
+      if (
+        line.trim() !== "" &&
+        line.length - line.trimStart().length <= indentation
+      ) {
+        break;
+      }
+      block.push(line);
+    }
+    blocks.push(block.join("\n"));
+  }
+  return blocks;
+}
+
 test("Dependency Review scans same-repository and fork pull requests", () => {
   assert.doesNotMatch(
     workflow,
@@ -147,4 +169,80 @@ test("reusable Zizmor grants the minimum metadata access required by SARIF uploa
     ["zizmor"],
     "an inline job must violate the exact job inventory",
   );
+});
+
+test("reusable Zizmor validates immutable policy snapshots before analysis", () => {
+  assert.match(zizmorWorkflow, /^  workflow_call:\s*\n  push:/mu);
+  const tooling = [
+    ".github/zizmor/Dockerfile",
+    ".github/zizmor/policy-baselines.v1.json",
+    "scripts/zizmor-policy-baseline.mjs",
+  ];
+  for (const path of tooling) {
+    assert.match(
+      zizmorWorkflow,
+      new RegExp(`^\\s{12}${path.replaceAll(".", "\\.")}$`, "m"),
+    );
+  }
+
+  const identity = zizmorWorkflow.indexOf(
+    "      - name: Verify reusable workflow identity",
+  );
+  const toolingCheckout = zizmorWorkflow.indexOf(
+    "      - name: Checkout this reusable workflow's immutable tooling source",
+  );
+  assert.ok(
+    identity >= 0 && identity < toolingCheckout,
+    "the called-workflow identity must fail closed before any checkout",
+  );
+  assert.match(
+    zizmorWorkflow,
+    /TOOLING_REPOSITORY: \$\{\{ job\.workflow_repository \}\}\n\s+TOOLING_SHA: \$\{\{ job\.workflow_sha \}\}[\s\S]*test "\$TOOLING_REPOSITORY" = "LCV-Ideas-Software\/.github"[\s\S]*\[\[ "\$TOOLING_SHA" =~ \^\[0-9a-f\]\{40\}\$ \]\]/u,
+  );
+
+  const resolve = zizmorWorkflow.indexOf(
+    "      - name: Resolve immutable Zizmor policy snapshots",
+  );
+  const candidate = zizmorWorkflow.indexOf(
+    "      - name: Checkout candidate repository snapshot",
+  );
+  const base = zizmorWorkflow.indexOf(
+    "      - name: Checkout base repository snapshot",
+  );
+  const validate = zizmorWorkflow.indexOf(
+    "      - name: Validate immutable Zizmor policy baseline",
+  );
+  const build = zizmorWorkflow.indexOf(
+    "      - name: Build the digest-pinned zizmor runtime",
+  );
+  assert.ok(
+    0 <= resolve && resolve < candidate && candidate < base && base < validate,
+    "snapshot resolution, explicit checkouts, and validation must remain ordered",
+  );
+  assert.ok(
+    validate < build,
+    "the baseline must be validated before tool execution",
+  );
+
+  assert.match(
+    zizmorWorkflow,
+    /node \.lcv-zizmor-tooling\/scripts\/zizmor-policy-baseline\.mjs resolve \\\n\s+--event-path "\$GITHUB_EVENT_PATH" \\\n\s+--event "\$GITHUB_EVENT_NAME" \\\n\s+--repository "\$GITHUB_REPOSITORY" \\\n\s+--sha "\$GITHUB_SHA" \\\n\s+--ref "\$GITHUB_REF" \\\n\s+--output "\$GITHUB_OUTPUT"/u,
+  );
+  assert.match(
+    zizmorWorkflow,
+    /node \.lcv-zizmor-tooling\/scripts\/zizmor-policy-baseline\.mjs validate \\\n\s+--manifest \.lcv-zizmor-tooling\/\.github\/zizmor\/policy-baselines\.v1\.json \\\n\s+--repository "\$GITHUB_REPOSITORY" \\\n\s+--base-dir \.lcv-audit-base \\\n\s+--base-sha "\$BASE_SHA" \\\n\s+--candidate-dir \.lcv-audit-target \\\n\s+--candidate-sha "\$CANDIDATE_SHA"/u,
+  );
+  assert.doesNotMatch(zizmorWorkflow, /--no-ignores|--config(?:=|\s)/u);
+  assert.doesNotMatch(
+    zizmorWorkflow,
+    /(?:^|\s)node\s+\.lcv-audit-(?:base|target)\//mu,
+    "the reusable workflow must never execute code from either audited snapshot",
+  );
+  for (const run of literalRunBlocks(zizmorWorkflow)) {
+    assert.doesNotMatch(
+      run,
+      /\$\{\{/u,
+      "GitHub contexts must cross into shell only through fixed environment variables",
+    );
+  }
 });

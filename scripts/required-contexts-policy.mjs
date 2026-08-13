@@ -33,7 +33,7 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Dependency Review"],
     policyRunner: true,
     nodeOptions: undefined,
-    digest: "93a95311fb1a68f80893700f744b76b7bc3b66b3b1904df0751d241174e9ec65",
+    digest: "0521ff840de65290c7477ad10cf2865bf9a53279fc7e0f114b9319375fbf1b7e",
   },
   {
     path: ".github/workflows/codeql.yml",
@@ -55,7 +55,7 @@ const WORKFLOW_SPECS = Object.freeze([
     contexts: ["Analyze actions", "Analyze javascript-typescript"],
     policyRunner: true,
     nodeOptions: undefined,
-    digest: "2a6b9d8da5da2481b39b10ddfff36bba681d221681b8ec5d677c0e97e54fe674",
+    digest: "8ad694feac1001712602beb4cb04630dd5ae58d72470065fd5d89fdd33a6a844",
   },
   {
     path: ".github/workflows/zizmor.yml",
@@ -71,11 +71,12 @@ const WORKFLOW_SPECS = Object.freeze([
       "schedule",
       "workflow_dispatch",
     ],
+    workflowCall: null,
     pullRequest: { branches: ["main"] },
     contexts: ["Run zizmor"],
     policyRunner: false,
     nodeOptions: undefined,
-    digest: "203bb33ba3ef51be8d149cf8ba7c0551bf77f817cdb7313c370eae0c1353e3c5",
+    digest: "5582b7ccc7c0ef37d8cf12f333acdc8e5783859a3f62b845ff03d36c5a445499",
   },
   {
     path: ".github/workflows/pages.yml",
@@ -319,6 +320,13 @@ function validateWorkflow(workflow, spec) {
   exact(workflow.permissions, {}, `${spec.path} workflow permissions`);
   const events = plainObject(workflow.on, `${spec.path}.on`);
   exact(Object.keys(events), spec.eventIds, `${spec.path} event inventory`);
+  if (Object.hasOwn(spec, "workflowCall")) {
+    exact(
+      events.workflow_call,
+      spec.workflowCall,
+      `${spec.path} workflow_call contract`,
+    );
+  }
   exact(
     events.pull_request,
     spec.pullRequest,

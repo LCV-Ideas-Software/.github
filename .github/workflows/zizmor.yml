@@ -33,8 +33,18 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
+      - name: Verify reusable workflow identity
+        shell: bash
+        env:
+          TOOLING_REPOSITORY: ${{ job.workflow_repository }}
+          TOOLING_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$TOOLING_REPOSITORY" = "LCV-Ideas-Software/.github"
+          [[ "$TOOLING_SHA" =~ ^[0-9a-f]{40}$ ]]
+
       - name: Checkout this reusable workflow's immutable tooling source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,15 +53,57 @@ jobs:
           path: .lcv-zizmor-tooling
           sparse-checkout: |
             .github/zizmor/Dockerfile
-            .github/zizmor.yml
+            .github/zizmor/policy-baselines.v1.json
+            scripts/zizmor-policy-baseline.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
+          fetch-depth: 1
 
-      - name: Checkout repository to audit without persisted credentials
+      - name: Resolve immutable Zizmor policy snapshots
+        id: policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          node .lcv-zizmor-tooling/scripts/zizmor-policy-baseline.mjs resolve \
+            --event-path "$GITHUB_EVENT_PATH" \
+            --event "$GITHUB_EVENT_NAME" \
+            --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" \
+            --ref "$GITHUB_REF" \
+            --output "$GITHUB_OUTPUT"
+
+      - name: Checkout candidate repository snapshot
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.policy.outputs.candidate_sha }}
           path: .lcv-audit-target
           persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout base repository snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ steps.policy.outputs.base_sha }}
+          path: .lcv-audit-base
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate immutable Zizmor policy baseline
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.policy.outputs.base_sha }}
+          CANDIDATE_SHA: ${{ steps.policy.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          node .lcv-zizmor-tooling/scripts/zizmor-policy-baseline.mjs validate \
+            --manifest .lcv-zizmor-tooling/.github/zizmor/policy-baselines.v1.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --base-dir .lcv-audit-base \
+            --base-sha "$BASE_SHA" \
+            --candidate-dir .lcv-audit-target \
+            --candidate-sha "$CANDIDATE_SHA"
 
       - name: Build the digest-pinned zizmor runtime
         shell: bash
@@ -78,11 +130,8 @@ jobs:
             --security-opt no-new-privileges
             --pids-limit 128
             --volume "${GITHUB_WORKSPACE}/.lcv-audit-target:/workspace:ro"
-            --volume "${GITHUB_WORKSPACE}/.lcv-zizmor-tooling/.github/zizmor.yml:/etc/zizmor.yml:ro"
             --workdir /workspace
             lcv-zizmor:audited
-            --config=/etc/zizmor.yml \
-            --no-ignores \
             --offline \
             --persona=auditor \
             --strict-collection \
