@@ -309,12 +309,40 @@ test("baseline accepts only reviewed Git blobs and rejects new ignore directives
   );
 });
 
-test("all shadow configuration names and wrong checkout SHAs are rejected", async () => {
+test("every shadow configuration name is rejected in isolation", async () => {
+  for (const shadow of [".github/zizmor.yaml", "zizmor.yml", "zizmor.yaml"]) {
+    const fixture = await repository({
+      ".github/zizmor.yml": "rules: {}\n",
+      [shadow]: "rules: {}\n",
+    });
+    const policy = manifest([
+      {
+        path: ".github/zizmor.yml",
+        mode: "100644",
+        blob_shas: [fixture.entries[".github/zizmor.yml"].blob],
+        kind: "config",
+      },
+    ]);
+    try {
+      assert.throws(() =>
+        validateBaseline({
+          manifest: policy,
+          repository: REPOSITORY,
+          baseDir: fixture.directory,
+          baseSha: fixture.sha,
+          candidateDir: fixture.directory,
+          candidateSha: fixture.sha,
+        }),
+      );
+    } finally {
+      await rm(fixture.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a checkout SHA mismatch is rejected independently", async () => {
   const fixture = await repository({
     ".github/zizmor.yml": "rules: {}\n",
-    ".github/zizmor.yaml": "rules: {}\n",
-    "zizmor.yml": "rules: {}\n",
-    "zizmor.yaml": "rules: {}\n",
   });
   const policy = manifest([
     {
@@ -324,7 +352,7 @@ test("all shadow configuration names and wrong checkout SHAs are rejected", asyn
       kind: "config",
     },
   ]);
-  for (const candidateSha of [fixture.sha, A]) {
+  try {
     assert.throws(() =>
       validateBaseline({
         manifest: policy,
@@ -332,11 +360,12 @@ test("all shadow configuration names and wrong checkout SHAs are rejected", asyn
         baseDir: fixture.directory,
         baseSha: fixture.sha,
         candidateDir: fixture.directory,
-        candidateSha,
+        candidateSha: A,
       }),
     );
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
   }
-  await rm(fixture.directory, { recursive: true, force: true });
 });
 
 test("every audited YAML path must remain a regular non-executable Git blob", async () => {
