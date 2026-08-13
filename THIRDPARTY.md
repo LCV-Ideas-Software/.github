@@ -48,7 +48,7 @@ deployed bundle is built from this repository's own source.
 | @slack/sdk       | 2.15.2  | MIT     | runtime | https://jsr.io/@slack/sdk                  |
 | @slack/api       | 2.9.3   | MIT     | runtime | https://jsr.io/@slack/api                  |
 | deno_slack_hooks | 1.5.0   | MIT     | build   | https://deno.land/x/deno_slack_hooks@1.5.0 |
-| esbuild          | 0.25.0  | MIT     | build   | https://www.npmjs.com/package/esbuild      |
+| esbuild          | 0.28.1  | MIT     | build   | https://www.npmjs.com/package/esbuild      |
 
 Licenses confirmed from the upstream repositories that publish these JSR packages:
 [`slackapi/deno-slack-sdk`](https://github.com/slackapi/deno-slack-sdk) and
@@ -65,13 +65,13 @@ outside this graph because every production CLI invocation uses `--skip-update` 
 never invokes `doctor`, `upgrade`, or `run`. Its license comes from the upstream repository that
 publishes it, [`slackapi/deno-slack-hooks`](https://github.com/slackapi/deno-slack-hooks), MIT.
 The official hook imports vulnerable `esbuild@0.24.2`; the project's Deno import map remaps that
-exact specifier to the first corrected release, `0.25.0`. The lockfile contains only the corrected
+exact specifier to the reviewed patched release, `0.28.1`. The lockfile contains only the corrected
 package graph. Candidate verification type-checks all four production hook entry points with the
 frozen lock; `deno.jsonc` also makes that lock fail-closed for hook processes launched by the Slack
 CLI, disables local `node_modules` and vendored resolution, and limits the import-map surface to
 the three Slack aliases plus the one esbuild override. Both workflows select that config explicitly;
 the audit rejects competing Deno configs or package workspaces at every ancestor inside the checkout
-and verifies the reviewed integrity of all 25 platform packages. The daily trusted audit continues to verify
+and verifies the reviewed integrity of all 26 platform packages. The daily trusted audit continues to verify
 the unmodified Slack hook source.
 Candidate verification also executes the pinned official `EsbuildBundler` directly against the
 two exact `source_file` entries declared by the source manifest, because the complete official

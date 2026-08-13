@@ -42,7 +42,7 @@ const CONFIG = JSON.stringify({
   vendor: false,
   tasks: EXPECTED_DENO_TASKS,
   imports: {
-    "npm:esbuild@0.24.2": "npm:esbuild@0.25.0",
+    "npm:esbuild@0.24.2": "npm:esbuild@0.28.1",
     "deno-slack-sdk/mod.ts": "jsr:@slack/sdk@2.15.2",
     "deno-slack-sdk/types.ts": "jsr:@slack/sdk@2.15.2/types.ts",
     "deno-slack-api/mod.ts": "jsr:@slack/api@2.9.3",
@@ -101,16 +101,16 @@ Deno.test("documents candidate and trusted audit invocations", async () => {
 });
 
 const LOCK = JSON.stringify({
-  specifiers: { "npm:esbuild@0.25.0": "0.25.0" },
+  specifiers: { "npm:esbuild@0.28.1": "0.28.1" },
   npm: {
-    "esbuild@0.25.0": {
+    "esbuild@0.28.1": {
       integrity:
-        "sha512-BXq5mqc8ltbaN34cDqWuYKyNhX8D/Z0J1xdtdQ8UcIIIyJyz+ZMKUt58tF3SrZ85jcfN/PZYhjR5uDQAYNVbuw==",
+        "sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==",
       optionalDependencies: REVIEWED_ESBUILD_PLATFORMS,
     },
     ...Object.fromEntries(
       REVIEWED_ESBUILD_PLATFORMS.map((name) => [
-        `${name}@0.25.0`,
+        `${name}@0.28.1`,
         {
           integrity: EXPECTED_ESBUILD_PLATFORM_INTEGRITIES[
             name as keyof typeof EXPECTED_ESBUILD_PLATFORM_INTEGRITIES
@@ -381,7 +381,7 @@ Deno.test("validates the exact local hook, override, and clean lockfile", () => 
     () =>
       verifyLocalPins(
         HOOKS,
-        CONFIG.replace("npm:esbuild@0.25.0", "npm:esbuild@^0.25.0"),
+        CONFIG.replace("npm:esbuild@0.28.1", "npm:esbuild@^0.28.1"),
         LOCK,
       ),
     "exact reviewed import-map surface",
@@ -392,11 +392,33 @@ Deno.test("validates the exact local hook, override, and clean lockfile", () => 
         HOOKS,
         CONFIG,
         LOCK.replace(
-          '"npm:esbuild@0.25.0":"0.25.0"',
-          '"npm:esbuild@0.24.2":"0.24.2","npm:esbuild@0.25.0":"0.25.0"',
+          '"npm:esbuild@0.28.1":"0.28.1"',
+          '"npm:esbuild@0.24.2":"0.24.2","npm:esbuild@0.28.1":"0.28.1"',
         ),
       ),
     "unexpected esbuild specifier set",
+  );
+  const changedPackageIntegrity = JSON.parse(LOCK);
+  changedPackageIntegrity.npm["esbuild@0.28.1"].integrity = "sha512-unreviewed";
+  assertThrows(
+    () =>
+      verifyLocalPins(
+        HOOKS,
+        CONFIG,
+        JSON.stringify(changedPackageIntegrity),
+      ),
+    "reviewed esbuild artifact integrity changed",
+  );
+  const missingOpenHarmonyPlatform = JSON.parse(LOCK);
+  delete missingOpenHarmonyPlatform.npm["@esbuild/openharmony-arm64@0.28.1"];
+  assertThrows(
+    () =>
+      verifyLocalPins(
+        HOOKS,
+        CONFIG,
+        JSON.stringify(missingOpenHarmonyPlatform),
+      ),
+    "unexpected esbuild platform package set",
   );
   const stalePlatform = JSON.parse(LOCK);
   stalePlatform.npm["@esbuild/linux-x64@0.24.2"] = { integrity: "stale" };
@@ -405,7 +427,7 @@ Deno.test("validates the exact local hook, override, and clean lockfile", () => 
     "unexpected esbuild platform package set",
   );
   const changedPlatformIntegrity = JSON.parse(LOCK);
-  changedPlatformIntegrity.npm["@esbuild/linux-x64@0.25.0"].integrity =
+  changedPlatformIntegrity.npm["@esbuild/linux-x64@0.28.1"].integrity =
     "sha512-unreviewed";
   assertThrows(
     () =>
