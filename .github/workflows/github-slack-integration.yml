@@ -115,14 +115,14 @@ jobs:
             echo "::error::Slack app still contains bootstrap-only placeholders, an empty workflow list, or a provisioning scope."
             exit 1
           fi
-          deno task --frozen check
+          deno task --config=deno.jsonc --frozen check
 
       - name: Audit Slack workflow app dependencies
         working-directory: slack/github-integration
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.token || '' }}
-        run: deno task --frozen audit
+        run: deno task --config=deno.jsonc --frozen audit
 
   prove_remote_d1:
     name: Prove remote D1 migration
@@ -266,6 +266,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: slack-production
+    env:
+      SLACK_SKIP_UPDATE: "1"
     steps:
       - name: Checkout verified revision without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -319,7 +321,7 @@ jobs:
             LICENSE bin/slack
           test -f "$install_root/bin/slack"
           chmod 0755 "$install_root/bin/slack"
-          version_output=$("$install_root/bin/slack" version)
+          version_output=$("$install_root/bin/slack" version --skip-update)
           printf '%s\n' "$version_output"
           if [[ "$version_output" != *"v${SLACK_CLI_VERSION}"* ]]; then
             echo "::error::The verified Slack CLI asset did not report the expected version."

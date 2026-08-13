@@ -407,7 +407,8 @@ closed the confirmation window and removed the activation endpoint and script.
    `C0BMQMW3L4E` and `C0BMUK793NV` respectively and ensure the Deno app can post
    to both.
 3. Finalize and verify the source-controlled Slack manifest, workflows,
-   triggers and channel IDs with `deno task --frozen check`.
+   triggers and channel IDs with
+   `deno task --config=deno.jsonc --frozen check`.
 4. Store `SLACK_SERVICE_TOKEN` as a secret in the protected
    `slack-production` environment and `SLACK_GITHUB_INTEGRATION_APP_ID` plus
    `SLACK_WORKSPACE_ID` as repository variables. Set the app variable to
@@ -599,19 +600,45 @@ Slack's official guidance for these mechanisms is available in [Deploying to
 Slack][slack-deploy], [Slack CLI CI/CD authorization][slack-cli-auth], and
 [Creating workflows][slack-workflows].
 
-The latest upstream `deno_slack_hooks@1.5.0` transitively pins
-`esbuild@0.24.2`. Its moderate `GHSA-67mh-4wv8-2f99` development-server
-advisory is temporarily accepted because the exact reviewed hook source calls
-only `build()` and `stop()`; the affected server is not reachable. The audit
-script fails closed unless this is the sole low-or-higher advisory and the hook
-is still the latest stable GitHub release, with the exact tag, annotated-tag
-object, commit
-`b6719c18a18a39ca44fa1b311c3bada28dc3df35`, source lock hash, package
-integrity, and call set all remain exact. The code-level deadline is
-`2026-11-01T00:00:00Z`, which is 31/10/2026 às 21:00:00 in the program's fixed
-UTC−03:00 timezone. The exception must be removed sooner if Slack publishes a
-fixed hook. Deploys do not use the Slack CLI's broad `--force` warning
-override.
+The latest upstream `deno_slack_hooks@1.5.0` imports `esbuild@0.24.2`, affected
+by `GHSA-67mh-4wv8-2f99`. The [Deno import map][deno-config] remaps that one exact upstream
+specifier to the first corrected version, `esbuild@0.25.0`; the official Slack
+hook remains unmodified and no source is forked or vendored. The audit script
+fails closed unless the mapping is exact, the lockfile contains only the
+corrected esbuild graph, `deno audit` reports zero advisories, and the hook is
+still the latest stable GitHub release with the exact tag, annotated-tag object,
+commit `b6719c18a18a39ca44fa1b311c3bada28dc3df35`, source lock hash, package
+integrity, and reviewed `build()`/`stop()` call set. A later stable Slack hook
+with corrected esbuild must replace the override in the same reviewed change.
+Within the complete frozen production closure, the audit requires exactly the
+13 `deno_slack_hooks@1.5.0` source files reached by the production `get-hooks`,
+`get-manifest`, `build`, and `get-trigger` entry points; candidate verification
+checks all four roots. Update and local-run hooks are excluded
+because production always uses `--skip-update` and never invokes them. The Deno
+configuration sets `lock.frozen=true`, `nodeModulesDir="none"`, and
+`vendor=false`, so hook subprocesses cannot silently add a missing dependency
+or substitute local package/vendor content during deployment. The import-map
+surface is limited to the exact three Slack aliases and single esbuild
+override, and every esbuild platform package must retain its reviewed `0.25.0`
+integrity. Both verification workflows explicitly select `deno.jsonc`; the
+audit rejects a competing `deno.json`, `package.json` workspace, or Deno
+workspace at the app, `slack/`, or repository-root boundary. The
+deployment job additionally sets
+`SLACK_SKIP_UPDATE=1`; a contract test locks the verified CLI asset/version
+step and the exact four application invocations with their `--skip-update`
+arguments. The
+candidate and merge-group gate additionally executes the official pinned build
+hook against the complete app in an isolated temporary directory. It requires
+the manifest to declare exactly the two reviewed callback IDs, the matching
+function bundles to be the only emitted bundles, both bundles to parse as
+JavaScript, and each module to expose the callable default handler required by
+the Slack runtime before deployment can become eligible. Since that build may
+complete through Deno's native bundler, the gate also invokes the pinned
+official `EsbuildBundler` directly for the two exact `source_file` entries from
+the source manifest and reapplies the inventory, syntax, and handler checks.
+It then deletes both temporary outputs, following Slack's documented
+[CLI hook contract][slack-hooks].
+Deploys do not use the Slack CLI's broad `--force` warning override.
 
 Wrangler is an exact development dependency in the relay manifest and lockfile.
 CI requires npm's effective registry to remain the official
@@ -956,11 +983,14 @@ GitHub.
 - [Cloudflare Queues dead-letter queues][cloudflare-dlq]
 - [Cloudflare D1 migrations][cloudflare-d1]
 - [Cloudflare Secrets Store bindings][cloudflare-secrets]
+- [Deno configuration and import maps][deno-config]
+- [Slack CLI hook contract][slack-hooks]
 
 [cloudflare-d1]: https://developers.cloudflare.com/d1/reference/migrations/
 [cloudflare-dlq]: https://developers.cloudflare.com/queues/configuration/dead-letter-queues/
 [cloudflare-secrets]: https://developers.cloudflare.com/secrets-store/integrations/workers/
 [cloudflare-workers]: https://developers.cloudflare.com/workers/best-practices/workers-best-practices/
+[deno-config]: https://docs.deno.com/runtime/reference/deno_json/#dependencies
 [github-events]: https://docs.github.com/en/webhooks/webhook-events-and-payloads
 [github-hmac]: https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
 [github-org-webhooks]: https://docs.github.com/en/rest/orgs/webhooks
@@ -979,6 +1009,7 @@ GitHub.
 [slack-deploy]: https://docs.slack.dev/tools/deno-slack-sdk/guides/deploying-to-slack/
 [slack-date-formatting]: https://docs.slack.dev/messaging/formatting-message-text/#date-formatting
 [slack-logging]: https://docs.slack.dev/tools/deno-slack-sdk/guides/logging-function-and-app-behavior/
+[slack-hooks]: https://docs.slack.dev/tools/slack-cli/reference/hooks/
 [slack-message-context]: https://docs.slack.dev/reference/types/message_context-type/
 [slack-slash-commands]: https://docs.slack.dev/interactivity/implementing-slash-commands/
 [slack-trigger]: https://docs.slack.dev/tools/slack-cli/reference/commands/slack_trigger/

@@ -99,36 +99,70 @@ from the user-facing text. The app does not use Slack's viewer-localized
 `<!date>` syntax. Slack's own timestamp beside the message is native UI metadata
 and is not changed by this app.
 
-## Temporary dependency-audit exception
+## Audited esbuild security override
 
-Slack's latest `deno_slack_hooks@1.5.0` build hook transitively pins
-`esbuild@0.24.2`, which is reported by `GHSA-67mh-4wv8-2f99`. The advisory
-affects esbuild's development server; the reviewed hook source invokes only
-`build()` and `stop()` and does not make that server reachable.
+Slack's latest `deno_slack_hooks@1.5.0` build hook imports `esbuild@0.24.2`,
+which is reported by `GHSA-67mh-4wv8-2f99`. The project's
+[Deno import map](https://docs.deno.com/runtime/reference/deno_json/#dependencies)
+remaps that exact upstream specifier to the first corrected release,
+`esbuild@0.25.0`. The hook remains the official Slack release; no source is
+forked or vendored. The regenerated lockfile contains no vulnerable esbuild
+version, and the reviewed hook still invokes only `build()` and `stop()`. Within
+the complete frozen production closure, it also pins the exact subset of 13
+`deno_slack_hooks@1.5.0` source files exercised by Slack CLI production
+operations: `get-hooks`, `get-manifest`, `build`, and `get-trigger`. The
+candidate gate checks all four entry points with `--frozen`; production passes
+`--skip-update`, so update and local-run hooks are intentionally outside this
+graph. The Deno configuration sets `lock.frozen=true`, `nodeModulesDir="none"`,
+and `vendor=false`, so Slack CLI hook subprocesses cannot silently extend the
+reviewed lock or substitute local package/vendor content during deployment. The
+two verification workflows select `deno.jsonc` explicitly, and the audit rejects
+competing Deno configs or package workspaces at the app, `slack/`, and
+repository-root levels. All 25 esbuild platform artifacts retain their reviewed
+integrities. The audited import-map surface is exactly the three Slack aliases
+plus the one esbuild override. The deployment job also sets
+`SLACK_SKIP_UPDATE=1`, and a fail-closed contract locks the verified CLI
+asset/version step plus the exact four application operations and their
+`--skip-update` arguments.
 
-`deno task --frozen audit` is fail-closed in both execution modes. Candidate
-events (`pull_request` and `merge_group`) must receive no GitHub token and
-verify the checked-in hook pin, package integrity, reviewed source hash, esbuild
-call set, advisory output, and exception window locally. Trusted events (`push`,
-`schedule`, and `workflow_dispatch`) require a GitHub token and additionally
-verify the live release, annotated tag, commit, remote source, and latest stable
-release. A token in candidate mode, a missing token in trusted mode, any
-additional low-or-higher advisory, a newer stable hook release, or any changed
-assumption fails the check. The workflow repeats the trusted verification every
-day at 07h17. The code-level deadline is `2026-11-01T00:00:00Z`, which is
-31/10/2026 às 21:00:00 in the program's fixed UTC−03:00 timezone. The exception
-must be removed as soon as Slack publishes a hook release using esbuild 0.25.0
-or newer.
+`deno task --config=deno.jsonc --frozen check` also runs the official pinned
+build hook against the complete app in an isolated temporary directory. It fails
+unless the hook exits successfully, the manifest declares exactly the two
+reviewed callback IDs, the corresponding bundles are the only emitted function
+files, both bundles parse as JavaScript, and each module exposes the callable
+default handler required by the Slack runtime. Because the official build may
+finish through Deno's native bundler before reaching the compatibility fallback,
+the same gate directly executes the pinned official `EsbuildBundler` for the two
+exact `source_file` entries from the source manifest and reapplies the output,
+syntax, and handler checks. It then removes both temporary outputs. This proof
+runs in both pull-request and merge-group verification, before any production
+deployment. Together these paths exercise the official Slack CLI
+[`build` hook contract](https://docs.slack.dev/tools/slack-cli/reference/hooks/).
+
+`deno task --config=deno.jsonc --frozen audit` is fail-closed in both execution
+modes. Candidate events (`pull_request` and `merge_group`) must receive no
+GitHub token and verify the checked-in hook pin, exact 13-file
+`deno_slack_hooks@1.5.0` subset within the complete frozen production closure,
+import-map override, package integrity, every esbuild platform package, reviewed
+source hash, esbuild call set, and zero-advisory audit locally. Trusted events
+(`push`, `schedule`, and `workflow_dispatch`) require a GitHub token and
+additionally verify the live release, annotated tag, commit, remote source, and
+latest stable release. A token in candidate mode, a missing token in trusted
+mode, a missing or ranged override, any vulnerable lock residue, any
+low-or-higher advisory, a newer stable hook release, or any changed assumption
+fails the check. The workflow repeats the trusted verification every day at
+07h17. When Slack publishes a stable hook with corrected esbuild, update the
+official hook pin and remove the exact override in the same reviewed change.
 
 From a POSIX shell, candidate mode is reproduced without a credential:
 
 ```sh
-env -u GITHUB_TOKEN GITHUB_EVENT_NAME=merge_group deno task --frozen audit
+env -u GITHUB_TOKEN GITHUB_EVENT_NAME=merge_group deno task --config=deno.jsonc --frozen audit
 ```
 
 Trusted mode requires `GITHUB_TOKEN` to be supplied by the trusted job and is
 reproduced without rendering that value:
 
 ```sh
-GITHUB_EVENT_NAME=workflow_dispatch deno task --frozen audit
+GITHUB_EVENT_NAME=workflow_dispatch deno task --config=deno.jsonc --frozen audit
 ```

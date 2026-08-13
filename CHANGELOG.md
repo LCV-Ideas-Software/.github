@@ -25,6 +25,30 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 13/08/2026 — Slack build dependency remediation
+
+### Security
+
+- Replaced the temporary `GHSA-67mh-4wv8-2f99` exception with an exact Deno
+  import-map override from the official Slack hook's `esbuild@0.24.2` specifier
+  to the first corrected release, `esbuild@0.25.0`. The official
+  `deno_slack_hooks@1.5.0` source remains unmodified; the regenerated lockfile
+  contains no vulnerable esbuild version, and the fail-closed audit now
+  requires zero advisories plus the exact import-map surface, integrity,
+  esbuild platform set, upstream source
+  hash, exact subset of 13 `deno_slack_hooks@1.5.0` source files within the
+  complete frozen production closure, and reviewed `build()`/`stop()` call
+  set. The PR and merge-group gate checks all four production hook entry
+  points with the frozen lock, disables local `node_modules` and vendored
+  substitution, locks the verified CLI asset and exact no-update
+  application commands, freezes hook subprocess resolution, executes the
+  complete official Slack build plus the pinned official esbuild fallback over
+  the two source-manifest entry points, and
+  rejects a wrong manifest callback inventory, missing or extra bundles, empty
+  output, invalid JavaScript, or a bundle without a callable default handler
+  before deployment.
+  Evidence: #123.
+
 ## 11/08/2026 — GitHub Actions governance sanitation
 
 First repository of the enterprise-wide governance rollout described in
