@@ -171,6 +171,72 @@ function assertReconciliationRequest(init) {
   return body;
 }
 
+function assertReconciliationV4Request(init) {
+  const body = JSON.parse(String(init.body));
+  assert.equal(
+    body.report_signature,
+    hmac(
+      JSON.stringify([
+        "slack_activity_reconciliation_v4",
+        body.checkpoint_us,
+        body.report_timestamp,
+        body.scan_state,
+        body.traces.map((trace) => [
+          trace.trace_id,
+          trace.delivery_id,
+          trace.outcome,
+          trace.relay_attempt,
+          trace.send_execution_id,
+          trace.slack_channel_id,
+          trace.slack_message_ts,
+          trace.send_boundary_reached,
+          trace.pre_send_failure_proven,
+          trace.started_at_us,
+          trace.completed_at_us,
+        ]),
+      ]),
+    ),
+  );
+  return body;
+}
+
+function assertReconciliationV5Request(init) {
+  const body = JSON.parse(String(init.body));
+  assert.equal(
+    body.report_signature,
+    hmac(
+      JSON.stringify([
+        "slack_activity_reconciliation_v5",
+        body.checkpoint_us,
+        body.report_timestamp,
+        body.scan_state,
+        body.hydrations.map((hydration) => [
+          hydration.trace_id,
+          hydration.first_observed_us,
+          hydration.last_observed_us,
+          hydration.status,
+          hydration.debt_reason,
+          hydration.attempted,
+        ]),
+        body.traces.map((trace) => [
+          trace.trace_id,
+          trace.delivery_id,
+          trace.outcome,
+          trace.relay_attempt,
+          trace.send_execution_id,
+          trace.slack_channel_id,
+          trace.slack_message_ts,
+          trace.send_boundary_reached,
+          trace.pre_send_failure_proven,
+          trace.started_at_us,
+          trace.completed_at_us,
+        ]),
+      ]),
+    ),
+  );
+  return body;
+}
+
 function assertBridgeReconciliationRequest(init) {
   const body = JSON.parse(String(init.body));
   assert.equal(
@@ -201,6 +267,9 @@ function acceptedReconciliationResponse(report, changedErrorTraces = 0) {
   return jsonResponse({
     ok: true,
     traces: report.traces.length,
+    ...(Array.isArray(report.hydrations)
+      ? { hydrations: report.hydrations.length }
+      : {}),
     changed_error_traces: changedErrorTraces,
     checkpoint_us: report.checkpoint_us,
   });
@@ -211,6 +280,144 @@ function checkpointResponse(checkpointUs) {
     checkpoint_us: checkpointUs,
     reconciliation_version: 3,
   });
+}
+
+function checkpointResponseV4(checkpointUs, resumeFromUs = null) {
+  return jsonResponse({
+    checkpoint_us: checkpointUs,
+    reconciliation_version: 4,
+    resume_from_us: resumeFromUs,
+  });
+}
+
+function checkpointResponseV5({
+  checkpointUs,
+  resumeFromUs = null,
+  pendingTraceIds = [],
+  pendingTraceTotal = pendingTraceIds.length,
+  pendingTraceOldestUs = null,
+}) {
+  return jsonResponse({
+    checkpoint_us: checkpointUs,
+    reconciliation_version: 5,
+    resume_from_us: resumeFromUs,
+    pending_trace_ids: pendingTraceIds,
+    pending_trace_total: pendingTraceTotal,
+    pending_trace_oldest_us: pendingTraceOldestUs,
+  });
+}
+
+function hydrationTraceActivities({ created, deliveryId, traceId }) {
+  return {
+    start: {
+      level: "info",
+      event_type: "workflow_execution_started",
+      component_type: "workflows",
+      created,
+      trace_id: traceId,
+      payload: { workflow_name: "GitHub activity" },
+    },
+    boundary: {
+      level: "info",
+      event_type: "workflow_step_execution_result",
+      component_type: "workflows",
+      created: created + 1,
+      trace_id: traceId,
+      payload: {
+        exec_outcome: "Success",
+        function_execution_id: `Fx${traceId.slice(2)}Boundary`,
+        inputs: signedProgressInputs(
+          deliveryId,
+          "send_started",
+          "alerts",
+          String(Math.floor(created / 1_000_000)),
+        ),
+      },
+    },
+    terminal: {
+      level: "info",
+      event_type: "workflow_execution_result",
+      component_type: "workflows",
+      created: created + 2,
+      trace_id: traceId,
+      payload: { exec_outcome: "Success" },
+    },
+  };
+}
+
+function legacyTraceActivities({ created, traceId }) {
+  return [
+    {
+      level: "info",
+      event_type: "workflow_execution_started",
+      component_type: "workflows",
+      created,
+      trace_id: traceId,
+      payload: {},
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_started",
+      component_type: "workflows",
+      created: created + 1,
+      trace_id: traceId,
+      payload: {
+        current_step: 1,
+        total_steps: 2,
+        function_id: "Fn0BMBCA9QG7",
+        function_execution_id: `Fx${traceId.slice(2)}Validator`,
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_execution_result",
+      component_type: "workflows",
+      created: created + 2,
+      trace_id: traceId,
+      payload: {
+        exec_outcome: "Success",
+        function_id: "Fn0BMBCA9QG7",
+        function_execution_id: `Fx${traceId.slice(2)}Validator`,
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_started",
+      component_type: "workflows",
+      created: created + 3,
+      trace_id: traceId,
+      payload: {
+        current_step: 2,
+        total_steps: 2,
+        function_id: "Fn0102",
+        function_execution_id: `Fx${traceId.slice(2)}Send`,
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_step_execution_result",
+      component_type: "workflows",
+      created: created + 4,
+      trace_id: traceId,
+      payload: {
+        exec_outcome: "Success",
+        function_id: "Fn0102",
+        function_execution_id: `Fx${traceId.slice(2)}Send`,
+        outputs: {
+          channel_id: "C0BMQMW3L4E",
+          message_ts: "1786555894.853909",
+        },
+      },
+    },
+    {
+      level: "info",
+      event_type: "workflow_execution_result",
+      component_type: "workflows",
+      created: created + 5,
+      trace_id: traceId,
+      payload: { exec_outcome: "Success" },
+    },
+  ];
 }
 
 test("production manifest registers the receipt function and only the documented message scopes", () => {
@@ -418,13 +625,17 @@ test("Slack deployment is serialized behind the exact successful relay rollout",
   );
 });
 
-test("the monitor job can finish its bounded worst-case network plan", () => {
+test("the monitor job can finish its bounded worst-case network plan", async () => {
+  const monitorModule = await import("./slack-workflow-monitor.mjs");
   const monitorJob = workflowSource.slice(workflowSource.indexOf("  monitor:"));
   const timeout = monitorJob.match(/timeout-minutes:\s*(\d+)/);
   assert.notEqual(timeout, null);
+  const timeoutMinutes = Number.parseInt(timeout[1], 10);
   const timeoutMs = Number.parseInt(timeout[1], 10) * 60_000;
   const setupAndProcessingMarginMs = 30 * 60_000;
-  assert.equal(SLACK_MONITOR_WORST_CASE_NETWORK_MS, 17_010_000);
+  assert.equal(monitorModule.SLACK_MONITOR_MAX_RECONCILIATION_REPORTS, 402);
+  assert.equal(SLACK_MONITOR_WORST_CASE_NETWORK_MS, 17_410_000);
+  assert.equal(timeoutMinutes, 321);
   assert.ok(
     timeoutMs >=
       SLACK_MONITOR_WORST_CASE_NETWORK_MS + setupAndProcessingMarginMs,
@@ -591,7 +802,12 @@ test("monitor uses the durable checkpoint and posts an authenticated empty repor
     },
   });
 
-  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
   assert.deepEqual(calls, [CHECKPOINT_URL, SLACK_URL, RECONCILIATION_URL]);
 });
 
@@ -670,7 +886,12 @@ test("replays the exact signed report after an ambiguous response loss", async (
       return acceptedReconciliationResponse(JSON.parse(init.body));
     },
   });
-  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
   assert.equal(reportBodies.length, 2);
   assert.equal(reportBodies[1], reportBodies[0]);
 });
@@ -732,7 +953,12 @@ test("replays the exact signed report after an ambiguous HTTP 503", async () => 
       return acceptedReconciliationResponse(JSON.parse(init.body));
     },
   });
-  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
   assert.deepEqual(reportBodies, [reportBodies[0], reportBodies[0]]);
 });
 
@@ -758,7 +984,12 @@ test("replays the exact signed report after an ambiguous HTTP 408", async () => 
       return acceptedReconciliationResponse(JSON.parse(init.body));
     },
   });
-  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
   assert.deepEqual(reportBodies, [reportBodies[0], reportBodies[0]]);
 });
 
@@ -787,7 +1018,12 @@ test("replays the exact signed report after an ambiguous invalid JSON response",
       return acceptedReconciliationResponse(JSON.parse(init.body));
     },
   });
-  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
   assert.deepEqual(reportBodies, [reportBodies[0], reportBodies[0]]);
 });
 
@@ -807,6 +1043,30 @@ test("rejects a checkpoint error envelope before reading Slack activities", asyn
       },
     }),
     /checkpoint is malformed/,
+  );
+  assert.equal(slackRequests, 0);
+});
+
+test("rejects malformed v5 pending trace ids through the controlled checkpoint error", async () => {
+  let slackRequests = 0;
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => Date.parse("2026-08-04T08:00:00.000Z"),
+      fetchImpl: async (input) => {
+        assert.equal(input, CHECKPOINT_URL);
+        slackRequests += input === SLACK_URL ? 1 : 0;
+        return jsonResponse({
+          checkpoint_us: 1,
+          reconciliation_version: 5,
+          resume_from_us: null,
+          pending_trace_ids: null,
+          pending_trace_total: 0,
+          pending_trace_oldest_us: null,
+        });
+      },
+    }),
+    /Relay reconciliation checkpoint is malformed/,
   );
   assert.equal(slackRequests, 0);
 });
@@ -840,7 +1100,12 @@ test("uses the authenticated v2 bridge while the old Worker is still live", asyn
   });
   assert.equal(report.checkpoint_us, initialAnchor);
   assert.deepEqual(report.traces, []);
-  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
 });
 
 test("fails closed on an error trace reported through the v2 bridge", async () => {
@@ -989,7 +1254,7 @@ test("retains v3-only message evidence until the new Worker is live", async () =
         });
       },
     }),
-    /retained 1 trace until relay reconciliation v3 becomes available/,
+    /retained 1 trace until relay reconciliation v3 or newer becomes available/,
   );
   assert.equal(report.checkpoint_us, 0);
   assert.deepEqual(report.traces, []);
@@ -1050,7 +1315,7 @@ test("retains a successful receipt-less trace until the v3 Worker is live", asyn
         });
       },
     }),
-    /retained 1 trace until relay reconciliation v3 becomes available/,
+    /retained 1 trace until relay reconciliation v3 or newer becomes available/,
   );
   assert.equal(report.checkpoint_us, 0);
   assert.deepEqual(report.traces, []);
@@ -1181,7 +1446,12 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
     },
   });
 
-  assert.deepEqual(result, { errors: 0, pages: 2, traces: 1 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 2,
+    traces: 1,
+  });
   assert.equal(reports.length, 1);
   assert.deepEqual(reports[0].traces, [
     {
@@ -1199,6 +1469,1396 @@ test("paginates every activity and correlates delivery_id, trace_id, and send bo
     },
   ]);
   assert.ok(!JSON.stringify(reports).includes("must-not-leak"));
+});
+
+test("reconciles a bounded prefix before requiring the next run", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const previousCheckpointUs = now * 1_000 - 60 * 60 * 1_000 * 1_000;
+  const firstCreated = previousCheckpointUs + 1;
+  const reports = [];
+  let slackRequests = 0;
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return checkpointResponseV4(previousCheckpointUs);
+        }
+        if (input === RECONCILIATION_URL) {
+          const report = assertReconciliationV4Request(init);
+          reports.push(report);
+          return acceptedReconciliationResponse(report);
+        }
+        assert.equal(input, SLACK_URL);
+        slackRequests += 1;
+        assert.ok(
+          slackRequests <= 100,
+          "the bounded catch-up must not request page 101",
+        );
+        const created = firstCreated + slackRequests - 1;
+        const activities =
+          slackRequests === 100
+            ? Array.from({ length: 26 }, (_, index) => {
+                const suffix = String(index + 1).padStart(3, "0");
+                const traceCreated = created + index * 2;
+                return [
+                  {
+                    level: "info",
+                    event_type: "workflow_execution_started",
+                    component_type: "workflows",
+                    created: traceCreated,
+                    trace_id: `TrBoundedPrefix${suffix}`,
+                    payload: {},
+                  },
+                  {
+                    level: "info",
+                    event_type: "workflow_step_execution_result",
+                    component_type: "workflows",
+                    created: traceCreated + 1,
+                    trace_id: `TrBoundedPrefix${suffix}`,
+                    payload: {
+                      exec_outcome: "Success",
+                      function_execution_id: `FxBoundedPrefix${suffix}`,
+                      inputs: signedProgressInputs(
+                        `delivery-bounded-prefix-${suffix}`,
+                        "send_started",
+                        "alerts",
+                        String(Math.floor(traceCreated / 1_000_000)),
+                      ),
+                    },
+                  },
+                ];
+              }).flat()
+            : [
+                {
+                  level: "info",
+                  event_type: "workflow_published",
+                  component_type: "workflows",
+                  created,
+                  payload: { workflow_name: "GitHub activity" },
+                },
+              ];
+        return jsonResponse({
+          ok: true,
+          activities,
+          response_metadata: { next_cursor: `cursor-${slackRequests + 1}` },
+        });
+      },
+    }),
+    /catch-up acknowledged durable checkpoint progress after 100 pages/,
+  );
+
+  assert.equal(slackRequests, 100);
+  assert.deepEqual(
+    reports.map((report) => report.traces.length),
+    [25, 1],
+  );
+  assert.equal(reports[0].checkpoint_us, previousCheckpointUs);
+  assert.equal(reports[1].checkpoint_us, firstCreated + 99);
+  assert.deepEqual(
+    reports.map((report) => report.scan_state),
+    ["preserve", "resume"],
+  );
+  const reportedTraces = reports.flatMap((report) => report.traces);
+  assert.equal(reportedTraces.length, 26);
+  assert.deepEqual(reportedTraces[0], {
+    trace_id: "TrBoundedPrefix001",
+    delivery_id: "delivery-bounded-prefix-001",
+    outcome: "pending",
+    relay_attempt: "1",
+    send_execution_id: "FxBoundedPrefix001",
+    slack_channel_id: null,
+    slack_message_ts: null,
+    send_boundary_reached: true,
+    pre_send_failure_proven: false,
+    started_at_us: firstCreated + 99,
+    completed_at_us: null,
+  });
+  assert.equal(reportedTraces[25].trace_id, "TrBoundedPrefix026");
+  assert.equal(reportedTraces[25].started_at_us, firstCreated + 149);
+});
+
+test("a second run resumes after the acknowledged bounded prefix instead of replaying the overlap", async () => {
+  const firstNow = Date.parse("2026-08-14T06:11:06.000Z");
+  const secondNow = firstNow + 15 * 60 * 1_000;
+  const initialCheckpointUs = firstNow * 1_000 - 60 * 60 * 1_000 * 1_000;
+  const firstCreated = initialCheckpointUs + 1;
+  let durableCheckpointUs = initialCheckpointUs;
+  let resumeFromUs = null;
+  let run = 1;
+  let firstRunSlackRequests = 0;
+  let secondRunSlackRequests = 0;
+  const requestedMinimums = [];
+  const scanStates = [];
+
+  const fetchImpl = async (input, init) => {
+    if (input === CHECKPOINT_URL) {
+      return checkpointResponseV4(durableCheckpointUs, resumeFromUs);
+    }
+    if (input === RECONCILIATION_URL) {
+      const report = assertReconciliationV4Request(init);
+      scanStates.push(report.scan_state);
+      durableCheckpointUs = report.checkpoint_us;
+      if (report.scan_state === "resume") {
+        resumeFromUs = durableCheckpointUs;
+      } else if (report.scan_state === "complete") {
+        resumeFromUs = null;
+      }
+      return jsonResponse({
+        ok: true,
+        traces: report.traces.length,
+        changed_error_traces: 0,
+        checkpoint_us: durableCheckpointUs,
+      });
+    }
+    assert.equal(input, SLACK_URL);
+    const form = Object.fromEntries(init.body);
+    requestedMinimums.push(Number(form.min_date_created));
+    if (run === 1) {
+      firstRunSlackRequests += 1;
+      assert.ok(firstRunSlackRequests <= 100);
+      return jsonResponse({
+        ok: true,
+        activities: [
+          {
+            level: "info",
+            event_type: "workflow_published",
+            component_type: "workflows",
+            created: firstCreated + firstRunSlackRequests - 1,
+            payload: { workflow_name: "GitHub activity" },
+          },
+        ],
+        response_metadata: {
+          next_cursor: `first-run-cursor-${firstRunSlackRequests + 1}`,
+        },
+      });
+    }
+    secondRunSlackRequests += 1;
+    assert.equal(form.cursor, undefined);
+    return jsonResponse({
+      ok: true,
+      activities: [
+        {
+          level: "info",
+          event_type: "workflow_published",
+          component_type: "workflows",
+          created: resumeFromUs,
+          payload: { workflow_name: "GitHub activity" },
+        },
+        {
+          level: "info",
+          event_type: "workflow_published",
+          component_type: "workflows",
+          created: resumeFromUs + 1,
+          payload: { workflow_name: "GitHub alerts" },
+        },
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+  };
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => firstNow,
+      fetchImpl,
+    }),
+    /catch-up acknowledged durable checkpoint progress after 100 pages/,
+  );
+  assert.equal(firstRunSlackRequests, 100);
+  const acknowledgedPrefixUs = firstCreated + 99;
+  assert.equal(durableCheckpointUs, acknowledgedPrefixUs);
+  assert.equal(resumeFromUs, acknowledgedPrefixUs);
+
+  run = 2;
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => secondNow,
+    fetchImpl,
+  });
+
+  assert.equal(secondRunSlackRequests, 1);
+  assert.equal(
+    requestedMinimums[0],
+    initialCheckpointUs - 20 * 60 * 1_000 * 1_000,
+  );
+  assert.equal(requestedMinimums.at(-1), acknowledgedPrefixUs);
+  assert.deepEqual(scanStates, ["resume", "complete"]);
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
+  assert.equal(resumeFromUs, null);
+  assert.equal(durableCheckpointUs, acknowledgedPrefixUs + 1);
+});
+
+test("hydrates the terminal after a page-100 start without requesting temporal page 101", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const previousCheckpointUs = now * 1_000 - 60 * 60 * 1_000 * 1_000;
+  const traceCreatedUs = previousCheckpointUs + 10_000;
+  const traceId = "TrHydratePageBoundary1";
+  const activities = hydrationTraceActivities({
+    created: traceCreatedUs,
+    deliveryId: "delivery-hydrate-page-boundary-1",
+    traceId,
+  });
+  let temporalPages = 0;
+  let hydrationPages = 0;
+  let report;
+
+  const fetchImpl = async (input, init) => {
+    if (input === CHECKPOINT_URL) {
+      return checkpointResponseV5({ checkpointUs: previousCheckpointUs });
+    }
+    if (input === RECONCILIATION_URL) {
+      report = assertReconciliationV5Request(init);
+      return acceptedReconciliationResponse(report);
+    }
+    assert.equal(input, SLACK_URL);
+    const form = Object.fromEntries(init.body);
+    if (form.trace_id === traceId) {
+      hydrationPages += 1;
+      assert.equal(form.min_date_created, undefined);
+      assert.equal(form.max_date_created, undefined);
+      assert.equal(form.cursor, undefined);
+      return jsonResponse({
+        ok: true,
+        activities: [
+          activities.start,
+          activities.boundary,
+          activities.terminal,
+        ],
+        response_metadata: { next_cursor: "" },
+      });
+    }
+    temporalPages += 1;
+    assert.ok(temporalPages <= 100, "temporal page 101 must never be fetched");
+    return jsonResponse({
+      ok: true,
+      activities:
+        temporalPages === 100
+          ? [activities.start, activities.boundary]
+          : [
+              {
+                level: "info",
+                event_type: "workflow_published",
+                component_type: "workflows",
+                created: previousCheckpointUs + temporalPages,
+                payload: { workflow_name: "GitHub activity" },
+              },
+            ],
+      response_metadata: { next_cursor: `temporal-${temporalPages + 1}` },
+    });
+  };
+
+  await assert.rejects(
+    monitorSlackWorkflow({ environment, fetchImpl, now: () => now }),
+    /catch-up acknowledged durable checkpoint progress after 100 pages/,
+  );
+  assert.equal(temporalPages, 100);
+  assert.equal(hydrationPages, 1);
+  assert.equal(report.scan_state, "resume");
+  assert.equal(report.checkpoint_us, traceCreatedUs + 1);
+  assert.deepEqual(report.hydrations, []);
+  assert.equal(report.traces.length, 1);
+  assert.equal(report.traces[0].trace_id, traceId);
+  assert.equal(report.traces[0].outcome, "success");
+});
+
+test("hydrates a suffix-only trace behind the durable checkpoint without regressing it", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceCreatedUs = checkpointUs - 10_000;
+  const traceId = "TrHydrateSuffixOnly1";
+  const activities = hydrationTraceActivities({
+    created: traceCreatedUs,
+    deliveryId: "delivery-hydrate-suffix-only-1",
+    traceId,
+  });
+  let report;
+  let hydrationRequests = 0;
+
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponseV5({ checkpointUs });
+      }
+      if (input === RECONCILIATION_URL) {
+        report = assertReconciliationV5Request(init);
+        return acceptedReconciliationResponse(report);
+      }
+      assert.equal(input, SLACK_URL);
+      const form = Object.fromEntries(init.body);
+      if (form.trace_id === traceId) {
+        hydrationRequests += 1;
+        assert.equal(form.min_date_created, undefined);
+        assert.equal(form.max_date_created, undefined);
+        return jsonResponse({
+          ok: true,
+          activities: [
+            activities.start,
+            activities.boundary,
+            activities.terminal,
+          ],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      return jsonResponse({
+        ok: true,
+        activities: [activities.terminal],
+        response_metadata: { next_cursor: "" },
+      });
+    },
+  });
+
+  assert.equal(hydrationRequests, 1);
+  assert.equal(report.checkpoint_us, checkpointUs);
+  assert.equal(report.traces[0].started_at_us, traceCreatedUs);
+  assert.equal(report.traces[0].completed_at_us, traceCreatedUs + 2);
+  assert.deepEqual(result, { caughtUp: true, errors: 0, pages: 1, traces: 1 });
+});
+
+test("paginates a trace hydration independently without temporal bounds", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceId = "TrHydrateCursor1";
+  const activities = hydrationTraceActivities({
+    created: checkpointUs - 1_000,
+    deliveryId: "delivery-hydrate-cursor-1",
+    traceId,
+  });
+  const hydrationCursors = [];
+
+  await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponseV5({ checkpointUs });
+      }
+      if (input === RECONCILIATION_URL) {
+        const report = assertReconciliationV5Request(init);
+        return acceptedReconciliationResponse(report);
+      }
+      const form = Object.fromEntries(init.body);
+      if (form.trace_id !== traceId) {
+        return jsonResponse({
+          ok: true,
+          activities: [activities.terminal],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      assert.equal(form.min_date_created, undefined);
+      assert.equal(form.max_date_created, undefined);
+      hydrationCursors.push(form.cursor ?? null);
+      return hydrationCursors.length === 1
+        ? jsonResponse({
+            ok: true,
+            activities: [activities.start, activities.boundary],
+            response_metadata: { next_cursor: "trace-page-2" },
+          })
+        : jsonResponse({
+            ok: true,
+            activities: [activities.terminal],
+            response_metadata: { next_cursor: "" },
+          });
+    },
+  });
+
+  assert.deepEqual(hydrationCursors, [null, "trace-page-2"]);
+});
+
+test("deduplicates activities replayed by temporal scan and trace hydration", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceId = "TrHydrateExactReplay1";
+  const activities = hydrationTraceActivities({
+    created: checkpointUs + 1_000,
+    deliveryId: "delivery-hydrate-exact-replay-1",
+    traceId,
+  });
+  let hydrationPage = 0;
+  let report;
+
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponseV5({ checkpointUs });
+      }
+      if (input === RECONCILIATION_URL) {
+        report = assertReconciliationV5Request(init);
+        return acceptedReconciliationResponse(report);
+      }
+      const form = Object.fromEntries(init.body);
+      if (form.trace_id !== traceId) {
+        return jsonResponse({
+          ok: true,
+          activities: [activities.start, activities.boundary],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      hydrationPage += 1;
+      return hydrationPage === 1
+        ? jsonResponse({
+            ok: true,
+            activities: [activities.start, activities.boundary],
+            response_metadata: { next_cursor: "exact-replay-page-2" },
+          })
+        : jsonResponse({
+            ok: true,
+            activities: [activities.boundary, activities.terminal],
+            response_metadata: { next_cursor: "" },
+          });
+    },
+  });
+
+  assert.equal(hydrationPage, 2);
+  assert.deepEqual(report.hydrations, []);
+  assert.equal(report.traces.length, 1);
+  assert.equal(report.traces[0].trace_id, traceId);
+  assert.deepEqual(result, { caughtUp: true, errors: 0, pages: 1, traces: 1 });
+});
+
+test("preserves normalized trace ownership when hydration hits its pagination bound", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceId = "TrHydrationBoundOwnership1";
+  const deliveryId = "delivery-hydration-bound-ownership-1";
+  const activities = hydrationTraceActivities({
+    created: checkpointUs + 1_000,
+    deliveryId,
+    traceId,
+  });
+  let hydrationPage = 0;
+  let report;
+
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponseV5({ checkpointUs });
+      }
+      if (input === RECONCILIATION_URL) {
+        report = assertReconciliationV5Request(init);
+        return acceptedReconciliationResponse(report);
+      }
+      const form = Object.fromEntries(init.body);
+      if (form.trace_id === traceId) {
+        hydrationPage += 1;
+        return jsonResponse({
+          ok: true,
+          activities:
+            hydrationPage === 1
+              ? [activities.start, activities.boundary, activities.terminal]
+              : [],
+          response_metadata: {
+            next_cursor: `hydration-bound-${hydrationPage + 1}`,
+          },
+        });
+      }
+      return jsonResponse({
+        ok: true,
+        activities: [activities.terminal],
+        response_metadata: { next_cursor: "" },
+      });
+    },
+  });
+
+  assert.equal(hydrationPage, 2);
+  assert.deepEqual(report.hydrations, []);
+  assert.equal(report.traces.length, 1);
+  assert.equal(report.traces[0].trace_id, traceId);
+  assert.equal(report.traces[0].delivery_id, deliveryId);
+  assert.equal(report.traces[0].outcome, "success");
+  assert.deepEqual(result, { caughtUp: true, errors: 0, pages: 1, traces: 1 });
+});
+
+test("persists bounded pending ownership before durable pagination debt", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceId = "TrHydrationBoundPending1";
+  const deliveryId = "delivery-hydration-bound-pending-1";
+  const activities = hydrationTraceActivities({
+    created: checkpointUs - 1_000,
+    deliveryId,
+    traceId,
+  });
+  const reports = [];
+  let hydrationRequests = 0;
+  let pendingTrace = true;
+
+  const fetchImpl = async (input, init) => {
+    if (input === CHECKPOINT_URL) {
+      return checkpointResponseV5({
+        checkpointUs,
+        pendingTraceIds: pendingTrace ? [traceId] : [],
+        pendingTraceOldestUs: pendingTrace ? activities.start.created : null,
+      });
+    }
+    if (input === RECONCILIATION_URL) {
+      const report = assertReconciliationV5Request(init);
+      reports.push(report);
+      if (
+        report.hydrations.some(
+          (hydration) =>
+            hydration.trace_id === traceId &&
+            hydration.status === "debt" &&
+            hydration.debt_reason === "pagination_bound",
+        )
+      ) {
+        pendingTrace = false;
+      }
+      return acceptedReconciliationResponse(report);
+    }
+    assert.equal(input, SLACK_URL);
+    const form = Object.fromEntries(init.body);
+    if (form.trace_id === traceId) {
+      hydrationRequests += 1;
+      return hydrationRequests % 2 === 1
+        ? jsonResponse({
+            ok: true,
+            activities: [activities.start, activities.boundary],
+            response_metadata: { next_cursor: "pending-bound-page-2" },
+          })
+        : jsonResponse({
+            ok: true,
+            activities: [],
+            response_metadata: { next_cursor: "pending-bound-page-3" },
+          });
+    }
+    return jsonResponse({
+      ok: true,
+      activities: [],
+      response_metadata: { next_cursor: "" },
+    });
+  };
+
+  await monitorSlackWorkflow({ environment, fetchImpl, now: () => now });
+  await monitorSlackWorkflow({ environment, fetchImpl, now: () => now + 1 });
+
+  assert.equal(hydrationRequests, 2);
+  assert.equal(reports.length, 3);
+  const [ownershipReport, debtReport, replayReport] = reports;
+  assert.equal(ownershipReport.checkpoint_us, checkpointUs);
+  assert.equal(ownershipReport.scan_state, "preserve");
+  assert.deepEqual(ownershipReport.hydrations, []);
+  assert.equal(ownershipReport.traces.length, 1);
+  assert.equal(ownershipReport.traces[0].trace_id, traceId);
+  assert.equal(ownershipReport.traces[0].delivery_id, deliveryId);
+  assert.equal(ownershipReport.traces[0].outcome, "pending");
+  assert.equal(debtReport.checkpoint_us, checkpointUs);
+  assert.equal(debtReport.scan_state, "complete");
+  assert.deepEqual(debtReport.traces, []);
+  assert.deepEqual(debtReport.hydrations, [
+    {
+      trace_id: traceId,
+      first_observed_us: activities.start.created,
+      last_observed_us: activities.boundary.created,
+      status: "debt",
+      debt_reason: "pagination_bound",
+      attempted: true,
+    },
+  ]);
+  assert.deepEqual(replayReport.traces, []);
+  assert.deepEqual(replayReport.hydrations, []);
+  for (const report of reports) {
+    const hydrationIds = new Set(
+      report.hydrations.map((hydration) => hydration.trace_id),
+    );
+    assert.equal(
+      report.traces.some((trace) => hydrationIds.has(trace.trace_id)),
+      false,
+    );
+  }
+});
+
+test("separates a terminal trace from same-delivery hydration debt", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const deliveryId = "delivery-mixed-trace-hydration-1";
+  const pendingTraceId = "TrMixedHydrationPending1";
+  const terminalTraceId = "TrMixedHydrationTerminal1";
+  const pendingActivities = hydrationTraceActivities({
+    created: checkpointUs - 1_000,
+    deliveryId,
+    traceId: pendingTraceId,
+  });
+  const terminalActivities = hydrationTraceActivities({
+    created: checkpointUs + 1_000,
+    deliveryId,
+    traceId: terminalTraceId,
+  });
+  const reports = [];
+  let hydrationPage = 0;
+
+  await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponseV5({
+          checkpointUs,
+          pendingTraceIds: [pendingTraceId],
+          pendingTraceOldestUs: pendingActivities.start.created,
+        });
+      }
+      if (input === RECONCILIATION_URL) {
+        const report = assertReconciliationV5Request(init);
+        reports.push(report);
+        return acceptedReconciliationResponse(report);
+      }
+      assert.equal(input, SLACK_URL);
+      const form = Object.fromEntries(init.body);
+      if (form.trace_id === pendingTraceId) {
+        hydrationPage += 1;
+        return hydrationPage === 1
+          ? jsonResponse({
+              ok: true,
+              activities: [pendingActivities.start, pendingActivities.boundary],
+              response_metadata: { next_cursor: "mixed-hydration-page-2" },
+            })
+          : jsonResponse({
+              ok: true,
+              activities: [],
+              response_metadata: { next_cursor: "mixed-hydration-page-3" },
+            });
+      }
+      return jsonResponse({
+        ok: true,
+        activities: [
+          terminalActivities.start,
+          terminalActivities.boundary,
+          terminalActivities.terminal,
+        ],
+        response_metadata: { next_cursor: "" },
+      });
+    },
+  });
+
+  assert.equal(hydrationPage, 2);
+  assert.equal(reports.length, 2);
+  const [traceReport, debtReport] = reports;
+  assert.deepEqual(traceReport.hydrations, []);
+  assert.deepEqual(
+    traceReport.traces.map((trace) => trace.trace_id),
+    [pendingTraceId, terminalTraceId],
+  );
+  assert.equal(traceReport.scan_state, "preserve");
+  assert.deepEqual(debtReport.traces, []);
+  assert.deepEqual(
+    debtReport.hydrations.map((hydration) => [
+      hydration.trace_id,
+      hydration.status,
+      hydration.debt_reason,
+    ]),
+    [[pendingTraceId, "debt", "pagination_bound"]],
+  );
+  assert.equal(debtReport.scan_state, "complete");
+});
+
+test("does not register a complete legacy workflow for hydration", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceId = "TrLegacyHydrationRegistry1";
+  const activities = legacyTraceActivities({
+    created: checkpointUs + 1_000,
+    traceId,
+  });
+  let report;
+  let hydrationRequests = 0;
+
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponseV5({ checkpointUs });
+      }
+      if (input === RECONCILIATION_URL) {
+        report = assertReconciliationV5Request(init);
+        return acceptedReconciliationResponse(report);
+      }
+      const form = Object.fromEntries(init.body);
+      if (form.trace_id === traceId) hydrationRequests += 1;
+      return jsonResponse({
+        ok: true,
+        activities,
+        response_metadata: { next_cursor: "" },
+      });
+    },
+  });
+
+  assert.equal(hydrationRequests, 0);
+  assert.deepEqual(report.hydrations, []);
+  assert.deepEqual(report.traces, []);
+  assert.deepEqual(result, { caughtUp: true, errors: 0, pages: 1, traces: 0 });
+});
+
+test("removes a persisted hydration after confirming a legacy workflow", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceId = "TrPersistedLegacyHydration1";
+  const activities = legacyTraceActivities({
+    created: checkpointUs + 1_000,
+    traceId,
+  });
+  let hydrationRequests = 0;
+  let report;
+
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => now,
+    fetchImpl: async (input, init) => {
+      if (input === CHECKPOINT_URL) {
+        return checkpointResponseV5({
+          checkpointUs,
+          pendingTraceIds: [traceId],
+          pendingTraceOldestUs: activities[0].created,
+        });
+      }
+      if (input === RECONCILIATION_URL) {
+        report = assertReconciliationV5Request(init);
+        return acceptedReconciliationResponse(report);
+      }
+      assert.equal(input, SLACK_URL);
+      const form = Object.fromEntries(init.body);
+      if (form.trace_id === traceId) hydrationRequests += 1;
+      return jsonResponse({
+        ok: true,
+        activities,
+        response_metadata: { next_cursor: "" },
+      });
+    },
+  });
+
+  assert.equal(hydrationRequests, 0);
+  assert.deepEqual(report.traces, []);
+  assert.deepEqual(report.hydrations, [
+    {
+      trace_id: traceId,
+      first_observed_us: activities[0].created,
+      last_observed_us: activities.at(-1).created,
+      status: "legacy",
+      debt_reason: null,
+      attempted: false,
+    },
+  ]);
+  assert.equal(report.scan_state, "complete");
+  assert.equal(report.checkpoint_us, activities.at(-1).created);
+  assert.deepEqual(result, { caughtUp: true, errors: 0, pages: 1, traces: 0 });
+});
+
+test("reports attempted normalized pending hydrations without registering unattempted traces", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceIds = [
+    "TrHydrationFairness1",
+    "TrHydrationFairness2",
+    "TrHydrationFairness3",
+  ];
+  const activitiesByTrace = new Map(
+    traceIds.map((traceId, index) => [
+      traceId,
+      hydrationTraceActivities({
+        created: checkpointUs + index * 10 + 1,
+        deliveryId: `delivery-hydration-fairness-${index + 1}`,
+        traceId,
+      }),
+    ]),
+  );
+  const fetchedTraceIds = [];
+  const reports = [];
+
+  let monitorError = null;
+  try {
+    await monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return checkpointResponseV5({ checkpointUs });
+        }
+        if (input === RECONCILIATION_URL) {
+          const report = assertReconciliationV5Request(init);
+          reports.push(report);
+          return acceptedReconciliationResponse(report);
+        }
+        const form = Object.fromEntries(init.body);
+        if (form.trace_id !== undefined) {
+          fetchedTraceIds.push(form.trace_id);
+          const traceActivities = activitiesByTrace.get(form.trace_id);
+          return jsonResponse({
+            ok: true,
+            activities: [traceActivities.start, traceActivities.boundary],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        return jsonResponse({
+          ok: true,
+          activities: [...activitiesByTrace.values()].flatMap(
+            ({ start, boundary }) => [start, boundary],
+          ),
+          response_metadata: { next_cursor: "" },
+        });
+      },
+    });
+  } catch (error) {
+    monitorError = error;
+  }
+
+  assert.deepEqual(fetchedTraceIds, traceIds.slice(0, 2));
+  assert.equal(reports.length, 2);
+  const [traceReport, hydrationReport] = reports;
+  assert.deepEqual(
+    traceReport.traces.map((trace) => trace.trace_id),
+    traceIds,
+  );
+  assert.deepEqual(traceReport.hydrations, []);
+  assert.equal(traceReport.scan_state, "preserve");
+  assert.deepEqual(hydrationReport.traces, []);
+  assert.deepEqual(
+    hydrationReport.hydrations.map(({ trace_id: traceId, attempted }) => ({
+      traceId,
+      attempted,
+    })),
+    traceIds.slice(0, 2).map((traceId) => ({ traceId, attempted: true })),
+  );
+  assert.equal(hydrationReport.scan_state, "complete");
+  assert.match(String(monitorError), /trace hydration remains incomplete/);
+});
+
+test("persists completed hydration attempts before surfacing a later hydration failure", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const firstTraceId = "TrHydrationCompletedBeforeFailure1";
+  const failingTraceId = "TrHydrationFailureAfterCompleted2";
+  const firstActivities = hydrationTraceActivities({
+    created: checkpointUs - 1_000,
+    deliveryId: "delivery-hydration-completed-before-failure-1",
+    traceId: firstTraceId,
+  });
+  const hydratedTraceIds = [];
+  const reports = [];
+
+  let monitorError = null;
+  try {
+    await monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return checkpointResponseV5({
+            checkpointUs,
+            pendingTraceIds: [firstTraceId, failingTraceId],
+            pendingTraceOldestUs: firstActivities.start.created,
+          });
+        }
+        if (input === RECONCILIATION_URL) {
+          const report = assertReconciliationV5Request(init);
+          reports.push(report);
+          return acceptedReconciliationResponse(report);
+        }
+        assert.equal(input, SLACK_URL);
+        const form = Object.fromEntries(init.body);
+        if (form.trace_id === undefined) {
+          return jsonResponse({
+            ok: true,
+            activities: [],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        hydratedTraceIds.push(form.trace_id);
+        if (form.trace_id === firstTraceId) {
+          return jsonResponse({
+            ok: true,
+            activities: [firstActivities.start, firstActivities.boundary],
+            response_metadata: { next_cursor: "" },
+          });
+        }
+        assert.equal(form.trace_id, failingTraceId);
+        return jsonResponse({
+          ok: true,
+          activities: null,
+          response_metadata: { next_cursor: "" },
+        });
+      },
+    });
+  } catch (error) {
+    monitorError = error;
+  }
+
+  assert.deepEqual(hydratedTraceIds, [firstTraceId, failingTraceId]);
+  assert.equal(reports.length, 2);
+  assert.deepEqual(
+    reports[0].traces.map((trace) => [trace.trace_id, trace.outcome]),
+    [[firstTraceId, "pending"]],
+  );
+  assert.deepEqual(reports[0].hydrations, []);
+  assert.equal(reports[0].scan_state, "preserve");
+  assert.deepEqual(reports[1].traces, []);
+  assert.deepEqual(
+    reports[1].hydrations.map(({ trace_id: traceId, status, attempted }) => ({
+      traceId,
+      status,
+      attempted,
+    })),
+    [firstTraceId, failingTraceId].map((traceId) => ({
+      traceId,
+      status: "pending",
+      attempted: true,
+    })),
+  );
+  assert.equal(reports[1].checkpoint_us, checkpointUs);
+  assert.match(
+    String(monitorError),
+    /Slack activity API returned a malformed activities collection/,
+  );
+});
+
+test("does not advance the checkpoint while trace hydration remains unresolved", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const checkpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  const traceId = "TrHydrateUnresolved1";
+  const terminal = {
+    level: "info",
+    event_type: "workflow_execution_result",
+    component_type: "workflows",
+    created: checkpointUs + 1_000,
+    trace_id: traceId,
+    payload: { exec_outcome: "Success" },
+  };
+  let report;
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return checkpointResponseV5({ checkpointUs });
+        }
+        if (input === RECONCILIATION_URL) {
+          report = assertReconciliationV5Request(init);
+          return acceptedReconciliationResponse(report);
+        }
+        return jsonResponse({
+          ok: true,
+          activities: [terminal],
+          response_metadata: { next_cursor: "" },
+        });
+      },
+    }),
+    /trace hydration remains incomplete/,
+  );
+
+  assert.equal(report.checkpoint_us, checkpointUs);
+  assert.deepEqual(report.traces, []);
+  assert.deepEqual(report.hydrations, [
+    {
+      trace_id: traceId,
+      first_observed_us: terminal.created,
+      last_observed_us: terminal.created,
+      status: "pending",
+      debt_reason: null,
+      attempted: true,
+    },
+  ]);
+});
+
+test("resumes before a pending trace start so the terminal suffix can complete it", async () => {
+  const firstNow = Date.parse("2026-08-14T06:11:06.000Z");
+  const secondNow = firstNow + 15 * 60 * 1_000;
+  const initialCheckpointUs = firstNow * 1_000 - 60 * 60 * 1_000 * 1_000;
+  const traceStartedAtUs = initialCheckpointUs + 1_000;
+  const traceId = "TrBoundarySplit1";
+  const deliveryId = "delivery-boundary-split-1";
+  let durableCheckpointUs = initialCheckpointUs;
+  let resumeFromUs = null;
+  let durableTrace = null;
+  let run = 1;
+  let firstRunSlackRequests = 0;
+  let secondRunSlackRequests = 0;
+  const requestedMinimums = [];
+  const reports = [];
+
+  const startActivity = {
+    level: "info",
+    event_type: "workflow_execution_started",
+    component_type: "workflows",
+    created: traceStartedAtUs,
+    trace_id: traceId,
+    payload: { workflow_name: "GitHub activity" },
+  };
+  const boundaryActivity = {
+    level: "info",
+    event_type: "workflow_step_execution_result",
+    component_type: "workflows",
+    created: traceStartedAtUs + 1,
+    trace_id: traceId,
+    payload: {
+      exec_outcome: "Success",
+      function_execution_id: "FxBoundarySplit1",
+      inputs: signedProgressInputs(
+        deliveryId,
+        "send_started",
+        "alerts",
+        String(Math.floor(traceStartedAtUs / 1_000_000)),
+      ),
+    },
+  };
+  const terminalActivity = {
+    level: "info",
+    event_type: "workflow_execution_result",
+    component_type: "workflows",
+    created: traceStartedAtUs + 2,
+    trace_id: traceId,
+    payload: { exec_outcome: "Success" },
+  };
+
+  const fetchImpl = async (input, init) => {
+    if (input === CHECKPOINT_URL) {
+      return checkpointResponseV4(durableCheckpointUs, resumeFromUs);
+    }
+    if (input === RECONCILIATION_URL) {
+      const report = assertReconciliationV4Request(init);
+      reports.push(report);
+      for (const trace of report.traces) {
+        if (trace.trace_id === traceId) durableTrace = structuredClone(trace);
+      }
+      durableCheckpointUs = report.checkpoint_us;
+      if (report.scan_state === "resume") {
+        resumeFromUs = durableCheckpointUs;
+      } else if (report.scan_state === "complete") {
+        resumeFromUs = null;
+      }
+      return acceptedReconciliationResponse(report);
+    }
+    assert.equal(input, SLACK_URL);
+    const form = Object.fromEntries(init.body);
+    const minimum = Number(form.min_date_created);
+    requestedMinimums.push(minimum);
+    if (run === 1) {
+      firstRunSlackRequests += 1;
+      assert.ok(firstRunSlackRequests <= 100);
+      return jsonResponse({
+        ok: true,
+        activities:
+          firstRunSlackRequests === 100
+            ? [startActivity, boundaryActivity]
+            : [
+                {
+                  level: "info",
+                  event_type: "workflow_published",
+                  component_type: "workflows",
+                  created: initialCheckpointUs + firstRunSlackRequests,
+                  payload: { workflow_name: "GitHub activity" },
+                },
+              ],
+        response_metadata: {
+          next_cursor: `split-cursor-${firstRunSlackRequests + 1}`,
+        },
+      });
+    }
+    secondRunSlackRequests += 1;
+    assert.equal(form.cursor, undefined);
+    return jsonResponse({
+      ok: true,
+      activities: [
+        ...(minimum <= traceStartedAtUs ? [startActivity] : []),
+        ...(minimum <= traceStartedAtUs + 1 ? [boundaryActivity] : []),
+        terminalActivity,
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+  };
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => firstNow,
+      fetchImpl,
+    }),
+    /catch-up acknowledged durable checkpoint progress after 100 pages/,
+  );
+  assert.equal(firstRunSlackRequests, 100);
+  assert.equal(durableTrace?.outcome, "pending");
+
+  run = 2;
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => secondNow,
+    fetchImpl,
+  });
+
+  assert.equal(secondRunSlackRequests, 1);
+  assert.equal(requestedMinimums.at(-1), traceStartedAtUs);
+  assert.equal(durableTrace?.outcome, "success");
+  assert.deepEqual(
+    reports.map(({ scan_state }) => scan_state),
+    ["resume", "complete"],
+  );
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 1,
+  });
+});
+
+test("a bounded overlap-only prefix persists v4 resume state before failing closed", async () => {
+  const firstNow = Date.parse("2026-08-14T06:11:06.000Z");
+  const secondNow = firstNow + 15 * 60 * 1_000;
+  const previousCheckpointUs = firstNow * 1_000 - 60 * 60 * 1_000 * 1_000;
+  let durableCheckpointUs = previousCheckpointUs;
+  let resumeFromUs = null;
+  let run = 1;
+  let firstRunSlackRequests = 0;
+  let secondRunSlackRequests = 0;
+  let reconciliationPosts = 0;
+  const requestedMinimums = [];
+  const scanStates = [];
+
+  const fetchImpl = async (input, init) => {
+    if (input === CHECKPOINT_URL) {
+      return checkpointResponseV4(durableCheckpointUs, resumeFromUs);
+    }
+    if (input === RECONCILIATION_URL) {
+      reconciliationPosts += 1;
+      const report = assertReconciliationV4Request(init);
+      scanStates.push(report.scan_state);
+      durableCheckpointUs = report.checkpoint_us;
+      if (report.scan_state === "resume") {
+        resumeFromUs = durableCheckpointUs;
+      } else if (report.scan_state === "complete") {
+        resumeFromUs = null;
+      }
+      return acceptedReconciliationResponse(report);
+    }
+    assert.equal(input, SLACK_URL);
+    const form = Object.fromEntries(init.body);
+    requestedMinimums.push(Number(form.min_date_created));
+    if (run === 1) {
+      firstRunSlackRequests += 1;
+      assert.ok(firstRunSlackRequests <= 100);
+      return jsonResponse({
+        ok: true,
+        activities: [
+          {
+            level: "info",
+            event_type: "workflow_published",
+            component_type: "workflows",
+            created: previousCheckpointUs - 100 + firstRunSlackRequests,
+            payload: { workflow_name: "GitHub activity" },
+          },
+        ],
+        response_metadata: {
+          next_cursor: `overlap-cursor-${firstRunSlackRequests + 1}`,
+        },
+      });
+    }
+    secondRunSlackRequests += 1;
+    assert.equal(form.cursor, undefined);
+    return jsonResponse({
+      ok: true,
+      activities: [
+        {
+          level: "info",
+          event_type: "workflow_published",
+          component_type: "workflows",
+          created: previousCheckpointUs + 1,
+          payload: { workflow_name: "GitHub alerts" },
+        },
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+  };
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => firstNow,
+      fetchImpl,
+    }),
+    /Relay did not acknowledge Slack activity checkpoint progress/,
+  );
+  assert.equal(firstRunSlackRequests, 100);
+  assert.equal(reconciliationPosts, 1);
+  assert.equal(durableCheckpointUs, previousCheckpointUs);
+  assert.equal(resumeFromUs, previousCheckpointUs);
+
+  run = 2;
+  const result = await monitorSlackWorkflow({
+    environment,
+    now: () => secondNow,
+    fetchImpl,
+  });
+
+  assert.equal(secondRunSlackRequests, 1);
+  assert.equal(
+    requestedMinimums[0],
+    previousCheckpointUs - 20 * 60 * 1_000 * 1_000,
+  );
+  assert.equal(requestedMinimums.at(-1), previousCheckpointUs);
+  assert.deepEqual(scanStates, ["resume", "complete"]);
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
+  assert.equal(resumeFromUs, null);
+  assert.equal(durableCheckpointUs, previousCheckpointUs + 1);
+});
+
+test("a relay response that does not advance the checkpoint cannot claim progress", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const previousCheckpointUs = now * 1_000 - 60 * 60 * 1_000 * 1_000;
+  let slackRequests = 0;
+  let reconciliationPosts = 0;
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return checkpointResponseV4(previousCheckpointUs);
+        }
+        if (input === RECONCILIATION_URL) {
+          reconciliationPosts += 1;
+          const report = assertReconciliationV4Request(init);
+          return jsonResponse({
+            ok: true,
+            traces: report.traces.length,
+            changed_error_traces: 0,
+            checkpoint_us: previousCheckpointUs,
+          });
+        }
+        assert.equal(input, SLACK_URL);
+        slackRequests += 1;
+        return jsonResponse({
+          ok: true,
+          activities: [
+            {
+              level: "info",
+              event_type: "workflow_published",
+              component_type: "workflows",
+              created: previousCheckpointUs + slackRequests,
+              payload: { workflow_name: "GitHub activity" },
+            },
+          ],
+          response_metadata: {
+            next_cursor: `unacknowledged-cursor-${slackRequests + 1}`,
+          },
+        });
+      },
+    }),
+    (error) =>
+      /Relay did not acknowledge Slack activity checkpoint progress/u.test(
+        error.message,
+      ) && !/advanced|success/iu.test(error.message),
+  );
+
+  assert.equal(slackRequests, 100);
+  assert.equal(reconciliationPosts, 1);
+});
+
+test("fails closed when a bounded prefix cannot advance the checkpoint", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const previousCheckpointUs = now * 1_000 - 60 * 1_000 * 1_000;
+  let slackRequests = 0;
+  let reconciliationPosts = 0;
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input) => {
+        if (input === CHECKPOINT_URL) {
+          return checkpointResponse(previousCheckpointUs);
+        }
+        if (input === RECONCILIATION_URL) {
+          reconciliationPosts += 1;
+          return jsonResponse({ ok: true });
+        }
+        assert.equal(input, SLACK_URL);
+        slackRequests += 1;
+        return jsonResponse({
+          ok: true,
+          activities: [
+            {
+              level: "info",
+              event_type: "workflow_published",
+              component_type: "workflows",
+              created: previousCheckpointUs,
+              payload: { workflow_name: "GitHub activity" },
+            },
+          ],
+          response_metadata: {
+            next_cursor: `stalled-cursor-${slackRequests + 1}`,
+          },
+        });
+      },
+    }),
+    /could not advance its checkpoint within its safety bound/,
+  );
+
+  assert.equal(slackRequests, 100);
+  assert.equal(reconciliationPosts, 0);
+});
+
+test("v3 cannot post an advancing bounded prefix without durable resume state", async () => {
+  const now = Date.parse("2026-08-14T06:11:06.000Z");
+  const previousCheckpointUs = now * 1_000 - 60 * 60 * 1_000 * 1_000;
+  let slackRequests = 0;
+  let reconciliationPosts = 0;
+
+  await assert.rejects(
+    monitorSlackWorkflow({
+      environment,
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        if (input === CHECKPOINT_URL) {
+          return checkpointResponse(previousCheckpointUs);
+        }
+        if (input === RECONCILIATION_URL) {
+          reconciliationPosts += 1;
+          const report = assertReconciliationRequest(init);
+          return acceptedReconciliationResponse(report);
+        }
+        assert.equal(input, SLACK_URL);
+        slackRequests += 1;
+        return jsonResponse({
+          ok: true,
+          activities: [
+            {
+              level: "info",
+              event_type: "workflow_published",
+              component_type: "workflows",
+              created: previousCheckpointUs + slackRequests,
+              payload: { workflow_name: "GitHub activity" },
+            },
+          ],
+          response_metadata: {
+            next_cursor: `v3-bounded-cursor-${slackRequests + 1}`,
+          },
+        });
+      },
+    }),
+    /Relay reconciliation v4 is required to resume bounded Slack activity catch-up/,
+  );
+
+  assert.equal(slackRequests, 100);
+  assert.equal(reconciliationPosts, 0);
 });
 
 test("refreshes the authenticated report timestamp after long pagination and between chunks", async () => {
@@ -1270,7 +2930,12 @@ test("refreshes the authenticated report timestamp after long pagination and bet
     },
   });
 
-  assert.deepEqual(result, { errors: 0, pages: 3, traces: 101 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 3,
+    traces: 101,
+  });
   assert.deepEqual(reportSizes, [25, 25, 25, 25, 1]);
   assert.deepEqual(reportTimestamps, [
     "1785830701",
@@ -2800,7 +4465,12 @@ test("HTTP 429 performs one bounded Slack retry and does not retry twice", async
     },
     sleepImpl: async (milliseconds) => delays.push(milliseconds),
   });
-  assert.deepEqual(result, { errors: 0, pages: 1, traces: 0 });
+  assert.deepEqual(result, {
+    caughtUp: true,
+    errors: 0,
+    pages: 1,
+    traces: 0,
+  });
   assert.equal(slackRequests, 2);
   assert.deepEqual(delays, [2_000]);
 

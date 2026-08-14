@@ -56,6 +56,7 @@ import {
 } from "./slack-delivery-protocol-contract.mjs";
 import { SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS } from "../workers/github-slack-relay/src/slack-delivery-protocol-guards.ts";
 import {
+  SLACK_ACTIVITY_SCAN_STATE_TABLE_SQL,
   SLACK_RECONCILIATION_REPORT_ERRORS_REPORT_INDEX_SQL,
   SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL,
   SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL,
@@ -118,6 +119,18 @@ function createPostSealSchemaDatabase() {
     database.exec(
       readFileSync(
         `${migrationsDirectory}/0007_journal_slack_reconciliation_reports.sql`,
+        "utf8",
+      ),
+    );
+    database.exec(
+      readFileSync(
+        `${migrationsDirectory}/0008_resume_bounded_slack_activity_scan.sql`,
+        "utf8",
+      ),
+    );
+    database.exec(
+      readFileSync(
+        `${migrationsDirectory}/0009_track_slack_trace_hydration.sql`,
         "utf8",
       ),
     );
@@ -257,6 +270,22 @@ const reconciliationSchemaMutations = [
 ];
 
 const reconciliationInventoryMutations = [
+  {
+    expectedFailure: /Slack reconciliation schema-object inventory/u,
+    name: "the scan resume nonnegative predicate is missing",
+    mutate(database) {
+      database.exec("DROP TABLE slack_activity_scan_state");
+      database.exec(
+        replaceExactSchemaFragment(
+          SLACK_ACTIVITY_SCAN_STATE_TABLE_SQL,
+          " CHECK (\n    resume_from_us IS NULL OR resume_from_us >= 0\n  )",
+        ),
+      );
+      database.exec(
+        "INSERT INTO slack_activity_scan_state (singleton_id, resume_from_us) VALUES (1, NULL)",
+      );
+    },
+  },
   {
     expectedFailure: /Slack reconciliation index inventory/u,
     name: "the reviewed report index becomes compound",
@@ -1500,13 +1529,13 @@ test("the remote proof worst-case budget preserves the workflow margin", () => {
   assert.deepEqual(document.errors, []);
   const proofJob = document.toJS({ maxAliasCount: 0 }).jobs.prove_remote_d1;
 
-  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 99);
+  assert.equal(REMOTE_PROOF_API_REQUEST_CAP, 102);
   assert.equal(REMOTE_PROOF_WRANGLER_CALL_CAP, 3);
   assert.equal(REMOTE_PROOF_RETRY_DELAY_BUDGET_MS, 14_000);
-  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_859_000);
+  assert.equal(REMOTE_PROOF_WORST_CASE_RUNTIME_MS, 1_904_000);
   assert.equal(REMOTE_PROOF_WORKFLOW_TIMEOUT_MS, 3_600_000);
   assert.equal(REMOTE_PROOF_JOB_DEADLINE_BUFFER_MS, 60_000);
-  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_459_000);
+  assert.equal(REMOTE_PROOF_REQUIRED_REMAINING_MS, 2_504_000);
   assert.equal(
     proofJob["timeout-minutes"] * 60_000,
     REMOTE_PROOF_WORKFLOW_TIMEOUT_MS,

@@ -1,5 +1,9 @@
 import type { RelayDestination, SlackWorkflowPayload } from "./domain";
-import type { SlackProgressPhase, SlackTraceOutcome } from "./store";
+import type {
+  SlackProgressPhase,
+  SlackReconciliationScanState,
+  SlackTraceOutcome,
+} from "./store";
 
 export interface SignedSlackProgress {
   delivery_id: string;
@@ -26,12 +30,34 @@ export interface SignedSlackTrace {
   completed_at_us: number | null;
 }
 
-export interface SignedSlackReconciliation {
+export type SlackTraceHydrationDebtReason =
+  "retention_expired" | "pagination_bound";
+
+export interface SignedSlackTraceHydration {
+  trace_id: string;
+  first_observed_us: number;
+  last_observed_us: number;
+  status: "pending" | "debt" | "legacy";
+  debt_reason: SlackTraceHydrationDebtReason | null;
+  attempted: boolean;
+}
+
+export interface SignedSlackReconciliationV4 {
   checkpoint_us: number;
   report_timestamp: string;
+  scan_state: SlackReconciliationScanState;
   traces: SignedSlackTrace[];
   report_signature: string;
 }
+
+export interface SignedSlackReconciliation extends SignedSlackReconciliationV4 {
+  hydrations: SignedSlackTraceHydration[];
+}
+
+export type SignedSlackReconciliationV3 = Omit<
+  SignedSlackReconciliationV4,
+  "scan_state"
+>;
 
 export interface SignedSlackCheckpointRequest {
   request_timestamp: string;
@@ -247,6 +273,62 @@ export function canonicalSlackReconciliation(
   report: Omit<SignedSlackReconciliation, "report_signature">,
 ): string {
   return JSON.stringify([
+    "slack_activity_reconciliation_v5",
+    report.checkpoint_us,
+    report.report_timestamp,
+    report.scan_state,
+    report.hydrations.map((hydration) => [
+      hydration.trace_id,
+      hydration.first_observed_us,
+      hydration.last_observed_us,
+      hydration.status,
+      hydration.debt_reason,
+      hydration.attempted,
+    ]),
+    report.traces.map((trace) => [
+      trace.trace_id,
+      trace.delivery_id,
+      trace.outcome,
+      trace.relay_attempt,
+      trace.send_execution_id,
+      trace.slack_channel_id,
+      trace.slack_message_ts,
+      trace.send_boundary_reached,
+      trace.pre_send_failure_proven,
+      trace.started_at_us,
+      trace.completed_at_us,
+    ]),
+  ]);
+}
+
+export function canonicalSlackReconciliationV4(
+  report: Omit<SignedSlackReconciliationV4, "report_signature">,
+): string {
+  return JSON.stringify([
+    "slack_activity_reconciliation_v4",
+    report.checkpoint_us,
+    report.report_timestamp,
+    report.scan_state,
+    report.traces.map((trace) => [
+      trace.trace_id,
+      trace.delivery_id,
+      trace.outcome,
+      trace.relay_attempt,
+      trace.send_execution_id,
+      trace.slack_channel_id,
+      trace.slack_message_ts,
+      trace.send_boundary_reached,
+      trace.pre_send_failure_proven,
+      trace.started_at_us,
+      trace.completed_at_us,
+    ]),
+  ]);
+}
+
+export function canonicalSlackReconciliationV3(
+  report: Omit<SignedSlackReconciliationV3, "report_signature">,
+): string {
+  return JSON.stringify([
     "slack_activity_reconciliation_v3",
     report.checkpoint_us,
     report.report_timestamp,
@@ -267,7 +349,7 @@ export function canonicalSlackReconciliation(
 }
 
 export function canonicalSlackReconciliationV2(
-  report: Omit<SignedSlackReconciliation, "report_signature">,
+  report: Omit<SignedSlackReconciliationV3, "report_signature">,
 ): string {
   return JSON.stringify([
     "slack_activity_reconciliation_v2",
@@ -288,10 +370,20 @@ export function canonicalSlackReconciliationV2(
 }
 
 export async function signSlackReconciliation(
-  report: Omit<SignedSlackReconciliation, "report_signature">,
+  report:
+    | Omit<SignedSlackReconciliation, "report_signature">
+    | Omit<SignedSlackReconciliationV4, "report_signature">
+    | Omit<SignedSlackReconciliationV3, "report_signature">,
   secret: string,
 ): Promise<string> {
-  return hmacSignature(canonicalSlackReconciliation(report), secret);
+  return hmacSignature(
+    "hydrations" in report
+      ? canonicalSlackReconciliation(report)
+      : "scan_state" in report
+        ? canonicalSlackReconciliationV4(report)
+        : canonicalSlackReconciliationV3(report),
+    secret,
+  );
 }
 
 export async function verifySlackReconciliation(
@@ -305,15 +397,37 @@ export async function verifySlackReconciliation(
   );
 }
 
+export async function verifySlackReconciliationV4(
+  report: SignedSlackReconciliationV4,
+  secret: string,
+): Promise<boolean> {
+  return verifyHmacSignature(
+    canonicalSlackReconciliationV4(report),
+    report.report_signature,
+    secret,
+  );
+}
+
+export async function verifySlackReconciliationV3(
+  report: SignedSlackReconciliationV3,
+  secret: string,
+): Promise<boolean> {
+  return verifyHmacSignature(
+    canonicalSlackReconciliationV3(report),
+    report.report_signature,
+    secret,
+  );
+}
+
 export async function signSlackReconciliationV2(
-  report: Omit<SignedSlackReconciliation, "report_signature">,
+  report: Omit<SignedSlackReconciliationV3, "report_signature">,
   secret: string,
 ): Promise<string> {
   return hmacSignature(canonicalSlackReconciliationV2(report), secret);
 }
 
 export async function verifySlackReconciliationV2(
-  report: SignedSlackReconciliation,
+  report: SignedSlackReconciliationV3,
   secret: string,
 ): Promise<boolean> {
   return verifyHmacSignature(

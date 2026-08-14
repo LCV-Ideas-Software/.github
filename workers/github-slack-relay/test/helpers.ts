@@ -52,12 +52,23 @@ type MemorySlackTrace = {
   preSendFailureProven: boolean;
   startedAtUs: number;
   completedAtUs: number | null;
+  updatedAt: number;
   applied: boolean;
+};
+
+type MemorySlackTraceHydration = {
+  firstObservedUs: number;
+  lastObservedUs: number;
+  lastHydratedAt: number;
+  status: "pending" | "debt";
+  debtReason: "retention_expired" | "pagination_bound" | null;
+  updatedAt: number;
 };
 
 export class MemoryDeliveryStore implements DeliveryStore {
   readonly deliveries = new Map<string, StoredDelivery>();
   readonly slackTraces = new Map<string, MemorySlackTrace>();
+  readonly slackTraceHydrations = new Map<string, MemorySlackTraceHydration>();
   readonly slackReconciliationReports = new Map<
     string,
     SlackReconciliationReportResult
@@ -65,6 +76,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
   readonly reportedSlackErrorTraces = new Map<string, string | null>();
   nextSlackAt = 0;
   slackActivityCheckpoint = 0;
+  slackActivityResumeFrom: number | null = null;
   slackDeliveryProtocolActive = true;
   slackDeliveryProtocolRevision: string | null =
     SLACK_DELIVERY_PROTOCOL_SEALED_REVISION;
@@ -387,8 +399,37 @@ export class MemoryDeliveryStore implements DeliveryStore {
         "known_loss_recovery_authorization_required",
       );
     }
+    const consumeOwnedHydrationDebt = () => {
+      if (
+        delivery.status !== "delivered" ||
+        delivery.destination !== input.destination ||
+        delivery.attemptCount !== input.attemptCount ||
+        delivery.slackMessageTs !== input.messageTs ||
+        delivery.slackSendExecutionId === null
+      ) {
+        return;
+      }
+      for (const [traceId, hydration] of this.slackTraceHydrations) {
+        const trace = this.slackTraces.get(traceId);
+        if (
+          (hydration.status === "pending" || hydration.status === "debt") &&
+          trace?.deliveryId === delivery.deliveryId &&
+          trace.outcome === "pending" &&
+          trace.attemptCount === delivery.attemptCount &&
+          (trace.sendExecutionId === null ||
+            trace.sendExecutionId === delivery.slackSendExecutionId)
+        ) {
+          trace.applied = true;
+          trace.updatedAt = Math.max(trace.updatedAt, input.now);
+          this.slackTraceHydrations.delete(traceId);
+        }
+      }
+    };
     if (delivery.status === "delivered") {
-      if (delivery.slackMessageTs === input.messageTs) return "duplicate";
+      if (delivery.slackMessageTs === input.messageTs) {
+        consumeOwnedHydrationDebt();
+        return "duplicate";
+      }
       throw new SlackProgressConflictError("slack_message_timestamp_conflict");
     }
     const releasedPreSendRetry =
@@ -444,6 +485,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
     delivery.nextAttemptAt = input.now;
     delivery.lastError = null;
     delivery.legacyUnverified = false;
+    consumeOwnedHydrationDebt();
     return "recorded";
   }
 
@@ -667,6 +709,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
         trace.startedAtUs,
       ),
       completedAtUs: previous?.completedAtUs ?? trace.completedAtUs ?? null,
+      updatedAt: now,
       applied: previous?.applied ?? false,
     };
     if (
@@ -878,6 +921,55 @@ export class MemoryDeliveryStore implements DeliveryStore {
     return this.slackActivityCheckpoint;
   }
 
+  async getSlackActivityScanState(): Promise<{
+    checkpointUs: number;
+    resumeFromUs: number | null;
+    pendingTraceIds: string[];
+    pendingTraceTotal: number;
+    pendingTraceOldestUs: number | null;
+  }> {
+    const pending = [
+      ...[...this.slackTraces]
+        .filter(
+          ([traceId, trace]) =>
+            trace.outcome === "pending" &&
+            !trace.applied &&
+            !this.slackTraceHydrations.has(traceId),
+        )
+        .map(([traceId, trace]) => ({
+          traceId,
+          firstObservedUs: trace.startedAtUs,
+          lastHydratedAt: 0,
+        })),
+      ...[...this.slackTraceHydrations]
+        .filter(([, hydration]) => hydration.status === "pending")
+        .map(([traceId, hydration]) => ({
+          traceId,
+          firstObservedUs: hydration.firstObservedUs,
+          lastHydratedAt: hydration.lastHydratedAt,
+        })),
+    ].sort(
+      (left, right) =>
+        left.lastHydratedAt - right.lastHydratedAt ||
+        left.firstObservedUs - right.firstObservedUs ||
+        (left.traceId < right.traceId
+          ? -1
+          : left.traceId > right.traceId
+            ? 1
+            : 0),
+    );
+    return {
+      checkpointUs: this.slackActivityCheckpoint,
+      resumeFromUs: this.slackActivityResumeFrom,
+      pendingTraceIds: pending.slice(0, 25).map(({ traceId }) => traceId),
+      pendingTraceTotal: pending.length,
+      pendingTraceOldestUs:
+        pending.length === 0
+          ? null
+          : Math.min(...pending.map(({ firstObservedUs }) => firstObservedUs)),
+    };
+  }
+
   async getSlackReconciliationReport(
     reportId: string,
   ): Promise<SlackReconciliationReportResult | null> {
@@ -893,6 +985,11 @@ export class MemoryDeliveryStore implements DeliveryStore {
   async reconcileSlackReport(
     input: SlackReconciliationInput,
   ): Promise<SlackReconciliationReportResult> {
+    const scanState = input.scanState;
+    const hydrations = input.hydrations ?? [];
+    const traceIds = new Set(input.traces.map(({ traceId }) => traceId));
+    const hydrationIds = new Set(hydrations.map(({ traceId }) => traceId));
+    const reportItemCount = input.traces.length + hydrations.length;
     const deliveries = new Map(
       [...this.deliveries].map(([deliveryId, delivery]) => [
         deliveryId,
@@ -912,15 +1009,46 @@ export class MemoryDeliveryStore implements DeliveryStore {
       ]),
     );
     const reportedErrors = new Map(this.reportedSlackErrorTraces);
+    const storedHydrations = new Map(
+      [...this.slackTraceHydrations].map(([traceId, hydration]) => [
+        traceId,
+        structuredClone(hydration),
+      ]),
+    );
     const checkpoint = this.slackActivityCheckpoint;
+    const resumeFrom = this.slackActivityResumeFrom;
     try {
       if (
         !/^[0-9a-f]{64}$/u.test(input.reportId) ||
-        input.traces.length > 25 ||
-        new Set(input.traces.map(({ traceId }) => traceId)).size !==
-          input.traces.length ||
+        reportItemCount > 25 ||
+        traceIds.size !== input.traces.length ||
+        hydrationIds.size !== hydrations.length ||
+        [...hydrationIds].some((traceId) => traceIds.has(traceId)) ||
+        hydrations.some(
+          ({
+            traceId,
+            firstObservedUs,
+            lastObservedUs,
+            attempted,
+            status,
+            debtReason,
+          }) =>
+            !/^Tr[A-Za-z0-9_-]{1,125}$/u.test(traceId) ||
+            !Number.isSafeInteger(firstObservedUs) ||
+            firstObservedUs < 0 ||
+            !Number.isSafeInteger(lastObservedUs) ||
+            lastObservedUs < firstObservedUs ||
+            typeof attempted !== "boolean" ||
+            !["pending", "debt", "legacy"].includes(status) ||
+            (status === "debt"
+              ? !["retention_expired", "pagination_bound"].includes(
+                  debtReason ?? "",
+                )
+              : debtReason !== null),
+        ) ||
         !Number.isSafeInteger(input.checkpointUs) ||
         input.checkpointUs < 0 ||
+        !["preserve", "resume", "complete"].includes(scanState) ||
         !Number.isSafeInteger(input.now) ||
         input.now <= 0
       ) {
@@ -932,7 +1060,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
       const replay = await this.getSlackReconciliationReport(input.reportId);
       if (replay !== null) {
         if (
-          replay.traceCount !== input.traces.length ||
+          replay.traceCount !== reportItemCount ||
           replay.requestedCheckpointUs !== input.checkpointUs
         ) {
           throw new SlackReconciliationConflictError(
@@ -980,7 +1108,7 @@ export class MemoryDeliveryStore implements DeliveryStore {
             preSendFailureProven: trace.preSendFailureProven,
             startedAtUs: trace.startedAtUs,
             completedAtUs: trace.completedAtUs,
-            updatedAt: input.now,
+            updatedAt: trace.updatedAt,
             appliedAt: trace.applied ? input.now : null,
           },
         ]),
@@ -1030,17 +1158,159 @@ export class MemoryDeliveryStore implements DeliveryStore {
           preSendFailureProven: trace.preSendFailureProven,
           startedAtUs: trace.startedAtUs,
           completedAtUs: trace.completedAtUs,
+          updatedAt: trace.updatedAt,
           applied: trace.appliedAt !== null,
         });
       }
 
-      return await this.finalizeSlackReconciliationReport(
+      for (const trace of input.traces) {
+        if (trace.outcome !== "pending") {
+          this.slackTraceHydrations.delete(trace.traceId);
+        }
+      }
+      const hydrationRetentionCutoffUs = Math.max(
+        0,
+        (input.now - 7 * 24 * 60 * 60 * 1_000) * 1_000,
+      );
+      const affectedDebtDeliveries = new Set<string>();
+      const ownedDebtByDelivery = new Map<
+        string,
+        Array<{
+          traceId: string;
+          debtReason: "retention_expired" | "pagination_bound";
+        }>
+      >();
+      for (const hydration of hydrations) {
+        if (hydration.status === "legacy") {
+          this.slackTraceHydrations.delete(hydration.traceId);
+          continue;
+        }
+        const trace = this.slackTraces.get(hydration.traceId);
+        if (
+          trace !== undefined &&
+          (trace.outcome !== "pending" || trace.applied)
+        ) {
+          this.slackTraceHydrations.delete(hydration.traceId);
+          continue;
+        }
+        const previous = this.slackTraceHydrations.get(hydration.traceId);
+        const firstObservedUs = Math.min(
+          previous?.firstObservedUs ?? hydration.firstObservedUs,
+          hydration.firstObservedUs,
+          trace?.startedAtUs ?? hydration.firstObservedUs,
+        );
+        const lastObservedUs = Math.max(
+          previous?.lastObservedUs ?? hydration.lastObservedUs,
+          hydration.lastObservedUs,
+        );
+        const debtReason =
+          previous?.status === "debt"
+            ? previous.debtReason
+            : hydration.status === "debt"
+              ? hydration.debtReason
+              : firstObservedUs <= hydrationRetentionCutoffUs
+                ? "retention_expired"
+                : null;
+        const status = debtReason === null ? "pending" : "debt";
+        this.slackTraceHydrations.set(hydration.traceId, {
+          firstObservedUs,
+          lastObservedUs,
+          lastHydratedAt: hydration.attempted
+            ? Math.max(previous?.lastHydratedAt ?? 0, input.now)
+            : (previous?.lastHydratedAt ?? 0),
+          status,
+          debtReason,
+          updatedAt: Math.max(previous?.updatedAt ?? 0, input.now),
+        });
+        if (status === "debt" && trace?.outcome === "pending") {
+          affectedDebtDeliveries.add(trace.deliveryId);
+        }
+      }
+      for (const [traceId, hydration] of this.slackTraceHydrations) {
+        const trace = this.slackTraces.get(traceId);
+        if (
+          hydration.status !== "debt" ||
+          hydration.debtReason === null ||
+          trace?.outcome !== "pending" ||
+          !affectedDebtDeliveries.has(trace.deliveryId)
+        ) {
+          continue;
+        }
+        const owned = ownedDebtByDelivery.get(trace.deliveryId) ?? [];
+        owned.push({ traceId, debtReason: hydration.debtReason });
+        ownedDebtByDelivery.set(trace.deliveryId, owned);
+      }
+      for (const [traceId, trace] of this.slackTraces) {
+        if (
+          trace.outcome !== "pending" ||
+          !trace.applied ||
+          !affectedDebtDeliveries.has(trace.deliveryId)
+        ) {
+          continue;
+        }
+        const owned = ownedDebtByDelivery.get(trace.deliveryId) ?? [];
+        if (!owned.some((candidate) => candidate.traceId === traceId)) {
+          owned.push({ traceId, debtReason: "retention_expired" });
+          ownedDebtByDelivery.set(trace.deliveryId, owned);
+        }
+      }
+      for (const [deliveryId, owned] of ownedDebtByDelivery) {
+        const delivery = this.deliveries.get(deliveryId);
+        if (delivery === undefined) {
+          throw new Error("slack_trace_hydration_owner_missing");
+        }
+        if (delivery.status === "delivered") {
+          for (const ownedDebt of owned) {
+            const trace = this.slackTraces.get(ownedDebt.traceId);
+            if (trace?.outcome !== "pending") continue;
+            trace.applied = true;
+            trace.updatedAt = input.now;
+            this.slackTraceHydrations.delete(ownedDebt.traceId);
+          }
+          continue;
+        }
+        delivery.status = "manual_review";
+        delivery.updatedAt = input.now;
+        const hasDifferentTerminalOwner = [...this.slackTraces].some(
+          ([traceId, trace]) =>
+            trace.deliveryId === deliveryId &&
+            trace.outcome !== "pending" &&
+            trace.applied &&
+            !owned.some((candidate) => candidate.traceId === traceId),
+        );
+        if (owned.length !== 1 || hasDifferentTerminalOwner) {
+          delivery.lastError = "slack_trace_hydration_owner_ambiguous";
+          delivery.slackTraceId = null;
+          continue;
+        }
+        const [ownedDebt] = owned;
+        if (ownedDebt === undefined) {
+          throw new Error("slack_trace_hydration_owner_missing");
+        }
+        const trace = this.slackTraces.get(ownedDebt.traceId);
+        if (trace === undefined) {
+          throw new Error("slack_trace_hydration_owner_missing");
+        }
+        delivery.lastError = `slack_activity_trace_${ownedDebt.debtReason}`;
+        delivery.slackTraceId = ownedDebt.traceId;
+        trace.applied = true;
+        trace.updatedAt = input.now;
+        this.slackTraceHydrations.delete(ownedDebt.traceId);
+      }
+
+      const result = await this.finalizeSlackReconciliationReport(
         input.reportId,
-        input.traces.length,
+        reportItemCount,
         plan.errorTraceIds,
         input.checkpointUs,
         input.now,
       );
+      if (scanState === "resume") {
+        this.slackActivityResumeFrom = result.checkpointUs;
+      } else if (scanState === "complete") {
+        this.slackActivityResumeFrom = null;
+      }
+      return result;
     } catch (error) {
       this.deliveries.clear();
       for (const [deliveryId, delivery] of deliveries) {
@@ -1058,7 +1328,12 @@ export class MemoryDeliveryStore implements DeliveryStore {
       for (const [traceId, reportId] of reportedErrors) {
         this.reportedSlackErrorTraces.set(traceId, reportId);
       }
+      this.slackTraceHydrations.clear();
+      for (const [traceId, hydration] of storedHydrations) {
+        this.slackTraceHydrations.set(traceId, hydration);
+      }
       this.slackActivityCheckpoint = checkpoint;
+      this.slackActivityResumeFrom = resumeFrom;
       throw error;
     }
   }
@@ -1130,10 +1405,14 @@ export class MemoryDeliveryStore implements DeliveryStore {
         (minimum, delivery) => Math.min(minimum, delivery.updatedAt * 1_000),
         checkpointUs,
       );
-    const committedCheckpoint = Math.max(
-      this.slackActivityCheckpoint,
-      Math.min(checkpointUs, unresolved),
-    );
+    const committedCheckpoint = [...this.slackTraceHydrations.values()].some(
+      ({ status }) => status === "pending",
+    )
+      ? this.slackActivityCheckpoint
+      : Math.max(
+          this.slackActivityCheckpoint,
+          Math.min(checkpointUs, unresolved),
+        );
     const result: SlackReconciliationReportResult = {
       traceCount,
       changedErrorTraces: novelErrorTraceIds.length,
@@ -1173,10 +1452,16 @@ export class MemoryDeliveryStore implements DeliveryStore {
         (minimum, delivery) => Math.min(minimum, delivery.updatedAt * 1_000),
         checkpointUs,
       );
-    this.slackActivityCheckpoint = Math.max(
-      this.slackActivityCheckpoint,
-      Math.min(checkpointUs, unresolved),
-    );
+    if (
+      ![...this.slackTraceHydrations.values()].some(
+        ({ status }) => status === "pending",
+      )
+    ) {
+      this.slackActivityCheckpoint = Math.max(
+        this.slackActivityCheckpoint,
+        Math.min(checkpointUs, unresolved),
+      );
+    }
     return this.slackActivityCheckpoint;
   }
 
@@ -1219,6 +1504,9 @@ export class MemoryDeliveryStore implements DeliveryStore {
     return (
       this.healthy &&
       (await this.isSlackDeliveryProtocolActive(expectedRevision)) &&
+      ![...this.slackTraceHydrations.values()].some(
+        ({ status }) => status === "debt",
+      ) &&
       ![...this.deliveries.values()].some(
         (delivery) =>
           delivery.status === "manual_review" ||

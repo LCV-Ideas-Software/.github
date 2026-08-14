@@ -128,7 +128,7 @@ const WORKFLOW_SPECS = Object.freeze([
     digest: "ea3c7e7d5d89e5071df87fa01505542f6011629da95d67d65d5b55417c896477",
     privilegedJobIds: ["monitor"],
     privilegedDigest:
-      "351a5ffc11b84ad5d35c152f09bdc606f5b139dce8a9f48f5d42fbe0b70c2e07",
+      "7675e2f907c110525f90ed116843016c73babf89f026c6031b780ee4f3030dd4",
   },
 ]);
 
