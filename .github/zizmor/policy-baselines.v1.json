@@ -52,19 +52,29 @@
         {
           "path": ".github/workflows/deploy.yml",
           "mode": "100644",
-          "blob_shas": ["897e51646cd05bbdf0d0cb42986b5287d5ee26d8"],
+          "blob_shas": [
+            "67b9ba2b8030510c7feee7c0aebe7940080197ba",
+            "897e51646cd05bbdf0d0cb42986b5287d5ee26d8"
+          ],
           "kind": "inline-ignore"
         },
         {
           "path": ".github/workflows/native-auto-merge.yml",
           "mode": "100644",
-          "blob_shas": ["ca7c20ae23803ebcf2a772354fb458c4e3dabca7"],
-          "kind": "config-ignore-target"
+          "blob_shas": [
+            "3d7f90c43a01264b630befc169fdb76c3dd728a9",
+            "ca7c20ae23803ebcf2a772354fb458c4e3dabca7",
+            "d92de828539ecf6f8fa677db1ef13047aa56dff0"
+          ],
+          "kind": "inline-ignore"
         },
         {
           "path": ".github/zizmor.yml",
           "mode": "100644",
-          "blob_shas": ["b549f4da9b712d5661a87d4c879e05a72944cb01"],
+          "blob_shas": [
+            "7deaad4b3a84d0a5e245a14fc57939ed1b7b1d0a",
+            "b549f4da9b712d5661a87d4c879e05a72944cb01"
+          ],
           "kind": "config"
         }
       ]
