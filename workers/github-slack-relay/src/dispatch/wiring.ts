@@ -1,0 +1,357 @@
+// ADR-001 §6.1/§6.7/§6.8 — glue between index.ts and the dispatch modules.
+// Everything here is inert while DISPATCH_MODE is "off" and dispatch_outbox
+// is empty (F1 ships in that state); mode flips are config-only deploys.
+import {
+  DISPATCH_METADATA_EVENT_TYPE,
+  STALE_QUEUED_REQUEUE_AFTER_MS,
+  type DispatchDestination,
+  type DispatchMode,
+  type DispatchStatusCounters,
+  type DispatchStore,
+} from "./contract";
+import { processDispatchMessage } from "./consumer";
+import { fenceDecision } from "./mode";
+import { observerAlarms } from "./observer";
+import { D1DispatchStore } from "./outbox";
+import { runResolverPass } from "./resolver";
+
+// §9.A1/§9.A2 (operator decision, issue #192 comment 5297040618): the only
+// destinations are the two existing private channels.
+export const DISPATCH_CHANNELS: Readonly<
+  Record<DispatchDestination, string>
+> = Object.freeze({
+  alerts: "C0BMUK793NV",
+  activity: "C0BMQMW3L4E",
+});
+
+// R9/§9.A4: workspace retention verified "never delete" (operator screenshot;
+// probes green). Proven-absent verdicts are unreachable if this is ever
+// reset to null.
+export const RETENTION_VERIFIED_EVIDENCE =
+  "issue #192 comments 5297493344 + 5297540210 (2026-08-14)";
+
+// §6.7: "increased since the last observation" is derived read-only by
+// comparing the marker count at now minus two cron periods with the total.
+export const OBSERVER_LOOKBACK_MS = 10 * 60 * 1_000;
+
+const CRON_PROCESS_LIMIT = 20;
+
+export function channelForDestination(
+  destination: DispatchDestination,
+): string {
+  return DISPATCH_CHANNELS[destination];
+}
+
+export interface DispatchQueueJobBody {
+  deliveryId: string;
+  path: "dispatch";
+}
+
+export function dispatchQueueJobBody(deliveryId: string): DispatchQueueJobBody {
+  return { deliveryId, path: "dispatch" };
+}
+
+// Published bodies carry the marker; legacy bodies never do, so unmarked
+// messages keep flowing to the legacy consumers untouched during F3 drain.
+export function isDispatchQueueJob(body: unknown): body is DispatchQueueJobBody {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    (body as Record<string, unknown>)["path"] === "dispatch" &&
+    typeof (body as Record<string, unknown>)["deliveryId"] === "string"
+  );
+}
+
+// §6.8: the legacy ingress (modes off/shadow) accepts a GUID as NEW only if
+// the outbox has no non-shadow row for it. Read-only PK lookup.
+export async function legacyAcceptBlockedByOutbox(
+  store: DispatchStore,
+  deliveryId: string,
+): Promise<boolean> {
+  const row = await store.get(deliveryId);
+  return row !== null && !row.shadow;
+}
+
+// §6.8 primary mode: the outbox is the accepting path; the legacy table is
+// the "other path" the fence reads forever.
+export async function acceptPrimary(
+  store: DispatchStore,
+  input: {
+    deliveryId: string;
+    destination: DispatchDestination;
+    payloadJson: string;
+    now: number;
+  },
+): Promise<"inserted" | "duplicate" | "blocked_other_path"> {
+  const [hasLegacyRow, outboxRow] = await Promise.all([
+    store.legacyRowExists(input.deliveryId),
+    store.get(input.deliveryId),
+  ]);
+  const decision = fenceDecision(
+    "primary",
+    hasLegacyRow,
+    outboxRow === null
+      ? null
+      : { state: outboxRow.state, shadow: outboxRow.shadow },
+  );
+  if (decision === "blocked_other_path") return "blocked_other_path";
+  if (decision === "duplicate_same_path") return "duplicate";
+  const inserted = await store.insert({
+    deliveryId: input.deliveryId,
+    destination: input.destination,
+    shadow: false,
+    payloadJson: input.payloadJson,
+    now: input.now,
+  });
+  return inserted ? "inserted" : "duplicate";
+}
+
+// §6.8 F2: the legacy row and the shadow outbox row commit in ONE batch()
+// (a 5xx to GitHub implies neither committed). The legacy INSERT below is a
+// deliberate byte-copy of D1DeliveryStore.insert (src/store.ts) — the legacy
+// path is frozen, and reaching into the legacy store class would couple the
+// new module to code scheduled for F4 removal.
+export async function insertShadowPaired(
+  database: D1Database,
+  input: {
+    deliveryId: string;
+    eventType: string;
+    action: string;
+    repository: string;
+    destination: DispatchDestination;
+    payloadJson: string;
+    now: number;
+  },
+): Promise<{ legacyInserted: boolean; shadowInserted: boolean }> {
+  const legacyInsert = database
+    .prepare(
+      `INSERT INTO deliveries (
+        delivery_id,
+        event_type,
+        action,
+        repository,
+        destination,
+        payload_json,
+        status,
+        attempt_count,
+        next_attempt_at,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+      ON CONFLICT(delivery_id) DO NOTHING`,
+    )
+    .bind(
+      input.deliveryId,
+      input.eventType,
+      input.action,
+      input.repository,
+      input.destination,
+      input.payloadJson,
+      input.now,
+      input.now,
+      input.now,
+    );
+  const shadowInsert = database
+    .prepare(
+      `INSERT INTO dispatch_outbox (
+        delivery_id, destination, shadow, payload_json, state,
+        created_ms, updated_ms
+      ) VALUES (?, ?, 1, ?, 'queued', ?, ?)
+      ON CONFLICT(delivery_id) DO NOTHING`,
+    )
+    .bind(
+      input.deliveryId,
+      input.destination,
+      input.payloadJson,
+      input.now,
+      input.now,
+    );
+  const auditInsert = database
+    .prepare(
+      `INSERT INTO dispatch_audit (
+        delivery_id, from_state, to_state, evidence_json, actor, at_ms
+      )
+      SELECT ?, 'none', 'queued', ?, 'ingress', ?
+      WHERE EXISTS (
+        SELECT 1 FROM dispatch_outbox
+        WHERE delivery_id = ? AND shadow = 1 AND created_ms = ?
+      )`,
+    )
+    .bind(
+      input.deliveryId,
+      JSON.stringify({ shadow: true, destination: input.destination }),
+      input.now,
+      input.deliveryId,
+      input.now,
+    );
+  const [legacyResult, shadowResult] = await database.batch([
+    legacyInsert,
+    shadowInsert,
+    auditInsert,
+  ]);
+  return {
+    legacyInserted: (legacyResult?.meta.changes ?? 0) > 0,
+    shadowInserted: (shadowResult?.meta.changes ?? 0) > 0,
+  };
+}
+
+export interface DispatchCronDeps {
+  database: D1Database;
+  mode: DispatchMode;
+  fetch: typeof fetch;
+  now: () => number;
+  readBotToken: () => Promise<string>;
+  publish: (destination: DispatchDestination, body: DispatchQueueJobBody) => Promise<void>;
+}
+
+export interface DispatchCronResult {
+  skipped: boolean;
+  shadowProcessed: number;
+  requeued: number;
+  resolverExamined: number;
+  alarms: string[];
+}
+
+// §6.7 observe-only job + §6.3.1 resolver budget + R13 stale re-enqueue.
+// Runs after (and independently of) the legacy runScheduledRecovery.
+export async function runDispatchCronPass(
+  deps: DispatchCronDeps,
+): Promise<DispatchCronResult> {
+  const store = new D1DispatchStore(deps.database);
+  const now = deps.now();
+  const counters = await store.statusCounters(now);
+  const totalRows = countAllRows(counters);
+  if (totalRows === 0) {
+    return {
+      skipped: true,
+      shadowProcessed: 0,
+      requeued: 0,
+      resolverExamined: 0,
+      alarms: [],
+    };
+  }
+
+  let shadowProcessed = 0;
+  let requeued = 0;
+  let resolverExamined = 0;
+
+  // R20: in mode off nothing is processed or published — rows accumulate in
+  // queued (alarmed below) until a config-only re-enable.
+  if (deps.mode !== "off") {
+    const stale = await store.staleQueuedRows(now, CRON_PROCESS_LIMIT);
+    for (const row of stale) {
+      if (row.shadow) {
+        // §9.A1: shadow rows never reach Slack; they are claimed and
+        // terminally recorded here, entirely off-queue.
+        await processDispatchMessage(
+          {
+            body: { deliveryId: row.deliveryId, mode: deps.mode },
+            attempts: 1,
+            ack: () => {},
+            retry: () => {},
+          },
+          {
+            store,
+            fetch: deps.fetch,
+            now: deps.now,
+            botToken: "",
+            channelFor: channelForDestination,
+          },
+        );
+        shadowProcessed += 1;
+      } else if (deps.mode === "primary") {
+        // R13: double-publish is claim-CAS-safe.
+        await deps.publish(
+          row.destination,
+          dispatchQueueJobBody(row.deliveryId),
+        );
+        requeued += 1;
+      }
+    }
+  }
+
+  const ambiguousTotal =
+    counters.byStateAndDestination.alerts.ambiguous +
+    counters.byStateAndDestination.activity.ambiguous +
+    counters.byStateAndDestination.alerts.sending +
+    counters.byStateAndDestination.activity.sending;
+  const verificationDue = await store.verificationRowsDue(now, 1);
+  if (ambiguousTotal > 0 || verificationDue.length > 0) {
+    const botToken = await deps.readBotToken();
+    const pass = await runResolverPass({
+      store,
+      fetch: deps.fetch,
+      now: deps.now,
+      botToken,
+      channelFor: channelForDestination,
+      retentionVerifiedEvidence: RETENTION_VERIFIED_EVIDENCE,
+    });
+    resolverExamined = pass.examined;
+  }
+
+  const after = await store.statusCounters(deps.now());
+  const previousRepaired = await store.repairedDuplicatesBefore(
+    now - OBSERVER_LOOKBACK_MS,
+  );
+  const alarms = observerAlarms(
+    {
+      deadLetter: sumState(after, "dead_letter"),
+      manual: sumState(after, "manual"),
+      oldestAmbiguousAgeMs: oldestAmbiguousAge(after),
+      repairedDuplicates: after.repairedDuplicates,
+    },
+    { repairedDuplicates: previousRepaired },
+  );
+
+  return { skipped: false, shadowProcessed, requeued, resolverExamined, alarms };
+}
+
+function countAllRows(counters: DispatchStatusCounters): number {
+  let total = 0;
+  for (const destination of ["alerts", "activity"] as const) {
+    for (const count of Object.values(
+      counters.byStateAndDestination[destination],
+    )) {
+      total += count;
+    }
+  }
+  return total;
+}
+
+function sumState(
+  counters: DispatchStatusCounters,
+  state: "dead_letter" | "manual",
+): number {
+  return (
+    counters.byStateAndDestination.alerts[state] +
+    counters.byStateAndDestination.activity[state]
+  );
+}
+
+// §6.7: the counters expose the oldest non-terminal age; the ambiguous-age
+// alarm reuses it — a stale queued/manual row is at least as alarming as a
+// stale ambiguous one, so the approximation is fail-safe (alarms earlier,
+// never later).
+function oldestAmbiguousAge(
+  counters: DispatchStatusCounters,
+): number | null {
+  const ambiguous =
+    counters.byStateAndDestination.alerts.ambiguous +
+    counters.byStateAndDestination.activity.ambiguous;
+  if (ambiguous === 0) return null;
+  return counters.oldestNonTerminalAgeMs;
+}
+
+export function dispatchStatusBody(
+  counters: DispatchStatusCounters,
+): Record<string, unknown> {
+  return {
+    dispatch: {
+      counters: counters.byStateAndDestination,
+      oldest_non_terminal_age_ms: counters.oldestNonTerminalAgeMs,
+      repaired_duplicates: counters.repairedDuplicates,
+    },
+    metadata_event_type: DISPATCH_METADATA_EVENT_TYPE,
+    stale_queued_requeue_after_ms: STALE_QUEUED_REQUEUE_AFTER_MS,
+  };
+}

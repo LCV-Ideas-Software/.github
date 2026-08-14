@@ -1585,6 +1585,43 @@ export class FakeQueue {
   }
 }
 
+// Minimal D1 whose every read answers "no rows" and every write reports
+// zero changes, so the ADR-001 dispatch surfaces (presence fence, /status,
+// cron pass) see an empty outbox in legacy-focused tests. Dispatch tests use
+// the real sqlite-backed harness in dispatch-helpers.ts instead.
+function emptyDispatchD1Stub(): D1Database {
+  const statement = {
+    bind(): D1PreparedStatement {
+      return statement as unknown as D1PreparedStatement;
+    },
+    async run(): Promise<D1Result<unknown>> {
+      return {
+        success: true,
+        results: [],
+        meta: { changes: 0 },
+      } as unknown as D1Result<unknown>;
+    },
+    async first<T>(): Promise<T | null> {
+      return null;
+    },
+    async all<T>(): Promise<D1Result<T>> {
+      return {
+        success: true,
+        results: [],
+        meta: { changes: 0 },
+      } as unknown as D1Result<T>;
+    },
+  };
+  return {
+    prepare(): D1PreparedStatement {
+      return statement as unknown as D1PreparedStatement;
+    },
+    async batch(): Promise<D1Result<unknown>[]> {
+      return [];
+    },
+  } as unknown as D1Database;
+}
+
 export function makeEnv(
   queue: FakeQueue,
   options: {
@@ -1601,7 +1638,7 @@ export function makeEnv(
   return {
     ALERT_QUEUE: queue as unknown as Queue,
     ACTIVITY_QUEUE: (options.activityQueue ?? queue) as unknown as Queue,
-    DB: {} as D1Database,
+    DB: emptyDispatchD1Stub(),
     GITHUB_WEBHOOK_SECRET: (options.githubSecret ??
       TEST_WEBHOOK_SECRET) as unknown as SecretsStoreSecret,
     SLACK_ALERTS_WORKFLOW_WEBHOOK_URL: (options.alertsSlackUrl ??
@@ -1615,6 +1652,9 @@ export function makeEnv(
     SLACK_RELAY_SIGNING_SECRET_NEXT: (options.relaySigningSecretNext ??
       TEST_RELAY_SIGNING_SECRET_NEXT) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
+    SLACK_DISPATCH_BOT_TOKEN:
+      "xoxb-test-dispatch-token" as unknown as SecretsStoreSecret,
+    DISPATCH_MODE: "off",
     WORKER_VERSION: {
       id: "test-worker-version",
       tag: options.workerRevision ?? "a".repeat(40),

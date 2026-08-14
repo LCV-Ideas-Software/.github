@@ -193,6 +193,10 @@ export interface DispatchStore {
   appendAudit(entry: Omit<DispatchAuditEntry, "seq">): Promise<void>;
   auditEntries(deliveryId: string): Promise<DispatchAuditEntry[]>;
   repairedDuplicatesTotal(): Promise<number>;
+  // ADR §6.7 "repaired_duplicates increased since the last observation":
+  // read-only count of repair markers at or before a cutoff, so the
+  // observe-only cron derives "previous" without any write path (R5).
+  repairedDuplicatesBefore(cutoffMs: number): Promise<number>;
 }
 
 export interface DispatchStatusCounters {

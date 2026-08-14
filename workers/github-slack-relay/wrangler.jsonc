@@ -13,6 +13,9 @@
   },
   "vars": {
     "SLACK_RELAY_SIGNING_ACTIVE_SLOT": "next",
+    // ADR-001 §6.8: off -> shadow -> primary. F1 ships with "off" (no
+    // behavior change); flips happen by config-only deploys at F2/F3.
+    "DISPATCH_MODE": "off",
   },
   "version_metadata": {
     "binding": "WORKER_VERSION",
@@ -59,6 +62,12 @@
       "binding": "SLACK_RELAY_SIGNING_SECRET_NEXT",
       "store_id": "df90c0935ba1460899c3c2c457548a90",
       "secret_name": "github-slack-relay-signing-secret-next",
+    },
+    {
+      // ADR-001 §6.6/§9.A3: bot token of the dispatcher app A0BQEAG5Y5P.
+      "binding": "SLACK_DISPATCH_BOT_TOKEN",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "SLACK_DISPATCH_BOT_TOKEN",
     },
   ],
   "queues": {

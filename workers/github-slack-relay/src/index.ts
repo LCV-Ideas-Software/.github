@@ -31,9 +31,24 @@ import {
   type QueueJob,
   type StoredDelivery,
 } from "./store";
+import { processDispatchMessage } from "./dispatch/consumer";
+import { parseDispatchMode } from "./dispatch/mode";
+import { D1DispatchStore } from "./dispatch/outbox";
+import {
+  acceptPrimary,
+  channelForDestination,
+  dispatchQueueJobBody,
+  dispatchStatusBody,
+  insertShadowPaired,
+  isDispatchQueueJob,
+  legacyAcceptBlockedByOutbox,
+  runDispatchCronPass,
+} from "./dispatch/wiring";
 
 const WEBHOOK_PATH = "/github/webhook";
 const HEALTH_PATH = "/healthz";
+// ADR-001 §6.7: read-only aggregate counters for the dispatch outbox.
+const DISPATCH_STATUS_PATH = "/status";
 const SLACK_PROGRESS_PATH = "/slack/progress";
 const SLACK_RECONCILIATION_PATH = "/slack/reconciliation";
 const SLACK_CHECKPOINT_PATH = "/slack/reconciliation/checkpoint";
@@ -903,6 +918,16 @@ export async function handleFetch(
     }
   }
 
+  if (url.pathname === DISPATCH_STATUS_PATH && request.method === "GET") {
+    try {
+      const dispatchStore = new D1DispatchStore(env.DB);
+      const counters = await dispatchStore.statusCounters(dependencies.now());
+      return jsonResponse(dispatchStatusBody(counters), 200);
+    } catch {
+      return jsonResponse({ error: "status_unavailable" }, 503);
+    }
+  }
+
   if (url.pathname !== WEBHOOK_PATH) {
     return jsonResponse({ error: "not_found" }, 404);
   }
@@ -1027,17 +1052,76 @@ export async function handleFetch(
   }
 
   const now = dependencies.now();
+  const dispatchMode = parseDispatchMode(env.DISPATCH_MODE);
+  const dispatchStore = new D1DispatchStore(env.DB);
+
+  // ADR-001 §6.8 primary mode: the outbox is the accepting path; the legacy
+  // table is read forever by the presence fence.
+  if (dispatchMode === "primary") {
+    let accepted: Awaited<ReturnType<typeof acceptPrimary>>;
+    try {
+      accepted = await acceptPrimary(dispatchStore, {
+        deliveryId,
+        destination: normalized.destination,
+        payloadJson: JSON.stringify(normalized.payload),
+        now,
+      });
+    } catch {
+      return jsonResponse({ error: "persistence_unavailable" }, 503);
+    }
+    if (accepted !== "inserted") {
+      return jsonResponse({ accepted: true, duplicate: true }, 202);
+    }
+    try {
+      await destinationQueue(env, normalized.destination).send(
+        dispatchQueueJobBody(deliveryId),
+      );
+    } catch {
+      // R13: the queued row is durable; the cron re-enqueues it and the
+      // claim CAS makes an eventual double-publish safe.
+      return jsonResponse(
+        { accepted: true, queued: false, recovery_scheduled: true },
+        202,
+      );
+    }
+    return jsonResponse({ accepted: true, queued: true }, 202);
+  }
+
+  // ADR-001 §6.8 modes off/shadow: the legacy path accepts, fenced by the
+  // outbox (shadow rows excluded inside the helper).
+  try {
+    if (await legacyAcceptBlockedByOutbox(dispatchStore, deliveryId)) {
+      return jsonResponse({ accepted: true, duplicate: true }, 202);
+    }
+  } catch {
+    return jsonResponse({ error: "persistence_unavailable" }, 503);
+  }
+
   let inserted: boolean;
   try {
-    inserted = await dependencies.store.insert({
-      deliveryId,
-      eventType: event,
-      action: normalized.payload.action,
-      repository: normalized.payload.repository,
-      destination: normalized.destination,
-      payload: normalized.payload,
-      now,
-    });
+    if (dispatchMode === "shadow") {
+      // ADR-001 §6.8 F2: legacy row and shadow outbox row commit atomically.
+      const paired = await insertShadowPaired(env.DB, {
+        deliveryId,
+        eventType: event,
+        action: normalized.payload.action,
+        repository: normalized.payload.repository,
+        destination: normalized.destination,
+        payloadJson: JSON.stringify(normalized.payload),
+        now,
+      });
+      inserted = paired.legacyInserted;
+    } else {
+      inserted = await dependencies.store.insert({
+        deliveryId,
+        eventType: event,
+        action: normalized.payload.action,
+        repository: normalized.payload.repository,
+        destination: normalized.destination,
+        payload: normalized.payload,
+        now,
+      });
+    }
   } catch {
     return jsonResponse({ error: "persistence_unavailable" }, 503);
   }
@@ -1495,12 +1579,64 @@ export async function processDeadLetterMessage(
   message.ack();
 }
 
+async function processMarkedDispatchMessage(
+  message: Message<QueueJob>,
+  env: Env,
+  dependencies: Required<RuntimeOverrides>,
+): Promise<void> {
+  const job = message.body as unknown as { deliveryId: string };
+  let botToken: string;
+  try {
+    botToken = await readSecret(env.SLACK_DISPATCH_BOT_TOKEN);
+  } catch {
+    retryMessage(message, 60);
+    return;
+  }
+  await processDispatchMessage(
+    {
+      body: {
+        deliveryId: job.deliveryId,
+        // §6.8/R20: the mode active WHEN CONSUMED governs the message.
+        mode: parseDispatchMode(env.DISPATCH_MODE),
+      },
+      attempts: message.attempts,
+      ack: () => {
+        message.ack();
+      },
+      retry: (options) => {
+        if (options?.delaySeconds === undefined) {
+          message.retry();
+        } else {
+          message.retry({ delaySeconds: options.delaySeconds });
+        }
+      },
+    },
+    {
+      store: new D1DispatchStore(env.DB),
+      fetch: dependencies.fetch,
+      now: dependencies.now,
+      botToken,
+      channelFor: channelForDestination,
+    },
+  );
+}
+
 export async function handleQueue(
   batch: MessageBatch<QueueJob>,
   env: Env,
   overrides?: RuntimeOverrides,
 ): Promise<void> {
   for (const message of batch.messages) {
+    // ADR-001 §6.1: marked bodies belong to the dispatcher; legacy bodies
+    // never carry the marker and keep flowing to the legacy consumers.
+    if (isDispatchQueueJob(message.body)) {
+      await processMarkedDispatchMessage(
+        message,
+        env,
+        runtime(env, overrides),
+      );
+      continue;
+    }
     if (
       batch.queue === ALERT_DEAD_LETTER_QUEUE ||
       batch.queue === ACTIVITY_DEAD_LETTER_QUEUE
@@ -1576,6 +1712,45 @@ export async function runScheduledRecovery(
       recovered,
     }),
   );
+
+  // ADR-001 §6.3.1/§6.7/R13: dispatch pass — stale-queued handling, resolver
+  // budget and the observe-only alarms. Failures here never break the legacy
+  // recovery above; the pass is a no-op while the outbox is empty.
+  try {
+    const dispatchResult = await runDispatchCronPass({
+      database: env.DB,
+      mode: parseDispatchMode(env.DISPATCH_MODE),
+      fetch: dependencies.fetch,
+      now: dependencies.now,
+      readBotToken: () => readSecret(env.SLACK_DISPATCH_BOT_TOKEN),
+      publish: async (destination, body) => {
+        await destinationQueue(env, destination).send(body);
+      },
+    });
+    if (!dispatchResult.skipped) {
+      console.info(
+        JSON.stringify({
+          event: "dispatch_cron_pass",
+          shadow_processed: dispatchResult.shadowProcessed,
+          requeued: dispatchResult.requeued,
+          resolver_examined: dispatchResult.resolverExamined,
+          alarm_count: dispatchResult.alarms.length,
+        }),
+      );
+      for (const alarm of dispatchResult.alarms) {
+        console.error(
+          JSON.stringify({ event: "dispatch_observer_alarm", alarm }),
+        );
+      }
+    }
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "dispatch_cron_pass_failed",
+        ...safeFailureSummary(error),
+      }),
+    );
+  }
 
   return { purged, recovered, enqueueFailures };
 }
