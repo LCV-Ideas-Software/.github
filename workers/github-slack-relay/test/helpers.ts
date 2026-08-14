@@ -1633,12 +1633,15 @@ export function makeEnv(
     relaySigningSecret?: string;
     relaySigningSecretNext?: string;
     workerRevision?: string;
+    // Dispatch-focused tests inject a real sqlite-backed D1 here.
+    db?: D1Database;
+    dispatchMode?: string;
   } = {},
 ): Env {
   return {
     ALERT_QUEUE: queue as unknown as Queue,
     ACTIVITY_QUEUE: (options.activityQueue ?? queue) as unknown as Queue,
-    DB: emptyDispatchD1Stub(),
+    DB: options.db ?? emptyDispatchD1Stub(),
     GITHUB_WEBHOOK_SECRET: (options.githubSecret ??
       TEST_WEBHOOK_SECRET) as unknown as SecretsStoreSecret,
     SLACK_ALERTS_WORKFLOW_WEBHOOK_URL: (options.alertsSlackUrl ??
@@ -1654,7 +1657,7 @@ export function makeEnv(
     SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next",
     SLACK_DISPATCH_BOT_TOKEN:
       "xoxb-test-dispatch-token" as unknown as SecretsStoreSecret,
-    DISPATCH_MODE: "off",
+    DISPATCH_MODE: (options.dispatchMode ?? "off") as "off",
     WORKER_VERSION: {
       id: "test-worker-version",
       tag: options.workerRevision ?? "a".repeat(40),

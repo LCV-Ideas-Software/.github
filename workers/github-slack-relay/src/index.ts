@@ -1621,6 +1621,39 @@ async function processMarkedDispatchMessage(
   );
 }
 
+// ADR-001 §6.2/§6.5 row 16: a marked message that exhausted the main
+// queue's retries reaches the DLQ and the row transitions to dead_letter
+// (alarmed via the observer) — EXCEPT when the trips were mode-off
+// deferrals (R20): those are deliberate pauses, not transport failures, so
+// the queued row stays queued for the config-only re-enable and the DLQ
+// message is dropped (the row is durable; the cron republishes it).
+async function processDispatchDeadLetterMessage(
+  message: Message<QueueJob>,
+  env: Env,
+  dependencies: Required<RuntimeOverrides>,
+): Promise<void> {
+  const job = message.body as unknown as { deliveryId: string };
+  const dispatchStore = new D1DispatchStore(env.DB);
+  const now = dependencies.now();
+  try {
+    if (parseDispatchMode(env.DISPATCH_MODE) === "off") {
+      const row = await dispatchStore.get(job.deliveryId);
+      if (row === null || row.state === "queued") {
+        message.ack();
+        return;
+      }
+    }
+    await dispatchStore.markDeadLetter(
+      job.deliveryId,
+      now,
+      "cloudflare_queue_dead_letter",
+    );
+    message.ack();
+  } catch {
+    retryMessage(message, 60);
+  }
+}
+
 export async function handleQueue(
   batch: MessageBatch<QueueJob>,
   env: Env,
@@ -1630,11 +1663,22 @@ export async function handleQueue(
     // ADR-001 §6.1: marked bodies belong to the dispatcher; legacy bodies
     // never carry the marker and keep flowing to the legacy consumers.
     if (isDispatchQueueJob(message.body)) {
-      await processMarkedDispatchMessage(
-        message,
-        env,
-        runtime(env, overrides),
-      );
+      if (
+        batch.queue === ALERT_DEAD_LETTER_QUEUE ||
+        batch.queue === ACTIVITY_DEAD_LETTER_QUEUE
+      ) {
+        await processDispatchDeadLetterMessage(
+          message,
+          env,
+          runtime(env, overrides),
+        );
+      } else {
+        await processMarkedDispatchMessage(
+          message,
+          env,
+          runtime(env, overrides),
+        );
+      }
       continue;
     }
     if (
@@ -1713,9 +1757,19 @@ export async function runScheduledRecovery(
     }),
   );
 
-  // ADR-001 §6.3.1/§6.7/R13: dispatch pass — stale-queued handling, resolver
-  // budget and the observe-only alarms. Failures here never break the legacy
-  // recovery above; the pass is a no-op while the outbox is empty.
+  return { purged, recovered, enqueueFailures };
+}
+
+// ADR-001 §6.3.1/§6.7/R13: dispatch pass — stale-queued handling, resolver
+// budget and the observe-only alarms. Deliberately OUTSIDE
+// runScheduledRecovery so the legacy protocol-seal early return can never
+// starve it; a failure here never breaks the legacy recovery and vice versa.
+// The pass is a no-op while the outbox is empty.
+export async function runDispatchScheduled(
+  env: Env,
+  overrides?: RuntimeOverrides,
+): Promise<void> {
+  const dependencies = runtime(env, overrides);
   try {
     const dispatchResult = await runDispatchCronPass({
       database: env.DB,
@@ -1751,8 +1805,6 @@ export async function runScheduledRecovery(
       }),
     );
   }
-
-  return { purged, recovered, enqueueFailures };
 }
 
 export default {
@@ -1773,5 +1825,6 @@ export default {
 
   async scheduled(_controller, env): Promise<void> {
     await runScheduledRecovery(env);
+    await runDispatchScheduled(env);
   },
 } satisfies ExportedHandler<Env, QueueJob>;

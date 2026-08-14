@@ -2,8 +2,6 @@
 // Everything here is inert while DISPATCH_MODE is "off" and dispatch_outbox
 // is empty (F1 ships in that state); mode flips are config-only deploys.
 import {
-  DISPATCH_METADATA_EVENT_TYPE,
-  STALE_QUEUED_REQUEUE_AFTER_MS,
   type DispatchDestination,
   type DispatchMode,
   type DispatchStatusCounters,
@@ -151,13 +149,18 @@ export async function insertShadowPaired(
       input.now,
       input.now,
     );
+  // changes() reflects the PREVIOUS statement on the same connection, so the
+  // shadow row commits only when the legacy insert actually inserted (no
+  // orphan shadow row on a redelivered GUID — panel V21) and the audit row
+  // commits only when the shadow insert actually inserted (panel V11).
   const shadowInsert = database
     .prepare(
       `INSERT INTO dispatch_outbox (
         delivery_id, destination, shadow, payload_json, state,
         created_ms, updated_ms
-      ) VALUES (?, ?, 1, ?, 'queued', ?, ?)
-      ON CONFLICT(delivery_id) DO NOTHING`,
+      )
+      SELECT ?, ?, 1, ?, 'queued', ?, ?
+      WHERE changes() > 0`,
     )
     .bind(
       input.deliveryId,
@@ -172,16 +175,11 @@ export async function insertShadowPaired(
         delivery_id, from_state, to_state, evidence_json, actor, at_ms
       )
       SELECT ?, 'none', 'queued', ?, 'ingress', ?
-      WHERE EXISTS (
-        SELECT 1 FROM dispatch_outbox
-        WHERE delivery_id = ? AND shadow = 1 AND created_ms = ?
-      )`,
+      WHERE changes() > 0`,
     )
     .bind(
       input.deliveryId,
       JSON.stringify({ shadow: true, destination: input.destination }),
-      input.now,
-      input.deliveryId,
       input.now,
     );
   const [legacyResult, shadowResult] = await database.batch([
@@ -213,7 +211,8 @@ export interface DispatchCronResult {
 }
 
 // §6.7 observe-only job + §6.3.1 resolver budget + R13 stale re-enqueue.
-// Runs after (and independently of) the legacy runScheduledRecovery.
+// Called from the scheduled() entrypoint OUTSIDE runScheduledRecovery, so
+// the legacy protocol-seal early return can never starve it (panel V6).
 export async function runDispatchCronPass(
   deps: DispatchCronDeps,
 ): Promise<DispatchCronResult> {
@@ -236,7 +235,7 @@ export async function runDispatchCronPass(
   let resolverExamined = 0;
 
   // R20: in mode off nothing is processed or published — rows accumulate in
-  // queued (alarmed below) until a config-only re-enable.
+  // queued and the queued_backlog_stale alarm below makes that visible.
   if (deps.mode !== "off") {
     const stale = await store.staleQueuedRows(now, CRON_PROCESS_LIMIT);
     for (const row of stale) {
@@ -259,8 +258,11 @@ export async function runDispatchCronPass(
           },
         );
         shadowProcessed += 1;
-      } else if (deps.mode === "primary") {
-        // R13: double-publish is claim-CAS-safe.
+      } else {
+        // R13 in primary; §6.8 regime A in shadow — after a rollback flip
+        // the non-shadow backlog must still drain (panel V8/V10). The
+        // consumer applies the mode active at consume time, so a republished
+        // row is deferred (not sent) if the mode is not primary by then.
         await deps.publish(
           row.destination,
           dispatchQueueJobBody(row.deliveryId),
@@ -270,23 +272,28 @@ export async function runDispatchCronPass(
     }
   }
 
-  const ambiguousTotal =
-    counters.byStateAndDestination.alerts.ambiguous +
-    counters.byStateAndDestination.activity.ambiguous +
-    counters.byStateAndDestination.alerts.sending +
-    counters.byStateAndDestination.activity.sending;
-  const verificationDue = await store.verificationRowsDue(now, 1);
-  if (ambiguousTotal > 0 || verificationDue.length > 0) {
-    const botToken = await deps.readBotToken();
-    const pass = await runResolverPass({
-      store,
-      fetch: deps.fetch,
-      now: deps.now,
-      botToken,
-      channelFor: channelForDestination,
-      retentionVerifiedEvidence: RETENTION_VERIFIED_EVIDENCE,
-    });
-    resolverExamined = pass.examined;
+  // §6.8/R20 "egress pauses" in mode off: the resolver performs Slack
+  // egress (conversations.history, chat.delete) and therefore never runs in
+  // mode off (panel V2); ambiguous rows wait, alarmed, for re-enable.
+  if (deps.mode !== "off") {
+    const ambiguousTotal =
+      counters.byStateAndDestination.alerts.ambiguous +
+      counters.byStateAndDestination.activity.ambiguous +
+      counters.byStateAndDestination.alerts.sending +
+      counters.byStateAndDestination.activity.sending;
+    const verificationDue = await store.verificationRowsDue(now, 1);
+    if (ambiguousTotal > 0 || verificationDue.length > 0) {
+      const botToken = await deps.readBotToken();
+      const pass = await runResolverPass({
+        store,
+        fetch: deps.fetch,
+        now: deps.now,
+        botToken,
+        channelFor: channelForDestination,
+        retentionVerifiedEvidence: RETENTION_VERIFIED_EVIDENCE,
+      });
+      resolverExamined = pass.examined;
+    }
   }
 
   const after = await store.statusCounters(deps.now());
@@ -299,6 +306,10 @@ export async function runDispatchCronPass(
       manual: sumState(after, "manual"),
       oldestAmbiguousAgeMs: oldestAmbiguousAge(after),
       repairedDuplicates: after.repairedDuplicates,
+      queued:
+        after.byStateAndDestination.alerts.queued +
+        after.byStateAndDestination.activity.queued,
+      oldestNonTerminalAgeMs: after.oldestNonTerminalAgeMs,
     },
     { repairedDuplicates: previousRepaired },
   );
@@ -342,6 +353,8 @@ function oldestAmbiguousAge(
   return counters.oldestNonTerminalAgeMs;
 }
 
+// §6.7: aggregate counters ONLY — no identifiers, keys or configuration on
+// the unauthenticated surface (panel F2).
 export function dispatchStatusBody(
   counters: DispatchStatusCounters,
 ): Record<string, unknown> {
@@ -351,7 +364,5 @@ export function dispatchStatusBody(
       oldest_non_terminal_age_ms: counters.oldestNonTerminalAgeMs,
       repaired_duplicates: counters.repairedDuplicates,
     },
-    metadata_event_type: DISPATCH_METADATA_EVENT_TYPE,
-    stale_queued_requeue_after_ms: STALE_QUEUED_REQUEUE_AFTER_MS,
   };
 }

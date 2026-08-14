@@ -436,31 +436,65 @@ export class D1DispatchStore implements DispatchStore {
 
   async normalizeExpiredLeases(now: number): Promise<number> {
     // ADR §6.3.1: normalization first — audited lease_expired; the rows
-    // become resolver input.
-    const predicate =
-      "state = 'sending' AND lease_until_ms IS NOT NULL AND lease_until_ms < ?";
-    const audit = this.#database
+    // become resolver input. Shadow rows never posted anything (§9.A1), so
+    // an expired shadow lease returns to queued for the next cron pass
+    // instead of entering the egress-bearing ambiguous path (panel V12).
+    const realPredicate =
+      "state = 'sending' AND shadow = 0" +
+      " AND lease_until_ms IS NOT NULL AND lease_until_ms < ?";
+    const shadowPredicate =
+      "state = 'sending' AND shadow = 1" +
+      " AND lease_until_ms IS NOT NULL AND lease_until_ms < ?";
+    const realAudit = this.#database
       .prepare(
         `INSERT INTO dispatch_audit (
            delivery_id, from_state, to_state, evidence_json, actor, at_ms
          )
          SELECT delivery_id, 'sending', 'ambiguous', ?, 'resolver', ?
          FROM dispatch_outbox
-         WHERE ${predicate}`,
+         WHERE ${realPredicate}`,
       )
       .bind(JSON.stringify({ reason: "lease_expired" }), now, now);
-    const update = this.#database
+    const realUpdate = this.#database
       .prepare(
         `UPDATE dispatch_outbox
          SET state = 'ambiguous',
              last_error = 'lease_expired',
              next_attempt_ms = NULL,
              updated_ms = ?
-         WHERE ${predicate}`,
+         WHERE ${realPredicate}`,
       )
       .bind(now, now);
-    const results = await this.#database.batch([audit, update]);
-    return results[1]?.meta.changes ?? 0;
+    const shadowAudit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, 'sending', 'queued', ?, 'resolver', ?
+         FROM dispatch_outbox
+         WHERE ${shadowPredicate}`,
+      )
+      .bind(JSON.stringify({ reason: "lease_expired_shadow" }), now, now);
+    const shadowUpdate = this.#database
+      .prepare(
+        `UPDATE dispatch_outbox
+         SET state = 'queued',
+             last_error = 'lease_expired_shadow',
+             lease_until_ms = NULL,
+             next_attempt_ms = NULL,
+             updated_ms = ?
+         WHERE ${shadowPredicate}`,
+      )
+      .bind(now, now);
+    const results = await this.#database.batch([
+      realAudit,
+      realUpdate,
+      shadowAudit,
+      shadowUpdate,
+    ]);
+    return (
+      (results[1]?.meta.changes ?? 0) + (results[3]?.meta.changes ?? 0)
+    );
   }
 
   async ambiguousRowsDue(
@@ -471,6 +505,7 @@ export class D1DispatchStore implements DispatchStore {
       .prepare(
         `SELECT * FROM dispatch_outbox
          WHERE state = 'ambiguous'
+           AND shadow = 0
            AND (next_attempt_ms IS NULL OR next_attempt_ms <= ?)
          ORDER BY updated_ms ASC
          LIMIT ?`,
@@ -551,18 +586,29 @@ export class D1DispatchStore implements DispatchStore {
     deliveryId: string,
     now: number,
     nextVerifyAfterMs: number | null,
+    expectedRemaining: number,
   ): Promise<boolean> {
-    const predicate = " AND verify_scans_remaining > 0";
-    const audit = this.#inPlaceAudit(
-      deliveryId,
-      JSON.stringify({
-        verification_scan_complete: true,
-        next_verify_after_ms: nextVerifyAfterMs,
-      }),
-      "resolver",
-      now,
-      predicate,
-    );
+    // CAS on the caller's snapshot so overlapping resolver passes cannot
+    // double-decrement and burn both §6.3.3 scans (panel V13).
+    const predicate = " AND verify_scans_remaining = ?";
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, state, ?, 'resolver', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(
+        JSON.stringify({
+          verification_scan_complete: true,
+          next_verify_after_ms: nextVerifyAfterMs,
+        }),
+        now,
+        deliveryId,
+        expectedRemaining,
+      );
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
@@ -571,7 +617,7 @@ export class D1DispatchStore implements DispatchStore {
              updated_ms = ?
          WHERE delivery_id = ?${predicate}`,
       )
-      .bind(nextVerifyAfterMs, now, deliveryId);
+      .bind(nextVerifyAfterMs, now, deliveryId, expectedRemaining);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }

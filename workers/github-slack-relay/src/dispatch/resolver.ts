@@ -217,6 +217,9 @@ async function completeScan(
   deps: ResolverDeps,
   now: number,
 ): Promise<void> {
+  // An operator sweep over a row with no scans remaining (R19) has no
+  // counter to consume — only §6.3.3 verification scans decrement.
+  if (row.verifyScansRemaining <= 0) return;
   const nextVerifyAfterMs =
     row.verifyScansRemaining >= 2
       ? (row.verifyAfterMs ?? now) -
@@ -227,6 +230,7 @@ async function completeScan(
     row.deliveryId,
     now,
     nextVerifyAfterMs,
+    row.verifyScansRemaining,
   );
 }
 

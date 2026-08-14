@@ -172,10 +172,13 @@ export interface DispatchStore {
   verificationRowsDue(now: number, limit: number): Promise<DispatchOutboxRow[]>;
   incrementResolverAttempts(deliveryId: string, now: number): Promise<number>;
   armVerification(deliveryId: string, now: number): Promise<boolean>;
+  // CAS on the caller's snapshot of verify_scans_remaining, so overlapping
+  // resolver passes cannot double-decrement (panel finding V13).
   completeVerificationScan(
     deliveryId: string,
     now: number,
     nextVerifyAfterMs: number | null,
+    expectedRemaining: number,
   ): Promise<boolean>;
   updateCanonicalTs(
     deliveryId: string,
@@ -207,10 +210,14 @@ export interface DispatchStatusCounters {
   repairedDuplicates: number;
 }
 
-// ADR §6.7 — observe-only alarm predicate inputs.
+// ADR §6.7 — observe-only alarm predicate inputs. `queued` and
+// `oldestNonTerminalAgeMs` feed the R20 backlog alarm ("rows accumulate in
+// queued, alarmed"); optional so pre-existing callers stay valid.
 export interface ObserverSnapshot {
   deadLetter: number;
   manual: number;
   oldestAmbiguousAgeMs: number | null;
   repairedDuplicates: number;
+  queued?: number;
+  oldestNonTerminalAgeMs?: number | null;
 }
