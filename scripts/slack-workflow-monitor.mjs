@@ -14,6 +14,12 @@ const RELAY_REPORT_REPLAY_TIMEOUT_MS = 5_000;
 const MAX_RETRY_AFTER_SECONDS = 30;
 const MAX_PAGES = 100;
 const REPORT_TRACE_LIMIT = 25;
+const MAX_TRACE_HYDRATION_PAGES = 2;
+// Four worst-case Slack calls fit the 321-minute job timeout after
+// retaining its 30-minute setup/processing margin. Durable fair rotation in
+// D1 carries the remaining pending IDs into later natural runs.
+const MAX_TRACE_HYDRATIONS_PER_RUN = 2;
+const SLACK_ACTIVITY_RETENTION_US = 7 * 24 * 60 * 60 * 1_000 * 1_000;
 const MAX_RELAY_AGE_SECONDS = 300;
 const MAX_RELAY_CLOCK_SKEW_SECONDS = 60;
 const MAX_ACTIVITIES_PER_PAGE = 100;
@@ -54,10 +60,19 @@ const EXECUTION_EVENT_TYPES = new Set([
   "workflow_step_execution_result",
 ]);
 
+const MAX_RECONCILIATION_ITEMS =
+  MAX_PAGES * MAX_ACTIVITIES_PER_PAGE + 2 * MAX_TRACE_HYDRATIONS_PER_RUN;
+// Trace and hydration reports are disjoint partitions. Splitting two
+// partitions can add at most one partially filled chunk to the combined bound.
+export const SLACK_MONITOR_MAX_RECONCILIATION_REPORTS =
+  Math.ceil(MAX_RECONCILIATION_ITEMS / REPORT_TRACE_LIMIT) + 1;
 export const SLACK_MONITOR_WORST_CASE_NETWORK_MS =
   RELAY_CHECKPOINT_TIMEOUT_MS +
   MAX_PAGES * (REQUEST_TIMEOUT_MS * 2 + MAX_RETRY_AFTER_SECONDS * 1_000) +
-  Math.ceil((MAX_PAGES * MAX_ACTIVITIES_PER_PAGE) / REPORT_TRACE_LIMIT) *
+  MAX_TRACE_HYDRATIONS_PER_RUN *
+    MAX_TRACE_HYDRATION_PAGES *
+    (REQUEST_TIMEOUT_MS * 2 + MAX_RETRY_AFTER_SECONDS * 1_000) +
+  SLACK_MONITOR_MAX_RECONCILIATION_REPORTS *
     (RELAY_REPORT_TIMEOUT_MS + RELAY_REPORT_REPLAY_TIMEOUT_MS);
 
 function requiredEnvironmentValue(environment, name) {
@@ -140,6 +155,56 @@ function checkpointCanonical(request) {
 }
 
 function reconciliationCanonical(report, version = 3) {
+  if (version === 5) {
+    return JSON.stringify([
+      "slack_activity_reconciliation_v5",
+      report.checkpoint_us,
+      report.report_timestamp,
+      report.scan_state,
+      report.hydrations.map((hydration) => [
+        hydration.trace_id,
+        hydration.first_observed_us,
+        hydration.last_observed_us,
+        hydration.status,
+        hydration.debt_reason,
+        hydration.attempted,
+      ]),
+      report.traces.map((trace) => [
+        trace.trace_id,
+        trace.delivery_id,
+        trace.outcome,
+        trace.relay_attempt,
+        trace.send_execution_id,
+        trace.slack_channel_id,
+        trace.slack_message_ts,
+        trace.send_boundary_reached,
+        trace.pre_send_failure_proven,
+        trace.started_at_us,
+        trace.completed_at_us,
+      ]),
+    ]);
+  }
+  if (version === 4) {
+    return JSON.stringify([
+      "slack_activity_reconciliation_v4",
+      report.checkpoint_us,
+      report.report_timestamp,
+      report.scan_state,
+      report.traces.map((trace) => [
+        trace.trace_id,
+        trace.delivery_id,
+        trace.outcome,
+        trace.relay_attempt,
+        trace.send_execution_id,
+        trace.slack_channel_id,
+        trace.slack_message_ts,
+        trace.send_boundary_reached,
+        trace.pre_send_failure_proven,
+        trace.started_at_us,
+        trace.completed_at_us,
+      ]),
+    ]);
+  }
   return JSON.stringify([
     `slack_activity_reconciliation_v${version}`,
     report.checkpoint_us,
@@ -274,22 +339,78 @@ async function readCheckpoint(fetchImpl, configuration, reportTimestamp) {
     "Relay reconciliation checkpoint",
     RELAY_CHECKPOINT_TIMEOUT_MS,
   );
-  const currentShape = hasExactKeys(response, [
+  const v5Shape = hasExactKeys(response, [
+    "checkpoint_us",
+    "reconciliation_version",
+    "resume_from_us",
+    "pending_trace_ids",
+    "pending_trace_total",
+    "pending_trace_oldest_us",
+  ]);
+  const v4Shape = hasExactKeys(response, [
+    "checkpoint_us",
+    "reconciliation_version",
+    "resume_from_us",
+  ]);
+  const v3Shape = hasExactKeys(response, [
     "checkpoint_us",
     "reconciliation_version",
   ]);
   const bridgeShape = hasExactKeys(response, ["checkpoint_us"]);
+  const pendingTraceIdsValid =
+    v5Shape &&
+    Array.isArray(response.pending_trace_ids) &&
+    response.pending_trace_ids.length <= REPORT_TRACE_LIMIT &&
+    response.pending_trace_ids.every(
+      (traceId) =>
+        typeof traceId === "string" && TRACE_ID_PATTERN.test(traceId),
+    ) &&
+    new Set(response.pending_trace_ids).size ===
+      response.pending_trace_ids.length;
+  const pendingTraceSummaryValid =
+    v5Shape &&
+    pendingTraceIdsValid &&
+    Number.isSafeInteger(response.pending_trace_total) &&
+    response.pending_trace_total >= response.pending_trace_ids.length &&
+    (response.pending_trace_total === 0 ||
+      response.pending_trace_ids.length > 0) &&
+    ((response.pending_trace_total === 0 &&
+      response.pending_trace_ids.length === 0 &&
+      response.pending_trace_oldest_us === null) ||
+      (response.pending_trace_total > 0 &&
+        Number.isSafeInteger(response.pending_trace_oldest_us) &&
+        response.pending_trace_oldest_us >= 0));
   if (
-    (!currentShape && !bridgeShape) ||
+    (!v5Shape && !v4Shape && !v3Shape && !bridgeShape) ||
     !Number.isSafeInteger(response.checkpoint_us) ||
     response.checkpoint_us < 0 ||
-    (currentShape && response.reconciliation_version !== 3)
+    (v5Shape &&
+      (response.reconciliation_version !== 5 ||
+        !pendingTraceIdsValid ||
+        !pendingTraceSummaryValid ||
+        (response.resume_from_us !== null &&
+          (!Number.isSafeInteger(response.resume_from_us) ||
+            response.resume_from_us < 0 ||
+            response.resume_from_us > response.checkpoint_us)))) ||
+    (v4Shape &&
+      (response.reconciliation_version !== 4 ||
+        (response.resume_from_us !== null &&
+          (!Number.isSafeInteger(response.resume_from_us) ||
+            response.resume_from_us < 0 ||
+            response.resume_from_us > response.checkpoint_us)))) ||
+    (v3Shape && response.reconciliation_version !== 3)
   ) {
     throw new Error("Relay reconciliation checkpoint is malformed.");
   }
   return Object.freeze({
     checkpointUs: response.checkpoint_us,
-    reconciliationVersion: currentShape ? 3 : 2,
+    reconciliationVersion: v5Shape ? 5 : v4Shape ? 4 : v3Shape ? 3 : 2,
+    resumeFromUs: v5Shape || v4Shape ? response.resume_from_us : null,
+    pendingTraceIds: Object.freeze(
+      v5Shape ? [...response.pending_trace_ids] : [],
+    ),
+    pendingTraceTotal: v5Shape ? response.pending_trace_total : 0,
+    pendingTraceOldestUs: v5Shape ? response.pending_trace_oldest_us : null,
   });
 }
 
@@ -351,6 +472,121 @@ async function fetchSlackPage({ body, configuration, fetchImpl, sleepImpl }) {
     );
   }
   return { activities: responseBody.activities, nextCursor };
+}
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  const record = recordFor(value);
+  if (record === null) return value;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, canonicalJsonValue(record[key])]),
+  );
+}
+
+function deduplicateSlackActivities(activities) {
+  const seen = new Set();
+  const unique = [];
+  for (const activity of activities) {
+    const key = JSON.stringify(canonicalJsonValue(activity));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(activity);
+  }
+  return unique;
+}
+
+function observeExecutionTraces(activities) {
+  const observations = new Map();
+  for (const activityValue of activities) {
+    const activity = recordFor(activityValue);
+    if (activity === null || !EXECUTION_EVENT_TYPES.has(activity.event_type)) {
+      continue;
+    }
+    const traceId = activity.trace_id;
+    const created = activity.created;
+    if (
+      typeof traceId !== "string" ||
+      !TRACE_ID_PATTERN.test(traceId) ||
+      !Number.isSafeInteger(created) ||
+      created < 0
+    ) {
+      continue;
+    }
+    let observation = observations.get(traceId);
+    if (observation === undefined) {
+      observation = {
+        firstObservedUs: created,
+        lastObservedUs: created,
+        hasStart: false,
+        hasTerminal: false,
+        legacyTopologyObserved: false,
+        currentTopologyObserved: false,
+      };
+      observations.set(traceId, observation);
+    }
+    observation.firstObservedUs = Math.min(
+      observation.firstObservedUs,
+      created,
+    );
+    observation.lastObservedUs = Math.max(observation.lastObservedUs, created);
+    observation.hasStart ||=
+      activity.event_type === "workflow_execution_started";
+    if (activity.event_type === "workflow_execution_result") {
+      const outcome = recordFor(activity.payload)?.exec_outcome;
+      observation.hasTerminal ||= outcome === "Success" || outcome === "Error";
+    }
+    if (activity.event_type === "workflow_step_started") {
+      const totalSteps = recordFor(activity.payload)?.total_steps;
+      observation.legacyTopologyObserved ||= totalSteps === 2;
+      observation.currentTopologyObserved ||= totalSteps === 4;
+    }
+  }
+  return observations;
+}
+
+async function fetchTraceHydration({
+  traceId,
+  configuration,
+  fetchImpl,
+  sleepImpl,
+}) {
+  const activities = [];
+  const seenCursors = new Set();
+  let cursor = "";
+  for (
+    let pageNumber = 0;
+    pageNumber < MAX_TRACE_HYDRATION_PAGES;
+    pageNumber += 1
+  ) {
+    const body = new URLSearchParams({
+      app_id: configuration.appId,
+      team_id: configuration.teamId,
+      min_log_level: "info",
+      component_type: "workflows",
+      trace_id: traceId,
+      sort_direction: "asc",
+      limit: String(MAX_ACTIVITIES_PER_PAGE),
+    });
+    if (cursor !== "") body.set("cursor", cursor);
+    const page = await fetchSlackPage({
+      body,
+      configuration,
+      fetchImpl,
+      sleepImpl,
+    });
+    activities.push(...page.activities);
+    if (page.nextCursor === "") {
+      return Object.freeze({ activities, paginationBoundReached: false });
+    }
+    if (seenCursors.has(page.nextCursor)) {
+      throw new Error("Slack trace hydration pagination repeated a cursor.");
+    }
+    seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+  return Object.freeze({ activities, paginationBoundReached: true });
 }
 
 function recordFor(value) {
@@ -890,18 +1126,36 @@ export function reconcileSlackActivities(activities, relaySigningSecrets = []) {
 async function postReconciliation({
   checkpointUs,
   previousCheckpointUs,
+  hydrations = [],
   traces,
   configuration,
   fetchImpl,
   now,
   reconciliationVersion,
+  scanState,
   uncorrelatedErrors,
 }) {
   const chunks = [];
   for (let index = 0; index < traces.length; index += REPORT_TRACE_LIMIT) {
-    chunks.push(traces.slice(index, index + REPORT_TRACE_LIMIT));
+    chunks.push({
+      traces: traces.slice(index, index + REPORT_TRACE_LIMIT),
+      hydrations: [],
+    });
   }
-  if (chunks.length === 0) chunks.push([]);
+  if (reconciliationVersion === 5) {
+    for (
+      let index = 0;
+      index < hydrations.length;
+      index += REPORT_TRACE_LIMIT
+    ) {
+      chunks.push({
+        traces: [],
+        hydrations: hydrations.slice(index, index + REPORT_TRACE_LIMIT),
+      });
+    }
+  }
+  if (chunks.length === 0) chunks.push({ traces: [], hydrations: [] });
+  let acknowledgedCheckpointUs = previousCheckpointUs;
 
   for (let index = 0; index < chunks.length; index += 1) {
     const final = index === chunks.length - 1;
@@ -913,7 +1167,13 @@ async function postReconciliation({
     const unsigned = {
       checkpoint_us: final ? checkpointUs : previousCheckpointUs,
       report_timestamp: reportTimestamp,
-      traces: chunks[index],
+      ...(reconciliationVersion >= 4
+        ? { scan_state: final ? scanState : "preserve" }
+        : {}),
+      ...(reconciliationVersion === 5
+        ? { hydrations: chunks[index].hydrations }
+        : {}),
+      traces: chunks[index].traces,
     };
     const response = await relayPost(
       fetchImpl,
@@ -938,15 +1198,31 @@ async function postReconciliation({
       "changed_error_traces",
       "checkpoint_us",
     ]);
+    const v5Shape =
+      reconciliationVersion === 5 &&
+      hasExactKeys(response, [
+        "ok",
+        "traces",
+        "hydrations",
+        "changed_error_traces",
+        "checkpoint_us",
+      ]);
     const bridgeShape =
       reconciliationVersion === 2 &&
       hasExactKeys(response, ["ok", "traces", "checkpoint_us"]);
-    if ((!currentShape && !bridgeShape) || response.ok !== true) {
+    const acceptedShape =
+      reconciliationVersion === 5
+        ? v5Shape
+        : reconciliationVersion === 2
+          ? bridgeShape
+          : currentShape;
+    if (!acceptedShape || response.ok !== true) {
       throw new Error("Relay reconciliation report was not accepted.");
     }
     if (
-      response.traces !== chunks[index].length ||
-      (currentShape &&
+      response.traces !== chunks[index].traces.length ||
+      (v5Shape && response.hydrations !== chunks[index].hydrations.length) ||
+      (reconciliationVersion !== 2 &&
         (!Number.isSafeInteger(response.changed_error_traces) ||
           response.changed_error_traces < 0 ||
           response.changed_error_traces > response.traces)) ||
@@ -956,15 +1232,19 @@ async function postReconciliation({
     ) {
       throw new Error("Relay reconciliation report returned invalid counts.");
     }
-    const changedErrorTraces = currentShape
-      ? response.changed_error_traces
-      : chunks[index].filter((trace) => trace.outcome === "error").length;
+    const changedErrorTraces =
+      reconciliationVersion !== 2
+        ? response.changed_error_traces
+        : chunks[index].traces.filter((trace) => trace.outcome === "error")
+            .length;
     if (changedErrorTraces > 0) {
       throw slackWorkflowError(
         changedErrorTraces + (final ? uncorrelatedErrors : 0),
       );
     }
+    if (final) acknowledgedCheckpointUs = response.checkpoint_us;
   }
+  return acknowledgedCheckpointUs;
 }
 
 function slackWorkflowError(errors) {
@@ -1029,19 +1309,19 @@ export async function monitorSlackWorkflow({
     previousCheckpointUs - CHECKPOINT_OVERLAP_US,
   );
   const minDateCreated =
-    previousCheckpointUs === 0
-      ? currentTimeUs - INITIAL_LOOKBACK_US
-      : minimumFromCheckpoint;
+    checkpoint.resumeFromUs !== null
+      ? checkpoint.resumeFromUs
+      : previousCheckpointUs === 0
+        ? currentTimeUs - INITIAL_LOOKBACK_US
+        : minimumFromCheckpoint;
 
   const activities = [];
   const seenCursors = new Set();
   let cursor = "";
   let pages = 0;
-  while (true) {
+  let caughtUp = false;
+  while (pages < MAX_PAGES) {
     pages += 1;
-    if (pages > MAX_PAGES) {
-      throw new Error("Slack activity pagination exceeded its safety bound.");
-    }
     const body = new URLSearchParams({
       app_id: configuration.appId,
       team_id: configuration.teamId,
@@ -1060,12 +1340,254 @@ export async function monitorSlackWorkflow({
       sleepImpl,
     });
     activities.push(...page.activities);
-    if (page.nextCursor === "") break;
+    if (page.nextCursor === "") {
+      caughtUp = true;
+      break;
+    }
     if (seenCursors.has(page.nextCursor)) {
       throw new Error("Slack activity pagination repeated a cursor.");
     }
     seenCursors.add(page.nextCursor);
     cursor = page.nextCursor;
+  }
+
+  if (checkpoint.reconciliationVersion === 5) {
+    const temporalObservations = observeExecutionTraces(activities);
+    const hydrationCandidateIds = [];
+    const hydrationCandidateSet = new Set();
+    const addHydrationCandidate = (traceId) => {
+      if (hydrationCandidateSet.has(traceId)) return;
+      hydrationCandidateSet.add(traceId);
+      hydrationCandidateIds.push(traceId);
+    };
+    for (const traceId of checkpoint.pendingTraceIds) {
+      const observation = temporalObservations.get(traceId);
+      if (
+        observation?.legacyTopologyObserved === true &&
+        observation.currentTopologyObserved === false
+      ) {
+        continue;
+      }
+      addHydrationCandidate(traceId);
+    }
+    for (const [traceId, observation] of temporalObservations) {
+      if (
+        !observation.legacyTopologyObserved &&
+        (!observation.hasStart || !observation.hasTerminal)
+      ) {
+        addHydrationCandidate(traceId);
+      }
+    }
+
+    const hydrationActivities = [];
+    const attemptedHydrationTraceIds = [];
+    const paginationBoundTraceIds = new Set();
+    let hydrationFailure = null;
+    for (const traceId of hydrationCandidateIds.slice(
+      0,
+      MAX_TRACE_HYDRATIONS_PER_RUN,
+    )) {
+      attemptedHydrationTraceIds.push(traceId);
+      try {
+        const hydration = await fetchTraceHydration({
+          traceId,
+          configuration,
+          fetchImpl,
+          sleepImpl,
+        });
+        hydrationActivities.push(...hydration.activities);
+        if (hydration.paginationBoundReached) {
+          paginationBoundTraceIds.add(traceId);
+        }
+      } catch (error) {
+        hydrationFailure = error;
+        break;
+      }
+    }
+
+    const combinedActivities = deduplicateSlackActivities([
+      ...activities,
+      ...hydrationActivities,
+    ]);
+    const attemptedHydrationTraceIdSet = new Set(attemptedHydrationTraceIds);
+    const checkpointPendingTraceIdSet = new Set(checkpoint.pendingTraceIds);
+    const reconciliation = reconcileSlackActivities(
+      combinedActivities,
+      configuration.relaySigningSecrets,
+    );
+    const normalizedTracesById = new Map(
+      reconciliation.traces.map((trace) => [trace.trace_id, trace]),
+    );
+    const combinedObservations = observeExecutionTraces(combinedActivities);
+    const hydrationIds = [];
+    const hydrationIdsSet = new Set();
+    const legacyHydrationTraceIds = new Set();
+    const addHydrationId = (traceId) => {
+      if (hydrationIdsSet.has(traceId)) return;
+      hydrationIdsSet.add(traceId);
+      hydrationIds.push(traceId);
+    };
+    for (const traceId of attemptedHydrationTraceIds) {
+      const observation = combinedObservations.get(traceId);
+      if (
+        observation?.legacyTopologyObserved === true &&
+        observation.currentTopologyObserved === false
+      ) {
+        legacyHydrationTraceIds.add(traceId);
+        addHydrationId(traceId);
+        continue;
+      }
+      addHydrationId(traceId);
+    }
+    for (const [traceId, observation] of combinedObservations) {
+      if (
+        observation.legacyTopologyObserved &&
+        !observation.currentTopologyObserved
+      ) {
+        if (
+          attemptedHydrationTraceIdSet.has(traceId) ||
+          checkpointPendingTraceIdSet.has(traceId)
+        ) {
+          legacyHydrationTraceIds.add(traceId);
+          addHydrationId(traceId);
+        }
+        continue;
+      }
+      addHydrationId(traceId);
+    }
+
+    const hydrations = [];
+    for (const traceId of hydrationIds) {
+      const normalizedTrace = normalizedTracesById.get(traceId);
+      const observation = combinedObservations.get(traceId);
+      // The checkpoint exposes a global oldest timestamp for health/fairness,
+      // not a trace-to-timestamp mapping. Never attribute that age to an
+      // arbitrary fair-page member; D1 preserves each registry row's minimum
+      // observation and performs the exact retention transition atomically.
+      const firstObservedUs = observation?.firstObservedUs ?? currentTimeUs;
+      const lastObservedUs = observation?.lastObservedUs ?? firstObservedUs;
+      if (legacyHydrationTraceIds.has(traceId)) {
+        hydrations.push(
+          Object.freeze({
+            trace_id: traceId,
+            first_observed_us: firstObservedUs,
+            last_observed_us: lastObservedUs,
+            status: "legacy",
+            debt_reason: null,
+            attempted: attemptedHydrationTraceIdSet.has(traceId),
+          }),
+        );
+        continue;
+      }
+      const paginationBoundReached = paginationBoundTraceIds.has(traceId);
+      const retentionExpired =
+        currentTimeUs - firstObservedUs >= SLACK_ACTIVITY_RETENTION_US;
+      const debtReason = paginationBoundReached
+        ? "pagination_bound"
+        : retentionExpired
+          ? "retention_expired"
+          : null;
+      if (normalizedTrace !== undefined) {
+        if (
+          normalizedTrace.outcome === "pending" &&
+          (attemptedHydrationTraceIdSet.has(traceId) || debtReason !== null)
+        ) {
+          hydrations.push(
+            Object.freeze({
+              trace_id: traceId,
+              first_observed_us: firstObservedUs,
+              last_observed_us: lastObservedUs,
+              status: debtReason === null ? "pending" : "debt",
+              debt_reason: debtReason,
+              attempted: attemptedHydrationTraceIdSet.has(traceId),
+            }),
+          );
+        }
+        continue;
+      }
+      hydrations.push(
+        Object.freeze({
+          trace_id: traceId,
+          first_observed_us: firstObservedUs,
+          last_observed_us: lastObservedUs,
+          status: debtReason === null ? "pending" : "debt",
+          debt_reason: debtReason,
+          attempted: attemptedHydrationTraceIdSet.has(traceId),
+        }),
+      );
+    }
+
+    let temporalMaximumCreated = 0;
+    for (const activityValue of activities) {
+      const created = recordFor(activityValue)?.created;
+      if (Number.isSafeInteger(created) && created >= 0) {
+        temporalMaximumCreated = Math.max(temporalMaximumCreated, created);
+      }
+    }
+    const evidenceCheckpointUs =
+      temporalMaximumCreated === 0
+        ? previousCheckpointUs === 0
+          ? minDateCreated
+          : previousCheckpointUs
+        : Math.max(previousCheckpointUs, temporalMaximumCreated);
+    const hasPendingHydration = hydrations.some(
+      (hydration) => hydration.status === "pending",
+    );
+    const reportTraces = reconciliation.traces;
+    const reportCheckpointUs = hasPendingHydration
+      ? previousCheckpointUs
+      : evidenceCheckpointUs;
+    const canPersistInitialBoundedResume =
+      !caughtUp && previousCheckpointUs > 0 && checkpoint.resumeFromUs === null;
+    if (
+      !caughtUp &&
+      !hasPendingHydration &&
+      (temporalMaximumCreated <= previousCheckpointUs ||
+        reportCheckpointUs <= previousCheckpointUs) &&
+      !canPersistInitialBoundedResume
+    ) {
+      throw new Error(
+        "Slack activity pagination could not advance its checkpoint within its safety bound.",
+      );
+    }
+    const acknowledgedCheckpointUs = await postReconciliation({
+      checkpointUs: reportCheckpointUs,
+      previousCheckpointUs,
+      hydrations,
+      traces: reportTraces,
+      configuration,
+      fetchImpl,
+      now,
+      reconciliationVersion: checkpoint.reconciliationVersion,
+      scanState: caughtUp ? "complete" : "resume",
+      uncorrelatedErrors: reconciliation.errors,
+    });
+
+    if (hydrationFailure !== null) throw hydrationFailure;
+    if (hasPendingHydration) {
+      throw new Error(
+        "Slack trace hydration remains incomplete after durable reconciliation.",
+      );
+    }
+    if (!caughtUp && acknowledgedCheckpointUs <= previousCheckpointUs) {
+      throw new Error(
+        "Relay did not acknowledge Slack activity checkpoint progress within its safety bound.",
+      );
+    }
+    if (reconciliation.errors > 0) {
+      throw slackWorkflowError(reconciliation.errors);
+    }
+    if (!caughtUp) {
+      throw new Error(
+        `Slack activity catch-up acknowledged durable checkpoint progress after ${pages} pages; more activity remains for the next scheduled run.`,
+      );
+    }
+    return Object.freeze({
+      caughtUp: true,
+      errors: 0,
+      pages,
+      traces: reportTraces.length,
+    });
   }
 
   const reconciliation = reconcileSlackActivities(
@@ -1078,22 +1600,60 @@ export async function monitorSlackWorkflow({
         ? minDateCreated
         : previousCheckpointUs
       : Math.max(previousCheckpointUs, reconciliation.maximumCreated);
+  // Resume inclusively before an incomplete trace so its terminal suffix is
+  // never detached from the authenticated start observed in this prefix.
+  const earliestPendingTraceStartUs = reconciliation.traces.reduce(
+    (earliest, trace) =>
+      trace.outcome !== "pending"
+        ? earliest
+        : earliest === null
+          ? trace.started_at_us
+          : Math.min(earliest, trace.started_at_us),
+    null,
+  );
+  const traceSafeCheckpointUs =
+    earliestPendingTraceStartUs === null
+      ? evidenceCheckpointUs
+      : Math.min(
+          evidenceCheckpointUs,
+          Math.max(previousCheckpointUs, earliestPendingTraceStartUs),
+        );
   const bridgeTraces = reconciliation.traces.filter(bridgeCompatibleTrace);
   const reportTraces =
-    checkpoint.reconciliationVersion === 3
+    checkpoint.reconciliationVersion >= 3
       ? reconciliation.traces
       : bridgeTraces.map(asBridgeTrace);
   const reportCheckpointUs =
     checkpoint.reconciliationVersion === 2 &&
     bridgeTraces.length !== reconciliation.traces.length
       ? previousCheckpointUs
-      : evidenceCheckpointUs;
+      : traceSafeCheckpointUs;
   const withheldBridgeTraces =
     checkpoint.reconciliationVersion === 2
       ? reconciliation.traces.filter((trace) => !bridgeCompatibleTrace(trace))
           .length
       : 0;
-  await postReconciliation({
+  const canPersistInitialBoundedResume =
+    !caughtUp &&
+    previousCheckpointUs > 0 &&
+    checkpoint.reconciliationVersion === 4 &&
+    checkpoint.resumeFromUs === null;
+  if (
+    !caughtUp &&
+    (reconciliation.maximumCreated <= previousCheckpointUs ||
+      reportCheckpointUs <= previousCheckpointUs) &&
+    !canPersistInitialBoundedResume
+  ) {
+    throw new Error(
+      "Slack activity pagination could not advance its checkpoint within its safety bound.",
+    );
+  }
+  if (!caughtUp && checkpoint.reconciliationVersion !== 4) {
+    throw new Error(
+      "Relay reconciliation v4 is required to resume bounded Slack activity catch-up.",
+    );
+  }
+  const acknowledgedCheckpointUs = await postReconciliation({
     checkpointUs: reportCheckpointUs,
     previousCheckpointUs,
     traces: reportTraces,
@@ -1101,8 +1661,15 @@ export async function monitorSlackWorkflow({
     fetchImpl,
     now,
     reconciliationVersion: checkpoint.reconciliationVersion,
+    scanState: caughtUp ? "complete" : "resume",
     uncorrelatedErrors: reconciliation.errors,
   });
+
+  if (!caughtUp && acknowledgedCheckpointUs <= previousCheckpointUs) {
+    throw new Error(
+      "Relay did not acknowledge Slack activity checkpoint progress within its safety bound.",
+    );
+  }
 
   if (reconciliation.errors > 0) {
     throw slackWorkflowError(reconciliation.errors);
@@ -1110,10 +1677,16 @@ export async function monitorSlackWorkflow({
   if (withheldBridgeTraces > 0) {
     const noun = withheldBridgeTraces === 1 ? "trace" : "traces";
     throw new Error(
-      `Slack retained ${withheldBridgeTraces} ${noun} until relay reconciliation v3 becomes available; activity payloads withheld.`,
+      `Slack retained ${withheldBridgeTraces} ${noun} until relay reconciliation v3 or newer becomes available; activity payloads withheld.`,
+    );
+  }
+  if (!caughtUp) {
+    throw new Error(
+      `Slack activity catch-up acknowledged durable checkpoint progress after ${pages} pages; more activity remains for the next scheduled run.`,
     );
   }
   return Object.freeze({
+    caughtUp: true,
     errors: 0,
     pages,
     traces: reportTraces.length,
@@ -1126,9 +1699,8 @@ const invokedPath = process.argv[1]
 if (invokedPath === import.meta.url) {
   monitorSlackWorkflow()
     .then((result) => {
-      console.info(
-        `Slack workflow monitor reconciled ${result.traces} complete traces across ${result.pages} pages with no errors.`,
-      );
+      const message = `Slack workflow monitor reconciled ${result.traces} traces across ${result.pages} pages`;
+      console.info(`${message} with no errors.`);
     })
     .catch((error) => {
       console.error(error instanceof Error ? error.message : "Monitor failed.");

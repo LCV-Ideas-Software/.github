@@ -331,6 +331,14 @@ function applyTrace(
   const markApplied = (): void => {
     effectiveTrace.appliedAt ??= now;
   };
+  if (
+    delivery.status === "manual_review" &&
+    delivery.lastError === "slack_trace_hydration_owner_ambiguous" &&
+    delivery.slackTraceId === null
+  ) {
+    markApplied();
+    return;
+  }
   if (effectiveTrace.messageTs !== null) {
     if (
       effectiveTrace.sendExecutionId === null ||

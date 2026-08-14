@@ -4,6 +4,8 @@ import {
   SEALED_SLACK_DELIVERY_PROTOCOL_GUARDS,
 } from "./slack-delivery-protocol-guards";
 import {
+  SLACK_ACTIVITY_SCAN_STATE_COLUMN_CONTRACT,
+  SLACK_ACTIVITY_SCAN_STATE_TABLE_SQL,
   SLACK_RECONCILIATION_REPORT_COLUMN_CONTRACT,
   SLACK_RECONCILIATION_REPORT_ERROR_COLUMN_CONTRACT,
   SLACK_RECONCILIATION_REPORT_ERROR_INDEX_CONTRACT,
@@ -13,6 +15,10 @@ import {
   SLACK_RECONCILIATION_REPORT_INDEX_CONTRACT,
   SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL,
   SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
+  SLACK_TRACE_HYDRATION_REGISTRY_COLUMN_CONTRACT,
+  SLACK_TRACE_HYDRATION_REGISTRY_INDEX_CONTRACT,
+  SLACK_TRACE_HYDRATION_REGISTRY_PENDING_INDEX_SQL,
+  SLACK_TRACE_HYDRATION_REGISTRY_TABLE_SQL,
 } from "./slack-reconciliation-schema-contract";
 import {
   planSlackReconciliation,
@@ -58,6 +64,16 @@ export interface SlackReconciliationReportResult {
   checkpointUs: number;
 }
 
+export interface SlackActivityScanState {
+  checkpointUs: number;
+  resumeFromUs: number | null;
+  pendingTraceIds: string[];
+  pendingTraceTotal: number;
+  pendingTraceOldestUs: number | null;
+}
+
+export type SlackReconciliationScanState = "preserve" | "resume" | "complete";
+
 export interface SlackTraceReconciliation {
   traceId: string;
   deliveryId: string;
@@ -87,10 +103,24 @@ export interface SlackReconciliationTraceInput {
   completedAtUs: number | null;
 }
 
+export type SlackTraceHydrationDebtReason =
+  "retention_expired" | "pagination_bound";
+
+export interface SlackTraceHydrationInput {
+  traceId: string;
+  firstObservedUs: number;
+  lastObservedUs: number;
+  attempted: boolean;
+  status: "pending" | "debt" | "legacy";
+  debtReason: SlackTraceHydrationDebtReason | null;
+}
+
 export interface SlackReconciliationInput {
   reportId: string;
   traces: readonly SlackReconciliationTraceInput[];
+  hydrations?: readonly SlackTraceHydrationInput[];
   checkpointUs: number;
+  scanState: SlackReconciliationScanState;
   now: number;
 }
 
@@ -217,6 +247,7 @@ export interface DeliveryStore {
     attemptCount: number;
   } | null>;
   getSlackActivityCheckpoint(): Promise<number>;
+  getSlackActivityScanState(): Promise<SlackActivityScanState>;
   getSlackReconciliationReport(
     reportId: string,
   ): Promise<SlackReconciliationReportResult | null>;
@@ -310,6 +341,8 @@ const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 const SLACK_RECONCILIATION_REPORT_ID_PATTERN = /^[0-9a-f]{64}$/u;
 const SLACK_TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/u;
 const SLACK_RECONCILIATION_TRACE_LIMIT = 25;
+const SLACK_TRACE_HYDRATION_PAGE_LIMIT = 25;
+const SLACK_TRACE_HYDRATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const SLACK_RECONCILIATION_REPORT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const SLACK_FUNCTION_EXECUTION_ID_PATTERN = /^Fx[A-Za-z0-9]{1,126}$/u;
 const SLACK_RECONCILIATION_RETRY_DELAY_MS =
@@ -453,6 +486,28 @@ export class D1DeliveryStore implements DeliveryStore {
            ) AS error_column_contract,
            (
              SELECT group_concat(
+               name || ':' || type || ':' || "notnull" || ':' || pk,
+               ','
+             )
+             FROM (
+               SELECT name, type, "notnull", pk
+               FROM pragma_table_info('slack_activity_scan_state')
+               ORDER BY cid
+             )
+           ) AS scan_state_column_contract,
+           (
+             SELECT group_concat(
+               name || ':' || type || ':' || "notnull" || ':' || pk,
+               ','
+             )
+             FROM (
+               SELECT name, type, "notnull", pk
+               FROM pragma_table_info('slack_trace_hydration_registry')
+               ORDER BY cid
+             )
+           ) AS hydration_column_contract,
+           (
+             SELECT group_concat(
                name || ':' || "unique" || ':' || origin || ':' || partial,
                ','
              )
@@ -473,6 +528,17 @@ export class D1DeliveryStore implements DeliveryStore {
                ORDER BY name
              )
            ) AS error_index_contract,
+           (
+             SELECT group_concat(
+               name || ':' || "unique" || ':' || origin || ':' || partial,
+               ','
+             )
+             FROM (
+               SELECT name, "unique", origin, partial
+               FROM pragma_index_list('slack_trace_hydration_registry')
+               ORDER BY name
+             )
+           ) AS hydration_index_contract,
            (
              SELECT group_concat(
                id || ':' || seq || ':' || "table" || ':' || "from" || ':' ||
@@ -503,11 +569,20 @@ export class D1DeliveryStore implements DeliveryStore {
                AND tbl_name = 'slack_reconciliation_report_errors'
            ) AS error_index_sql,
            (
+             SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'index'
+               AND name = 'idx_slack_trace_hydration_registry_pending'
+               AND tbl_name = 'slack_trace_hydration_registry'
+           ) AS hydration_index_sql,
+           (
              SELECT COUNT(*)
              FROM sqlite_schema
              WHERE tbl_name IN (
                'slack_reconciliation_reports',
-               'slack_reconciliation_report_errors'
+               'slack_reconciliation_report_errors',
+               'slack_activity_scan_state',
+               'slack_trace_hydration_registry'
              )
                AND sql IS NOT NULL
            ) AS schema_object_count,
@@ -524,19 +599,39 @@ export class D1DeliveryStore implements DeliveryStore {
              WHERE type = 'table'
                AND name = 'slack_reconciliation_report_errors'
                AND tbl_name = 'slack_reconciliation_report_errors'
-           ) AS error_sql`,
+           ) AS error_sql,
+           (
+             SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'table'
+               AND name = 'slack_activity_scan_state'
+               AND tbl_name = 'slack_activity_scan_state'
+           ) AS scan_state_sql,
+           (
+             SELECT sql
+             FROM sqlite_schema
+             WHERE type = 'table'
+               AND name = 'slack_trace_hydration_registry'
+               AND tbl_name = 'slack_trace_hydration_registry'
+           ) AS hydration_sql`,
       )
       .first<{
         report_column_contract: string | null;
         error_column_contract: string | null;
+        scan_state_column_contract: string | null;
+        hydration_column_contract: string | null;
         report_index_contract: string | null;
         error_index_contract: string | null;
+        hydration_index_contract: string | null;
         foreign_key_contract: string | null;
         report_index_sql: string | null;
         error_index_sql: string | null;
+        hydration_index_sql: string | null;
         schema_object_count: number;
         report_sql: string | null;
         error_sql: string | null;
+        scan_state_sql: string | null;
+        hydration_sql: string | null;
       }>();
     return (
       row !== null &&
@@ -544,19 +639,29 @@ export class D1DeliveryStore implements DeliveryStore {
         SLACK_RECONCILIATION_REPORT_COLUMN_CONTRACT &&
       row.error_column_contract ===
         SLACK_RECONCILIATION_REPORT_ERROR_COLUMN_CONTRACT &&
+      row.scan_state_column_contract ===
+        SLACK_ACTIVITY_SCAN_STATE_COLUMN_CONTRACT &&
+      row.hydration_column_contract ===
+        SLACK_TRACE_HYDRATION_REGISTRY_COLUMN_CONTRACT &&
       row.report_index_contract ===
         SLACK_RECONCILIATION_REPORT_INDEX_CONTRACT &&
       row.error_index_contract ===
         SLACK_RECONCILIATION_REPORT_ERROR_INDEX_CONTRACT &&
+      row.hydration_index_contract ===
+        SLACK_TRACE_HYDRATION_REGISTRY_INDEX_CONTRACT &&
       row.foreign_key_contract ===
         SLACK_RECONCILIATION_REPORT_FOREIGN_KEY_CONTRACT &&
       row.report_index_sql ===
         SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL &&
       row.error_index_sql ===
         SLACK_RECONCILIATION_REPORT_ERRORS_REPORT_INDEX_SQL &&
-      row.schema_object_count === 4 &&
+      row.hydration_index_sql ===
+        SLACK_TRACE_HYDRATION_REGISTRY_PENDING_INDEX_SQL &&
+      row.schema_object_count === 7 &&
       row.report_sql === SLACK_RECONCILIATION_REPORTS_TABLE_SQL &&
-      row.error_sql === SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL
+      row.error_sql === SLACK_RECONCILIATION_REPORT_ERRORS_TABLE_SQL &&
+      row.scan_state_sql === SLACK_ACTIVITY_SCAN_STATE_TABLE_SQL &&
+      row.hydration_sql === SLACK_TRACE_HYDRATION_REGISTRY_TABLE_SQL
     );
   }
 
@@ -1022,10 +1127,8 @@ export class D1DeliveryStore implements DeliveryStore {
         "known_loss_recovery_authorization_required",
       );
     }
-    if (existing.status === "delivered") {
-      if (existing.slackMessageTs === input.messageTs) {
-        return "duplicate";
-      }
+    const duplicateReceipt = existing.status === "delivered";
+    if (duplicateReceipt && existing.slackMessageTs !== input.messageTs) {
       throw new SlackProgressConflictError("slack_message_timestamp_conflict");
     }
     const releasedPreSendRetry =
@@ -1035,6 +1138,7 @@ export class D1DeliveryStore implements DeliveryStore {
         existing.status === "dead_letter") &&
       existing.slackTraceId !== null;
     if (
+      !duplicateReceipt &&
       existing.status !== "sending" &&
       existing.status !== "accepted_by_slack" &&
       existing.status !== "accepted_by_trigger" &&
@@ -1050,9 +1154,21 @@ export class D1DeliveryStore implements DeliveryStore {
       throw new SlackProgressConflictError("slack_send_execution_missing");
     }
 
+    const hydrationRegistry = await this.#database
+      .prepare(
+        `SELECT 1 AS present
+         FROM sqlite_schema
+         WHERE type = 'table'
+           AND name = 'slack_trace_hydration_registry'
+           AND tbl_name = 'slack_trace_hydration_registry'
+           AND sql IS NOT NULL
+         LIMIT 1`,
+      )
+      .first<{ present: number }>();
+
     let result: D1Result<unknown>;
     try {
-      result = await this.#database
+      const deliveryMutation = this.#database
         .prepare(
           `UPDATE deliveries
            SET status = 'delivered', updated_at = ?, delivered_at = ?,
@@ -1113,8 +1229,98 @@ export class D1DeliveryStore implements DeliveryStore {
           input.destination,
           input.attemptCount,
           existing.slackSendExecutionId,
-        )
-        .run();
+        );
+      if (hydrationRegistry === null) {
+        result = await deliveryMutation.run();
+      } else {
+        const applyOwnedHydrationDebt = this.#database
+          .prepare(
+            `UPDATE slack_workflow_traces AS trace
+             SET applied_at = COALESCE(trace.applied_at, ?),
+                 updated_at = MAX(trace.updated_at, ?)
+             WHERE trace.delivery_id = ?
+               AND trace.outcome = 'pending'
+               AND trace.relay_attempt = ?
+               AND (
+                 trace.send_execution_id IS NULL
+                 OR trace.send_execution_id = ?
+               )
+               AND EXISTS (
+                 SELECT 1
+                 FROM slack_trace_hydration_registry AS registry
+                 WHERE registry.trace_id = trace.trace_id
+                   AND registry.status IN ('pending', 'debt')
+               )
+               AND EXISTS (
+                 SELECT 1
+                 FROM deliveries AS delivery
+                 WHERE delivery.delivery_id = trace.delivery_id
+                   AND delivery.delivery_id = ?
+                   AND delivery.destination = ?
+                   AND delivery.status = 'delivered'
+                   AND delivery.attempt_count = ?
+                   AND delivery.slack_message_ts = ?
+                   AND delivery.slack_send_execution_id = ?
+               )`,
+          )
+          .bind(
+            input.now,
+            input.now,
+            input.deliveryId,
+            input.attemptCount,
+            existing.slackSendExecutionId,
+            input.deliveryId,
+            input.destination,
+            input.attemptCount,
+            input.messageTs,
+            existing.slackSendExecutionId,
+          );
+        const removeOwnedHydrationDebt = this.#database
+          .prepare(
+            `DELETE FROM slack_trace_hydration_registry AS registry
+             WHERE registry.status IN ('pending', 'debt')
+               AND EXISTS (
+                 SELECT 1
+                 FROM slack_workflow_traces AS trace
+                 JOIN deliveries AS delivery
+                   ON delivery.delivery_id = trace.delivery_id
+                 WHERE trace.trace_id = registry.trace_id
+                   AND trace.delivery_id = ?
+                   AND trace.outcome = 'pending'
+                   AND trace.applied_at IS NOT NULL
+                   AND trace.relay_attempt = ?
+                   AND (
+                     trace.send_execution_id IS NULL
+                     OR trace.send_execution_id = ?
+                   )
+                   AND delivery.delivery_id = ?
+                   AND delivery.destination = ?
+                   AND delivery.status = 'delivered'
+                   AND delivery.attempt_count = ?
+                   AND delivery.slack_message_ts = ?
+                   AND delivery.slack_send_execution_id = ?
+               )`,
+          )
+          .bind(
+            input.deliveryId,
+            input.attemptCount,
+            existing.slackSendExecutionId,
+            input.deliveryId,
+            input.destination,
+            input.attemptCount,
+            input.messageTs,
+            existing.slackSendExecutionId,
+          );
+        const [deliveryResult] = await this.#database.batch([
+          deliveryMutation,
+          applyOwnedHydrationDebt,
+          removeOwnedHydrationDebt,
+        ]);
+        if (deliveryResult === undefined) {
+          throw new Error("slack_progress_batch_result_missing");
+        }
+        result = deliveryResult;
+      }
     } catch (error) {
       const current = await this.get(input.deliveryId);
       if (
@@ -2279,6 +2485,95 @@ export class D1DeliveryStore implements DeliveryStore {
     return state.slack_activity_checkpoint_us;
   }
 
+  async getSlackActivityScanState(): Promise<SlackActivityScanState> {
+    const state = await this.#database
+      .prepare(
+        `WITH pending_trace_candidates AS (
+           SELECT trace.trace_id,
+                  trace.started_at_us AS first_observed_us,
+                  0 AS last_hydrated_at
+           FROM slack_workflow_traces AS trace
+           WHERE trace.outcome = 'pending'
+             AND trace.applied_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1
+               FROM slack_trace_hydration_registry AS registry
+               WHERE registry.trace_id = trace.trace_id
+             )
+           UNION ALL
+           SELECT registry.trace_id,
+                  registry.first_observed_us,
+                  registry.last_hydrated_at
+           FROM slack_trace_hydration_registry AS registry
+           WHERE registry.status = 'pending'
+         ), pending_trace_page AS (
+           SELECT trace_id
+           FROM pending_trace_candidates
+           ORDER BY last_hydrated_at, first_observed_us, trace_id
+           LIMIT ${SLACK_TRACE_HYDRATION_PAGE_LIMIT}
+         )
+         SELECT relay.slack_activity_checkpoint_us,
+                scan.resume_from_us,
+                (SELECT json_group_array(trace_id)
+                 FROM pending_trace_page) AS pending_trace_ids_json,
+                (SELECT COUNT(*)
+                 FROM pending_trace_candidates) AS pending_trace_total,
+                (SELECT MIN(first_observed_us)
+                 FROM pending_trace_candidates) AS pending_trace_oldest_us
+         FROM relay_state AS relay
+         JOIN slack_activity_scan_state AS scan
+           ON scan.singleton_id = relay.singleton_id
+         WHERE relay.singleton_id = 1`,
+      )
+      .first<{
+        slack_activity_checkpoint_us: number;
+        resume_from_us: number | null;
+        pending_trace_ids_json: string;
+        pending_trace_total: number;
+        pending_trace_oldest_us: number | null;
+      }>();
+    let pendingTraceIds: unknown = null;
+    if (state !== null) {
+      try {
+        pendingTraceIds = JSON.parse(state.pending_trace_ids_json);
+      } catch {
+        pendingTraceIds = null;
+      }
+    }
+    if (
+      state === null ||
+      !Number.isSafeInteger(state.slack_activity_checkpoint_us) ||
+      state.slack_activity_checkpoint_us < 0 ||
+      (state.resume_from_us !== null &&
+        (!Number.isSafeInteger(state.resume_from_us) ||
+          state.resume_from_us < 0 ||
+          state.resume_from_us > state.slack_activity_checkpoint_us)) ||
+      !Array.isArray(pendingTraceIds) ||
+      pendingTraceIds.length > SLACK_TRACE_HYDRATION_PAGE_LIMIT ||
+      pendingTraceIds.some(
+        (traceId) =>
+          typeof traceId !== "string" || !SLACK_TRACE_ID_PATTERN.test(traceId),
+      ) ||
+      !Number.isSafeInteger(state.pending_trace_total) ||
+      state.pending_trace_total < pendingTraceIds.length ||
+      state.pending_trace_total < 0 ||
+      (state.pending_trace_oldest_us !== null &&
+        (!Number.isSafeInteger(state.pending_trace_oldest_us) ||
+          state.pending_trace_oldest_us < 0)) ||
+      (state.pending_trace_total === 0) !==
+        (state.pending_trace_oldest_us === null)
+    ) {
+      throw new Error("slack_activity_scan_state_unavailable");
+    }
+    return {
+      checkpointUs: state.slack_activity_checkpoint_us,
+      resumeFromUs: state.resume_from_us,
+      pendingTraceIds: pendingTraceIds as string[],
+      pendingTraceTotal: state.pending_trace_total,
+      pendingTraceOldestUs: state.pending_trace_oldest_us,
+    };
+  }
+
   async getSlackReconciliationReport(
     reportId: string,
   ): Promise<SlackReconciliationReportResult | null> {
@@ -2328,13 +2623,42 @@ export class D1DeliveryStore implements DeliveryStore {
   async reconcileSlackReport(
     input: SlackReconciliationInput,
   ): Promise<SlackReconciliationReportResult> {
+    const scanState = input.scanState;
+    const hydrations = input.hydrations ?? [];
+    const traceIds = new Set(input.traces.map(({ traceId }) => traceId));
+    const hydrationIds = new Set(hydrations.map(({ traceId }) => traceId));
+    const reportItemCount = input.traces.length + hydrations.length;
     if (
       !SLACK_RECONCILIATION_REPORT_ID_PATTERN.test(input.reportId) ||
-      input.traces.length > SLACK_RECONCILIATION_TRACE_LIMIT ||
-      new Set(input.traces.map(({ traceId }) => traceId)).size !==
-        input.traces.length ||
+      reportItemCount > SLACK_RECONCILIATION_TRACE_LIMIT ||
+      traceIds.size !== input.traces.length ||
+      hydrationIds.size !== hydrations.length ||
+      [...hydrationIds].some((traceId) => traceIds.has(traceId)) ||
+      hydrations.some(
+        ({
+          traceId,
+          firstObservedUs,
+          lastObservedUs,
+          attempted,
+          status,
+          debtReason,
+        }) =>
+          !SLACK_TRACE_ID_PATTERN.test(traceId) ||
+          !Number.isSafeInteger(firstObservedUs) ||
+          firstObservedUs < 0 ||
+          !Number.isSafeInteger(lastObservedUs) ||
+          lastObservedUs < firstObservedUs ||
+          typeof attempted !== "boolean" ||
+          !["pending", "debt", "legacy"].includes(status) ||
+          (status === "debt"
+            ? !["retention_expired", "pagination_bound"].includes(
+                debtReason ?? "",
+              )
+            : debtReason !== null),
+      ) ||
       !Number.isSafeInteger(input.checkpointUs) ||
       input.checkpointUs < 0 ||
+      !["preserve", "resume", "complete"].includes(scanState) ||
       !Number.isSafeInteger(input.now) ||
       input.now <= 0
     ) {
@@ -2344,6 +2668,7 @@ export class D1DeliveryStore implements DeliveryStore {
     }
 
     const rawTracesJson = JSON.stringify(input.traces);
+    const rawHydrationsJson = JSON.stringify(hydrations);
     const planningRows = await this.#database
       .prepare(
         `WITH report_input AS (
@@ -2493,7 +2818,7 @@ export class D1DeliveryStore implements DeliveryStore {
     }
     if (replay !== null) {
       if (
-        replay.traceCount !== input.traces.length ||
+        replay.traceCount !== reportItemCount ||
         replay.requestedCheckpointUs !== input.checkpointUs
       ) {
         throw new SlackReconciliationConflictError(
@@ -2541,6 +2866,10 @@ export class D1DeliveryStore implements DeliveryStore {
       [...plan.traces.values()].map((final) => ({ final })),
     );
     const deliveryChangesJson = JSON.stringify(guardedDeliveryChanges);
+    const hydrationRetentionCutoffUs = Math.max(
+      0,
+      (input.now - SLACK_TRACE_HYDRATION_RETENTION_MS) * 1_000,
+    );
     const purgeExpiredReports = this.#database
       .prepare(
         `DELETE FROM slack_reconciliation_reports
@@ -2665,6 +2994,273 @@ export class D1DeliveryStore implements DeliveryStore {
                json_extract(entry.value, '$.initial.legacyUnverified')`,
       )
       .bind(deliveryChangesJson);
+    const removeNormalizedHydrations = this.#database
+      .prepare(
+        `DELETE FROM slack_trace_hydration_registry
+         WHERE trace_id IN (
+           SELECT json_extract(value, '$.traceId')
+           FROM json_each(?)
+           WHERE json_extract(value, '$.outcome') != 'pending'
+         )`,
+      )
+      .bind(rawTracesJson);
+    const removeLegacyHydrations = this.#database
+      .prepare(
+        `DELETE FROM slack_trace_hydration_registry
+         WHERE trace_id IN (
+           SELECT json_extract(value, '$.traceId')
+           FROM json_each(?)
+           WHERE json_extract(value, '$.status') = 'legacy'
+         )`,
+      )
+      .bind(rawHydrationsJson);
+    const upsertHydrations = this.#database
+      .prepare(
+        `WITH hydration_input AS (
+           SELECT
+             json_extract(entry.value, '$.traceId') AS trace_id,
+             MIN(
+               json_extract(entry.value, '$.firstObservedUs'),
+               COALESCE(
+                 (
+                   SELECT trace.started_at_us
+                   FROM slack_workflow_traces AS trace
+                   WHERE trace.trace_id =
+                         json_extract(entry.value, '$.traceId')
+                 ),
+                 json_extract(entry.value, '$.firstObservedUs')
+               )
+             ) AS first_observed_us,
+             json_extract(entry.value, '$.lastObservedUs') AS last_observed_us,
+             json_extract(entry.value, '$.attempted') AS attempted,
+             json_extract(entry.value, '$.status') AS status,
+             json_extract(entry.value, '$.debtReason') AS debt_reason
+           FROM json_each(?) AS entry
+           WHERE json_extract(entry.value, '$.status') != 'legacy'
+             AND NOT EXISTS (
+               SELECT 1
+               FROM slack_workflow_traces AS trace
+               WHERE trace.trace_id =
+                     json_extract(entry.value, '$.traceId')
+                 AND (
+                   trace.outcome != 'pending'
+                   OR trace.applied_at IS NOT NULL
+                 )
+             )
+         )
+         INSERT INTO slack_trace_hydration_registry (
+           trace_id, first_observed_us, last_observed_us, last_hydrated_at,
+           status, debt_reason, updated_at
+         )
+         SELECT
+           entry.trace_id,
+           entry.first_observed_us,
+           entry.last_observed_us,
+           CASE WHEN entry.attempted = 1 THEN ? ELSE 0 END,
+           CASE
+             WHEN entry.status = 'debt'
+               OR entry.first_observed_us <= ?
+             THEN 'debt'
+             ELSE 'pending'
+           END,
+           CASE
+             WHEN entry.status = 'debt'
+             THEN entry.debt_reason
+             WHEN entry.first_observed_us <= ?
+             THEN 'retention_expired'
+             ELSE NULL
+           END,
+           ?
+         FROM hydration_input AS entry
+         WHERE 1
+         ON CONFLICT(trace_id) DO UPDATE SET
+           first_observed_us = MIN(
+             slack_trace_hydration_registry.first_observed_us,
+             excluded.first_observed_us
+           ),
+           last_observed_us = MAX(
+             slack_trace_hydration_registry.last_observed_us,
+             excluded.last_observed_us
+           ),
+           last_hydrated_at = CASE
+             WHEN excluded.last_hydrated_at > 0
+             THEN MAX(
+               slack_trace_hydration_registry.last_hydrated_at,
+               excluded.last_hydrated_at
+             )
+             ELSE slack_trace_hydration_registry.last_hydrated_at
+           END,
+           status = CASE
+             WHEN slack_trace_hydration_registry.status = 'debt'
+               OR excluded.status = 'debt'
+               OR MIN(
+                 slack_trace_hydration_registry.first_observed_us,
+                 excluded.first_observed_us
+               ) <= ?
+             THEN 'debt'
+             ELSE 'pending'
+           END,
+           debt_reason = CASE
+             WHEN slack_trace_hydration_registry.status = 'debt'
+             THEN slack_trace_hydration_registry.debt_reason
+             WHEN excluded.status = 'debt'
+             THEN excluded.debt_reason
+             WHEN MIN(
+               slack_trace_hydration_registry.first_observed_us,
+               excluded.first_observed_us
+             ) <= ?
+             THEN 'retention_expired'
+             ELSE NULL
+           END,
+           updated_at = MAX(
+             slack_trace_hydration_registry.updated_at,
+             excluded.updated_at
+           )`,
+      )
+      .bind(
+        rawHydrationsJson,
+        input.now,
+        hydrationRetentionCutoffUs,
+        hydrationRetentionCutoffUs,
+        input.now,
+        hydrationRetentionCutoffUs,
+        hydrationRetentionCutoffUs,
+      );
+    const resolveOwnedHydrationDeliveries = this.#database
+      .prepare(
+        `WITH affected_deliveries AS (
+           SELECT DISTINCT trace.delivery_id
+           FROM json_each(?) AS entry
+           JOIN slack_trace_hydration_registry AS registry
+             ON registry.trace_id = json_extract(entry.value, '$.traceId')
+           JOIN slack_workflow_traces AS trace
+             ON trace.trace_id = registry.trace_id
+             AND trace.outcome = 'pending'
+           WHERE registry.status = 'debt'
+           ), ownership_candidate AS (
+            SELECT registry.trace_id, trace.delivery_id
+            FROM slack_trace_hydration_registry AS registry
+            JOIN slack_workflow_traces AS trace
+              ON trace.trace_id = registry.trace_id
+            AND trace.outcome = 'pending'
+           WHERE registry.status = 'debt'
+              AND trace.delivery_id IN (
+                SELECT delivery_id FROM affected_deliveries
+              )
+            UNION
+            SELECT trace.trace_id, trace.delivery_id
+            FROM slack_workflow_traces AS trace
+            WHERE trace.outcome = 'pending'
+              AND trace.applied_at IS NOT NULL
+              AND trace.delivery_id IN (
+                SELECT delivery_id FROM affected_deliveries
+              )
+            UNION
+            SELECT terminal_trace.trace_id, terminal_trace.delivery_id
+            FROM slack_workflow_traces AS terminal_trace
+            WHERE terminal_trace.outcome IN ('success', 'error')
+              AND terminal_trace.applied_at IS NOT NULL
+              AND terminal_trace.delivery_id IN (
+              SELECT delivery_id FROM affected_deliveries
+            )
+           ), owner_group AS (
+            SELECT delivery_id,
+                   COUNT(*) AS debt_count,
+                   MIN(trace_id) AS trace_id
+            FROM ownership_candidate
+            GROUP BY delivery_id
+          )
+         UPDATE deliveries AS delivery
+         SET status = 'manual_review',
+             last_error = CASE
+               WHEN (
+                 SELECT owner.debt_count
+                 FROM owner_group AS owner
+                 WHERE owner.delivery_id = delivery.delivery_id
+                ) = 1
+               THEN 'slack_activity_trace_' || (
+                 SELECT registry.debt_reason
+                 FROM owner_group AS owner
+                 JOIN slack_trace_hydration_registry AS registry
+                   ON registry.trace_id = owner.trace_id
+                 WHERE owner.delivery_id = delivery.delivery_id
+               )
+               ELSE 'slack_trace_hydration_owner_ambiguous'
+             END,
+             slack_trace_id = CASE
+               WHEN (
+                 SELECT owner.debt_count
+                 FROM owner_group AS owner
+                 WHERE owner.delivery_id = delivery.delivery_id
+               ) = 1
+               THEN (
+                 SELECT owner.trace_id
+                 FROM owner_group AS owner
+                 WHERE owner.delivery_id = delivery.delivery_id
+               )
+               ELSE NULL
+             END,
+             updated_at = ?
+         WHERE delivery.delivery_id IN (
+           SELECT delivery_id FROM owner_group
+          )
+           AND delivery.status != 'delivered'`,
+      )
+      .bind(rawHydrationsJson, input.now);
+    const applyOwnedHydrationTraces = this.#database
+      .prepare(
+        `UPDATE slack_workflow_traces AS trace
+         SET applied_at = COALESCE(trace.applied_at, ?),
+             updated_at = ?
+         WHERE trace.outcome = 'pending'
+           AND trace.trace_id IN (
+             SELECT registry.trace_id
+             FROM json_each(?) AS entry
+             JOIN slack_trace_hydration_registry AS registry
+               ON registry.trace_id = json_extract(entry.value, '$.traceId')
+             JOIN deliveries AS delivery
+               ON delivery.delivery_id = trace.delivery_id
+              AND (
+                delivery.status = 'delivered'
+                OR (
+                  delivery.status = 'manual_review'
+                  AND delivery.slack_trace_id = registry.trace_id
+                  AND delivery.last_error =
+                      'slack_activity_trace_' || registry.debt_reason
+                )
+              )
+             WHERE registry.status = 'debt'
+           )`,
+      )
+      .bind(input.now, input.now, rawHydrationsJson);
+    const removeOwnedHydrationDebt = this.#database
+      .prepare(
+        `DELETE FROM slack_trace_hydration_registry AS registry
+         WHERE registry.status = 'debt'
+           AND registry.trace_id IN (
+             SELECT json_extract(value, '$.traceId')
+             FROM json_each(?)
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM slack_workflow_traces AS trace
+             JOIN deliveries AS delivery
+               ON delivery.delivery_id = trace.delivery_id
+             WHERE trace.trace_id = registry.trace_id
+               AND trace.outcome = 'pending'
+               AND trace.applied_at IS NOT NULL
+               AND (
+                 delivery.status = 'delivered'
+                 OR (
+                   delivery.status = 'manual_review'
+                   AND delivery.slack_trace_id = registry.trace_id
+                   AND delivery.last_error =
+                       'slack_activity_trace_' || registry.debt_reason
+                 )
+               )
+           )`,
+      )
+      .bind(rawHydrationsJson);
     const errorTraceIdsJson = JSON.stringify(plan.errorTraceIds);
     const reserveErrors = this.#database
       .prepare(
@@ -2681,30 +3277,53 @@ export class D1DeliveryStore implements DeliveryStore {
     const advanceCheckpoint = this.#database
       .prepare(
         `UPDATE relay_state
-         SET slack_activity_checkpoint_us = MAX(
-           slack_activity_checkpoint_us,
-           MIN(
-             ?,
-             COALESCE(
-               (
-                 SELECT MIN(updated_at * 1000)
-                 FROM deliveries
-                 WHERE legacy_unverified = 0
-                   AND (
-                     status IN (
-                       'pending', 'enqueueing', 'queued', 'sending',
-                       'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+         SET slack_activity_checkpoint_us = CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM slack_trace_hydration_registry
+             WHERE status = 'pending'
+           ) THEN slack_activity_checkpoint_us
+           ELSE MAX(
+             slack_activity_checkpoint_us,
+             MIN(
+               ?,
+               COALESCE(
+                 (
+                   SELECT MIN(updated_at * 1000)
+                   FROM deliveries
+                   WHERE legacy_unverified = 0
+                     AND (
+                       status IN (
+                         'pending', 'enqueueing', 'queued', 'sending',
+                         'accepted_by_slack', 'accepted_by_trigger',
+                         'send_started'
+                       )
+                       OR slack_trace_id IS NULL
                      )
-                     OR slack_trace_id IS NULL
-                   )
-               ),
-               ?
+                 ),
+                 ?
+               )
              )
            )
-         )
+         END
          WHERE singleton_id = 1`,
       )
       .bind(input.checkpointUs, input.checkpointUs);
+    const updateScanState = this.#database
+      .prepare(
+        `UPDATE slack_activity_scan_state
+         SET resume_from_us = CASE ?
+           WHEN 'preserve' THEN resume_from_us
+           WHEN 'resume' THEN (
+             SELECT slack_activity_checkpoint_us
+             FROM relay_state
+             WHERE singleton_id = 1
+           )
+           WHEN 'complete' THEN NULL
+         END
+         WHERE singleton_id = 1`,
+      )
+      .bind(scanState);
     const journalReport = this.#database
       .prepare(
         `INSERT INTO slack_reconciliation_reports (
@@ -2767,9 +3386,9 @@ export class D1DeliveryStore implements DeliveryStore {
                  )
                )
              )
-             AND NOT EXISTS (
-               SELECT 1
-               FROM json_each(?) AS entry
+              AND NOT EXISTS (
+                SELECT 1
+                FROM json_each(?) AS entry
                LEFT JOIN deliveries AS delivery
                  ON delivery.delivery_id =
                     json_extract(entry.value, '$.final.deliveryId')
@@ -2794,11 +3413,128 @@ export class D1DeliveryStore implements DeliveryStore {
                      json_extract(entry.value, '$.final.slackTraceId')
                   OR delivery.slack_send_execution_id IS NOT
                      json_extract(entry.value, '$.final.slackSendExecutionId')
-                  OR delivery.legacy_unverified IS NOT
-                     json_extract(entry.value, '$.final.legacyUnverified')
+                   OR delivery.legacy_unverified IS NOT
+                      json_extract(entry.value, '$.final.legacyUnverified')
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM json_each(?) AS entry
+                JOIN slack_trace_hydration_registry AS registry
+                  ON registry.trace_id =
+                     json_extract(entry.value, '$.traceId')
+                WHERE json_extract(entry.value, '$.outcome') != 'pending'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM json_each(?) AS entry
+                WHERE (
+                  json_extract(entry.value, '$.status') = 'legacy'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM slack_trace_hydration_registry AS registry
+                    WHERE registry.trace_id =
+                          json_extract(entry.value, '$.traceId')
+                  )
+                ) OR (
+                  json_extract(entry.value, '$.status') != 'legacy'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM slack_trace_hydration_registry AS registry
+                    WHERE registry.trace_id =
+                          json_extract(entry.value, '$.traceId')
+                      AND registry.first_observed_us <=
+                          json_extract(entry.value, '$.firstObservedUs')
+                      AND registry.last_observed_us >=
+                          json_extract(entry.value, '$.lastObservedUs')
+                      AND (
+                        (
+                          json_extract(entry.value, '$.attempted') = 1
+                          AND registry.last_hydrated_at >= ?
+                        )
+                        OR (
+                          json_extract(entry.value, '$.attempted') = 0
+                        )
+                      )
+                      AND registry.updated_at >= ?
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM slack_workflow_traces AS trace
+                    LEFT JOIN deliveries AS delivery
+                      ON delivery.delivery_id = trace.delivery_id
+                    WHERE trace.trace_id =
+                          json_extract(entry.value, '$.traceId')
+                      AND (
+                        trace.outcome != 'pending'
+                        OR (
+                          trace.outcome = 'pending'
+                          AND trace.applied_at IS NOT NULL
+                          AND (
+                            delivery.status = 'delivered'
+                            OR (
+                              delivery.status = 'manual_review'
+                              AND delivery.slack_trace_id = trace.trace_id
+                              AND delivery.last_error IN (
+                                'slack_activity_trace_retention_expired',
+                                'slack_activity_trace_pagination_bound'
+                              )
+                            )
+                          )
+                        )
+                      )
+                  )
+                )
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM json_each(?) AS entry
+                JOIN slack_trace_hydration_registry AS registry
+                  ON registry.trace_id =
+                     json_extract(entry.value, '$.traceId')
+                 AND registry.status = 'debt'
+               JOIN slack_workflow_traces AS trace
+                 ON trace.trace_id = registry.trace_id
+                 AND trace.outcome = 'pending'
+                LEFT JOIN deliveries AS delivery
+                  ON delivery.delivery_id = trace.delivery_id
+               WHERE NOT (
+                 delivery.status = 'manual_review'
+                 AND delivery.last_error =
+                     'slack_trace_hydration_owner_ambiguous'
+                  AND delivery.slack_trace_id IS NULL
+                  AND (
+                    SELECT COUNT(*)
+                    FROM (
+                      SELECT sibling_registry.trace_id
+                      FROM slack_trace_hydration_registry AS sibling_registry
+                      JOIN slack_workflow_traces AS sibling_trace
+                        ON sibling_trace.trace_id = sibling_registry.trace_id
+                       AND sibling_trace.outcome = 'pending'
+                      WHERE sibling_registry.status = 'debt'
+                        AND sibling_trace.delivery_id = trace.delivery_id
+                      UNION
+                      SELECT applied_trace.trace_id
+                      FROM slack_workflow_traces AS applied_trace
+                      WHERE applied_trace.delivery_id = trace.delivery_id
+                        AND applied_trace.outcome = 'pending'
+                        AND applied_trace.applied_at IS NOT NULL
+                      UNION
+                      SELECT terminal_trace.trace_id
+                      FROM slack_workflow_traces AS terminal_trace
+                      WHERE terminal_trace.delivery_id = trace.delivery_id
+                        AND terminal_trace.outcome IN ('success', 'error')
+                        AND terminal_trace.applied_at IS NOT NULL
+                    ) AS ownership_candidate
+                  ) > 1
+               )
+              )
+              AND EXISTS (
+                SELECT 1 FROM relay_state WHERE singleton_id = 1
              )
              AND EXISTS (
-               SELECT 1 FROM relay_state WHERE singleton_id = 1
+               SELECT 1
+               FROM slack_activity_scan_state
+               WHERE singleton_id = 1
              )
              THEN ? ELSE -1 END,
            (SELECT COUNT(*)
@@ -2819,7 +3555,12 @@ export class D1DeliveryStore implements DeliveryStore {
         deliveryChangesJson,
         traceGuardsJson,
         deliveryChangesJson,
-        input.traces.length,
+        rawTracesJson,
+        rawHydrationsJson,
+        input.now,
+        input.now,
+        rawHydrationsJson,
+        reportItemCount,
         input.reportId,
         input.checkpointUs,
         input.checkpointUs,
@@ -2832,8 +3573,15 @@ export class D1DeliveryStore implements DeliveryStore {
         insertNewTraces,
         updateExistingTraces,
         updateDeliveries,
+        removeNormalizedHydrations,
+        removeLegacyHydrations,
+        upsertHydrations,
+        resolveOwnedHydrationDeliveries,
+        applyOwnedHydrationTraces,
+        removeOwnedHydrationDebt,
         reserveErrors,
         advanceCheckpoint,
+        updateScanState,
         journalReport,
       ]);
     } catch (error) {
@@ -2842,7 +3590,7 @@ export class D1DeliveryStore implements DeliveryStore {
       );
       if (racedReplay !== null) {
         if (
-          racedReplay.traceCount !== input.traces.length ||
+          racedReplay.traceCount !== reportItemCount ||
           racedReplay.requestedCheckpointUs !== input.checkpointUs
         ) {
           throw new SlackReconciliationConflictError(
@@ -2856,7 +3604,7 @@ export class D1DeliveryStore implements DeliveryStore {
     const result = await this.getSlackReconciliationReport(input.reportId);
     if (
       result === null ||
-      result.traceCount !== input.traces.length ||
+      result.traceCount !== reportItemCount ||
       result.requestedCheckpointUs !== input.checkpointUs
     ) {
       throw new Error("slack_reconciliation_report_unavailable");
@@ -2932,27 +3680,35 @@ export class D1DeliveryStore implements DeliveryStore {
     const advanceCheckpoint = this.#database
       .prepare(
         `UPDATE relay_state
-         SET slack_activity_checkpoint_us = MAX(
-           slack_activity_checkpoint_us,
-           MIN(
-             ?,
-             COALESCE(
-               (
-                 SELECT MIN(updated_at * 1000)
-                 FROM deliveries
-                 WHERE legacy_unverified = 0
-                   AND (
-                     status IN (
-                       'pending', 'enqueueing', 'queued', 'sending',
-                       'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+         SET slack_activity_checkpoint_us = CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM slack_trace_hydration_registry
+             WHERE status = 'pending'
+           ) THEN slack_activity_checkpoint_us
+           ELSE MAX(
+             slack_activity_checkpoint_us,
+             MIN(
+               ?,
+               COALESCE(
+                 (
+                   SELECT MIN(updated_at * 1000)
+                   FROM deliveries
+                   WHERE legacy_unverified = 0
+                     AND (
+                       status IN (
+                         'pending', 'enqueueing', 'queued', 'sending',
+                         'accepted_by_slack', 'accepted_by_trigger',
+                         'send_started'
+                       )
+                       OR slack_trace_id IS NULL
                      )
-                     OR slack_trace_id IS NULL
-                   )
-               ),
-               ?
+                 ),
+                 ?
+               )
              )
            )
-         )
+         END
          WHERE singleton_id = 1`,
       )
       .bind(checkpointUs, checkpointUs);
@@ -2999,27 +3755,35 @@ export class D1DeliveryStore implements DeliveryStore {
     const state = await this.#database
       .prepare(
         `UPDATE relay_state
-         SET slack_activity_checkpoint_us = MAX(
-           slack_activity_checkpoint_us,
-           MIN(
-             ?,
-             COALESCE(
-               (
-                 SELECT MIN(updated_at * 1000)
-                 FROM deliveries
-                 WHERE legacy_unverified = 0
-                   AND (
-                     status IN (
-                       'pending', 'enqueueing', 'queued', 'sending',
-                       'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+         SET slack_activity_checkpoint_us = CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM slack_trace_hydration_registry
+             WHERE status = 'pending'
+           ) THEN slack_activity_checkpoint_us
+           ELSE MAX(
+             slack_activity_checkpoint_us,
+             MIN(
+               ?,
+               COALESCE(
+                 (
+                   SELECT MIN(updated_at * 1000)
+                   FROM deliveries
+                   WHERE legacy_unverified = 0
+                     AND (
+                       status IN (
+                         'pending', 'enqueueing', 'queued', 'sending',
+                         'accepted_by_slack', 'accepted_by_trigger',
+                         'send_started'
+                       )
+                       OR slack_trace_id IS NULL
                      )
-                     OR slack_trace_id IS NULL
-                   )
-               ),
-               ?
+                 ),
+                 ?
+               )
              )
            )
-         )
+         END
          WHERE singleton_id = 1
          RETURNING slack_activity_checkpoint_us`,
       )
@@ -3112,19 +3876,37 @@ export class D1DeliveryStore implements DeliveryStore {
       )
       .all();
 
+    if (
+      !(await this.#hasExactSlackDeliveryProtocolSeal()) ||
+      !(await this.#hasExactSlackReconciliationSchema())
+    ) {
+      return false;
+    }
+
     const state = await this.#database
       .prepare(
-        `SELECT next_slack_at, slack_activity_checkpoint_us,
+        `SELECT relay.next_slack_at, relay.slack_activity_checkpoint_us,
+                scan.resume_from_us,
                 slack_delivery_protocol_active,
                 slack_delivery_protocol_revision,
                 slack_delivery_protocol_activated_at,
                 slack_delivery_protocol_activation_id,
                 slack_delivery_protocol_schema_revision,
                 slack_delivery_protocol_confirmation_open
-         FROM relay_state
-         WHERE singleton_id = 1
+         FROM relay_state AS relay
+         JOIN slack_activity_scan_state AS scan
+           ON scan.singleton_id = relay.singleton_id
+         WHERE relay.singleton_id = 1
            AND typeof(next_slack_at) = 'integer'
            AND typeof(slack_activity_checkpoint_us) = 'integer'
+           AND (
+             scan.resume_from_us IS NULL
+             OR (
+               typeof(scan.resume_from_us) = 'integer'
+               AND scan.resume_from_us BETWEEN 0
+                                           AND slack_activity_checkpoint_us
+             )
+           )
            AND slack_delivery_protocol_active = 1
            AND typeof(slack_delivery_protocol_revision) = 'text'
            AND slack_delivery_protocol_revision = ?
@@ -3148,6 +3930,7 @@ export class D1DeliveryStore implements DeliveryStore {
       .first<{
         next_slack_at: number;
         slack_activity_checkpoint_us: number;
+        resume_from_us: number | null;
         slack_delivery_protocol_active: number;
         slack_delivery_protocol_revision: string;
         slack_delivery_protocol_activated_at: number;
@@ -3159,15 +3942,22 @@ export class D1DeliveryStore implements DeliveryStore {
     const unresolved = await this.#database
       .prepare(
         `SELECT 1 AS present
-         FROM deliveries
-         WHERE status IN ('manual_review', 'dead_letter')
-           OR (
-             legacy_unverified = 0
-             AND status IN (
-               'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+         FROM (
+           SELECT 1
+           FROM deliveries
+           WHERE status IN ('manual_review', 'dead_letter')
+             OR (
+               legacy_unverified = 0
+               AND status IN (
+                 'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+               )
+               AND next_attempt_at <= ?
              )
-             AND next_attempt_at <= ?
-           )
+           UNION ALL
+           SELECT 1
+           FROM slack_trace_hydration_registry
+           WHERE status = 'debt'
+         )
          LIMIT 1`,
       )
       .bind(now)
@@ -3177,8 +3967,6 @@ export class D1DeliveryStore implements DeliveryStore {
       state !== null &&
       Number.isSafeInteger(state.next_slack_at) &&
       Number.isSafeInteger(state.slack_activity_checkpoint_us) &&
-      (await this.#hasExactSlackDeliveryProtocolSeal()) &&
-      (await this.#hasExactSlackReconciliationSchema()) &&
       unresolved === null
     );
   }

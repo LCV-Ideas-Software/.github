@@ -242,7 +242,7 @@ Production verification and deployment are owned by
 2. checks npm and Deno dependency signatures and advisories;
 3. verifies committed bindings, formats, lints, type-checks, runs both test
    suites, and creates a strict Worker dry-run bundle;
-4. when the production gate is enabled, proves migrations `0001` through `0007`
+4. when the production gate is enabled, proves migrations `0001` through `0009`
    and the seal guards in an owned disposable remote D1, and cleans it up;
 5. applies production D1 migrations, then requires the exact sealed historical
    `e0131a7/0005` protocol anchor, all three permanent guards, no transient
@@ -264,10 +264,14 @@ guards. Its source and destination assertions are part of the same D1 migration
 transaction, so tuple or schema drift aborts before Worker replacement.
 Migration `0007_journal_slack_reconciliation_reports.sql` adds exact
 authenticated-report replay without inferring historical error receipts.
+Migration `0008_resume_bounded_slack_activity_scan.sql` adds one singleton
+resume watermark for bounded Slack activity catch-up; its initial value is
+`NULL`, so migration does not skip or reclassify historical evidence.
 Trace updates stay individually idempotent; novel-error reservation, checkpoint
-clamping and immutable response journaling alone finalize atomically in one D1
-batch. Report journals become eligible for deletion after 24 hours and are
-removed by the next finalized report, while receipts follow the trace lifetime.
+clamping, scan-state transition and immutable response journaling alone finalize
+atomically in one D1 batch. Report journals become eligible for deletion after
+24 hours and are removed by the next finalized report, while receipts follow
+the trace lifetime.
 
 The Worker reads immutable `WORKER_VERSION.tag`, which the deploy command binds
 to the current 40-character `GITHUB_SHA`, as runtime provenance. Delivery
@@ -398,8 +402,15 @@ ORDER BY updated_at ASC;
 ```
 
 The separate Slack app workflow queries `apps.activities.list` every 15 minutes
-at `info` level, follows every `response_metadata.next_cursor`, and starts from
-an authenticated D1 checkpoint with a 20-minute overlap. The Worker uses
+at `info` level, follows `response_metadata.next_cursor` for at most 100 pages
+per execution, and starts from an authenticated D1 checkpoint with a 20-minute
+overlap. If an earlier bounded execution has not caught up, it instead resumes
+inclusively from the relay-acknowledged D1 watermark. The monitor never stores
+a Slack cursor between scheduled runs because Slack may reject a cursor that is
+no longer valid. If more than 100 pages share the exact watermark timestamp,
+the monitor remains fail-closed rather than skipping activities. A pending
+trace keeps the resume watermark at its start so the next run refetches the
+authenticated start together with its terminal suffix. The Worker uses
 Cloudflare Smart Placement so reconciliation executes near the D1 primary
 instead of paying cross-region latency for every trace. An empty query keeps
 its previous evidence boundary (or anchors the initial lower bound); it never
@@ -421,7 +432,8 @@ signed relay timestamp is
 within the validator's five-minute/60-second window around the Slack step
 activity itself. Rejected or replayed trigger inputs are ignored. Raw activities
 and private workflow inputs are never sent to D1 or logged. Reports contain at
-most 25 traces. Trace mutations are individually idempotent, after which one D1
+most 25 normalized traces plus hydration records in total. Trace mutations are
+individually idempotent, after which one D1
 batch atomically commits novel terminal-error receipts, the clamped checkpoint
 and an immutable response journal. Replaying the same signed body after a lost
 HTTP response returns exactly the original result; a later overlapping report
@@ -429,8 +441,13 @@ cannot announce the same error again. Migration `0007` deliberately infers no
 receipt for historical errors: only an authenticated post-migration report
 establishes novelty. Per-trace receipts follow their traces. Replay journals
 become eligible for deletion after 24 hours and are removed by the next
-finalized report. The checkpoint advances only after all pages and every
-normalized trace are durably accepted. A
+finalized report. A complete scan clears the resume watermark. A bounded prefix
+stores `resume_from_us` as the checkpoint D1 actually committed after clamping,
+in the same batch as the final report's normalized traces and journal. Earlier
+25-trace chunks each commit in their own atomic D1 batch. The next scheduled
+execution therefore cannot replay the normal overlap forever. A response that
+does not acknowledge progress fails closed and is never described as a
+successful advance. A
 terminal error with an authenticated failure of the signed validator step and
 no send boundary is the sole automatic resend case. An Activities `Error` from
 the send-boundary callback remains ambiguous even when no callback success was
@@ -440,17 +457,28 @@ validator failure proves that neither the callback nor its dependent
 `SendMessage` ran. Success without a receipt, any post-boundary failure, missing
 proof, incomplete evidence or a conflicting trace fails closed.
 
-The current checkpoint response advertises `reconciliation_version: 3`; v3
-HMACs also bind the observed Slack channel and `message_ts`. A checkpoint
-without a version identifies the old v2 Worker during the one-time rollout.
-The new monitor then sends only terminal error traces in the domain-separated
-v2 format; it retains success, pending, and v3-only evidence, pins the
-checkpoint, and fails. Once the v3 Worker is live it rejects every v2 report,
-including an empty report, so an in-flight old monitor cannot mutate state or
-advance the checkpoint. The next scheduled run negotiates v3 and replays the
-overlap. The exact successful two-step workflow topology predating durable
-receipts is recognized only for overlap compatibility and is never adopted as
-evidence for a current D1 delivery.
+The current checkpoint response advertises `reconciliation_version: 5`, the
+nullable `resume_from_us`, and a fair, bounded page of at most 25 pending
+`trace_id` values with the total count and global oldest observation. V5 HMACs
+bind the scan-state transition, hydration records and the v4 trace evidence.
+Each natural run hydrates at most two trace IDs, with at most two cursor pages
+per trace; those `apps.activities.list` requests use `trace_id` without temporal
+bounds and never persist Slack cursors. Each signed hydration record states
+whether that ID was actually fetched; only attempted IDs advance the fairness
+timestamp, while newly observed IDs remain first in the pending rotation. Exact
+activity deduplication happens before normalization. A pending hydration is durable in D1 and prevents the
+activity checkpoint from advancing until the trace normalizes or becomes debt.
+The seven-day retention boundary and an exhausted hydration-page bound fail
+closed: an owned pending trace moves atomically to `manual_review`, while
+unowned debt remains health-blocking without inventing an owner.
+
+A v4 checkpoint remains readable during rollout, but once the v5 Worker is
+live every authenticated v4, v3 or v2 report receives
+`reconciliation_upgrade_required` without mutating delivery, checkpoint or scan
+state. A checkpoint without a version identifies the old v2 Worker during its
+earlier rollout. The exact successful two-step workflow topology predating
+durable receipts is recognized only for overlap compatibility and is never
+adopted as evidence for a current D1 delivery.
 
 Retention is also checkpoint-aware: a receipt-confirmed row is purged only when
 its applied terminal trace predates both the 30-day cutoff and the durable
@@ -478,7 +506,11 @@ validated the exact resulting tuple, closed confirmation irreversibly, removed
 both transient guards and installed permanent update, insert and delete guards.
 Migration `0007_journal_slack_reconciliation_reports.sql` then added the
 bounded reconciliation journal without fabricating historical error receipts
-or changing the sealed activation tuple.
+or changing the sealed activation tuple. Migration
+`0008_resume_bounded_slack_activity_scan.sql` then added the nullable singleton
+resume watermark without changing that tuple or existing checkpoints. Migration
+`0009_track_slack_trace_hydration.sql` adds the pending/debt trace registry and
+its fair-scan index without storing raw Slack activities or expiring cursors.
 If a successful Slack trace is observed for an ordinary legacy row, D1 may
 attach that trace ID but preserves `accepted_by_slack` and
 `legacy_unverified = 1`; the trace alone is neither delivery proof nor a reason
@@ -551,6 +583,7 @@ to write and revoked after the job. The built-in `GITHUB_TOKEN` grants only
 - [Slack app environment variables](https://docs.slack.dev/tools/deno-slack-sdk/guides/using-environment-variables/)
 - [Slack app activity logging](https://docs.slack.dev/tools/deno-slack-sdk/guides/logging-function-and-app-behavior/)
 - [`apps.activities.list`](https://docs.slack.dev/reference/methods/apps.activities.list/)
+- [Slack cursor pagination](https://docs.slack.dev/apis/web-api/pagination/)
 - [Cloudflare Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/)
 - [Cloudflare Secrets Store bindings](https://developers.cloudflare.com/secrets-store/integrations/workers/)
 - [Cloudflare Queues dead-letter queues](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/)

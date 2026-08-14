@@ -238,6 +238,14 @@ function databaseWithReconciliationJournal(): {
     result.database,
     "0007_journal_slack_reconciliation_reports.sql",
   );
+  applyMigrationAtomically(
+    result.database,
+    "0008_resume_bounded_slack_activity_scan.sql",
+  );
+  applyMigrationAtomically(
+    result.database,
+    "0009_track_slack_trace_hydration.sql",
+  );
   return result;
 }
 
@@ -924,6 +932,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         reportId: (traceCount === 1 ? "1" : "2").repeat(64),
         traces,
         checkpointUs: NOW * 1_000,
+        scanState: "preserve",
         now: NOW,
       });
       return boundaries;
@@ -934,6 +943,1335 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
 
     expect(oneTrace).toEqual({ all: 1, batch: 1, first: 1, run: 0 });
     expect(maximumTraces).toEqual(oneTrace);
+  });
+
+  it("persists only the relay-acknowledged checkpoint for bounded scan resume", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-bounded-scan-checkpoint-clamp";
+    await store.insert(input(deliveryId));
+
+    const requestedCheckpointUs = (NOW + 100) * 1_000;
+    const resumed = await store.reconcileSlackReport({
+      reportId: "3".repeat(64),
+      traces: [],
+      checkpointUs: requestedCheckpointUs,
+      scanState: "resume",
+      now: NOW + 1,
+    });
+
+    expect(resumed).toMatchObject({
+      requestedCheckpointUs,
+      checkpointUs: NOW * 1_000,
+    });
+    await expect(store.getSlackActivityScanState()).resolves.toEqual({
+      checkpointUs: NOW * 1_000,
+      resumeFromUs: NOW * 1_000,
+      pendingTraceIds: [],
+      pendingTraceTotal: 0,
+      pendingTraceOldestUs: null,
+    });
+
+    database
+      .prepare("DELETE FROM deliveries WHERE delivery_id = ?")
+      .run(deliveryId);
+    await store.reconcileSlackReport({
+      reportId: "4".repeat(64),
+      traces: [],
+      checkpointUs: requestedCheckpointUs,
+      scanState: "complete",
+      now: NOW + 2,
+    });
+    await expect(store.getSlackActivityScanState()).resolves.toEqual({
+      checkpointUs: requestedCheckpointUs,
+      resumeFromUs: null,
+      pendingTraceIds: [],
+      pendingTraceTotal: 0,
+      pendingTraceOldestUs: null,
+    });
+  });
+
+  it("rotates a bounded pending-trace checkpoint page fairly beyond its limit", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const expectedIds: string[] = [];
+    for (let index = 1; index <= 30; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      const deliveryId = `sqlite-hydration-fairness-${suffix}`;
+      const traceId = `TrHydrationFairness${suffix}`;
+      expectedIds.push(traceId);
+      await store.insert(input(deliveryId));
+      database
+        .prepare(
+          `INSERT INTO slack_workflow_traces (
+             trace_id, delivery_id, outcome, relay_attempt,
+             send_boundary_reached, pre_send_failure_proven,
+             started_at_us, completed_at_us, updated_at, applied_at
+           ) VALUES (?, ?, 'pending', 1, 0, 0, ?, NULL, ?, NULL)`,
+        )
+        .run(traceId, deliveryId, NOW * 1_000 - index, NOW + index);
+    }
+
+    const firstPage = [...expectedIds].reverse().slice(0, 25);
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: firstPage,
+      pendingTraceTotal: 30,
+      pendingTraceOldestUs: NOW * 1_000 - 30,
+    });
+
+    await store.reconcileSlackReport({
+      reportId: "5".repeat(64),
+      traces: [],
+      hydrations: firstPage.map((traceId) => {
+        const sequence = Number.parseInt(traceId.slice(-2), 10);
+        return {
+          traceId,
+          firstObservedUs: NOW * 1_000 - sequence,
+          lastObservedUs: NOW * 1_000 - sequence,
+          attempted: true,
+          status: "pending" as const,
+          debtReason: null,
+        };
+      }),
+      checkpointUs: NOW * 1_000,
+      scanState: "resume",
+      now: NOW + 1_000,
+    });
+
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: [
+        ...expectedIds.slice(0, 5).reverse(),
+        ...firstPage.slice(0, 20),
+      ],
+      pendingTraceTotal: 30,
+      pendingTraceOldestUs: NOW * 1_000 - 30,
+    });
+  });
+
+  it("prioritizes a never-attempted pending hydration before attempted peers", async () => {
+    const { d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const attemptedTraceIds = [
+      "TrHydrationAttemptedA",
+      "TrHydrationAttemptedB",
+    ] as const;
+    const neverAttemptedTraceId = "TrHydrationNeverAttemptedZ";
+    const firstObservedUs = NOW * 1_000;
+
+    await store.reconcileSlackReport({
+      reportId: "e".repeat(64),
+      traces: [],
+      hydrations: [
+        ...attemptedTraceIds.map((traceId, index) => ({
+          traceId,
+          firstObservedUs: firstObservedUs + index,
+          lastObservedUs: firstObservedUs + index,
+          attempted: true,
+          status: "pending" as const,
+          debtReason: null,
+        })),
+        {
+          traceId: neverAttemptedTraceId,
+          firstObservedUs: firstObservedUs + 2,
+          lastObservedUs: firstObservedUs + 2,
+          attempted: false,
+          status: "pending",
+          debtReason: null,
+        },
+      ],
+      checkpointUs: firstObservedUs,
+      scanState: "resume",
+      now: NOW + 1,
+    });
+
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: [neverAttemptedTraceId, ...attemptedTraceIds],
+      pendingTraceTotal: 3,
+      pendingTraceOldestUs: firstObservedUs,
+    });
+  });
+
+  it("orders normalized never-attempted traces by observation age before attempted peers", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const attemptedTraceId = "TrHydrationAttemptedOld";
+    const oldestNeverAttemptedTraceId = "TrHydrationNeverAttemptedZ";
+    const newerNeverAttemptedTraceIds = Array.from(
+      { length: 25 },
+      (_, index) =>
+        `TrHydrationNeverAttemptedA${String(index).padStart(2, "0")}`,
+    );
+    const oldestObservedUs = NOW * 1_000;
+
+    await store.reconcileSlackReport({
+      reportId: "a".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId: attemptedTraceId,
+          firstObservedUs: oldestObservedUs - 1,
+          lastObservedUs: oldestObservedUs - 1,
+          attempted: true,
+          status: "pending",
+          debtReason: null,
+        },
+      ],
+      checkpointUs: oldestObservedUs,
+      scanState: "resume",
+      now: NOW,
+    });
+
+    for (const [index, traceId] of newerNeverAttemptedTraceIds.entries()) {
+      database
+        .prepare(
+          `INSERT INTO slack_trace_hydration_registry (
+             trace_id, first_observed_us, last_observed_us, last_hydrated_at,
+             status, debt_reason, updated_at
+           ) VALUES (?, ?, ?, 0, 'pending', NULL, ?)`,
+        )
+        .run(
+          traceId,
+          oldestObservedUs + index + 1,
+          oldestObservedUs + index + 1,
+          NOW + 1,
+        );
+    }
+
+    const deliveryId = "sqlite-normalized-never-attempted";
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `INSERT INTO slack_workflow_traces (
+           trace_id, delivery_id, outcome, relay_attempt,
+           send_boundary_reached, pre_send_failure_proven,
+           started_at_us, completed_at_us, updated_at, applied_at
+         ) VALUES (?, ?, 'pending', 1, 0, 0, ?, NULL, ?, NULL)`,
+      )
+      .run(oldestNeverAttemptedTraceId, deliveryId, oldestObservedUs, NOW + 2);
+
+    expect(
+      database
+        .prepare(
+          `SELECT last_hydrated_at FROM slack_trace_hydration_registry
+           WHERE trace_id = ?`,
+        )
+        .get(attemptedTraceId),
+    ).toEqual({ last_hydrated_at: NOW });
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: [
+        oldestNeverAttemptedTraceId,
+        ...newerNeverAttemptedTraceIds.slice(0, 24),
+      ],
+      pendingTraceTotal: 27,
+      pendingTraceOldestUs: oldestObservedUs - 1,
+    });
+  });
+
+  it("atomically moves an owned expired hydration to manual review and replays once", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-owned-hydration-debt";
+    const traceId = "TrOwnedHydrationDebt1";
+    const reportId = "8".repeat(64);
+    const expiredUs = (NOW - 8 * 24 * 60 * 60 * 1_000) * 1_000;
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'accepted_by_trigger', attempt_count = 1
+         WHERE delivery_id = ?`,
+      )
+      .run(deliveryId);
+    database
+      .prepare(
+        `INSERT INTO slack_workflow_traces (
+           trace_id, delivery_id, outcome, relay_attempt,
+           send_boundary_reached, pre_send_failure_proven,
+           started_at_us, completed_at_us, updated_at, applied_at
+         ) VALUES (?, ?, 'pending', 1, 0, 0, ?, NULL, ?, NULL)`,
+      )
+      .run(traceId, deliveryId, expiredUs, NOW);
+
+    const request = {
+      reportId,
+      traces: [],
+      hydrations: [
+        {
+          traceId,
+          firstObservedUs: expiredUs,
+          lastObservedUs: expiredUs + 1,
+          attempted: true,
+          status: "pending",
+          debtReason: null,
+        },
+      ],
+      checkpointUs: NOW * 1_000,
+      scanState: "complete",
+      now: NOW + 1,
+    } as unknown as Parameters<typeof store.reconcileSlackReport>[0];
+    const first = await store.reconcileSlackReport(request);
+    const replay = await store.reconcileSlackReport(request);
+
+    expect(replay).toEqual(first);
+    expect(
+      database
+        .prepare(
+          `SELECT status, last_error, slack_trace_id
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "manual_review",
+      last_error: "slack_activity_trace_retention_expired",
+      slack_trace_id: traceId,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ applied_at: NOW + 1 });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM slack_reconciliation_reports
+           WHERE report_id = ?`,
+        )
+        .get(reportId),
+    ).toEqual({ count: 1 });
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: [],
+      pendingTraceTotal: 0,
+      pendingTraceOldestUs: null,
+    });
+  });
+
+  it("keeps a delivered receipt stronger than owned expired hydration debt", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-delivered-hydration-debt";
+    const traceId = "TrSqliteDeliveredHydrationDebt1";
+    const expiredUs = (NOW - 8 * 24 * 60 * 60 * 1_000) * 1_000;
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(deliveryId, NOW, NOW + 20 * 60 * 1_000);
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId: "FxSqliteDeliveredHydrationSend1",
+      now: NOW + 1,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+    await store.recordSlackTrace(
+      {
+        traceId,
+        deliveryId,
+        outcome: "pending",
+        attemptCount: 1,
+        sendExecutionId: "FxSqliteDeliveredHydrationSend1",
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: true,
+        preSendFailureProven: false,
+        startedAtUs: expiredUs,
+        completedAtUs: null,
+      },
+      NOW + 2,
+    );
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "delivered",
+      messageTs: "1785758400.001100",
+      attemptCount: 1,
+      functionExecutionId: "FxSqliteDeliveredHydrationSend1",
+      now: NOW + 3,
+      reconcileAt: NOW + 20 * 60 * 1_000,
+    });
+
+    await store.reconcileSlackReport({
+      reportId: "f".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId,
+          firstObservedUs: expiredUs,
+          lastObservedUs: expiredUs + 1,
+          attempted: true,
+          status: "debt",
+          debtReason: "retention_expired",
+        },
+      ],
+      checkpointUs: NOW * 1_000,
+      scanState: "complete",
+      now: NOW + 4,
+    });
+
+    expect(
+      database
+        .prepare(
+          `SELECT status, last_error, slack_trace_id, slack_message_ts
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "delivered",
+      last_error: null,
+      slack_trace_id: null,
+      slack_message_ts: "1785758400.001100",
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT outcome, applied_at FROM slack_workflow_traces
+           WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ outcome: "pending", applied_at: NOW + 4 });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM slack_trace_hydration_registry
+           WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ count: 0 });
+  });
+
+  it("durably quarantines ambiguous same-delivery hydration debt without inventing an owner", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-ambiguous-owned-hydration-debt";
+    const traceIds = ["TrAmbiguousHydrationDebt1", "TrAmbiguousHydrationDebt2"];
+    const reportId = "a".repeat(64);
+    const expiredUs = (NOW - 8 * 24 * 60 * 60 * 1_000) * 1_000;
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'accepted_by_trigger', attempt_count = 1
+         WHERE delivery_id = ?`,
+      )
+      .run(deliveryId);
+    const insertTrace = database.prepare(
+      `INSERT INTO slack_workflow_traces (
+         trace_id, delivery_id, outcome, relay_attempt,
+         send_boundary_reached, pre_send_failure_proven,
+         started_at_us, completed_at_us, updated_at, applied_at
+       ) VALUES (?, ?, 'pending', 1, 0, 0, ?, NULL, ?, NULL)`,
+    );
+    for (const [index, traceId] of traceIds.entries()) {
+      insertTrace.run(traceId, deliveryId, expiredUs + index, NOW);
+    }
+
+    const request = {
+      reportId,
+      traces: [],
+      hydrations: traceIds.map((traceId, index) => ({
+        traceId,
+        firstObservedUs: expiredUs + index,
+        lastObservedUs: expiredUs + index + 1,
+        attempted: true,
+        status: "debt" as const,
+        debtReason: "retention_expired" as const,
+      })),
+      checkpointUs: NOW * 1_000,
+      scanState: "complete" as const,
+      now: NOW + 1,
+    };
+    const first = await store.reconcileSlackReport(request);
+    const replay = await store.reconcileSlackReport(request);
+
+    expect(replay).toEqual(first);
+    expect(
+      database
+        .prepare(
+          `SELECT status, last_error, slack_trace_id
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "manual_review",
+      last_error: "slack_trace_hydration_owner_ambiguous",
+      slack_trace_id: null,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, status, debt_reason
+           FROM slack_trace_hydration_registry
+           WHERE trace_id IN (?, ?)
+           ORDER BY trace_id`,
+        )
+        .all(...traceIds),
+    ).toEqual(
+      traceIds.map((traceId) => ({
+        trace_id: traceId,
+        status: "debt",
+        debt_reason: "retention_expired",
+      })),
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, applied_at
+           FROM slack_workflow_traces
+           WHERE trace_id IN (?, ?)
+           ORDER BY trace_id`,
+        )
+        .all(...traceIds),
+    ).toEqual(
+      traceIds.map((traceId) => ({ trace_id: traceId, applied_at: null })),
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM slack_reconciliation_reports
+           WHERE report_id = ?`,
+        )
+        .get(reportId),
+    ).toEqual({ count: 1 });
+    await expect(store.claimForSlack(deliveryId, NOW + 2)).resolves.toBeNull();
+    await expect(
+      store.healthcheck(NOW + 2, SEALED_PROTOCOL_REVISION),
+    ).resolves.toBe(false);
+  });
+
+  it("keeps authenticated receipt cleanup authoritative over a stale hydration report", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-receipt-after-ambiguous-hydration-debt";
+    const traceIds = [
+      "TrSqliteReceiptAfterHydrationDebt1",
+      "TrSqliteReceiptAfterHydrationDebt2",
+    ] as const;
+    const functionExecutionId = "FxSqliteReceiptAfterHydrationDebt1";
+    const messageTs = "1785758400.001101";
+    const observedUs = (NOW - 1_000) * 1_000;
+
+    await store.insert(input(deliveryId));
+    await store.markQueued(deliveryId, NOW);
+    await store.claimForSlack(deliveryId, NOW);
+    await store.markAcceptedByTrigger(
+      deliveryId,
+      NOW,
+      NOW + RECONCILIATION_RETRY_DELAY_MS,
+    );
+    await store.recordSlackProgress({
+      deliveryId,
+      destination: "alerts",
+      phase: "send_started",
+      messageTs: null,
+      attemptCount: 1,
+      functionExecutionId,
+      now: NOW + 1,
+      reconcileAt: NOW + RECONCILIATION_RETRY_DELAY_MS,
+    });
+    for (const [index, traceId] of traceIds.entries()) {
+      await store.recordSlackTrace(
+        {
+          traceId,
+          deliveryId,
+          outcome: "pending",
+          attemptCount: 1,
+          sendExecutionId: null,
+          destination: null,
+          slackChannelId: null,
+          messageTs: null,
+          sendBoundaryReached: false,
+          preSendFailureProven: false,
+          startedAtUs: observedUs + index,
+          completedAtUs: null,
+        },
+        NOW + 1,
+      );
+    }
+    await store.reconcileSlackReport({
+      reportId: "7".repeat(64),
+      traces: [],
+      hydrations: traceIds.map((traceId, index) => ({
+        traceId,
+        firstObservedUs: observedUs + index,
+        lastObservedUs: observedUs + index + 1,
+        attempted: true,
+        status: "debt" as const,
+        debtReason: "pagination_bound" as const,
+      })),
+      checkpointUs: NOW * 1_000,
+      scanState: "complete",
+      now: NOW + 2,
+    });
+    await expect(
+      store.healthcheck(NOW + 2, SEALED_PROTOCOL_REVISION),
+    ).resolves.toBe(false);
+
+    const receipt = {
+      deliveryId,
+      destination: "alerts" as const,
+      phase: "delivered" as const,
+      messageTs,
+      attemptCount: 1,
+      functionExecutionId,
+      now: NOW + 3,
+      reconcileAt: NOW + RECONCILIATION_RETRY_DELAY_MS,
+    };
+    await expect(store.recordSlackProgress(receipt)).resolves.toBe("recorded");
+    await expect(store.recordSlackProgress(receipt)).resolves.toBe("duplicate");
+
+    expect(
+      database
+        .prepare(
+          `SELECT status, last_error, slack_trace_id, slack_message_ts
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "delivered",
+      last_error: null,
+      slack_trace_id: null,
+      slack_message_ts: messageTs,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, applied_at
+           FROM slack_workflow_traces
+           WHERE trace_id IN (?, ?)
+           ORDER BY trace_id`,
+        )
+        .all(...traceIds),
+    ).toEqual(
+      traceIds.map((traceId) => ({
+        trace_id: traceId,
+        applied_at: NOW + 3,
+      })),
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM slack_trace_hydration_registry
+           WHERE trace_id IN (?, ?)`,
+        )
+        .get(...traceIds),
+    ).toEqual({ count: 0 });
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: [],
+      pendingTraceTotal: 0,
+      pendingTraceOldestUs: null,
+    });
+    await expect(
+      store.healthcheck(NOW + 3, SEALED_PROTOCOL_REVISION),
+    ).resolves.toBe(true);
+
+    const staleCheckpointUs = NOW * 1_000 + 100;
+    const staleReport = {
+      reportId: "8".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId: traceIds[0],
+          firstObservedUs: observedUs,
+          lastObservedUs: observedUs + 1,
+          attempted: true,
+          status: "pending" as const,
+          debtReason: null,
+        },
+      ],
+      checkpointUs: staleCheckpointUs,
+      scanState: "complete" as const,
+      now: NOW + 4,
+    };
+    const stale = await store.reconcileSlackReport(staleReport);
+    await expect(store.reconcileSlackReport(staleReport)).resolves.toEqual(
+      stale,
+    );
+
+    expect(stale).toMatchObject({ checkpointUs: staleCheckpointUs });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM slack_trace_hydration_registry
+           WHERE trace_id IN (?, ?)`,
+        )
+        .get(...traceIds),
+    ).toEqual({ count: 0 });
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: [],
+      pendingTraceTotal: 0,
+      pendingTraceOldestUs: null,
+    });
+    await expect(
+      store.healthcheck(NOW + 4, SEALED_PROTOCOL_REVISION),
+    ).resolves.toBe(true);
+  });
+
+  it("preserves ambiguity across sequential hydration debts for the same delivery", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-sequential-hydration-debt";
+    const traceIds = [
+      "TrSequentialHydrationDebt1",
+      "TrSequentialHydrationDebt2",
+    ] as const;
+    const expiredUs = (NOW - 8 * 24 * 60 * 60 * 1_000) * 1_000;
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'accepted_by_trigger', attempt_count = 1
+         WHERE delivery_id = ?`,
+      )
+      .run(deliveryId);
+    const insertTrace = database.prepare(
+      `INSERT INTO slack_workflow_traces (
+         trace_id, delivery_id, outcome, relay_attempt,
+         send_boundary_reached, pre_send_failure_proven,
+         started_at_us, completed_at_us, updated_at, applied_at
+       ) VALUES (?, ?, 'pending', 1, 0, 0, ?, NULL, ?, NULL)`,
+    );
+    for (const [index, traceId] of traceIds.entries()) {
+      insertTrace.run(traceId, deliveryId, expiredUs + index, NOW);
+    }
+
+    for (const [index, traceId] of traceIds.entries()) {
+      await store.reconcileSlackReport({
+        reportId: (index === 0 ? "b" : "c").repeat(64),
+        traces: [],
+        hydrations: [
+          {
+            traceId,
+            firstObservedUs: expiredUs + index,
+            lastObservedUs: expiredUs + index + 1,
+            attempted: true,
+            status: "pending",
+            debtReason: null,
+          },
+        ],
+        checkpointUs: NOW * 1_000,
+        scanState: "complete",
+        now: NOW + index + 1,
+      });
+    }
+
+    expect(
+      database
+        .prepare(
+          `SELECT status, last_error, slack_trace_id
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "manual_review",
+      last_error: "slack_trace_hydration_owner_ambiguous",
+      slack_trace_id: null,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, status, debt_reason
+           FROM slack_trace_hydration_registry
+           WHERE trace_id = ?`,
+        )
+        .get(traceIds[1]),
+    ).toEqual({
+      trace_id: traceIds[1],
+      status: "debt",
+      debt_reason: "retention_expired",
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, applied_at
+           FROM slack_workflow_traces
+           WHERE trace_id IN (?, ?)
+           ORDER BY trace_id`,
+        )
+        .all(...traceIds),
+    ).toEqual([
+      { trace_id: traceIds[0], applied_at: NOW + 1 },
+      { trace_id: traceIds[1], applied_at: null },
+    ]);
+  });
+
+  it("does not replace an applied terminal owner with pending hydration debt", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-terminal-owner-hydration-debt";
+    const pendingTraceId = "TrPendingDebtBesideTerminal1";
+    const terminalTraceId = "TrAppliedTerminalOwner1";
+    const observedUs = NOW * 1_000;
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'manual_review', attempt_count = 1,
+             last_error = 'slack_workflow_failed_without_pre_send_proof',
+             slack_trace_id = ?, updated_at = ?
+         WHERE delivery_id = ?`,
+      )
+      .run(terminalTraceId, NOW, deliveryId);
+    const insertTrace = database.prepare(
+      `INSERT INTO slack_workflow_traces (
+         trace_id, delivery_id, outcome, relay_attempt,
+         send_boundary_reached, pre_send_failure_proven,
+         started_at_us, completed_at_us, updated_at, applied_at
+       ) VALUES (?, ?, ?, 1, 0, 0, ?, ?, ?, ?)`,
+    );
+    insertTrace.run(
+      terminalTraceId,
+      deliveryId,
+      "error",
+      observedUs - 2,
+      observedUs - 1,
+      NOW,
+      NOW,
+    );
+    insertTrace.run(
+      pendingTraceId,
+      deliveryId,
+      "pending",
+      observedUs,
+      null,
+      NOW,
+      null,
+    );
+
+    await store.reconcileSlackReport({
+      reportId: "f".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId: pendingTraceId,
+          firstObservedUs: observedUs,
+          lastObservedUs: observedUs + 1,
+          attempted: true,
+          status: "debt",
+          debtReason: "pagination_bound",
+        },
+      ],
+      checkpointUs: observedUs,
+      scanState: "complete",
+      now: NOW + 1,
+    });
+
+    expect(
+      database
+        .prepare(
+          `SELECT status, last_error, slack_trace_id
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "manual_review",
+      last_error: "slack_trace_hydration_owner_ambiguous",
+      slack_trace_id: null,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, outcome, applied_at
+           FROM slack_workflow_traces
+           WHERE delivery_id = ? ORDER BY trace_id`,
+        )
+        .all(deliveryId),
+    ).toEqual([
+      { trace_id: terminalTraceId, outcome: "error", applied_at: NOW },
+      { trace_id: pendingTraceId, outcome: "pending", applied_at: null },
+    ]);
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, status, debt_reason
+           FROM slack_trace_hydration_registry WHERE trace_id = ?`,
+        )
+        .get(pendingTraceId),
+    ).toEqual({
+      trace_id: pendingTraceId,
+      status: "debt",
+      debt_reason: "pagination_bound",
+    });
+  });
+
+  it("preserves durable hydration ambiguity when terminal traces arrive later", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-late-terminal-hydration-ambiguity";
+    const traceIds = [
+      "TrLateTerminalAmbiguity1",
+      "TrLateTerminalAmbiguity2",
+    ] as const;
+    const observedUs = NOW * 1_000;
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'manual_review', attempt_count = 1,
+             last_error = 'slack_trace_hydration_owner_ambiguous',
+             slack_trace_id = NULL, updated_at = ?
+         WHERE delivery_id = ?`,
+      )
+      .run(NOW, deliveryId);
+    const insertTrace = database.prepare(
+      `INSERT INTO slack_workflow_traces (
+         trace_id, delivery_id, outcome, relay_attempt,
+         send_boundary_reached, pre_send_failure_proven,
+         started_at_us, completed_at_us, updated_at, applied_at
+       ) VALUES (?, ?, 'pending', 1, 0, 0, ?, NULL, ?, NULL)`,
+    );
+    const insertHydration = database.prepare(
+      `INSERT INTO slack_trace_hydration_registry (
+         trace_id, first_observed_us, last_observed_us, last_hydrated_at,
+         status, debt_reason, updated_at
+       ) VALUES (?, ?, ?, ?, 'debt', 'pagination_bound', ?)`,
+    );
+    for (const [index, traceId] of traceIds.entries()) {
+      insertTrace.run(traceId, deliveryId, observedUs + index, NOW);
+      insertHydration.run(
+        traceId,
+        observedUs + index,
+        observedUs + index,
+        NOW,
+        NOW,
+      );
+    }
+
+    for (const [index, traceId] of traceIds.entries()) {
+      await store.reconcileSlackReport({
+        reportId: (index === 0 ? "6" : "7").repeat(64),
+        traces: [
+          {
+            traceId,
+            deliveryId,
+            outcome: "error",
+            attemptCount: 1,
+            sendExecutionId: null,
+            slackChannelId: null,
+            messageTs: null,
+            sendBoundaryReached: false,
+            preSendFailureProven: false,
+            startedAtUs: observedUs + index,
+            completedAtUs: observedUs + index + 10,
+          },
+        ],
+        hydrations: [],
+        checkpointUs: observedUs + index + 10,
+        scanState: "complete",
+        now: NOW + index + 1,
+      });
+
+      expect(
+        database
+          .prepare(
+            `SELECT status, last_error, slack_trace_id
+             FROM deliveries WHERE delivery_id = ?`,
+          )
+          .get(deliveryId),
+      ).toEqual({
+        status: "manual_review",
+        last_error: "slack_trace_hydration_owner_ambiguous",
+        slack_trace_id: null,
+      });
+    }
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, outcome, applied_at
+           FROM slack_workflow_traces
+           WHERE delivery_id = ? ORDER BY trace_id`,
+        )
+        .all(deliveryId),
+    ).toEqual(
+      traceIds.map((traceId, index) => ({
+        trace_id: traceId,
+        outcome: "error",
+        applied_at: NOW + index + 1,
+      })),
+    );
+  });
+
+  it("keeps hydration fairness timestamps monotonic across reordered reports", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const traceId = "TrMonotonicHydrationFairness1";
+    const observedUs = NOW * 1_000;
+    const hydration = {
+      traceId,
+      firstObservedUs: observedUs,
+      lastObservedUs: observedUs + 1,
+      attempted: true,
+      status: "pending" as const,
+      debtReason: null,
+    };
+
+    await store.reconcileSlackReport({
+      reportId: "4".repeat(64),
+      traces: [],
+      hydrations: [hydration],
+      checkpointUs: observedUs,
+      scanState: "preserve",
+      now: NOW + 2,
+    });
+    await store.reconcileSlackReport({
+      reportId: "5".repeat(64),
+      traces: [],
+      hydrations: [hydration],
+      checkpointUs: observedUs,
+      scanState: "preserve",
+      now: NOW + 1,
+    });
+
+    expect(
+      database
+        .prepare(
+          `SELECT last_hydrated_at, updated_at
+           FROM slack_trace_hydration_registry WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ last_hydrated_at: NOW + 2, updated_at: NOW + 2 });
+  });
+
+  it("preserves a pending trace hydration until a terminal trace arrives", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-pending-trace-hydration";
+    const traceId = "TrPendingTraceHydration1";
+    const observedUs = NOW * 1_000;
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'accepted_by_trigger', attempt_count = 1
+         WHERE delivery_id = ?`,
+      )
+      .run(deliveryId);
+    database
+      .prepare(
+        `INSERT INTO slack_trace_hydration_registry (
+           trace_id, first_observed_us, last_observed_us, last_hydrated_at,
+           status, debt_reason, updated_at
+         ) VALUES (?, ?, ?, ?, 'pending', NULL, ?)`,
+      )
+      .run(traceId, observedUs - 1, observedUs, NOW, NOW);
+
+    const pendingTrace = {
+      traceId,
+      deliveryId,
+      outcome: "pending" as const,
+      attemptCount: 1,
+      sendExecutionId: null,
+      slackChannelId: null,
+      messageTs: null,
+      sendBoundaryReached: false,
+      preSendFailureProven: false,
+      startedAtUs: observedUs,
+      completedAtUs: null,
+    };
+    const pendingReport = {
+      reportId: "e".repeat(64),
+      traces: [pendingTrace],
+      hydrations: [],
+      checkpointUs: observedUs,
+      scanState: "preserve" as const,
+      now: NOW + 1,
+    };
+
+    const pending = await store.reconcileSlackReport(pendingReport);
+    await expect(store.reconcileSlackReport(pendingReport)).resolves.toEqual(
+      pending,
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT status, first_observed_us, last_observed_us
+           FROM slack_trace_hydration_registry WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({
+      status: "pending",
+      first_observed_us: observedUs - 1,
+      last_observed_us: observedUs,
+    });
+
+    const terminalReport = {
+      ...pendingReport,
+      reportId: "f".repeat(64),
+      traces: [
+        {
+          ...pendingTrace,
+          outcome: "error" as const,
+          completedAtUs: observedUs + 1,
+        },
+      ],
+      checkpointUs: observedUs + 1,
+      now: NOW + 2,
+    };
+    const terminal = await store.reconcileSlackReport(terminalReport);
+    await expect(store.reconcileSlackReport(terminalReport)).resolves.toEqual(
+      terminal,
+    );
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM slack_trace_hydration_registry WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ count: 0 });
+  });
+
+  it("atomically removes a confirmed legacy trace from the hydration registry", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const traceId = "TrConfirmedLegacyHydration1";
+    const observedUs = NOW * 1_000;
+    database
+      .prepare(
+        `INSERT INTO slack_trace_hydration_registry (
+           trace_id, first_observed_us, last_observed_us, last_hydrated_at,
+           status, debt_reason, updated_at
+         ) VALUES (?, ?, ?, 0, 'pending', NULL, ?)`,
+      )
+      .run(traceId, observedUs - 1, observedUs, NOW);
+    const request = {
+      reportId: "9".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId,
+          firstObservedUs: observedUs - 1,
+          lastObservedUs: observedUs,
+          attempted: false,
+          status: "legacy",
+          debtReason: null,
+        },
+      ],
+      checkpointUs: observedUs,
+      scanState: "complete",
+      now: NOW + 1,
+    } as unknown as Parameters<typeof store.reconcileSlackReport>[0];
+
+    const first = await store.reconcileSlackReport(request);
+    const replay = await store.reconcileSlackReport(request);
+
+    expect(replay).toEqual(first);
+    expect(first).toMatchObject({ traceCount: 1, checkpointUs: observedUs });
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM slack_trace_hydration_registry WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ count: 0 });
+    await expect(store.getSlackActivityScanState()).resolves.toMatchObject({
+      pendingTraceIds: [],
+      pendingTraceTotal: 0,
+      pendingTraceOldestUs: null,
+    });
+  });
+
+  it("inherits first observed time from an existing normalized pending trace", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-normalized-first-observed";
+    const traceId = "TrNormalizedFirstObserved1";
+    const expiredUs = (NOW - 8 * 24 * 60 * 60 * 1_000) * 1_000;
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'accepted_by_trigger', attempt_count = 1
+         WHERE delivery_id = ?`,
+      )
+      .run(deliveryId);
+    database
+      .prepare(
+        `INSERT INTO slack_workflow_traces (
+           trace_id, delivery_id, outcome, relay_attempt,
+           send_boundary_reached, pre_send_failure_proven,
+           started_at_us, completed_at_us, updated_at, applied_at
+         ) VALUES (?, ?, 'pending', 1, 0, 0, ?, NULL, ?, NULL)`,
+      )
+      .run(traceId, deliveryId, expiredUs, NOW);
+
+    await store.reconcileSlackReport({
+      reportId: "d".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId,
+          firstObservedUs: NOW * 1_000,
+          lastObservedUs: NOW * 1_000,
+          attempted: true,
+          status: "pending",
+          debtReason: null,
+        },
+      ],
+      checkpointUs: NOW * 1_000,
+      scanState: "complete",
+      now: NOW + 1,
+    });
+
+    expect(
+      database
+        .prepare(
+          `SELECT status, last_error, slack_trace_id
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "manual_review",
+      last_error: "slack_activity_trace_retention_expired",
+      slack_trace_id: traceId,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT applied_at FROM slack_workflow_traces WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ applied_at: NOW + 1 });
+  });
+
+  it("accepts 127-character hydration trace IDs and rejects 128", () => {
+    const { database } = databaseWithReconciliationJournal();
+    const acceptedTraceId = `Tr${"a".repeat(125)}`;
+    const rejectedTraceId = `Tr${"b".repeat(126)}`;
+    const insertHydration = database.prepare(
+      `INSERT INTO slack_trace_hydration_registry (
+         trace_id, first_observed_us, last_observed_us, last_hydrated_at,
+         status, debt_reason, updated_at
+       ) VALUES (?, 1, 1, 1, 'pending', NULL, 1)`,
+    );
+
+    expect(() => insertHydration.run(acceptedTraceId)).not.toThrow();
+    expect(() => insertHydration.run(rejectedTraceId)).toThrow();
+  });
+
+  it("persists an unowned hydration debt that blocks health without inventing an owner", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const traceId = "TrUnownedHydrationDebt1";
+
+    await store.reconcileSlackReport({
+      reportId: "9".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId,
+          firstObservedUs: NOW * 1_000 - 7 * 24 * 60 * 60 * 1_000_000,
+          lastObservedUs: NOW * 1_000 - 1,
+          attempted: true,
+          status: "debt",
+          debtReason: "retention_expired",
+        },
+      ],
+      checkpointUs: NOW * 1_000,
+      scanState: "complete",
+      now: NOW + 1,
+    } as unknown as Parameters<typeof store.reconcileSlackReport>[0]);
+
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, status, debt_reason
+           FROM slack_trace_hydration_registry WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({
+      trace_id: traceId,
+      status: "debt",
+      debt_reason: "retention_expired",
+    });
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM deliveries").get(),
+    ).toEqual({ count: 0 });
+    await expect(
+      store.healthcheck(NOW + 2, SEALED_PROTOCOL_REVISION),
+    ).resolves.toBe(false);
+  });
+
+  it("does not advance the checkpoint before an unresolved hydration becomes normalized or debt", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const requestedCheckpointUs = NOW * 1_000;
+    const traceId = "TrPendingHydrationCheckpoint1";
+
+    const result = await store.reconcileSlackReport({
+      reportId: "7".repeat(64),
+      traces: [],
+      hydrations: [
+        {
+          traceId,
+          firstObservedUs: requestedCheckpointUs - 1,
+          lastObservedUs: requestedCheckpointUs,
+          attempted: true,
+          status: "pending",
+          debtReason: null,
+        },
+      ],
+      checkpointUs: requestedCheckpointUs,
+      scanState: "resume",
+      now: NOW + 1,
+    } as unknown as Parameters<typeof store.reconcileSlackReport>[0]);
+
+    expect(result).toMatchObject({
+      requestedCheckpointUs,
+      checkpointUs: 0,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT trace_id, status
+           FROM slack_trace_hydration_registry WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({ trace_id: traceId, status: "pending" });
+  });
+
+  it("rolls back checkpoint and scan resume state when the report journal fails", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const initialCheckpointUs = NOW * 1_000;
+    await store.reconcileSlackReport({
+      reportId: "5".repeat(64),
+      traces: [],
+      checkpointUs: initialCheckpointUs,
+      scanState: "resume",
+      now: NOW,
+    });
+    database.exec(`
+      CREATE TRIGGER reject_scan_state_journal
+      BEFORE INSERT ON slack_reconciliation_reports
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated_scan_state_journal_failure');
+      END;
+    `);
+
+    await expect(
+      store.reconcileSlackReport({
+        reportId: "6".repeat(64),
+        traces: [],
+        checkpointUs: (NOW + 1) * 1_000,
+        scanState: "complete",
+        now: NOW + 1,
+      }),
+    ).rejects.toThrow("simulated_scan_state_journal_failure");
+    await expect(store.getSlackActivityScanState()).resolves.toEqual({
+      checkpointUs: initialCheckpointUs,
+      resumeFromUs: initialCheckpointUs,
+      pendingTraceIds: [],
+      pendingTraceTotal: 0,
+      pendingTraceOldestUs: null,
+    });
   });
 
   it("rolls back the entire 25-trace reconciliation when the last trace fails", async () => {
@@ -981,6 +2319,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         reportId: "f".repeat(64),
         traces,
         checkpointUs: NOW * 1_000,
+        scanState: "preserve",
         now: NOW,
       }),
     ).rejects.toThrow("simulated_batch_failure");
@@ -1013,6 +2352,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       reportId: "f".repeat(64),
       traces,
       checkpointUs: NOW * 1_000,
+      scanState: "preserve",
       now: NOW,
     });
     expect(committed).toEqual({
@@ -1050,6 +2390,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         reportId: "f".repeat(64),
         traces,
         checkpointUs: NOW * 1_000,
+        scanState: "preserve",
         now: NOW + 1,
       }),
     ).resolves.toEqual(committed);
@@ -1091,6 +2432,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
           },
         ],
         checkpointUs: NOW * 1_000,
+        scanState: "complete",
         now: NOW,
       }),
     ).resolves.toEqual({
@@ -1166,6 +2508,7 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         },
       ],
       checkpointUs: NOW * 1_000,
+      scanState: "preserve",
       now: NOW,
     });
     await barrier.reached;
@@ -1254,6 +2597,11 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
       database,
       "0007_journal_slack_reconciliation_reports.sql",
     );
+    applyMigrationAtomically(
+      database,
+      "0008_resume_bounded_slack_activity_scan.sql",
+    );
+    applyMigrationAtomically(database, "0009_track_slack_trace_hydration.sql");
     const store = new D1DeliveryStore(d1);
 
     await expect(
@@ -2156,7 +3504,7 @@ END`,
   });
 
   it("clamps the durable checkpoint behind every uncorrelated live attempt", async () => {
-    const { d1 } = databaseWithMigrations(true);
+    const { d1 } = databaseWithReconciliationJournal();
     const store = new D1DeliveryStore(d1);
     const deliveryId = "sqlite-late-indexed-trace";
     await store.insert(input(deliveryId));
@@ -2213,6 +3561,13 @@ END`,
       database,
       "0007_journal_slack_reconciliation_reports.sql",
     );
+    await expect(store.healthcheck(NOW, "e".repeat(40))).resolves.toBe(false);
+    applyMigrationAtomically(
+      database,
+      "0008_resume_bounded_slack_activity_scan.sql",
+    );
+    await expect(store.healthcheck(NOW, "e".repeat(40))).resolves.toBe(false);
+    applyMigrationAtomically(database, "0009_track_slack_trace_hydration.sql");
     await expect(store.healthcheck(NOW, "e".repeat(40))).resolves.toBe(true);
   });
 
@@ -2427,8 +3782,18 @@ END`,
   });
 
   it("stores an authenticated Slack message timestamp once and rejects reuse", async () => {
-    const { d1 } = databaseWithMigrations(true);
+    const { database, d1 } = databaseWithMigrations(true);
     const store = new D1DeliveryStore(d1);
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM sqlite_master
+           WHERE type = 'table'
+             AND name = 'slack_trace_hydration_registry'`,
+        )
+        .get(),
+    ).toEqual({ count: 0 });
     await store.insert(input("sqlite-receipt-one"));
     await store.markQueued("sqlite-receipt-one", NOW);
     await store.claimForSlack("sqlite-receipt-one", NOW);
@@ -3227,7 +4592,7 @@ END`,
   });
 
   it("attaches a trace when its receipt commits after the trace read", async () => {
-    const { database, d1 } = databaseWithMigrations(true);
+    const { database, d1 } = databaseWithReconciliationJournal();
     const deliveryId = "sqlite-trace-resolution-receipt-race";
     const mutator = new D1DeliveryStore(d1);
     await mutator.insert(input(deliveryId));
@@ -3521,6 +4886,11 @@ END`,
       database,
       "0007_journal_slack_reconciliation_reports.sql",
     );
+    applyMigrationAtomically(
+      database,
+      "0008_resume_bounded_slack_activity_scan.sql",
+    );
+    applyMigrationAtomically(database, "0009_track_slack_trace_hydration.sql");
     await expect(store.healthcheck(NOW + 2, TEST_REVISION)).resolves.toBe(true);
   });
 
@@ -3900,7 +5270,7 @@ END`,
   });
 
   it("keeps an applied terminal trace linked when its direct receipt arrives late", async () => {
-    const { database, d1 } = databaseWithMigrations(true);
+    const { database, d1 } = databaseWithReconciliationJournal();
     const store = new D1DeliveryStore(d1);
     const deliveryId = "sqlite-late-receipt-applied-trace";
     const traceId = "TrLateReceiptAppliedTrace1";
@@ -4665,7 +6035,7 @@ END`,
   });
 
   it("retains the boundary owner in manual review until a late direct receipt arrives", async () => {
-    const { d1 } = databaseWithMigrations(true);
+    const { d1 } = databaseWithReconciliationJournal();
     const store = new D1DeliveryStore(d1);
     const deliveryId = "sqlite-late-receipt-before-retry";
     const traceId = "TrLateReceiptBeforeRetry1";
