@@ -11,7 +11,7 @@ published to any registry — the Worker is deployed from this repository's sour
 `wrangler deploy`, and that field does not gate, tag or name any deployment.
 
 Two **components** hosted here are released under numbers, and their history is their tags, not this
-file: the reusable Zizmor workflow (`zizmor/v2.3.0` at the time of writing) and the CodeQL SARIF gate
+file: the reusable Zizmor workflow (`zizmor/v2.3.1` at the time of writing) and the CodeQL SARIF gate
 action (`codeql-sarif-gate/v1.0.0`). **External** consumers pin them by commit SHA, so for those a
 change takes effect only once a new tag is cut and the pin is bumped. Inside this repository the
 consumption is local and immediate: `.github/workflows/codeql.yml:60` invokes the gate as
@@ -24,6 +24,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) as f
 an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC−03:00), the
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
+
+## 14/08/2026 — Zizmor baseline do astrologo-app
+
+### Fixed
+
+- Pre-authorized the exact reviewed base and least-privilege rollout blobs for
+  the `astrologo-app` deploy workflow, trusted dependency-review workflow and
+  Zizmor configuration. The `zizmor/v2.3.1` baseline keeps the legacy native
+  blob only for transition compatibility, changes no validator or runtime, and
+  adds no wildcard or rule-wide suppression. Evidence: #189 and
+  `astrologo-app#294`.
 
 ## 13/08/2026 — Slack reconciliation locality and replay safety
 
