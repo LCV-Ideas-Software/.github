@@ -99,7 +99,10 @@ describe("property-based GitHub webhook security", () => {
     );
   });
 
-  it("bounds and sanitizes every attacker-controlled workflow field", async () => {
+  // 200 full handleFetch property runs sat at ~5.0s once the ADR-001
+  // presence fence added one async outbox lookup per request; the default
+  // 5s budget flakes under load while the property itself passes.
+  it("bounds and sanitizes every attacker-controlled workflow field", { timeout: 20_000 }, async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.uuid(),
