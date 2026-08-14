@@ -67,6 +67,17 @@ const SEND_TRACE_ATTEMPT_ONE = Object.freeze({
 });
 const openDatabases: DatabaseSync[] = [];
 
+interface D1BoundaryCounts {
+  all: number;
+  batch: number;
+  first: number;
+  run: number;
+}
+
+function emptyD1BoundaryCounts(): D1BoundaryCounts {
+  return { all: 0, batch: 0, first: 0, run: 0 };
+}
+
 function migrationSource(name: string): string {
   return readFileSync(
     new NodeUrl(`../migrations/${name}`, import.meta.url),
@@ -82,7 +93,10 @@ function d1Result(changes: number, results: unknown[] = []): D1Result<unknown> {
   } as unknown as D1Result<unknown>;
 }
 
-function sqliteD1(database: DatabaseSync): D1Database {
+function sqliteD1(
+  database: DatabaseSync,
+  boundaries?: D1BoundaryCounts,
+): D1Database {
   const statementRunners = new WeakMap<
     D1PreparedStatement,
     () => D1Result<unknown>
@@ -101,15 +115,18 @@ function sqliteD1(database: DatabaseSync): D1Database {
           return prepared as unknown as D1PreparedStatement;
         },
         async run(): Promise<D1Result<unknown>> {
+          if (boundaries !== undefined) boundaries.run += 1;
           return run();
         },
         async first<T>(columnName?: string): Promise<T | null> {
+          if (boundaries !== undefined) boundaries.first += 1;
           const row = statement.get(...values) as
             Record<string, unknown> | undefined;
           if (row === undefined) return null;
           return (columnName === undefined ? row : row[columnName]) as T;
         },
         async all<T>(): Promise<D1Result<T>> {
+          if (boundaries !== undefined) boundaries.all += 1;
           const rows = statement.all(...values) as T[];
           return d1Result(0, rows) as D1Result<T>;
         },
@@ -120,6 +137,7 @@ function sqliteD1(database: DatabaseSync): D1Database {
     async batch<T = unknown>(
       statements: D1PreparedStatement[],
     ): Promise<D1Result<T>[]> {
+      if (boundaries !== undefined) boundaries.batch += 1;
       database.exec("BEGIN IMMEDIATE TRANSACTION;");
       try {
         const results = statements.map((statement) => {
@@ -865,6 +883,330 @@ describe("D1 schema and constraint behavior on real SQLite", () => {
         )
         .get(),
     ).toEqual({ trace_id: traceId, report_id: reportId });
+  });
+
+  it("keeps real D1 reconciliation boundaries constant from one to 25 traces", async () => {
+    const reconcileAndCount = async (
+      traceCount: 1 | 25,
+    ): Promise<D1BoundaryCounts> => {
+      const { database } = databaseWithReconciliationJournal();
+      const boundaries = emptyD1BoundaryCounts();
+      const store = new D1DeliveryStore(sqliteD1(database, boundaries));
+      const traces = [];
+      for (let index = 0; index < traceCount; index += 1) {
+        const suffix = String(index + 1).padStart(2, "0");
+        const deliveryId = `sqlite-boundary-budget-${traceCount}-${suffix}`;
+        await store.insert(input(deliveryId));
+        database
+          .prepare(
+            `UPDATE deliveries
+             SET status = 'accepted_by_trigger', attempt_count = 1
+             WHERE delivery_id = ?`,
+          )
+          .run(deliveryId);
+        traces.push({
+          traceId: `TrBoundaryBudget${traceCount}${suffix}`,
+          deliveryId,
+          outcome: "pending" as const,
+          attemptCount: 1,
+          sendExecutionId: null,
+          slackChannelId: null,
+          messageTs: null,
+          sendBoundaryReached: false,
+          preSendFailureProven: false,
+          startedAtUs: NOW * 1_000 - index,
+          completedAtUs: null,
+        });
+      }
+      Object.assign(boundaries, emptyD1BoundaryCounts());
+
+      await store.reconcileSlackReport({
+        reportId: (traceCount === 1 ? "1" : "2").repeat(64),
+        traces,
+        checkpointUs: NOW * 1_000,
+        now: NOW,
+      });
+      return boundaries;
+    };
+
+    const oneTrace = await reconcileAndCount(1);
+    const maximumTraces = await reconcileAndCount(25);
+
+    expect(oneTrace).toEqual({ all: 1, batch: 1, first: 1, run: 0 });
+    expect(maximumTraces).toEqual(oneTrace);
+  });
+
+  it("rolls back the entire 25-trace reconciliation when the last trace fails", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const traces = [];
+    for (let index = 0; index < 25; index += 1) {
+      const suffix = String(index + 1).padStart(2, "0");
+      const deliveryId = `sqlite-atomic-reconciliation-${suffix}`;
+      const sendExecutionId = `FxSqliteAtomicReconciliation${suffix}`;
+      await store.insert(input(deliveryId));
+      database
+        .prepare(
+          `UPDATE deliveries
+           SET status = 'accepted_by_trigger', attempt_count = 1,
+               slack_send_execution_id = ?
+           WHERE delivery_id = ?`,
+        )
+        .run(sendExecutionId, deliveryId);
+      traces.push({
+        traceId: `TrAtomicBatch${suffix}`,
+        deliveryId,
+        outcome: "error" as const,
+        attemptCount: 1,
+        sendExecutionId,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000 - index,
+        completedAtUs: NOW * 1_000,
+      });
+    }
+    database.exec(`
+      CREATE TRIGGER reject_last_atomic_reconciliation_trace
+      BEFORE INSERT ON slack_workflow_traces
+      WHEN NEW.trace_id = 'TrAtomicBatch25'
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated_batch_failure');
+      END;
+    `);
+
+    await expect(
+      store.reconcileSlackReport({
+        reportId: "f".repeat(64),
+        traces,
+        checkpointUs: NOW * 1_000,
+        now: NOW,
+      }),
+    ).rejects.toThrow("simulated_batch_failure");
+
+    expect(
+      database
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM slack_workflow_traces) AS traces,
+             (SELECT COUNT(*) FROM slack_reconciliation_reports) AS reports,
+             (SELECT COUNT(*) FROM slack_reconciliation_report_errors) AS errors,
+             (SELECT slack_activity_checkpoint_us FROM relay_state
+              WHERE singleton_id = 1) AS checkpoint_us,
+             (SELECT COUNT(*) FROM deliveries
+              WHERE status = 'accepted_by_trigger'
+                AND slack_trace_id IS NULL
+                AND last_error IS NULL) AS untouched_deliveries`,
+        )
+        .get(),
+    ).toEqual({
+      traces: 0,
+      reports: 0,
+      errors: 0,
+      checkpoint_us: 0,
+      untouched_deliveries: 25,
+    });
+
+    database.exec("DROP TRIGGER reject_last_atomic_reconciliation_trace;");
+    const committed = await store.reconcileSlackReport({
+      reportId: "f".repeat(64),
+      traces,
+      checkpointUs: NOW * 1_000,
+      now: NOW,
+    });
+    expect(committed).toEqual({
+      traceCount: 25,
+      changedErrorTraces: 25,
+      requestedCheckpointUs: NOW * 1_000,
+      checkpointUs: NOW * 1_000,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM slack_workflow_traces
+              WHERE outcome = 'error' AND applied_at = ?) AS traces,
+             (SELECT COUNT(*) FROM slack_reconciliation_reports) AS reports,
+             (SELECT COUNT(*) FROM slack_reconciliation_report_errors) AS errors,
+             (SELECT slack_activity_checkpoint_us FROM relay_state
+              WHERE singleton_id = 1) AS checkpoint_us,
+             (SELECT COUNT(*) FROM deliveries
+              WHERE status = 'pending'
+                AND last_error =
+                    'slack_workflow_failed_before_send_boundary'
+                AND slack_trace_id IS NOT NULL) AS reconciled_deliveries`,
+        )
+        .get(NOW),
+    ).toEqual({
+      traces: 25,
+      reports: 1,
+      errors: 25,
+      checkpoint_us: NOW * 1_000,
+      reconciled_deliveries: 25,
+    });
+    await expect(
+      store.reconcileSlackReport({
+        reportId: "f".repeat(64),
+        traces,
+        checkpointUs: NOW * 1_000,
+        now: NOW + 1,
+      }),
+    ).resolves.toEqual(committed);
+  });
+
+  it("atomically resolves an execution-owned Slack message with its journal", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const store = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-atomic-message-reconciliation";
+    const sendExecutionId = "FxSqliteAtomicMessage1";
+    const traceId = "TrSqliteAtomicMessage1";
+    const messageTs = "1785758400.000321";
+    await store.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'send_started', attempt_count = 1,
+             slack_send_execution_id = ?
+         WHERE delivery_id = ?`,
+      )
+      .run(sendExecutionId, deliveryId);
+
+    await expect(
+      store.reconcileSlackReport({
+        reportId: "e".repeat(64),
+        traces: [
+          {
+            traceId,
+            deliveryId: null,
+            outcome: "error",
+            attemptCount: null,
+            sendExecutionId,
+            slackChannelId: "C0BMUK793NV",
+            messageTs,
+            sendBoundaryReached: true,
+            preSendFailureProven: false,
+            startedAtUs: NOW * 1_000 - 1,
+            completedAtUs: NOW * 1_000,
+          },
+        ],
+        checkpointUs: NOW * 1_000,
+        now: NOW,
+      }),
+    ).resolves.toEqual({
+      traceCount: 1,
+      changedErrorTraces: 1,
+      requestedCheckpointUs: NOW * 1_000,
+      checkpointUs: NOW * 1_000,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT status, slack_message_ts, slack_trace_id,
+                  slack_send_execution_id, last_error
+           FROM deliveries WHERE delivery_id = ?`,
+        )
+        .get(deliveryId),
+    ).toEqual({
+      status: "delivered",
+      slack_message_ts: messageTs,
+      slack_trace_id: traceId,
+      slack_send_execution_id: sendExecutionId,
+      last_error: null,
+    });
+    expect(
+      database
+        .prepare(
+          `SELECT outcome, slack_channel_id, slack_message_ts, applied_at
+           FROM slack_workflow_traces WHERE trace_id = ?`,
+        )
+        .get(traceId),
+    ).toEqual({
+      outcome: "error",
+      slack_channel_id: "C0BMUK793NV",
+      slack_message_ts: messageTs,
+      applied_at: NOW,
+    });
+  });
+
+  it("rolls back a stale reconciliation plan when a competing trace wins the race", async () => {
+    const { database, d1 } = databaseWithReconciliationJournal();
+    const barrier = pauseBeforeFirstBatch(d1);
+    const resolver = new D1DeliveryStore(barrier.d1);
+    const mutator = new D1DeliveryStore(d1);
+    const deliveryId = "sqlite-atomic-competing-trace";
+    const sendExecutionId = "FxSqliteAtomicCompeting1";
+    const reportTraceId = "TrSqliteAtomicCompetingReport1";
+    const competingTraceId = "TrSqliteAtomicCompetingWinner1";
+    await resolver.insert(input(deliveryId));
+    database
+      .prepare(
+        `UPDATE deliveries
+         SET status = 'accepted_by_trigger', attempt_count = 1,
+             slack_send_execution_id = ?
+         WHERE delivery_id = ?`,
+      )
+      .run(sendExecutionId, deliveryId);
+
+    const reconciliation = resolver.reconcileSlackReport({
+      reportId: "d".repeat(64),
+      traces: [
+        {
+          traceId: reportTraceId,
+          deliveryId,
+          outcome: "error",
+          attemptCount: 1,
+          sendExecutionId,
+          slackChannelId: null,
+          messageTs: null,
+          sendBoundaryReached: false,
+          preSendFailureProven: true,
+          startedAtUs: NOW * 1_000 - 1,
+          completedAtUs: NOW * 1_000,
+        },
+      ],
+      checkpointUs: NOW * 1_000,
+      now: NOW,
+    });
+    await barrier.reached;
+    await mutator.recordSlackTrace(
+      {
+        traceId: competingTraceId,
+        deliveryId,
+        outcome: "pending",
+        attemptCount: 1,
+        sendExecutionId: null,
+        destination: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: null,
+      },
+      NOW,
+    );
+    barrier.release();
+
+    await expect(reconciliation).rejects.toThrow();
+    expect(
+      database
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM slack_workflow_traces
+              WHERE trace_id = ?) AS report_trace,
+             (SELECT COUNT(*) FROM slack_workflow_traces
+              WHERE trace_id = ?) AS competing_trace,
+             (SELECT COUNT(*) FROM slack_reconciliation_reports) AS reports,
+             (SELECT status FROM deliveries WHERE delivery_id = ?) AS status`,
+        )
+        .get(reportTraceId, competingTraceId, deliveryId),
+    ).toEqual({
+      report_trace: 0,
+      competing_trace: 1,
+      reports: 0,
+      status: "accepted_by_trigger",
+    });
   });
 
   it("keeps migration guard SQL byte-exact with the runtime definitions", () => {

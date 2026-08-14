@@ -659,108 +659,27 @@ async function handleSlackControlRequest(
     return jsonResponse({ error: "invalid_signature" }, 401);
   }
   try {
-    const replay = await dependencies.store.getSlackReconciliationReport(
-      report.report_signature,
-    );
-    if (replay !== null) {
-      if (
-        replay.traceCount !== report.traces.length ||
-        replay.requestedCheckpointUs !== report.checkpoint_us
-      ) {
-        throw new SlackReconciliationConflictError(
-          "slack_reconciliation_report_conflict",
-        );
-      }
-      return jsonResponse(
-        {
-          ok: true,
-          traces: replay.traceCount,
-          changed_error_traces: replay.changedErrorTraces,
-          checkpoint_us: replay.checkpointUs,
-        },
-        200,
-      );
-    }
-    const errorTraceIds: string[] = [];
-    for (const trace of report.traces) {
-      let deliveryId = trace.delivery_id;
-      let attemptCount =
-        trace.relay_attempt === null
-          ? null
-          : Number.parseInt(trace.relay_attempt, 10);
-      let destination: "alerts" | "activity" | null = null;
-      const requiresPersistedBoundaryOwner =
-        trace.delivery_id === null ||
-        trace.relay_attempt === null ||
-        trace.slack_message_ts !== null ||
-        trace.send_boundary_reached;
-      if (trace.send_execution_id !== null) {
-        const owner =
-          await dependencies.store.resolveSlackTraceIdentityBySendExecutionId(
-            trace.send_execution_id,
-          );
-        if (owner === null) {
-          if (requiresPersistedBoundaryOwner) {
-            throw new SlackReconciliationConflictError(
-              "slack_trace_send_execution_not_found",
-            );
-          }
-        } else {
-          if (
-            (deliveryId !== null && deliveryId !== owner.deliveryId) ||
-            (attemptCount !== null && attemptCount !== owner.attemptCount)
-          ) {
-            throw new SlackReconciliationConflictError(
-              "slack_trace_owner_conflict",
-            );
-          }
-          deliveryId = owner.deliveryId;
-          attemptCount = owner.attemptCount;
-          destination = owner.destination;
-        }
-      }
-      if (deliveryId === null || attemptCount === null) {
-        throw new SlackReconciliationConflictError(
-          "slack_trace_identity_missing",
-        );
-      }
-      if (
-        trace.slack_channel_id !== null &&
-        ((destination === "alerts" &&
-          trace.slack_channel_id !== "C0BMUK793NV") ||
-          (destination === "activity" &&
-            trace.slack_channel_id !== "C0BMQMW3L4E"))
-      ) {
-        throw new SlackReconciliationConflictError(
-          "slack_trace_destination_conflict",
-        );
-      }
-      await dependencies.store.recordSlackTrace(
-        {
-          traceId: trace.trace_id,
-          deliveryId,
-          destination,
-          outcome: trace.outcome,
-          attemptCount,
-          sendExecutionId: trace.send_execution_id,
-          slackChannelId: trace.slack_channel_id,
-          messageTs: trace.slack_message_ts,
-          sendBoundaryReached: trace.send_boundary_reached,
-          preSendFailureProven: trace.pre_send_failure_proven,
-          startedAtUs: trace.started_at_us,
-          completedAtUs: trace.completed_at_us,
-        },
-        now,
-      );
-      if (trace.outcome === "error") errorTraceIds.push(trace.trace_id);
-    }
-    const result = await dependencies.store.finalizeSlackReconciliationReport(
-      report.report_signature,
-      report.traces.length,
-      errorTraceIds,
-      report.checkpoint_us,
+    const result = await dependencies.store.reconcileSlackReport({
+      reportId: report.report_signature,
+      traces: report.traces.map((trace) => ({
+        traceId: trace.trace_id,
+        deliveryId: trace.delivery_id,
+        outcome: trace.outcome,
+        attemptCount:
+          trace.relay_attempt === null
+            ? null
+            : Number.parseInt(trace.relay_attempt, 10),
+        sendExecutionId: trace.send_execution_id,
+        slackChannelId: trace.slack_channel_id,
+        messageTs: trace.slack_message_ts,
+        sendBoundaryReached: trace.send_boundary_reached,
+        preSendFailureProven: trace.pre_send_failure_proven,
+        startedAtUs: trace.started_at_us,
+        completedAtUs: trace.completed_at_us,
+      })),
+      checkpointUs: report.checkpoint_us,
       now,
-    );
+    });
     return jsonResponse(
       {
         ok: true,

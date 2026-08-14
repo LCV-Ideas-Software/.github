@@ -2,6 +2,12 @@ import { vi } from "vitest";
 
 import type { SlackWorkflowPayload } from "../src/domain";
 import {
+  planSlackReconciliation,
+  SlackReconciliationPlanConflictError,
+  type SlackReconciliationDeliverySnapshot,
+  type SlackReconciliationTraceSnapshot,
+} from "../src/slack-reconciliation-plan";
+import {
   SlackProgressConflictError,
   SlackReconciliationConflictError,
   SLACK_ACTIVITY_CHECKPOINT_OVERLAP_US,
@@ -16,6 +22,7 @@ import {
   type RecoveryClaim,
   type SlackProgressInput,
   type SlackProgressResult,
+  type SlackReconciliationInput,
   type SlackReconciliationReportResult,
   type SlackTraceReconciliation,
   type SlackTraceRecordResult,
@@ -881,6 +888,179 @@ export class MemoryDeliveryStore implements DeliveryStore {
     }
     const report = this.slackReconciliationReports.get(reportId);
     return report === undefined ? null : { ...report };
+  }
+
+  async reconcileSlackReport(
+    input: SlackReconciliationInput,
+  ): Promise<SlackReconciliationReportResult> {
+    const deliveries = new Map(
+      [...this.deliveries].map(([deliveryId, delivery]) => [
+        deliveryId,
+        cloneDelivery(delivery),
+      ]),
+    );
+    const traces = new Map(
+      [...this.slackTraces].map(([traceId, trace]) => [
+        traceId,
+        structuredClone(trace),
+      ]),
+    );
+    const reports = new Map(
+      [...this.slackReconciliationReports].map(([reportId, report]) => [
+        reportId,
+        { ...report },
+      ]),
+    );
+    const reportedErrors = new Map(this.reportedSlackErrorTraces);
+    const checkpoint = this.slackActivityCheckpoint;
+    try {
+      if (
+        !/^[0-9a-f]{64}$/u.test(input.reportId) ||
+        input.traces.length > 25 ||
+        new Set(input.traces.map(({ traceId }) => traceId)).size !==
+          input.traces.length ||
+        !Number.isSafeInteger(input.checkpointUs) ||
+        input.checkpointUs < 0 ||
+        !Number.isSafeInteger(input.now) ||
+        input.now <= 0
+      ) {
+        throw new SlackReconciliationConflictError(
+          "invalid_slack_reconciliation_report",
+        );
+      }
+
+      const replay = await this.getSlackReconciliationReport(input.reportId);
+      if (replay !== null) {
+        if (
+          replay.traceCount !== input.traces.length ||
+          replay.requestedCheckpointUs !== input.checkpointUs
+        ) {
+          throw new SlackReconciliationConflictError(
+            "slack_reconciliation_report_conflict",
+          );
+        }
+        return replay;
+      }
+
+      const deliverySnapshots = new Map<
+        string,
+        SlackReconciliationDeliverySnapshot
+      >(
+        [...this.deliveries].map(([deliveryId, delivery]) => [
+          deliveryId,
+          {
+            deliveryId,
+            destination: delivery.destination,
+            status: delivery.status,
+            attemptCount: delivery.attemptCount,
+            nextAttemptAt: delivery.nextAttemptAt,
+            lastError: delivery.lastError,
+            updatedAt: delivery.updatedAt,
+            deliveredAt: delivery.deliveredAt,
+            slackMessageTs: delivery.slackMessageTs,
+            slackTraceId: delivery.slackTraceId,
+            slackSendExecutionId: delivery.slackSendExecutionId,
+            legacyUnverified: delivery.legacyUnverified,
+          },
+        ]),
+      );
+      const traceSnapshots = new Map<string, SlackReconciliationTraceSnapshot>(
+        [...this.slackTraces].map(([traceId, trace]) => [
+          traceId,
+          {
+            traceId,
+            deliveryId: trace.deliveryId,
+            outcome: trace.outcome,
+            attemptCount: trace.attemptCount,
+            sendExecutionId: trace.sendExecutionId,
+            destination: trace.destination,
+            slackChannelId: trace.slackChannelId,
+            messageTs: trace.messageTs,
+            sendBoundaryReached: trace.sendBoundaryReached,
+            preSendFailureProven: trace.preSendFailureProven,
+            startedAtUs: trace.startedAtUs,
+            completedAtUs: trace.completedAtUs,
+            updatedAt: input.now,
+            appliedAt: trace.applied ? input.now : null,
+          },
+        ]),
+      );
+      let plan: ReturnType<typeof planSlackReconciliation>;
+      try {
+        plan = planSlackReconciliation({
+          traces: input.traces,
+          deliveries: deliverySnapshots,
+          existingTraces: traceSnapshots,
+          now: input.now,
+        });
+      } catch (error) {
+        if (error instanceof SlackReconciliationPlanConflictError) {
+          throw new SlackReconciliationConflictError(error.code);
+        }
+        throw error;
+      }
+
+      for (const [deliveryId, snapshot] of plan.deliveries) {
+        const delivery = this.deliveries.get(deliveryId);
+        if (delivery === undefined) {
+          throw new Error("slack_reconciliation_delivery_plan_missing");
+        }
+        delivery.status = snapshot.status;
+        delivery.attemptCount = snapshot.attemptCount;
+        delivery.nextAttemptAt = snapshot.nextAttemptAt;
+        delivery.lastError = snapshot.lastError;
+        delivery.updatedAt = snapshot.updatedAt;
+        delivery.deliveredAt = snapshot.deliveredAt;
+        delivery.slackMessageTs = snapshot.slackMessageTs;
+        delivery.slackTraceId = snapshot.slackTraceId;
+        delivery.slackSendExecutionId = snapshot.slackSendExecutionId;
+        delivery.legacyUnverified = snapshot.legacyUnverified;
+      }
+      this.slackTraces.clear();
+      for (const [traceId, trace] of plan.traces) {
+        this.slackTraces.set(traceId, {
+          deliveryId: trace.deliveryId,
+          outcome: trace.outcome,
+          attemptCount: trace.attemptCount,
+          sendExecutionId: trace.sendExecutionId,
+          destination: trace.destination,
+          slackChannelId: trace.slackChannelId,
+          messageTs: trace.messageTs,
+          sendBoundaryReached: trace.sendBoundaryReached,
+          preSendFailureProven: trace.preSendFailureProven,
+          startedAtUs: trace.startedAtUs,
+          completedAtUs: trace.completedAtUs,
+          applied: trace.appliedAt !== null,
+        });
+      }
+
+      return await this.finalizeSlackReconciliationReport(
+        input.reportId,
+        input.traces.length,
+        plan.errorTraceIds,
+        input.checkpointUs,
+        input.now,
+      );
+    } catch (error) {
+      this.deliveries.clear();
+      for (const [deliveryId, delivery] of deliveries) {
+        this.deliveries.set(deliveryId, delivery);
+      }
+      this.slackTraces.clear();
+      for (const [traceId, trace] of traces) {
+        this.slackTraces.set(traceId, trace);
+      }
+      this.slackReconciliationReports.clear();
+      for (const [reportId, report] of reports) {
+        this.slackReconciliationReports.set(reportId, report);
+      }
+      this.reportedSlackErrorTraces.clear();
+      for (const [traceId, reportId] of reportedErrors) {
+        this.reportedSlackErrorTraces.set(traceId, reportId);
+      }
+      this.slackActivityCheckpoint = checkpoint;
+      throw error;
+    }
   }
 
   async finalizeSlackReconciliationReport(

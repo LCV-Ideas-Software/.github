@@ -14,6 +14,12 @@ import {
   SLACK_RECONCILIATION_REPORTS_COMPLETED_INDEX_SQL,
   SLACK_RECONCILIATION_REPORTS_TABLE_SQL,
 } from "./slack-reconciliation-schema-contract";
+import {
+  planSlackReconciliation,
+  SlackReconciliationPlanConflictError,
+  type SlackReconciliationDeliverySnapshot,
+  type SlackReconciliationTraceSnapshot,
+} from "./slack-reconciliation-plan";
 
 export type DeliveryStatus =
   | "pending"
@@ -65,6 +71,27 @@ export interface SlackTraceReconciliation {
   preSendFailureProven: boolean;
   startedAtUs: number;
   completedAtUs: number | null;
+}
+
+export interface SlackReconciliationTraceInput {
+  traceId: string;
+  deliveryId: string | null;
+  outcome: SlackTraceOutcome;
+  attemptCount: number | null;
+  sendExecutionId: string | null;
+  slackChannelId: string | null;
+  messageTs: string | null;
+  sendBoundaryReached: boolean;
+  preSendFailureProven: boolean;
+  startedAtUs: number;
+  completedAtUs: number | null;
+}
+
+export interface SlackReconciliationInput {
+  reportId: string;
+  traces: readonly SlackReconciliationTraceInput[];
+  checkpointUs: number;
+  now: number;
 }
 
 export interface QueueJob {
@@ -193,6 +220,9 @@ export interface DeliveryStore {
   getSlackReconciliationReport(
     reportId: string,
   ): Promise<SlackReconciliationReportResult | null>;
+  reconcileSlackReport(
+    input: SlackReconciliationInput,
+  ): Promise<SlackReconciliationReportResult>;
   finalizeSlackReconciliationReport(
     reportId: string,
     traceCount: number,
@@ -247,6 +277,11 @@ interface SlackTraceRow {
   send_boundary_reached: number;
   pre_send_failure_proven: number;
   applied_at: number | null;
+}
+
+interface SlackReconciliationPlanningRow {
+  row_kind: "delivery" | "report" | "trace";
+  state_json: string;
 }
 
 interface SlackTraceResolutionSnapshot {
@@ -2288,6 +2323,545 @@ export class D1DeliveryStore implements DeliveryStore {
       requestedCheckpointUs: row.requested_checkpoint_us,
       checkpointUs: row.checkpoint_us,
     };
+  }
+
+  async reconcileSlackReport(
+    input: SlackReconciliationInput,
+  ): Promise<SlackReconciliationReportResult> {
+    if (
+      !SLACK_RECONCILIATION_REPORT_ID_PATTERN.test(input.reportId) ||
+      input.traces.length > SLACK_RECONCILIATION_TRACE_LIMIT ||
+      new Set(input.traces.map(({ traceId }) => traceId)).size !==
+        input.traces.length ||
+      !Number.isSafeInteger(input.checkpointUs) ||
+      input.checkpointUs < 0 ||
+      !Number.isSafeInteger(input.now) ||
+      input.now <= 0
+    ) {
+      throw new SlackReconciliationConflictError(
+        "invalid_slack_reconciliation_report",
+      );
+    }
+
+    const rawTracesJson = JSON.stringify(input.traces);
+    const planningRows = await this.#database
+      .prepare(
+        `WITH report_input AS (
+           SELECT value
+           FROM json_each(?)
+         ), relevant_delivery_ids AS (
+           SELECT json_extract(value, '$.deliveryId') AS delivery_id
+           FROM report_input
+           WHERE json_extract(value, '$.deliveryId') IS NOT NULL
+           UNION
+           SELECT deliveries.delivery_id
+           FROM deliveries
+           JOIN report_input
+             ON deliveries.slack_send_execution_id =
+                json_extract(report_input.value, '$.sendExecutionId')
+         )
+         SELECT 'report' AS row_kind,
+                json_object(
+                  'traceCount', trace_count,
+                  'changedErrorTraces', changed_error_traces,
+                  'requestedCheckpointUs', requested_checkpoint_us,
+                  'checkpointUs', checkpoint_us
+                ) AS state_json
+         FROM slack_reconciliation_reports
+         WHERE report_id = ?
+         UNION ALL
+         SELECT 'delivery' AS row_kind,
+                json_object(
+                  'deliveryId', delivery_id,
+                  'destination', destination,
+                  'status', status,
+                  'attemptCount', attempt_count,
+                  'nextAttemptAt', next_attempt_at,
+                  'lastError', last_error,
+                  'updatedAt', updated_at,
+                  'deliveredAt', delivered_at,
+                  'slackMessageTs', slack_message_ts,
+                  'slackTraceId', slack_trace_id,
+                  'slackSendExecutionId', slack_send_execution_id,
+                  'legacyUnverified', legacy_unverified
+                ) AS state_json
+         FROM deliveries
+         WHERE delivery_id IN (SELECT delivery_id FROM relevant_delivery_ids)
+            OR EXISTS (
+              SELECT 1
+              FROM report_input
+              WHERE json_extract(value, '$.messageTs') IS NOT NULL
+                AND deliveries.slack_message_ts =
+                    json_extract(value, '$.messageTs')
+                AND deliveries.destination = CASE
+                  json_extract(value, '$.slackChannelId')
+                  WHEN 'C0BMUK793NV' THEN 'alerts'
+                  WHEN 'C0BMQMW3L4E' THEN 'activity'
+                END
+            )
+         UNION ALL
+         SELECT 'trace' AS row_kind,
+                json_object(
+                  'traceId', trace_id,
+                  'deliveryId', delivery_id,
+                  'outcome', outcome,
+                  'attemptCount', relay_attempt,
+                  'sendExecutionId', send_execution_id,
+                  'destination', CASE slack_channel_id
+                    WHEN 'C0BMUK793NV' THEN 'alerts'
+                    WHEN 'C0BMQMW3L4E' THEN 'activity'
+                  END,
+                  'slackChannelId', slack_channel_id,
+                  'messageTs', slack_message_ts,
+                  'sendBoundaryReached', send_boundary_reached,
+                  'preSendFailureProven', pre_send_failure_proven,
+                  'startedAtUs', started_at_us,
+                  'completedAtUs', completed_at_us,
+                  'updatedAt', updated_at,
+                  'appliedAt', applied_at
+                ) AS state_json
+         FROM slack_workflow_traces
+         WHERE delivery_id IN (SELECT delivery_id FROM relevant_delivery_ids)
+            OR trace_id IN (
+              SELECT json_extract(value, '$.traceId') FROM report_input
+            )
+            OR send_execution_id IN (
+              SELECT json_extract(value, '$.sendExecutionId')
+              FROM report_input
+              WHERE json_extract(value, '$.sendExecutionId') IS NOT NULL
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM report_input
+              WHERE json_extract(value, '$.messageTs') IS NOT NULL
+                AND slack_workflow_traces.slack_channel_id =
+                    json_extract(value, '$.slackChannelId')
+                AND slack_workflow_traces.slack_message_ts =
+                    json_extract(value, '$.messageTs')
+            )`,
+      )
+      .bind(rawTracesJson, input.reportId)
+      .all<SlackReconciliationPlanningRow>();
+
+    const deliveries = new Map<string, SlackReconciliationDeliverySnapshot>();
+    const existingTraces = new Map<string, SlackReconciliationTraceSnapshot>();
+    let replay: SlackReconciliationReportResult | null = null;
+    for (const row of planningRows.results) {
+      const state = JSON.parse(row.state_json) as Record<string, unknown>;
+      if (row.row_kind === "report") {
+        replay = {
+          traceCount: state.traceCount as number,
+          changedErrorTraces: state.changedErrorTraces as number,
+          requestedCheckpointUs: state.requestedCheckpointUs as number,
+          checkpointUs: state.checkpointUs as number,
+        };
+      } else if (row.row_kind === "delivery") {
+        const snapshot: SlackReconciliationDeliverySnapshot = {
+          deliveryId: state.deliveryId as string,
+          destination: state.destination as RelayDestination,
+          status: state.status as DeliveryStatus,
+          attemptCount: state.attemptCount as number,
+          nextAttemptAt: state.nextAttemptAt as number,
+          lastError: state.lastError as string | null,
+          updatedAt: state.updatedAt as number,
+          deliveredAt: state.deliveredAt as number | null,
+          slackMessageTs: state.slackMessageTs as string | null,
+          slackTraceId: state.slackTraceId as string | null,
+          slackSendExecutionId: state.slackSendExecutionId as string | null,
+          legacyUnverified: state.legacyUnverified === 1,
+        };
+        deliveries.set(snapshot.deliveryId, snapshot);
+      } else {
+        const snapshot: SlackReconciliationTraceSnapshot = {
+          traceId: state.traceId as string,
+          deliveryId: state.deliveryId as string,
+          outcome: state.outcome as SlackTraceOutcome,
+          attemptCount: state.attemptCount as number,
+          sendExecutionId: state.sendExecutionId as string | null,
+          destination: state.destination as RelayDestination | null,
+          slackChannelId: state.slackChannelId as string | null,
+          messageTs: state.messageTs as string | null,
+          sendBoundaryReached: state.sendBoundaryReached === 1,
+          preSendFailureProven: state.preSendFailureProven === 1,
+          startedAtUs: state.startedAtUs as number,
+          completedAtUs: state.completedAtUs as number | null,
+          updatedAt: state.updatedAt as number,
+          appliedAt: state.appliedAt as number | null,
+        };
+        existingTraces.set(snapshot.traceId, snapshot);
+      }
+    }
+    if (replay !== null) {
+      if (
+        replay.traceCount !== input.traces.length ||
+        replay.requestedCheckpointUs !== input.checkpointUs
+      ) {
+        throw new SlackReconciliationConflictError(
+          "slack_reconciliation_report_conflict",
+        );
+      }
+      return replay;
+    }
+
+    let plan: ReturnType<typeof planSlackReconciliation>;
+    try {
+      plan = planSlackReconciliation({
+        traces: input.traces,
+        deliveries,
+        existingTraces,
+        now: input.now,
+      });
+    } catch (error) {
+      if (error instanceof SlackReconciliationPlanConflictError) {
+        throw new SlackReconciliationConflictError(error.code);
+      }
+      throw error;
+    }
+
+    const traceChanges = input.traces.map(({ traceId }) => {
+      const final = plan.traces.get(traceId);
+      if (final === undefined) {
+        throw new Error("slack_reconciliation_trace_plan_missing");
+      }
+      return { initial: existingTraces.get(traceId) ?? null, final };
+    });
+    const deliveryChanges = [...plan.deliveries].map(([deliveryId, final]) => ({
+      initial: deliveries.get(deliveryId),
+      final,
+    }));
+    if (deliveryChanges.some(({ initial }) => initial === undefined)) {
+      throw new Error("slack_reconciliation_delivery_plan_missing");
+    }
+    const guardedDeliveryChanges = deliveryChanges as Array<{
+      initial: SlackReconciliationDeliverySnapshot;
+      final: SlackReconciliationDeliverySnapshot;
+    }>;
+    const traceChangesJson = JSON.stringify(traceChanges);
+    const traceGuardsJson = JSON.stringify(
+      [...plan.traces.values()].map((final) => ({ final })),
+    );
+    const deliveryChangesJson = JSON.stringify(guardedDeliveryChanges);
+    const purgeExpiredReports = this.#database
+      .prepare(
+        `DELETE FROM slack_reconciliation_reports
+         WHERE completed_at < ?`,
+      )
+      .bind(input.now - SLACK_RECONCILIATION_REPORT_RETENTION_MS);
+    const insertNewTraces = this.#database
+      .prepare(
+        `INSERT INTO slack_workflow_traces (
+           trace_id, delivery_id, outcome, relay_attempt, send_execution_id,
+           slack_channel_id, slack_message_ts, send_boundary_reached,
+           pre_send_failure_proven, started_at_us, completed_at_us,
+           updated_at, applied_at
+         )
+         SELECT
+           json_extract(value, '$.final.traceId'),
+           json_extract(value, '$.final.deliveryId'),
+           json_extract(value, '$.final.outcome'),
+           json_extract(value, '$.final.attemptCount'),
+           json_extract(value, '$.final.sendExecutionId'),
+           json_extract(value, '$.final.slackChannelId'),
+           json_extract(value, '$.final.messageTs'),
+           json_extract(value, '$.final.sendBoundaryReached'),
+           json_extract(value, '$.final.preSendFailureProven'),
+           json_extract(value, '$.final.startedAtUs'),
+           json_extract(value, '$.final.completedAtUs'),
+           json_extract(value, '$.final.updatedAt'),
+           json_extract(value, '$.final.appliedAt')
+         FROM json_each(?)
+         WHERE json_type(value, '$.initial') = 'null'
+         ON CONFLICT(trace_id) DO NOTHING`,
+      )
+      .bind(traceChangesJson);
+    const updateExistingTraces = this.#database
+      .prepare(
+        `UPDATE slack_workflow_traces AS current
+         SET delivery_id = json_extract(entry.value, '$.final.deliveryId'),
+             outcome = json_extract(entry.value, '$.final.outcome'),
+             relay_attempt = json_extract(entry.value, '$.final.attemptCount'),
+             send_execution_id =
+               json_extract(entry.value, '$.final.sendExecutionId'),
+             slack_channel_id =
+               json_extract(entry.value, '$.final.slackChannelId'),
+             slack_message_ts = json_extract(entry.value, '$.final.messageTs'),
+             send_boundary_reached =
+               json_extract(entry.value, '$.final.sendBoundaryReached'),
+             pre_send_failure_proven =
+               json_extract(entry.value, '$.final.preSendFailureProven'),
+             started_at_us = json_extract(entry.value, '$.final.startedAtUs'),
+             completed_at_us =
+               json_extract(entry.value, '$.final.completedAtUs'),
+             updated_at = json_extract(entry.value, '$.final.updatedAt'),
+             applied_at = json_extract(entry.value, '$.final.appliedAt')
+         FROM json_each(?) AS entry
+         WHERE json_type(entry.value, '$.initial') = 'object'
+           AND current.trace_id = json_extract(entry.value, '$.final.traceId')
+           AND current.delivery_id IS
+               json_extract(entry.value, '$.initial.deliveryId')
+           AND current.outcome IS json_extract(entry.value, '$.initial.outcome')
+           AND current.relay_attempt IS
+               json_extract(entry.value, '$.initial.attemptCount')
+           AND current.send_execution_id IS
+               json_extract(entry.value, '$.initial.sendExecutionId')
+           AND current.slack_channel_id IS
+               json_extract(entry.value, '$.initial.slackChannelId')
+           AND current.slack_message_ts IS
+               json_extract(entry.value, '$.initial.messageTs')
+           AND current.send_boundary_reached IS
+               json_extract(entry.value, '$.initial.sendBoundaryReached')
+           AND current.pre_send_failure_proven IS
+               json_extract(entry.value, '$.initial.preSendFailureProven')
+           AND current.started_at_us IS
+               json_extract(entry.value, '$.initial.startedAtUs')
+           AND current.completed_at_us IS
+               json_extract(entry.value, '$.initial.completedAtUs')
+           AND current.updated_at IS
+               json_extract(entry.value, '$.initial.updatedAt')
+           AND current.applied_at IS
+               json_extract(entry.value, '$.initial.appliedAt')`,
+      )
+      .bind(traceChangesJson);
+    const updateDeliveries = this.#database
+      .prepare(
+        `UPDATE deliveries AS current
+         SET status = json_extract(entry.value, '$.final.status'),
+             attempt_count = json_extract(entry.value, '$.final.attemptCount'),
+             next_attempt_at =
+               json_extract(entry.value, '$.final.nextAttemptAt'),
+             last_error = json_extract(entry.value, '$.final.lastError'),
+             updated_at = json_extract(entry.value, '$.final.updatedAt'),
+             delivered_at = json_extract(entry.value, '$.final.deliveredAt'),
+             slack_message_ts =
+               json_extract(entry.value, '$.final.slackMessageTs'),
+             slack_trace_id = json_extract(entry.value, '$.final.slackTraceId'),
+             slack_send_execution_id =
+               json_extract(entry.value, '$.final.slackSendExecutionId'),
+             legacy_unverified =
+               json_extract(entry.value, '$.final.legacyUnverified')
+         FROM json_each(?) AS entry
+         WHERE current.delivery_id =
+               json_extract(entry.value, '$.initial.deliveryId')
+           AND current.destination IS
+               json_extract(entry.value, '$.initial.destination')
+           AND current.status IS json_extract(entry.value, '$.initial.status')
+           AND current.attempt_count IS
+               json_extract(entry.value, '$.initial.attemptCount')
+           AND current.next_attempt_at IS
+               json_extract(entry.value, '$.initial.nextAttemptAt')
+           AND current.last_error IS
+               json_extract(entry.value, '$.initial.lastError')
+           AND current.updated_at IS
+               json_extract(entry.value, '$.initial.updatedAt')
+           AND current.delivered_at IS
+               json_extract(entry.value, '$.initial.deliveredAt')
+           AND current.slack_message_ts IS
+               json_extract(entry.value, '$.initial.slackMessageTs')
+           AND current.slack_trace_id IS
+               json_extract(entry.value, '$.initial.slackTraceId')
+           AND current.slack_send_execution_id IS
+               json_extract(entry.value, '$.initial.slackSendExecutionId')
+           AND current.legacy_unverified IS
+               json_extract(entry.value, '$.initial.legacyUnverified')`,
+      )
+      .bind(deliveryChangesJson);
+    const errorTraceIdsJson = JSON.stringify(plan.errorTraceIds);
+    const reserveErrors = this.#database
+      .prepare(
+        `INSERT INTO slack_reconciliation_report_errors (
+           trace_id, report_id, committed_at
+         )
+         SELECT trace_id, ?, ?
+         FROM slack_workflow_traces
+         WHERE trace_id IN (SELECT value FROM json_each(?))
+           AND outcome = 'error'
+         ON CONFLICT(trace_id) DO NOTHING`,
+      )
+      .bind(input.reportId, input.now, errorTraceIdsJson);
+    const advanceCheckpoint = this.#database
+      .prepare(
+        `UPDATE relay_state
+         SET slack_activity_checkpoint_us = MAX(
+           slack_activity_checkpoint_us,
+           MIN(
+             ?,
+             COALESCE(
+               (
+                 SELECT MIN(updated_at * 1000)
+                 FROM deliveries
+                 WHERE legacy_unverified = 0
+                   AND (
+                     status IN (
+                       'pending', 'enqueueing', 'queued', 'sending',
+                       'accepted_by_slack', 'accepted_by_trigger', 'send_started'
+                     )
+                     OR slack_trace_id IS NULL
+                   )
+               ),
+               ?
+             )
+           )
+         )
+         WHERE singleton_id = 1`,
+      )
+      .bind(input.checkpointUs, input.checkpointUs);
+    const journalReport = this.#database
+      .prepare(
+        `INSERT INTO slack_reconciliation_reports (
+           report_id, trace_count, changed_error_traces,
+           requested_checkpoint_us, checkpoint_us, completed_at
+         ) VALUES (
+           ?,
+           CASE WHEN
+             NOT EXISTS (
+               SELECT 1
+               FROM json_each(?) AS entry
+               LEFT JOIN slack_workflow_traces AS trace
+                 ON trace.trace_id =
+                    json_extract(entry.value, '$.final.traceId')
+               WHERE trace.trace_id IS NULL
+                  OR trace.delivery_id IS NOT
+                     json_extract(entry.value, '$.final.deliveryId')
+                  OR trace.outcome IS NOT
+                     json_extract(entry.value, '$.final.outcome')
+                  OR trace.relay_attempt IS NOT
+                     json_extract(entry.value, '$.final.attemptCount')
+                  OR trace.send_execution_id IS NOT
+                     json_extract(entry.value, '$.final.sendExecutionId')
+                  OR trace.slack_channel_id IS NOT
+                     json_extract(entry.value, '$.final.slackChannelId')
+                  OR trace.slack_message_ts IS NOT
+                     json_extract(entry.value, '$.final.messageTs')
+                  OR trace.send_boundary_reached IS NOT
+                     json_extract(entry.value, '$.final.sendBoundaryReached')
+                  OR trace.pre_send_failure_proven IS NOT
+                     json_extract(entry.value, '$.final.preSendFailureProven')
+                  OR trace.started_at_us IS NOT
+                     json_extract(entry.value, '$.final.startedAtUs')
+                  OR trace.completed_at_us IS NOT
+                     json_extract(entry.value, '$.final.completedAtUs')
+                  OR trace.updated_at IS NOT
+                     json_extract(entry.value, '$.final.updatedAt')
+                  OR trace.applied_at IS NOT
+                     json_extract(entry.value, '$.final.appliedAt')
+             )
+             AND NOT EXISTS (
+               SELECT 1
+               FROM json_each(?) AS delivery_entry
+               WHERE (
+                 SELECT COUNT(*)
+                 FROM slack_workflow_traces
+                 WHERE delivery_id = json_extract(
+                   delivery_entry.value,
+                   '$.final.deliveryId'
+                 )
+               ) != (
+                 SELECT COUNT(*)
+                 FROM json_each(?) AS trace_entry
+                 WHERE json_extract(
+                   trace_entry.value,
+                   '$.final.deliveryId'
+                 ) = json_extract(
+                   delivery_entry.value,
+                   '$.final.deliveryId'
+                 )
+               )
+             )
+             AND NOT EXISTS (
+               SELECT 1
+               FROM json_each(?) AS entry
+               LEFT JOIN deliveries AS delivery
+                 ON delivery.delivery_id =
+                    json_extract(entry.value, '$.final.deliveryId')
+               WHERE delivery.delivery_id IS NULL
+                  OR delivery.destination IS NOT
+                     json_extract(entry.value, '$.final.destination')
+                  OR delivery.status IS NOT
+                     json_extract(entry.value, '$.final.status')
+                  OR delivery.attempt_count IS NOT
+                     json_extract(entry.value, '$.final.attemptCount')
+                  OR delivery.next_attempt_at IS NOT
+                     json_extract(entry.value, '$.final.nextAttemptAt')
+                  OR delivery.last_error IS NOT
+                     json_extract(entry.value, '$.final.lastError')
+                  OR delivery.updated_at IS NOT
+                     json_extract(entry.value, '$.final.updatedAt')
+                  OR delivery.delivered_at IS NOT
+                     json_extract(entry.value, '$.final.deliveredAt')
+                  OR delivery.slack_message_ts IS NOT
+                     json_extract(entry.value, '$.final.slackMessageTs')
+                  OR delivery.slack_trace_id IS NOT
+                     json_extract(entry.value, '$.final.slackTraceId')
+                  OR delivery.slack_send_execution_id IS NOT
+                     json_extract(entry.value, '$.final.slackSendExecutionId')
+                  OR delivery.legacy_unverified IS NOT
+                     json_extract(entry.value, '$.final.legacyUnverified')
+             )
+             AND EXISTS (
+               SELECT 1 FROM relay_state WHERE singleton_id = 1
+             )
+             THEN ? ELSE -1 END,
+           (SELECT COUNT(*)
+            FROM slack_reconciliation_report_errors
+            WHERE report_id = ?),
+           ?,
+           COALESCE(
+             (SELECT MIN(slack_activity_checkpoint_us, ?)
+              FROM relay_state WHERE singleton_id = 1),
+             -1
+           ),
+           ?
+         )`,
+      )
+      .bind(
+        input.reportId,
+        traceGuardsJson,
+        deliveryChangesJson,
+        traceGuardsJson,
+        deliveryChangesJson,
+        input.traces.length,
+        input.reportId,
+        input.checkpointUs,
+        input.checkpointUs,
+        input.now,
+      );
+
+    try {
+      await this.#database.batch([
+        purgeExpiredReports,
+        insertNewTraces,
+        updateExistingTraces,
+        updateDeliveries,
+        reserveErrors,
+        advanceCheckpoint,
+        journalReport,
+      ]);
+    } catch (error) {
+      const racedReplay = await this.getSlackReconciliationReport(
+        input.reportId,
+      );
+      if (racedReplay !== null) {
+        if (
+          racedReplay.traceCount !== input.traces.length ||
+          racedReplay.requestedCheckpointUs !== input.checkpointUs
+        ) {
+          throw new SlackReconciliationConflictError(
+            "slack_reconciliation_report_conflict",
+          );
+        }
+        return racedReplay;
+      }
+      throw error;
+    }
+    const result = await this.getSlackReconciliationReport(input.reportId);
+    if (
+      result === null ||
+      result.traceCount !== input.traces.length ||
+      result.requestedCheckpointUs !== input.checkpointUs
+    ) {
+      throw new Error("slack_reconciliation_report_unavailable");
+    }
+    return result;
   }
 
   async finalizeSlackReconciliationReport(

@@ -19,8 +19,7 @@ import {
 import type {
   SlackProgressInput,
   SlackProgressResult,
-  SlackTraceReconciliation,
-  SlackTraceRecordResult,
+  SlackReconciliationInput,
   SlackReconciliationReportResult,
 } from "../src/store";
 
@@ -64,21 +63,20 @@ class ProgressResponseLossStore extends MemoryDeliveryStore {
 class ReconciliationResponseLossStore extends MemoryDeliveryStore {
   #loseFirstResponse = true;
 
-  override async recordSlackTrace(
-    trace: SlackTraceReconciliation,
-    now: number,
-  ): Promise<SlackTraceRecordResult> {
-    const result = await super.recordSlackTrace(trace, now);
+  override async reconcileSlackReport(
+    input: SlackReconciliationInput,
+  ): Promise<SlackReconciliationReportResult> {
+    const result = await super.reconcileSlackReport(input);
     if (this.#loseFirstResponse) {
       this.#loseFirstResponse = false;
-      throw new Error("simulated_d1_response_loss_after_reconciliation_write");
+      throw new Error("simulated_d1_response_loss_after_report_commit");
     }
     return result;
   }
 }
 
 class ReconciliationPersistenceFailureStore extends MemoryDeliveryStore {
-  override recordSlackTrace(): Promise<SlackTraceRecordResult> {
+  override reconcileSlackReport(): Promise<SlackReconciliationReportResult> {
     return Promise.reject(new Error("delivery_not_found"));
   }
 }
@@ -86,25 +84,29 @@ class ReconciliationPersistenceFailureStore extends MemoryDeliveryStore {
 class ReconciliationFinalizeResponseLossStore extends MemoryDeliveryStore {
   #loseFirstResponse = true;
 
-  override async finalizeSlackReconciliationReport(
-    reportId: string,
-    traceCount: number,
-    errorTraceIds: readonly string[],
-    checkpointUs: number,
-    now: number,
+  override async reconcileSlackReport(
+    input: SlackReconciliationInput,
   ): Promise<SlackReconciliationReportResult> {
-    const result = await super.finalizeSlackReconciliationReport(
-      reportId,
-      traceCount,
-      errorTraceIds,
-      checkpointUs,
-      now,
-    );
+    const result = await super.reconcileSlackReport(input);
     if (this.#loseFirstResponse) {
       this.#loseFirstResponse = false;
       throw new Error("simulated_d1_response_loss_after_report_commit");
     }
     return result;
+  }
+}
+
+class ReconciliationReportBudgetStore extends MemoryDeliveryStore {
+  reconciliationReportBoundaries = 0;
+
+  override async reconcileSlackReport(
+    input: SlackReconciliationInput,
+  ): Promise<SlackReconciliationReportResult> {
+    this.reconciliationReportBoundaries += 1;
+    if (this.reconciliationReportBoundaries > 1) {
+      throw new Error("simulated_reconciliation_report_budget_exhausted");
+    }
+    return await super.reconcileSlackReport(input);
   }
 }
 
@@ -594,6 +596,155 @@ describe("authenticated Slack delivery proof", () => {
 });
 
 describe("fail-closed Slack trace reconciliation", () => {
+  it("reconciles the maximum 25 traces through one report persistence boundary", async () => {
+    const store = new ReconciliationReportBudgetStore();
+    const traces = Array.from({ length: 25 }, (_, index) => {
+      const suffix = String(index + 1).padStart(2, "0");
+      const deliveryId = `trace-report-budget-${suffix}`;
+      store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
+      return {
+        trace_id: `TrReportBudget${suffix}`,
+        delivery_id: deliveryId,
+        outcome: "pending" as const,
+        relay_attempt: "1",
+        send_execution_id: null,
+        slack_channel_id: null,
+        slack_message_ts: null,
+        send_boundary_reached: false,
+        pre_send_failure_proven: false,
+        started_at_us: NOW * 1_000 - index,
+        completed_at_us: null,
+      };
+    });
+
+    const response = await handleFetch(
+      await reconciliationRequest({
+        checkpoint_us: NOW * 1_000,
+        report_timestamp: NOW_SECONDS,
+        traces,
+      }),
+      makeEnv(new FakeQueue()),
+      { store, now: () => NOW },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, traces: 25 });
+    expect(store.slackTraces.size).toBe(25);
+    expect(store.slackReconciliationReports.size).toBe(1);
+    expect(store.reconciliationReportBoundaries).toBe(1);
+  });
+
+  it.each([
+    ["pre-send error first", false],
+    ["pending competitor first", true],
+  ])(
+    "never authorizes a duplicate send when the %s ordering contains a competing trace",
+    async (_ordering, pendingFirst) => {
+      const store = new MemoryDeliveryStore();
+      const deliveryId = `trace-report-order-${pendingFirst ? "pending" : "error"}`;
+      const safeErrorTrace = {
+        traceId: `TrReportOrderError${pendingFirst ? "PendingFirst" : "ErrorFirst"}`,
+        deliveryId,
+        outcome: "error" as const,
+        attemptCount: 1,
+        sendExecutionId: "FxReportOrderPreSend1",
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000 - 2,
+        completedAtUs: NOW * 1_000 - 1,
+      };
+      const pendingTrace = {
+        traceId: `TrReportOrderPending${pendingFirst ? "PendingFirst" : "ErrorFirst"}`,
+        deliveryId,
+        outcome: "pending" as const,
+        attemptCount: 1,
+        sendExecutionId: null,
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: false,
+        startedAtUs: NOW * 1_000,
+        completedAtUs: null,
+      };
+      store.seed(deliveryId, "accepted_by_trigger", NOW, { attemptCount: 1 });
+
+      await store.reconcileSlackReport({
+        reportId: (pendingFirst ? "b" : "a").repeat(64),
+        traces: pendingFirst
+          ? [pendingTrace, safeErrorTrace]
+          : [safeErrorTrace, pendingTrace],
+        checkpointUs: NOW * 1_000,
+        now: NOW + 1,
+      });
+
+      expect(store.deliveries.get(deliveryId)).toMatchObject({
+        status: "accepted_by_trigger",
+        attemptCount: 1,
+        slackTraceId: null,
+        slackSendExecutionId: null,
+        lastError: null,
+      });
+    },
+  );
+
+  it.each([
+    ["owned execution first", false],
+    ["unowned execution first", true],
+  ])(
+    "classifies competing terminal pre-send errors before applying the %s ordering",
+    async (_ordering, unownedFirst) => {
+      const store = new MemoryDeliveryStore();
+      const deliveryId = `trace-terminal-order-${unownedFirst ? "unowned" : "owned"}`;
+      const ownedTraceId = `TrTerminalOwned${unownedFirst ? "UnownedFirst" : "OwnedFirst"}`;
+      const unownedTraceId = `TrTerminalUnowned${unownedFirst ? "UnownedFirst" : "OwnedFirst"}`;
+      const ownedTrace = {
+        traceId: ownedTraceId,
+        deliveryId,
+        outcome: "error" as const,
+        attemptCount: 1,
+        sendExecutionId: "FxTerminalOwnedA1",
+        slackChannelId: null,
+        messageTs: null,
+        sendBoundaryReached: false,
+        preSendFailureProven: true,
+        startedAtUs: NOW * 1_000 - 2,
+        completedAtUs: NOW * 1_000 - 1,
+      };
+      const unownedTrace = {
+        ...ownedTrace,
+        traceId: unownedTraceId,
+        sendExecutionId: "FxTerminalUnownedB1",
+        startedAtUs: NOW * 1_000,
+        completedAtUs: NOW * 1_000 + 1,
+      };
+      store.seed(deliveryId, "accepted_by_trigger", NOW, {
+        attemptCount: 1,
+        slackSendExecutionId: ownedTrace.sendExecutionId,
+      });
+
+      await store.reconcileSlackReport({
+        reportId: (unownedFirst ? "d" : "c").repeat(64),
+        traces: unownedFirst
+          ? [unownedTrace, ownedTrace]
+          : [ownedTrace, unownedTrace],
+        checkpointUs: NOW * 1_000,
+        now: NOW + 1,
+      });
+
+      expect(store.deliveries.get(deliveryId)).toMatchObject({
+        status: "accepted_by_trigger",
+        attemptCount: 1,
+        slackTraceId: null,
+        slackSendExecutionId: ownedTrace.sendExecutionId,
+        lastError: null,
+      });
+      expect(store.slackTraces.get(ownedTraceId)?.applied).toBe(false);
+      expect(store.slackTraces.get(unownedTraceId)?.applied).toBe(true);
+    },
+  );
+
   it("accepts at most 25 traces in both reconciliation protocol parsers", async () => {
     const store = new MemoryDeliveryStore();
     const env = makeEnv(new FakeQueue());
@@ -1339,7 +1490,7 @@ describe("fail-closed Slack trace reconciliation", () => {
     expect(store.slackActivityCheckpoint).toBe(NOW * 1_000 - 100);
   });
 
-  it("retries an ambiguous reconciliation write instead of classifying it as a conflict", async () => {
+  it("replays an atomic reconciliation after an ambiguous response", async () => {
     const store = new ReconciliationResponseLossStore();
     const queue = new FakeQueue();
     const env = makeEnv(queue);
@@ -1386,8 +1537,8 @@ describe("fail-closed Slack trace reconciliation", () => {
     });
     expect(first.status).toBe(503);
     expect(await first.json()).toEqual({ error: "persistence_unavailable" });
-    expect(store.slackActivityCheckpoint).toBe(NOW * 1_000 - 100);
-    expect(store.slackTraces.size).toBe(1);
+    expect(store.slackActivityCheckpoint).toBe(NOW * 1_000);
+    expect(store.slackTraces.size).toBe(2);
 
     const replay = await handleFetch(await reconciliationRequest(report), env, {
       store,
