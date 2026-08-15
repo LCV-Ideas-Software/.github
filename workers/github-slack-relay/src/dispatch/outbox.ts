@@ -175,6 +175,11 @@ export class D1DispatchStore implements DispatchStore {
     payloadJson: string;
     now: number;
   }): Promise<boolean> {
+    // ADR §6.8 presence fence, in-batch (Copilot finding F8): a non-shadow
+    // INSERT itself refuses a GUID present in the legacy deliveries table,
+    // closing the check-then-insert window. Shadow rows are exempt — F2
+    // pairing REQUIRES the legacy row to exist (§6.8, shadow exclusion).
+    const shadowFlag = row.shadow ? 1 : 0;
     const audit = this.#database
       .prepare(
         `INSERT INTO dispatch_audit (
@@ -183,12 +188,17 @@ export class D1DispatchStore implements DispatchStore {
          SELECT ?, 'none', 'queued', ?, 'ingress', ?
          WHERE NOT EXISTS (
            SELECT 1 FROM dispatch_outbox WHERE delivery_id = ?
-         )`,
+         )
+           AND (? = 1 OR NOT EXISTS (
+             SELECT 1 FROM deliveries WHERE delivery_id = ?
+           ))`,
       )
       .bind(
         row.deliveryId,
         JSON.stringify({ destination: row.destination, shadow: row.shadow }),
         row.now,
+        row.deliveryId,
+        shadowFlag,
         row.deliveryId,
       );
     const insert = this.#database
@@ -196,16 +206,22 @@ export class D1DispatchStore implements DispatchStore {
         `INSERT INTO dispatch_outbox (
            delivery_id, destination, shadow, payload_json, state,
            created_ms, updated_ms
-         ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
+         )
+         SELECT ?, ?, ?, ?, 'queued', ?, ?
+         WHERE ? = 1 OR NOT EXISTS (
+           SELECT 1 FROM deliveries WHERE delivery_id = ?
+         )
          ON CONFLICT(delivery_id) DO NOTHING`,
       )
       .bind(
         row.deliveryId,
         row.destination,
-        row.shadow ? 1 : 0,
+        shadowFlag,
         row.payloadJson,
         row.now,
         row.now,
+        shadowFlag,
+        row.deliveryId,
       );
     const results = await this.#database.batch([audit, insert]);
     return changed(results[1]);
@@ -650,14 +666,48 @@ export class D1DispatchStore implements DispatchStore {
     return changed(results[1]);
   }
 
+  async flagDuplicateRepairPending(
+    deliveryId: string,
+    now: number,
+    evidenceJson: string,
+  ): Promise<boolean> {
+    // Copilot finding F5 (ADR §6.3.2/R19): a detected duplicate whose
+    // deletion failed must keep a future scan — verify_scans_remaining is
+    // raised to at least 1 and the next scan is due at the §6.3.3
+    // first-scan delay. One batch with its pending-marker audit row (§6.1).
+    const predicate = " AND state = 'delivered' AND shadow = 0";
+    const audit = this.#inPlaceAudit(
+      deliveryId,
+      asEvidenceJson(evidenceJson),
+      "resolver",
+      now,
+      predicate,
+    );
+    const update = this.#database
+      .prepare(
+        `UPDATE dispatch_outbox
+         SET verify_scans_remaining = MAX(verify_scans_remaining, 1),
+             verify_after_ms = ?,
+             updated_ms = ?
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(now + VERIFY_FIRST_SCAN_DELAY_MS, now, deliveryId);
+    const results = await this.#database.batch([audit, update]);
+    return changed(results[1]);
+  }
+
   async operatorResend(
     deliveryId: string,
     now: number,
     evidenceJson: string,
   ): Promise<boolean> {
+    // ADR §6.2 routes dead_letter to the operator menu alongside manual
+    // (Copilot finding F7): same audited possible-duplicate resend, same
+    // §6.3.3 verification arming.
+    const expectedStates: readonly DispatchState[] = ["manual", "dead_letter"];
     const audit = this.#transitionAudit(
       deliveryId,
-      ["manual"],
+      expectedStates,
       "queued",
       asEvidenceJson(evidenceJson),
       "operator",
@@ -677,9 +727,10 @@ export class D1DispatchStore implements DispatchStore {
              resolver_attempts = 0,
              last_error = NULL,
              updated_ms = ?
-         WHERE delivery_id = ? AND state = 'manual'`,
+         WHERE delivery_id = ?
+           AND state IN (${placeholders(expectedStates.length)})`,
       )
-      .bind(now, deliveryId);
+      .bind(now, deliveryId, ...expectedStates);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -760,9 +811,20 @@ export class D1DispatchStore implements DispatchStore {
          WHERE state IN ('queued', 'sending', 'ambiguous', 'manual')`,
       )
       .first<number | null>("oldest_ms");
+    // Copilot finding F6 (ADR §6.7): ambiguous_stale alarms on the oldest
+    // AMBIGUOUS row specifically, never on an old manual/queued row.
+    const oldestAmbiguous = await this.#database
+      .prepare(
+        `SELECT MIN(created_ms) AS oldest_ms
+         FROM dispatch_outbox
+         WHERE state = 'ambiguous'`,
+      )
+      .first<number | null>("oldest_ms");
     return {
       byStateAndDestination,
       oldestNonTerminalAgeMs: oldest === null ? null : now - oldest,
+      oldestAmbiguousAgeMs:
+        oldestAmbiguous === null ? null : now - oldestAmbiguous,
       repairedDuplicates: await this.repairedDuplicatesTotal(),
     };
   }

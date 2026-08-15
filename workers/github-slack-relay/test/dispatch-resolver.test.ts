@@ -642,6 +642,46 @@ describe("duplicate repair (R17)", () => {
     expect(await store.repairedDuplicatesTotal()).toBe(1);
   });
 
+  it("F2: overlapping cursor pages repeating one ts dedupe to found — never found_many, zero deletions", async () => {
+    const { store } = makeStore();
+    const deliveryId = "f2-overlapping-pages";
+    const row = await seedAmbiguous(store, deliveryId);
+    // Copilot finding F2: cursor pages can overlap and repeat the SAME
+    // message; the repeated identical ts must never mint a found_many
+    // (which would chat.delete the sole canonical copy).
+    let page = 0;
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (!url.includes("conversations.history")) return undefined;
+      page += 1;
+      if (page === 1) {
+        return slackHistoryPage(
+          [historyMessage({ ts: TS_EARLY, deliveryId })],
+          { nextCursor: "overlap-2", hasMore: true },
+        );
+      }
+      return slackHistoryPage(
+        [historyMessage({ ts: TS_EARLY, deliveryId })],
+        { nextCursor: "", hasMore: false },
+      );
+    });
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "found",
+      ts: TS_EARLY,
+      channel: ALERTS_CHANNEL,
+    });
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    expect(deleteCalls(calls)).toHaveLength(0);
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+  });
+
   it("R17: a single match never triggers chat.delete", async () => {
     const { store } = makeStore();
     const deliveryId = "red17-single-match";
@@ -660,6 +700,187 @@ describe("duplicate repair (R17)", () => {
     expect(verdict.kind).toBe("found");
     expect(deleteCalls(calls)).toHaveLength(0);
     expect(await store.repairedDuplicatesTotal()).toBe(0);
+  });
+});
+
+describe("verdict CAS races and failed deletions (F3/F4/F5)", () => {
+  it("F3: a found verdict whose CAS loses to a concurrent manual move lands via the late-proof rule", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f3-cas-lost-to-manual";
+    const row = await seedAmbiguous(store, deliveryId);
+    // Copilot finding F3: the scripted fetch parks the row in manual (e.g.
+    // budget exhaustion) while the scan is in flight, so the resolver's
+    // markDelivered WHERE state='ambiguous' CAS matches 0 rows.
+    const { fetch: fetchStub } = scriptedFetch((url) => {
+      if (!url.includes("conversations.history")) return undefined;
+      database
+        .prepare(
+          "UPDATE dispatch_outbox SET state = 'manual', updated_ms = ? WHERE delivery_id = ?",
+        )
+        .run(DISPATCH_TEST_NOW, deliveryId);
+      return slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })]);
+    });
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "found",
+      ts: TS_EARLY,
+      channel: ALERTS_CHANNEL,
+    });
+    // ADR §6.3 late-proof rule: the audit carries the ts and the row ends
+    // delivered via the manual -> delivered CAS.
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    expect(updated.slackChannelId).toBe(ALERTS_CHANNEL);
+    const entries = auditRows(database, deliveryId);
+    expect(
+      entries.some((entry) =>
+        String(entry["evidence_json"]).includes('"late_proof":true'),
+      ),
+    ).toBe(true);
+    expect(
+      entries.some(
+        (entry) =>
+          entry["from_state"] === "manual" &&
+          entry["to_state"] === "delivered",
+      ),
+    ).toBe(true);
+  });
+
+  it("F4: a found_many CAS lost to a concurrent delivered(later ts) reconciles canonical and never deletes the recorded ts", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f4-cas-lost-to-delivered";
+    const row = await seedAmbiguous(store, deliveryId);
+    // Copilot finding F4: a concurrent late proof records the LATER copy as
+    // delivered while the scan is in flight.
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      if (!url.includes("conversations.history")) return undefined;
+      database
+        .prepare(
+          `UPDATE dispatch_outbox
+           SET state = 'delivered', slack_message_ts = ?,
+               slack_channel_id = ?, updated_ms = ?
+           WHERE delivery_id = ?`,
+        )
+        .run(TS_LATE, ALERTS_CHANNEL, DISPATCH_TEST_NOW, deliveryId);
+      return slackHistoryPage([
+        historyMessage({ ts: TS_EARLY, deliveryId }),
+        historyMessage({ ts: TS_LATE, deliveryId }),
+      ]);
+    });
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "found_many",
+      canonicalTs: TS_EARLY,
+      channel: ALERTS_CHANNEL,
+      duplicateTs: [TS_LATE],
+    });
+    // The later message — the ts recorded on the row when the CAS lost — is
+    // NOT deleted; the canonical ts is reconciled to the earliest.
+    expect(deleteCalls(calls)).toHaveLength(0);
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+    const entries = auditRows(database, deliveryId);
+    expect(
+      entries.some((entry) =>
+        String(entry["evidence_json"]).includes(
+          `"repaired_from":"${TS_LATE}"`,
+        ),
+      ),
+    ).toBe(true);
+    // The undeleted copy keeps a future scan (F5 pending marker + R19).
+    expect(
+      entries.some((entry) =>
+        String(entry["evidence_json"]).includes(
+          '"duplicate_repair_pending":true',
+        ),
+      ),
+    ).toBe(true);
+    expect(updated.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+  });
+
+  it("F5: a failed chat.delete arms verification with a pending marker, counts nothing repaired, and a later scan completes the repair", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f5-delete-failed";
+    const row = await seedAmbiguous(store, deliveryId);
+    // Copilot finding F5: the delete is rate-limited — the detected
+    // duplicate must not be swallowed while the scan is consumed.
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) {
+        return { status: 200, body: { ok: false, error: "ratelimited" } };
+      }
+      return undefined;
+    });
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict.kind).toBe("found_many");
+    expect(deleteCalls(calls)).toHaveLength(1);
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    // (b) verification eligibility guaranteed for a future repair scan.
+    expect(updated.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+    expect(updated.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    );
+    // (a) pending marker audited; (c) the failed copy is NOT counted.
+    const entries = auditRows(database, deliveryId);
+    expect(
+      entries.some((entry) =>
+        String(entry["evidence_json"]).includes(
+          '"duplicate_repair_pending":true',
+        ),
+      ),
+    ).toBe(true);
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+
+    // A later scan with a succeeding delete completes the repair (R19).
+    const later = DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS;
+    const { fetch: repairFetch, calls: repairCalls } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      return undefined;
+    });
+    const pass = await runResolverPass(
+      resolverDeps(store, repairFetch, { now: () => later }),
+    );
+    expect(pass.examined).toBe(1);
+    const repairs = deleteCalls(repairCalls);
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0]?.body).toMatchObject({ ts: TS_LATE });
+    expect(await store.repairedDuplicatesTotal()).toBe(1);
+    const final = await mustGet(store, deliveryId);
+    expect(final.state).toBe("delivered");
+    expect(final.slackMessageTs).toBe(TS_EARLY);
+    expect(final.verifyScansRemaining).toBe(0);
   });
 });
 

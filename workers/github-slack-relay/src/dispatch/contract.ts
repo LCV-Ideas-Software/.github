@@ -186,6 +186,14 @@ export interface DispatchStore {
     ts: string,
     evidenceJson: string,
   ): Promise<boolean>;
+  // Copilot finding F5 (ADR §6.3.2/R19): a detected duplicate whose deletion
+  // failed re-arms verification (at least one scan, due at the §6.3.3
+  // first-scan delay) and records the pending marker — one batch + audit.
+  flagDuplicateRepairPending(
+    deliveryId: string,
+    now: number,
+    evidenceJson: string,
+  ): Promise<boolean>;
   // Operator menu (I1: the only resend path; marked possible-duplicate).
   operatorResend(deliveryId: string, now: number, evidenceJson: string): Promise<boolean>;
   operatorCloseManual(deliveryId: string, now: number, evidenceJson: string): Promise<boolean>;
@@ -207,6 +215,11 @@ export interface DispatchStatusCounters {
     Record<DispatchDestination, Readonly<Record<DispatchState, number>>>
   >;
   oldestNonTerminalAgeMs: number | null;
+  // Copilot finding F6 (ADR §6.7): the ambiguous_stale alarm fires ONLY on
+  // an AMBIGUOUS row older than 30 min — an old manual/queued row must not
+  // stand in for it. Additive field; oldestNonTerminalAgeMs stays for the
+  // queued-backlog alarm and the drain view.
+  oldestAmbiguousAgeMs: number | null;
   repairedDuplicates: number;
 }
 

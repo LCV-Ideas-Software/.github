@@ -235,8 +235,10 @@ async function completeScan(
 }
 
 // §6.3.2: delete one later copy; only a confirmed deletion is audited with
-// the repaired-duplicate marker that feeds the counter. A failed deletion
-// leaves the copy for a later scan (R19 — repair-from-anywhere).
+// the repaired-duplicate marker that feeds the counter. Copilot finding F5:
+// the outcome is reported to the caller — a failed deletion must re-arm
+// verification so a later scan completes the repair (R19), never be
+// silently swallowed.
 async function deleteDuplicate(
   row: DispatchOutboxRow,
   deps: ResolverDeps,
@@ -244,7 +246,7 @@ async function deleteDuplicate(
   canonicalTs: string,
   duplicateTs: string,
   channel: string,
-): Promise<void> {
+): Promise<boolean> {
   let deleted = false;
   try {
     const response = await deps.fetch(DELETE_URL, {
@@ -260,7 +262,7 @@ async function deleteDuplicate(
   } catch {
     deleted = false;
   }
-  if (!deleted) return;
+  if (!deleted) return false;
   await deps.store.appendAudit({
     deliveryId: row.deliveryId,
     fromState: "delivered",
@@ -273,6 +275,7 @@ async function deleteDuplicate(
     actor: "resolver",
     atMs: now,
   });
+  return true;
 }
 
 async function recordInconclusive(
@@ -331,13 +334,16 @@ export async function resolveAmbiguousRow(
   if (scan.kind === "failed") {
     return recordInconclusive(row, deps, now, scan.reason, scan.retryAfterMs);
   }
-  const sorted = [...scan.matches].sort(compareSlackTs);
+  // Copilot finding F2: cursor pages can overlap and repeat the SAME ts — a
+  // repeated identical ts is ONE message, and must never mint a found_many
+  // (which would chat.delete the sole canonical copy). Dedupe by ts first.
+  const sorted = [...new Set(scan.matches)].sort(compareSlackTs);
   const canonicalTs = sorted[0];
   if (canonicalTs !== undefined) {
     const duplicateTs = sorted.slice(1);
     if (duplicateTs.length === 0) {
       if (row.state === "ambiguous") {
-        await deps.store.markDelivered(
+        const recorded = await deps.store.markDelivered(
           row.deliveryId,
           now,
           canonicalTs,
@@ -346,6 +352,17 @@ export async function resolveAmbiguousRow(
           ["ambiguous"],
           JSON.stringify({ verdict: "found", ts: canonicalTs }),
         );
+        if (!recorded) {
+          // Copilot finding F3 / ADR §6.3 late-proof rule: the row left
+          // `ambiguous` mid-resolve (e.g. parked in manual by budget
+          // exhaustion) — canonical proof still lands durably.
+          await deps.store.recordLateProof(
+            row.deliveryId,
+            now,
+            canonicalTs,
+            channel,
+          );
+        }
       } else {
         await completeScan(row, deps, now);
       }
@@ -353,8 +370,9 @@ export async function resolveAmbiguousRow(
     }
     // §6.3.2 (R17/R18): the EARLIEST ts is canonical; every later copy is
     // deleted, audited, counted.
+    let deletableTs: readonly string[] = duplicateTs;
     if (row.state === "ambiguous") {
-      await deps.store.markDelivered(
+      const recorded = await deps.store.markDelivered(
         row.deliveryId,
         now,
         canonicalTs,
@@ -367,6 +385,50 @@ export async function resolveAmbiguousRow(
           duplicate_ts: duplicateTs,
         }),
       );
+      if (!recorded) {
+        // Copilot finding F4: the CAS lost a race — re-read before ANY
+        // deletion.
+        const fresh = await deps.store.get(row.deliveryId);
+        if (fresh === null || fresh.state !== "delivered") {
+          // Row parked off-delivered mid-resolve: land canonical proof via
+          // the §6.3 late-proof rule; delete nothing this pass — a later
+          // scan repairs (R19).
+          const proof = await deps.store.recordLateProof(
+            row.deliveryId,
+            now,
+            canonicalTs,
+            channel,
+          );
+          if (proof !== "audit_only") {
+            await deps.store.flagDuplicateRepairPending(
+              row.deliveryId,
+              now,
+              JSON.stringify({
+                duplicate_repair_pending: true,
+                canonical_ts: canonicalTs,
+                pending_ts: duplicateTs,
+              }),
+            );
+          }
+          return { kind: "found_many", canonicalTs, channel, duplicateTs };
+        }
+        const observedTs = fresh.slackMessageTs;
+        if (observedTs !== null && observedTs !== canonicalTs) {
+          // F4: a concurrent writer recorded a different ts — reconcile the
+          // canonical ts BEFORE any deletion, and never delete the ts that
+          // was recorded on the row.
+          await deps.store.updateCanonicalTs(
+            row.deliveryId,
+            now,
+            canonicalTs,
+            JSON.stringify({
+              canonical_ts: canonicalTs,
+              repaired_from: observedTs,
+            }),
+          );
+          deletableTs = duplicateTs.filter((ts) => ts !== observedTs);
+        }
+      }
     } else if (row.slackMessageTs !== canonicalTs) {
       await deps.store.updateCanonicalTs(
         row.deliveryId,
@@ -378,10 +440,36 @@ export async function resolveAmbiguousRow(
         }),
       );
     }
-    for (const ts of duplicateTs) {
-      await deleteDuplicate(row, deps, now, canonicalTs, ts, channel);
+    // Copilot finding F5: track every copy that was NOT confirmed deleted
+    // (failed chat.delete or F4 skip) — it must keep a future scan.
+    const pendingTs: string[] = duplicateTs.filter(
+      (ts) => !deletableTs.includes(ts),
+    );
+    for (const ts of deletableTs) {
+      const deleted = await deleteDuplicate(
+        row,
+        deps,
+        now,
+        canonicalTs,
+        ts,
+        channel,
+      );
+      if (!deleted) pendingTs.push(ts);
     }
-    if (row.state === "delivered") {
+    if (pendingTs.length > 0) {
+      // F5/R19: the delivered row keeps (or regains) verification
+      // eligibility so a later scan completes the repair; the failed copies
+      // are NOT counted as repaired.
+      await deps.store.flagDuplicateRepairPending(
+        row.deliveryId,
+        now,
+        JSON.stringify({
+          duplicate_repair_pending: true,
+          canonical_ts: canonicalTs,
+          pending_ts: pendingTs,
+        }),
+      );
+    } else if (row.state === "delivered") {
       await completeScan(row, deps, now);
     }
     return { kind: "found_many", canonicalTs, channel, duplicateTs };

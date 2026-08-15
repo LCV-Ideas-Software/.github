@@ -121,6 +121,9 @@ export async function insertShadowPaired(
     now: number;
   },
 ): Promise<{ legacyInserted: boolean; shadowInserted: boolean }> {
+  // §6.8 presence fence, in-batch (Copilot finding F8): the legacy INSERT
+  // itself refuses a GUID that already has a non-shadow outbox row, closing
+  // the check-then-insert window (shadow rows are excluded — §6.8).
   const legacyInsert = database
     .prepare(
       `INSERT INTO deliveries (
@@ -135,7 +138,11 @@ export async function insertShadowPaired(
         next_attempt_at,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+      )
+      SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM dispatch_outbox WHERE delivery_id = ? AND shadow = 0
+      )
       ON CONFLICT(delivery_id) DO NOTHING`,
     )
     .bind(
@@ -148,6 +155,7 @@ export async function insertShadowPaired(
       input.now,
       input.now,
       input.now,
+      input.deliveryId,
     );
   // changes() reflects the PREVIOUS statement on the same connection, so the
   // shadow row commits only when the legacy insert actually inserted (no
@@ -191,6 +199,61 @@ export async function insertShadowPaired(
     legacyInserted: (legacyResult?.meta.changes ?? 0) > 0,
     shadowInserted: (shadowResult?.meta.changes ?? 0) > 0,
   };
+}
+
+// §6.8 modes off (Copilot finding F8): the legacy ingress insert with the
+// presence fence INSIDE the statement — the legacy row cannot commit while a
+// non-shadow outbox row exists for the GUID (the read fence in index.ts only
+// narrows that window). Same deliberate byte-copy rationale as
+// insertShadowPaired above; ON CONFLICT DO NOTHING semantics preserved
+// (false => duplicate => 202).
+export async function insertLegacyFenced(
+  database: D1Database,
+  input: {
+    deliveryId: string;
+    eventType: string;
+    action: string;
+    repository: string;
+    destination: DispatchDestination;
+    payloadJson: string;
+    now: number;
+  },
+): Promise<boolean> {
+  const result = await database
+    .prepare(
+      `INSERT INTO deliveries (
+        delivery_id,
+        event_type,
+        action,
+        repository,
+        destination,
+        payload_json,
+        status,
+        attempt_count,
+        next_attempt_at,
+        created_at,
+        updated_at
+      )
+      SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM dispatch_outbox WHERE delivery_id = ? AND shadow = 0
+      )
+      ON CONFLICT(delivery_id) DO NOTHING`,
+    )
+    .bind(
+      input.deliveryId,
+      input.eventType,
+      input.action,
+      input.repository,
+      input.destination,
+      input.payloadJson,
+      input.now,
+      input.now,
+      input.now,
+      input.deliveryId,
+    )
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 export interface DispatchCronDeps {
@@ -304,7 +367,11 @@ export async function runDispatchCronPass(
     {
       deadLetter: sumState(after, "dead_letter"),
       manual: sumState(after, "manual"),
-      oldestAmbiguousAgeMs: oldestAmbiguousAge(after),
+      // §6.7 (Copilot finding F6): ambiguous_stale takes the per-state
+      // ambiguous age — an old manual row plus a fresh ambiguous row must
+      // not false-alarm. queued_backlog_stale below deliberately keeps the
+      // non-terminal age (R20 backlog approximation).
+      oldestAmbiguousAgeMs: after.oldestAmbiguousAgeMs,
       repairedDuplicates: after.repairedDuplicates,
       queued:
         after.byStateAndDestination.alerts.queued +
@@ -337,20 +404,6 @@ function sumState(
     counters.byStateAndDestination.alerts[state] +
     counters.byStateAndDestination.activity[state]
   );
-}
-
-// §6.7: the counters expose the oldest non-terminal age; the ambiguous-age
-// alarm reuses it — a stale queued/manual row is at least as alarming as a
-// stale ambiguous one, so the approximation is fail-safe (alarms earlier,
-// never later).
-function oldestAmbiguousAge(
-  counters: DispatchStatusCounters,
-): number | null {
-  const ambiguous =
-    counters.byStateAndDestination.alerts.ambiguous +
-    counters.byStateAndDestination.activity.ambiguous;
-  if (ambiguous === 0) return null;
-  return counters.oldestNonTerminalAgeMs;
 }
 
 // §6.7: aggregate counters ONLY — no identifiers, keys or configuration on

@@ -22,6 +22,8 @@ import { D1DispatchStore } from "../src/dispatch/outbox";
 import {
   acceptPrimary,
   channelForDestination,
+  insertLegacyFenced,
+  insertShadowPaired,
   runDispatchCronPass,
   type DispatchQueueJobBody,
 } from "../src/dispatch/wiring";
@@ -400,6 +402,199 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     expect(await blocked.json()).toEqual({ accepted: true, duplicate: true });
     expect(outboxRow(database, preExisting)).toBeUndefined();
     expect(auditRows(database, preExisting)).toHaveLength(0);
+  });
+
+  it("F8: the outbox INSERT refuses a GUID with a legacy row inside the same statement (non-shadow only)", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    // Copilot finding F8 / ADR §6.8: the presence fence is enforced INSIDE
+    // the insert batch, closing the check-then-insert window — no outbox
+    // row and no audit row commit over a legacy row.
+    seedLegacyDelivery(database, "wiring-f8-legacy-first");
+    expect(
+      await store.insert({
+        deliveryId: "wiring-f8-legacy-first",
+        destination: "alerts",
+        shadow: false,
+        payloadJson: '{"text":"fenced"}',
+        now: DISPATCH_TEST_NOW,
+      }),
+    ).toBe(false);
+    expect(outboxRow(database, "wiring-f8-legacy-first")).toBeUndefined();
+    expect(auditRows(database, "wiring-f8-legacy-first")).toHaveLength(0);
+
+    // Shadow inserts stay exempt (§6.8: F2 pairing requires the legacy row).
+    seedLegacyDelivery(database, "wiring-f8-legacy-shadow");
+    expect(
+      await store.insert({
+        deliveryId: "wiring-f8-legacy-shadow",
+        destination: "alerts",
+        shadow: true,
+        payloadJson: '{"text":"shadow"}',
+        now: DISPATCH_TEST_NOW,
+      }),
+    ).toBe(true);
+    expect(outboxRow(database, "wiring-f8-legacy-shadow")).toMatchObject({
+      shadow: 1,
+      state: "queued",
+    });
+  });
+
+  it("F8: insertLegacyFenced refuses a GUID with a non-shadow outbox row and ignores shadow rows", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const legacyInput = (deliveryId: string) => ({
+      deliveryId,
+      eventType: "workflow_run",
+      action: "completed",
+      repository: "proj-x/exemplo-projeto-000",
+      destination: "alerts" as const,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+
+    // Non-shadow outbox row present: the legacy INSERT itself refuses
+    // (Copilot F8 — concurrent-shape scenario, asserted at the SQL level).
+    await store.insert({
+      deliveryId: "wiring-f8-outbox-first",
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"outbox"}',
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(
+      await insertLegacyFenced(d1, legacyInput("wiring-f8-outbox-first")),
+    ).toBe(false);
+    const blocked = database
+      .prepare("SELECT COUNT(*) AS n FROM deliveries WHERE delivery_id = ?")
+      .get("wiring-f8-outbox-first") as { n: number };
+    expect(blocked.n).toBe(0);
+
+    // A shadow outbox row does not block (§6.8: shadow rows are excluded).
+    await store.insert({
+      deliveryId: "wiring-f8-shadow-outbox",
+      destination: "alerts",
+      shadow: true,
+      payloadJson: '{"text":"shadow"}',
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(
+      await insertLegacyFenced(d1, legacyInput("wiring-f8-shadow-outbox")),
+    ).toBe(true);
+    // ON CONFLICT DO NOTHING semantics preserved: a replay is a duplicate.
+    expect(
+      await insertLegacyFenced(d1, legacyInput("wiring-f8-shadow-outbox")),
+    ).toBe(false);
+  });
+
+  it("F8: insertShadowPaired's legacy INSERT carries the same fence — nothing commits over a non-shadow outbox row", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    await store.insert({
+      deliveryId: "wiring-f8-paired",
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"primary row"}',
+      now: DISPATCH_TEST_NOW,
+    });
+    const auditCountBefore = auditRows(database, "wiring-f8-paired").length;
+
+    const paired = await insertShadowPaired(d1, {
+      deliveryId: "wiring-f8-paired",
+      eventType: "workflow_run",
+      action: "completed",
+      repository: "proj-x/exemplo-projeto-000",
+      destination: "alerts",
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+
+    expect(paired).toEqual({ legacyInserted: false, shadowInserted: false });
+    const legacyCount = database
+      .prepare("SELECT COUNT(*) AS n FROM deliveries WHERE delivery_id = ?")
+      .get("wiring-f8-paired") as { n: number };
+    expect(legacyCount.n).toBe(0);
+    expect(outboxRow(database, "wiring-f8-paired")).toMatchObject({
+      shadow: 0,
+      state: "queued",
+    });
+    expect(auditRows(database, "wiring-f8-paired")).toHaveLength(
+      auditCountBefore,
+    );
+  });
+
+  it("F8: off-mode ingress with the default D1 store routes through the fenced legacy insert end-to-end", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const env = makeEnv(queue, { db: d1, dispatchMode: "off" });
+    const deliveryId = "00000000-0000-4000-9000-000000000301";
+
+    // No store override: dependencies.store is the default D1DeliveryStore,
+    // so index.ts must take the insertLegacyFenced branch (Copilot F8) with
+    // the response semantics unchanged.
+    const response = await handleFetch(
+      await signedRequest("workflow_run", deliveryId, workflowPayload()),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ accepted: true, queued: true });
+    const legacy = database
+      .prepare("SELECT status FROM deliveries WHERE delivery_id = ?")
+      .get(deliveryId) as { status: string } | undefined;
+    expect(legacy?.status).toBe("queued");
+    // Off mode keeps publishing the UNMARKED legacy queue body.
+    expect(queue.sent).toEqual([{ deliveryId }]);
+  });
+
+  it("F6: an old manual row plus a fresh ambiguous row never raises ambiguous_stale (ADR §6.7)", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const OLD_CREATED_MS = DISPATCH_TEST_NOW - 31 * 60_000;
+    seedOutboxRow(database, {
+      deliveryId: "wiring-f6-old-manual",
+      destination: "alerts",
+      state: "manual",
+      createdMs: OLD_CREATED_MS,
+    });
+    seedOutboxRow(database, {
+      deliveryId: "wiring-f6-fresh-ambiguous",
+      destination: "alerts",
+      state: "ambiguous",
+      createdMs: DISPATCH_TEST_NOW - 60_000,
+    });
+    // Copilot finding F6: the counters expose the oldest AMBIGUOUS age as
+    // its own additive field; the non-terminal age stays for the drain
+    // view and the queued-backlog alarm.
+    const store = new D1DispatchStore(d1);
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+    expect(counters.oldestAmbiguousAgeMs).toBe(60_000);
+    expect(counters.oldestNonTerminalAgeMs).toBe(31 * 60_000);
+
+    // Mode off: no egress, alarms still computed from the snapshot.
+    const readBotToken = vi.fn(async () => "xoxb-unused");
+    const fetchSpy = vi.fn<typeof fetch>();
+    const cronDeps = {
+      database: d1,
+      mode: "off" as const,
+      fetch: fetchSpy,
+      now: () => DISPATCH_TEST_NOW,
+      readBotToken,
+      publish: async () => {},
+    };
+    const first = await runDispatchCronPass(cronDeps);
+    expect(first.alarms).toContain("manual_present");
+    expect(first.alarms).not.toContain("ambiguous_stale");
+
+    // Once the AMBIGUOUS row itself is older than 30 min, the alarm fires.
+    database
+      .prepare("UPDATE dispatch_outbox SET created_ms = ? WHERE delivery_id = ?")
+      .run(OLD_CREATED_MS, "wiring-f6-fresh-ambiguous");
+    const second = await runDispatchCronPass(cronDeps);
+    expect(second.alarms).toContain("ambiguous_stale");
+    expect(second.alarms).toContain("manual_present");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(readBotToken).not.toHaveBeenCalled();
   });
 
   it("V5/V15 DLQ routing dead-letters a sending row and spares a queued row in mode off", async () => {

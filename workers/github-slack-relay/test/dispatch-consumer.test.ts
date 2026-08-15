@@ -162,6 +162,63 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     expect(recorded.retryOptions).toHaveLength(0);
   });
 
+  it("F1: a normalized SlackWorkflowPayload renders a readable message, never raw JSON", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "f1-workflow-payload-render";
+    // Copilot finding F1: real primary-mode payload_json is the normalized
+    // SlackWorkflowPayload (src/domain.ts) — it carries NO `text` field, so
+    // the old JSON.stringify fallback would post raw JSON to Slack.
+    const payload = {
+      source: "GitHub Actions",
+      severity: "high",
+      repository: "proj-x/exemplo-projeto-000",
+      title: "CI: failure",
+      details: "Workflow CI completed with conclusion failure.",
+      actor: "octocat",
+      branch: "main",
+      url: "https://github.com/proj-x/exemplo-projeto-000/actions/runs/1",
+      occurred_at: "2026-08-15T11:58:00.000Z",
+      delivery_id: deliveryId,
+      event: "workflow_run",
+      action: "completed",
+      destination: "alerts",
+      relay_attempt: "1",
+      relay_timestamp: "1786795080",
+      relay_signature: "0".repeat(64),
+    };
+    expect(
+      await store.insert({
+        deliveryId,
+        destination: "alerts",
+        shadow: false,
+        payloadJson: JSON.stringify(payload),
+        now: DISPATCH_TEST_NOW,
+      }),
+    ).toBe(true);
+    const scripted = postMessageFetch(slackPostOk(POST_TS, ALERTS_CHANNEL));
+    const recorded = recordedMessage(deliveryId, "primary");
+
+    await processDispatchMessage(
+      recorded.message,
+      consumerDeps(store, scripted.fetch),
+    );
+
+    expect(scripted.calls).toHaveLength(1);
+    const call = scripted.calls[0];
+    const text = String(call?.body?.["text"]);
+    // Readable render of the normalized fields — never raw JSON.
+    expect(text.startsWith("{")).toBe(false);
+    expect(text).toContain("CI: failure");
+    expect(text).toContain("proj-x/exemplo-projeto-000");
+    expect(text).toContain(payload.url);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      slack_message_ts: POST_TS,
+    });
+    expect(recorded.ackCount()).toBe(1);
+  });
+
   it("R1: duplicate queue delivery claim is a no-op", async () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);

@@ -39,6 +39,7 @@ import {
   channelForDestination,
   dispatchQueueJobBody,
   dispatchStatusBody,
+  insertLegacyFenced,
   insertShadowPaired,
   isDispatchQueueJob,
   legacyAcceptBlockedByOutbox,
@@ -1111,7 +1112,28 @@ export async function handleFetch(
         now,
       });
       inserted = paired.legacyInserted;
+    } else if (
+      dependencies.store instanceof D1DeliveryStore &&
+      dependencies.store.insert === D1DeliveryStore.prototype.insert
+    ) {
+      // ADR-001 §6.8 (Copilot finding F8): the production D1 path routes
+      // through the fenced INSERT so the legacy row cannot commit while a
+      // non-shadow outbox row exists — the read fence above only narrows
+      // the check-then-insert window; this closes it in-statement. The
+      // substitution applies ONLY to the stock D1 insert; a store whose
+      // insert was replaced (test interposition) keeps its own behavior.
+      inserted = await insertLegacyFenced(env.DB, {
+        deliveryId,
+        eventType: event,
+        action: normalized.payload.action,
+        repository: normalized.payload.repository,
+        destination: normalized.destination,
+        payloadJson: JSON.stringify(normalized.payload),
+        now,
+      });
     } else {
+      // Injected stores (unit-test fakes) keep the plain insert; the fenced
+      // SQL variant is pinned in test/dispatch-wiring.test.ts.
       inserted = await dependencies.store.insert({
         deliveryId,
         eventType: event,

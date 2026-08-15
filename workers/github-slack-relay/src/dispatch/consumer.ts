@@ -54,7 +54,115 @@ function parseQueueBody(body: unknown): ParsedQueueBody | null {
   return { deliveryId, mode: parseDispatchMode(candidate["mode"]) };
 }
 
-function messageText(payloadJson: string): string {
+// Copilot finding F1: mirrors the legacy Slack workflow's timestamp render
+// (formatBrasiliaDateTime in
+// slack/github-integration/functions/validate_relay_message.ts).
+const BRASILIA_DATE_TIME_FORMATTER = new Intl.DateTimeFormat("pt-BR", {
+  calendar: "gregory",
+  numberingSystem: "latn",
+  timeZone: "Etc/GMT+3",
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
+
+function formatOccurredAt(value: string): string {
+  const milliseconds = Date.parse(value);
+  if (
+    !Number.isFinite(milliseconds) ||
+    new Date(milliseconds).toISOString() !== value
+  ) {
+    return "Data e hora do evento: não informadas";
+  }
+  const parts = new Map(
+    BRASILIA_DATE_TIME_FORMATTER.formatToParts(new Date(milliseconds)).map(
+      ({ type, value: partValue }) => [type, partValue],
+    ),
+  );
+  const day = parts.get("day");
+  const month = parts.get("month");
+  const year = parts.get("year");
+  const hour = parts.get("hour");
+  const minute = parts.get("minute");
+  const second = parts.get("second");
+  if (
+    day === undefined ||
+    month === undefined ||
+    year === undefined ||
+    hour === undefined ||
+    minute === undefined ||
+    second === undefined
+  ) {
+    return "Data e hora do evento: não informadas";
+  }
+  return `${day}/${month}/${year} às ${hour}:${minute}:${second}`;
+}
+
+function stringField(
+  record: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = record[key];
+  return typeof value === "string" ? value : null;
+}
+
+// Copilot finding F1: the stored payload_json for real traffic is the
+// normalized SlackWorkflowPayload (src/domain.ts) — it carries NO `text`
+// field, so the JSON.stringify fallback would post raw JSON to Slack.
+// Render the same information the legacy Slack workflow displayed
+// (formatRelayMessage in
+// slack/github-integration/functions/validate_relay_message.ts) as plain
+// message text — no blocks, no thread_ts (R15).
+function renderWorkflowPayload(
+  payload: Record<string, unknown>,
+  destination: DispatchDestination,
+): string | null {
+  const title = stringField(payload, "title");
+  const repository = stringField(payload, "repository");
+  const url = stringField(payload, "url");
+  if (
+    title === null ||
+    title === "" ||
+    repository === null ||
+    repository === "" ||
+    url === null ||
+    url === ""
+  ) {
+    return null;
+  }
+  const severity = stringField(payload, "severity") ?? "";
+  const source = stringField(payload, "source") ?? "";
+  const event = stringField(payload, "event") ?? "";
+  const action = stringField(payload, "action") ?? "";
+  const branch = stringField(payload, "branch") ?? "";
+  const actor = stringField(payload, "actor") ?? "";
+  const details = stringField(payload, "details") ?? "";
+  const deliveryId = stringField(payload, "delivery_id") ?? "";
+  const occurredAt = formatOccurredAt(
+    stringField(payload, "occurred_at") ?? "",
+  );
+  const heading =
+    destination === "alerts" ? `*[${severity}] ${title}*` : `*${title}*`;
+  return [
+    heading,
+    `Repository: ${repository}`,
+    `Source: ${source} / ${event}:${action}`,
+    `Branch: ${branch}`,
+    `Actor: ${actor}`,
+    details,
+    `<${url}|Open in GitHub>`,
+    `Delivery: \`${deliveryId}\` · ${occurredAt}`,
+  ].join("\n");
+}
+
+function messageText(
+  payloadJson: string,
+  destination: DispatchDestination,
+): string {
   try {
     const parsed: unknown = JSON.parse(payloadJson);
     if (
@@ -62,8 +170,11 @@ function messageText(payloadJson: string): string {
       parsed !== null &&
       !Array.isArray(parsed)
     ) {
-      const text = (parsed as Record<string, unknown>)["text"];
+      const record = parsed as Record<string, unknown>;
+      const text = record["text"];
       if (typeof text === "string" && text.length > 0) return text;
+      const rendered = renderWorkflowPayload(record, destination);
+      if (rendered !== null) return rendered;
     }
     return JSON.stringify(parsed);
   } catch {
@@ -135,7 +246,7 @@ export async function processDispatchMessage(
       // §6.6: metadata carries only the delivery GUID + attempt.
       body: JSON.stringify({
         channel: deps.channelFor(claimed.destination),
-        text: messageText(claimed.payloadJson),
+        text: messageText(claimed.payloadJson, claimed.destination),
         metadata: {
           event_type: DISPATCH_METADATA_EVENT_TYPE,
           event_payload: {

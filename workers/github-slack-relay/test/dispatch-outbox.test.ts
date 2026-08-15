@@ -709,6 +709,83 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     expect(auditRows(database, deliveryId)).toHaveLength(5);
   });
 
+  it("F7: operatorResend recovers a dead_letter row and still refuses non-menu states (ADR §6.2)", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deadId = "f7-dead-letter-resend";
+    const deliveredId = "f7-delivered-refused";
+
+    await store.insert({
+      deliveryId: deadId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(deadId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(
+      await store.markDeadLetter(
+        deadId,
+        DISPATCH_TEST_NOW + 500,
+        "queue_retries_exhausted",
+      ),
+    ).toBe(true);
+
+    // ADR §6.2 routes dead_letter to the operator menu (Copilot F7): same
+    // audited possible-duplicate resend, same §6.3.3 verification arming.
+    expect(
+      await store.operatorResend(
+        deadId,
+        DISPATCH_TEST_NOW + 1_000,
+        '{"resend":"possible-duplicate accepted by operator"}',
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, deadId)).toMatchObject({
+      state: "queued",
+      verify_scans_remaining: 2,
+      last_error: null,
+    });
+    const resendAudit = auditRows(database, deadId).at(-1);
+    expect(resendAudit).toMatchObject({
+      from_state: "dead_letter",
+      to_state: "queued",
+      actor: "operator",
+    });
+
+    // A state outside the operator menu still refuses, with no audit row.
+    await store.insert({
+      deliveryId: deliveredId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(deliveredId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(
+      await store.markDelivered(
+        deliveredId,
+        DISPATCH_TEST_NOW + 500,
+        "1786665495.000160",
+        ALERTS_CHANNEL,
+        "consumer",
+        ["sending"],
+        '{"outcome":"ok"}',
+      ),
+    ).toBe(true);
+    const auditCountBefore = auditRows(database, deliveredId).length;
+    expect(
+      await store.operatorResend(
+        deliveredId,
+        DISPATCH_TEST_NOW + 1_000,
+        '{"resend":"refused"}',
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, deliveredId)).toMatchObject({
+      state: "delivered",
+    });
+    expect(auditRows(database, deliveredId)).toHaveLength(auditCountBefore);
+  });
+
   it("0010: a transition batch that violates UNIQUE(destination, ts) rolls back its audit row with it", async () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);
