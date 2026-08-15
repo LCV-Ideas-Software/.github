@@ -114,14 +114,32 @@ an old valid HMAC cannot be replayed into a later trace.
 
 Slack's activity result supplies the custom function's `function_execution_id`.
 The monitor carries that identifier plus the signed `relay_attempt`, channel,
-and message timestamp in its HMAC v3 reconciliation report. The new checkpoint
-advertises `reconciliation_version: 3`. During the one-time rollout only, a
-checkpoint without a version selects the domain-separated v2 format understood
-by the old Worker. The new Worker rejects every v2 report so an in-flight old
-monitor cannot mutate state or advance a checkpoint after the upgrade. The new
-monitor sends only terminal error traces to an old Worker; it retains every
-success, pending, or v3-only trace, pins the checkpoint, and fails until v3 is
-available. D1 may release a retry only from an authenticated terminal failure
+and message timestamp in its reconciliation report. The current checkpoint
+advertises `reconciliation_version: 5`, a nullable `resume_from_us`, and a fair
+page of at most 25 pending trace IDs with the total and global oldest
+observation. The v5 HMAC binds `preserve`, `resume`, or `complete`, normalized
+traces, and pending/debt hydration records. A bounded 100-page execution
+atomically persists `resume_from_us` as the checkpoint D1 actually committed
+after clamping. The next schedule resumes inclusively there instead of replaying
+the normal overlap, and a completed scan clears the resume state. A
+non-advancing acknowledgement fails closed.
+
+The monitor also hydrates at most two pending or suffix-only trace IDs per
+natural run, with at most two in-memory cursor pages for each, using
+`apps.activities.list` without temporal bounds. The signed hydration record
+marks whether that ID was actually fetched; only attempted IDs advance the
+fairness timestamp. Activities are deduplicated before normalization. Migration
+`0009_track_slack_trace_hydration.sql` retains
+only bounded trace metadata, never raw activities or Slack cursors. Pending
+hydration prevents checkpoint advancement. Seven-day retention expiry or the
+page bound becomes durable debt: an owned pending trace moves atomically to
+`manual_review`; unowned debt keeps health red without inventing an owner.
+
+During rollout a v4 checkpoint remains readable, but the v5 Worker rejects
+authenticated v4, v3 and v2 reports so an in-flight old monitor cannot mutate
+delivery, checkpoint, or scan state after the upgrade. A checkpoint without a
+version still identifies the older v2 Worker. D1 may release a retry only from
+an authenticated terminal failure
 of the signed validator, before any send boundary, bound to the exact relay
 attempt and validator `function_execution_id`. Any persisted send lease or
 `send_started` fact blocks that retry and forces manual review. A competing
@@ -527,13 +545,16 @@ ingestion therefore requires an intentional webhook action as well.
   controller, Worker, and Slack app formatting, lint, types, tests and candidate
   dependency audit in the same required predecessor. When production automation
   is enabled, the dependent `prove_remote_d1` job first applies migrations
-  `0001` through `0007`, exercises the seal guards, and cleans up an owned
+  `0001` through `0009`, exercises the seal guards, and cleans up an owned
   disposable remote D1. Only after both jobs succeed does production apply
   pending D1 migrations. Migration
   `0006_seal_slack_delivery_protocol.sql` validates the exact historical
   `e0131a758123cf210d9cc9e7e537b72dc0441a90/0005` activation tuple inside its
   transaction, closes confirmation once, and installs permanent update, insert
-  and delete guards. A post-migration validator then requires that sealed tuple,
+  and delete guards. Migration
+  `0008_resume_bounded_slack_activity_scan.sql` adds the nullable singleton
+  resume watermark without changing that sealed tuple or an existing
+  checkpoint. A post-migration validator then requires that sealed tuple,
   all final guards, no transient activation guards and zero duplicate
   execution-ID groups before any hosted replacement. The job stages Cloudflare
   runtime `NEXT` and deploys the relay from `main` with
@@ -555,10 +576,10 @@ ingestion therefore requires an intentional webhook action as well.
   failure. The same protected GitHub secret is
   supplied to both jobs only as the source for runtime `NEXT`; the old hosted
   current value is never available to Actions.
-  The monitor job has a 320-minute bound: this covers the calculated 283-minute
-  and 30-second network worst case for its 100 pages, one bounded `Retry-After`
-  retry per page, a 10-second checkpoint request and up to 400 reconciliation
-  chunks of 25 traces. Each report has a 15-second deadline and one byte-exact
+  The monitor job has a 321-minute bound: this covers the calculated 290-minute
+  and 10-second network worst case for its 100 pages, one bounded `Retry-After`
+  retry per page, a 10-second checkpoint request and up to 402 disjoint trace
+  or hydration chunks of 25 items. Each report has a 15-second deadline and one byte-exact
   replay after a transport failure, HTTP 408, any 5xx, or invalid JSON, bounded
   to 5 seconds, plus more than 30 minutes for
   setup and local processing. It normally completes in seconds; the
@@ -725,9 +746,13 @@ Monitoring and recovery are layered:
   case covers a committed delivery receipt whose reply was lost. Trigger acceptances,
   legacy-unverified and manual-review rows are retained;
 - the scheduled Slack monitor obtains an authenticated D1 watermark, queries
-  `apps.activities.list` at `info` level every 15 minutes, follows every
-  pagination cursor in ascending timestamp order, and uses a 20-minute
-  overlap. An empty scan retains the prior evidence watermark, or the initial
+  `apps.activities.list` at `info` level every 15 minutes, follows pagination
+  cursors in ascending timestamp order for at most 100 pages per execution,
+  and normally uses a 20-minute overlap. A bounded prefix remains red after it
+  atomically records the relay-acknowledged checkpoint as `resume_from_us`; the
+  next schedule resumes inclusively there, and only a complete scan clears that
+  state and restores the overlap. An empty scan retains the prior evidence
+  watermark, or the initial
   lower-bound anchor, rather than advancing to wall clock. D1 atomically clamps
   each proposed watermark behind the earliest nonlegacy live attempt until a
   trace is correlated. A retry retains its old trace binding until authenticated
@@ -999,6 +1024,7 @@ GitHub.
 - [Authorizing Slack CLI for CI/CD][slack-cli-auth]
 - [Using environment variables with the Deno Slack SDK][slack-app-env]
 - [`apps.activities.list`][slack-activities]
+- [Slack cursor pagination][slack-pagination]
 - [Slack message context and `message_ts`][slack-message-context]
 - [Logging Slack function and app behavior][slack-logging]
 - [Cloudflare Workers best practices][cloudflare-workers]
@@ -1037,6 +1063,7 @@ GitHub.
 [slack-logging]: https://docs.slack.dev/tools/deno-slack-sdk/guides/logging-function-and-app-behavior/
 [slack-hooks]: https://docs.slack.dev/tools/slack-cli/reference/hooks/
 [slack-message-context]: https://docs.slack.dev/reference/types/message_context-type/
+[slack-pagination]: https://docs.slack.dev/apis/web-api/pagination/
 [slack-slash-commands]: https://docs.slack.dev/interactivity/implementing-slash-commands/
 [slack-trigger]: https://docs.slack.dev/tools/slack-cli/reference/commands/slack_trigger/
 [slack-webhook-trigger]: https://docs.slack.dev/tools/deno-slack-sdk/guides/creating-webhook-triggers/

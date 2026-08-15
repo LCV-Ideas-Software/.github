@@ -31,11 +31,25 @@ function jsonResponse(body, { status = 200, headers = {} } = {}) {
   });
 }
 
-function checkpointResponse(checkpointUs = 1_786_579_000_000_000) {
-  return jsonResponse({
+function checkpointPayload(
+  checkpointUs = 1_786_579_000_000_000,
+  resumeFromUs = null,
+  pendingTraceIds = [],
+  pendingTraceTotal = pendingTraceIds.length,
+  pendingTraceOldestUs = pendingTraceTotal === 0 ? null : checkpointUs,
+) {
+  return {
     checkpoint_us: checkpointUs,
-    reconciliation_version: 3,
-  });
+    reconciliation_version: 5,
+    resume_from_us: resumeFromUs,
+    pending_trace_ids: pendingTraceIds,
+    pending_trace_total: pendingTraceTotal,
+    pending_trace_oldest_us: pendingTraceOldestUs,
+  };
+}
+
+function checkpointResponse(...args) {
+  return jsonResponse(checkpointPayload(...args));
 }
 
 function workerLikeFetch(activeSecret, calls = []) {
@@ -179,14 +193,21 @@ test("bounds timeout, retry delay, response bytes, and repeats the exact request
     },
   });
 
-  assert.deepEqual(result, { checkpointUs: 123, reconciliationVersion: 3 });
+  assert.deepEqual(result, {
+    checkpointUs: 123,
+    reconciliationVersion: 5,
+    resumeFromUs: null,
+    pendingTraceIds: [],
+    pendingTraceTotal: 0,
+    pendingTraceOldestUs: null,
+  });
   assert.equal(cancelled, true);
   assert.equal(bodies.length, 2);
   assert.equal(bodies[0], bodies[1]);
   assert.deepEqual(timeoutCalls, [10_000, 10_000]);
   assert.deepEqual(sleeps, [5_000]);
   assert.equal(RELAY_SIGNER_PROOF_REQUEST_TIMEOUT_MS, 10_000);
-  assert.equal(RELAY_SIGNER_PROOF_MAX_RESPONSE_BYTES, 2_048);
+  assert.equal(RELAY_SIGNER_PROOF_MAX_RESPONSE_BYTES, 4_096);
   assert.equal(RELAY_SIGNER_PROOF_WORST_CASE_NETWORK_MS, 25_000);
 });
 
@@ -222,7 +243,29 @@ test("retries one network failure and stops after the second attempt", async () 
   assert.equal(exhaustedCalls, 2);
 });
 
-test("accepts only the strict bounded v3 checkpoint response", async (t) => {
+test("accepts the full bounded v5 pending trace page", async () => {
+  const traceIds = Array.from(
+    { length: 25 },
+    (_, index) => `Tr${String(index).padStart(2, "0")}${"A".repeat(123)}`,
+  );
+  const result = await verifySlackRelaySigner({
+    environment: environment(),
+    fetchImpl: async () => checkpointResponse(123, null, traceIds, 30, 1),
+    now: () => NOW,
+    signalFactory: () => new AbortController().signal,
+  });
+
+  assert.deepEqual(result, {
+    checkpointUs: 123,
+    reconciliationVersion: 5,
+    resumeFromUs: null,
+    pendingTraceIds: traceIds,
+    pendingTraceTotal: 30,
+    pendingTraceOldestUs: 1,
+  });
+});
+
+test("accepts only the strict bounded v5 checkpoint response", async (t) => {
   const oversized = "x".repeat(RELAY_SIGNER_PROOF_MAX_RESPONSE_BYTES + 1);
   const cases = [
     ["wrong content type", () => new Response("plain text", { status: 200 })],
@@ -232,9 +275,7 @@ test("accepts only the strict bounded v3 checkpoint response", async (t) => {
         new Response("{}", {
           status: 200,
           headers: {
-            "content-length": String(
-              RELAY_SIGNER_PROOF_MAX_RESPONSE_BYTES + 1,
-            ),
+            "content-length": String(RELAY_SIGNER_PROOF_MAX_RESPONSE_BYTES + 1),
             "content-type": "application/json",
           },
         }),
@@ -265,30 +306,51 @@ test("accepts only the strict bounded v3 checkpoint response", async (t) => {
     ],
     ["wrong top-level shape", () => jsonResponse("not-an-object")],
     ["missing key", () => jsonResponse({ checkpoint_us: 0 })],
-    [
-      "extra key",
-      () =>
-        jsonResponse({
-          checkpoint_us: 0,
-          reconciliation_version: 3,
-          extra: true,
-        }),
-    ],
+    ["extra key", () => jsonResponse({ ...checkpointPayload(0), extra: true })],
     [
       "unsafe checkpoint",
-      () =>
-        jsonResponse({
-          checkpoint_us: Number.MAX_SAFE_INTEGER + 1,
-          reconciliation_version: 3,
-        }),
+      () => jsonResponse(checkpointPayload(Number.MAX_SAFE_INTEGER + 1)),
     ],
-    [
-      "negative checkpoint",
-      () => jsonResponse({ checkpoint_us: -1, reconciliation_version: 3 }),
-    ],
+    ["negative checkpoint", () => jsonResponse(checkpointPayload(-1))],
     [
       "wrong version",
-      () => jsonResponse({ checkpoint_us: 0, reconciliation_version: 2 }),
+      () =>
+        jsonResponse({ ...checkpointPayload(0), reconciliation_version: 4 }),
+    ],
+    [
+      "negative resume checkpoint",
+      () => jsonResponse(checkpointPayload(1, -1)),
+    ],
+    [
+      "resume checkpoint beyond the durable checkpoint",
+      () => jsonResponse(checkpointPayload(1, 2)),
+    ],
+    [
+      "duplicate pending trace id",
+      () =>
+        jsonResponse(
+          checkpointPayload(
+            1,
+            null,
+            ["TrPendingDuplicate1", "TrPendingDuplicate1"],
+            2,
+            1,
+          ),
+        ),
+    ],
+    [
+      "pending total below returned ids",
+      () =>
+        jsonResponse(checkpointPayload(1, null, ["TrPendingCount1"], 0, null)),
+    ],
+    [
+      "missing pending oldest timestamp",
+      () =>
+        jsonResponse(checkpointPayload(1, null, ["TrPendingOldest1"], 1, null)),
+    ],
+    [
+      "pending total without a fair-page id",
+      () => jsonResponse(checkpointPayload(1, null, [], 1, 1)),
     ],
   ];
 

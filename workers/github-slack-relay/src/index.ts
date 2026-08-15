@@ -13,9 +13,13 @@ import {
   type SignedSlackCheckpointRequest,
   type SignedSlackProgress,
   type SignedSlackReconciliation,
+  type SignedSlackReconciliationV3,
+  type SignedSlackReconciliationV4,
   verifySlackCheckpointRequest,
   verifySlackProgress,
   verifySlackReconciliation,
+  verifySlackReconciliationV3,
+  verifySlackReconciliationV4,
   verifySlackReconciliationV2,
   verifyGitHubSignature,
 } from "./security";
@@ -339,6 +343,118 @@ function parseSlackReconciliation(
     !exactKeys(record, [
       "checkpoint_us",
       "report_timestamp",
+      "scan_state",
+      "hydrations",
+      "traces",
+      "report_signature",
+    ]) ||
+    !Array.isArray(record.hydrations) ||
+    !Array.isArray(record.traces) ||
+    record.hydrations.length + record.traces.length >
+      SLACK_RECONCILIATION_TRACE_LIMIT
+  ) {
+    return null;
+  }
+
+  const legacyRecord = { ...record };
+  delete legacyRecord.scan_state;
+  delete legacyRecord.hydrations;
+  const legacy = parseSlackReconciliationV3(legacyRecord, now);
+  if (legacy === null) return null;
+
+  const hydrations: SignedSlackReconciliation["hydrations"] = [];
+  const traceIds = new Set(legacy.traces.map((trace) => trace.trace_id));
+  for (const candidate of record.hydrations) {
+    const hydration = asRecord(candidate);
+    if (
+      hydration === undefined ||
+      !exactKeys(hydration, [
+        "trace_id",
+        "first_observed_us",
+        "last_observed_us",
+        "status",
+        "debt_reason",
+        "attempted",
+      ]) ||
+      typeof hydration.trace_id !== "string" ||
+      !SLACK_TRACE_ID_PATTERN.test(hydration.trace_id) ||
+      traceIds.has(hydration.trace_id) ||
+      !Number.isSafeInteger(hydration.first_observed_us) ||
+      (hydration.first_observed_us as number) < 0 ||
+      !Number.isSafeInteger(hydration.last_observed_us) ||
+      (hydration.last_observed_us as number) <
+        (hydration.first_observed_us as number) ||
+      (hydration.status !== "pending" &&
+        hydration.status !== "debt" &&
+        hydration.status !== "legacy") ||
+      ((hydration.status === "pending" || hydration.status === "legacy") &&
+        hydration.debt_reason !== null) ||
+      (hydration.status === "debt" &&
+        hydration.debt_reason !== "retention_expired" &&
+        hydration.debt_reason !== "pagination_bound") ||
+      typeof hydration.attempted !== "boolean"
+    ) {
+      return null;
+    }
+    traceIds.add(hydration.trace_id);
+    hydrations.push({
+      trace_id: hydration.trace_id,
+      first_observed_us: hydration.first_observed_us as number,
+      last_observed_us: hydration.last_observed_us as number,
+      status: hydration.status,
+      debt_reason: hydration.debt_reason as
+        "retention_expired" | "pagination_bound" | null,
+      attempted: hydration.attempted,
+    });
+  }
+
+  if (
+    record.scan_state !== "preserve" &&
+    record.scan_state !== "resume" &&
+    record.scan_state !== "complete"
+  ) {
+    return null;
+  }
+
+  return {
+    ...legacy,
+    scan_state: record.scan_state,
+    hydrations,
+  };
+}
+
+function parseSlackReconciliationV4(
+  record: Record<string, unknown>,
+  now: number,
+): SignedSlackReconciliationV4 | null {
+  if (
+    !exactKeys(record, [
+      "checkpoint_us",
+      "report_timestamp",
+      "scan_state",
+      "traces",
+      "report_signature",
+    ]) ||
+    (record.scan_state !== "preserve" &&
+      record.scan_state !== "resume" &&
+      record.scan_state !== "complete")
+  ) {
+    return null;
+  }
+  const legacyRecord = { ...record };
+  delete legacyRecord.scan_state;
+  const legacy = parseSlackReconciliationV3(legacyRecord, now);
+  return legacy === null ? null : { ...legacy, scan_state: record.scan_state };
+}
+
+function parseSlackReconciliationV3(
+  record: Record<string, unknown>,
+  now: number,
+): SignedSlackReconciliationV3 | null {
+  if (
+    !exactKeys(record, [
+      "checkpoint_us",
+      "report_timestamp",
       "traces",
       "report_signature",
     ]) ||
@@ -354,7 +470,7 @@ function parseSlackReconciliation(
     return null;
   }
 
-  const traces: SignedSlackReconciliation["traces"] = [];
+  const traces: SignedSlackReconciliationV3["traces"] = [];
   const traceIds = new Set<string>();
   for (const candidate of record.traces) {
     const trace = asRecord(candidate);
@@ -444,7 +560,7 @@ function parseSlackReconciliation(
 function parseSlackReconciliationV2(
   record: Record<string, unknown>,
   now: number,
-): SignedSlackReconciliation | null {
+): SignedSlackReconciliationV3 | null {
   if (
     !exactKeys(record, [
       "checkpoint_us",
@@ -464,7 +580,7 @@ function parseSlackReconciliationV2(
     return null;
   }
 
-  const traces: SignedSlackReconciliation["traces"] = [];
+  const traces: SignedSlackReconciliationV3["traces"] = [];
   const traceIds = new Set<string>();
   for (const candidate of record.traces) {
     const trace = asRecord(candidate);
@@ -622,10 +738,15 @@ async function handleSlackControlRequest(
       return jsonResponse({ error: "invalid_signature" }, 401);
     }
     try {
+      const scanState = await dependencies.store.getSlackActivityScanState();
       return jsonResponse(
         {
-          checkpoint_us: await dependencies.store.getSlackActivityCheckpoint(),
-          reconciliation_version: 3,
+          checkpoint_us: scanState.checkpointUs,
+          reconciliation_version: 5,
+          resume_from_us: scanState.resumeFromUs,
+          pending_trace_ids: scanState.pendingTraceIds,
+          pending_trace_total: scanState.pendingTraceTotal,
+          pending_trace_oldest_us: scanState.pendingTraceOldestUs,
         },
         200,
       );
@@ -635,8 +756,15 @@ async function handleSlackControlRequest(
   }
 
   const currentReport = parseSlackReconciliation(record, now);
+  const v4Report = parseSlackReconciliationV4(record, now);
+  const v3Report = parseSlackReconciliationV3(record, now);
   const bridgeReport = parseSlackReconciliationV2(record, now);
-  if (currentReport === null && bridgeReport === null) {
+  if (
+    currentReport === null &&
+    v4Report === null &&
+    v3Report === null &&
+    bridgeReport === null
+  ) {
     return jsonResponse({ error: "invalid_request" }, 400);
   }
   let report: SignedSlackReconciliation | null = null;
@@ -645,6 +773,16 @@ async function handleSlackControlRequest(
     (await verifySlackReconciliation(currentReport, signing.active))
   ) {
     report = currentReport;
+  } else if (
+    v4Report !== null &&
+    (await verifySlackReconciliationV4(v4Report, signing.active))
+  ) {
+    return jsonResponse({ error: "reconciliation_upgrade_required" }, 409);
+  } else if (
+    v3Report !== null &&
+    (await verifySlackReconciliationV3(v3Report, signing.active))
+  ) {
+    return jsonResponse({ error: "reconciliation_upgrade_required" }, 409);
   } else if (
     bridgeReport !== null &&
     (await verifySlackReconciliationV2(bridgeReport, signing.active))
@@ -677,13 +815,23 @@ async function handleSlackControlRequest(
         startedAtUs: trace.started_at_us,
         completedAtUs: trace.completed_at_us,
       })),
+      hydrations: report.hydrations.map((hydration) => ({
+        traceId: hydration.trace_id,
+        firstObservedUs: hydration.first_observed_us,
+        lastObservedUs: hydration.last_observed_us,
+        status: hydration.status,
+        debtReason: hydration.debt_reason,
+        attempted: hydration.attempted,
+      })),
       checkpointUs: report.checkpoint_us,
+      scanState: report.scan_state,
       now,
     });
     return jsonResponse(
       {
         ok: true,
-        traces: result.traceCount,
+        traces: report.traces.length,
+        hydrations: report.hydrations.length,
         changed_error_traces: result.changedErrorTraces,
         checkpoint_us: result.checkpointUs,
       },

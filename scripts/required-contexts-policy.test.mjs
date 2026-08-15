@@ -52,7 +52,7 @@ test("the relay cannot lose Smart Placement for its D1 reconciliation path", () 
 test("the privileged Slack monitor job cannot lose its bounded execution budget", () => {
   rejectsMutation(
     ".github/workflows/slack-github-integration.yml",
-    "    timeout-minutes: 320",
+    "    timeout-minutes: 321",
     "    timeout-minutes: 5",
   );
 });

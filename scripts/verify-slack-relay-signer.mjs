@@ -7,7 +7,9 @@ const MAX_ATTEMPTS = 2;
 const MAX_RETRY_DELAY_MS = 5_000;
 const MINIMUM_SECRET_BYTES = 32;
 
-export const RELAY_SIGNER_PROOF_MAX_RESPONSE_BYTES = 2_048;
+// Accommodates the strict v5 checkpoint envelope with 25 maximum-length,
+// ASCII-only trace IDs while retaining a small, explicit response bound.
+export const RELAY_SIGNER_PROOF_MAX_RESPONSE_BYTES = 4_096;
 export const RELAY_SIGNER_PROOF_REQUEST_TIMEOUT_MS = 10_000;
 export const RELAY_SIGNER_PROOF_WORST_CASE_NETWORK_MS =
   MAX_ATTEMPTS * RELAY_SIGNER_PROOF_REQUEST_TIMEOUT_MS + MAX_RETRY_DELAY_MS;
@@ -115,9 +117,7 @@ async function readBoundedJson(response) {
     offset += chunk.byteLength;
   }
   try {
-    return JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(joined),
-    );
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(joined));
   } catch {
     throw unavailable();
   }
@@ -125,16 +125,49 @@ async function readBoundedJson(response) {
 
 function acceptedCheckpoint(payload) {
   if (
-    !exactKeys(payload, ["checkpoint_us", "reconciliation_version"]) ||
+    !exactKeys(payload, [
+      "checkpoint_us",
+      "reconciliation_version",
+      "resume_from_us",
+      "pending_trace_ids",
+      "pending_trace_total",
+      "pending_trace_oldest_us",
+    ]) ||
     !Number.isSafeInteger(payload.checkpoint_us) ||
     payload.checkpoint_us < 0 ||
-    payload.reconciliation_version !== 3
+    payload.reconciliation_version !== 5 ||
+    (payload.resume_from_us !== null &&
+      (!Number.isSafeInteger(payload.resume_from_us) ||
+        payload.resume_from_us < 0 ||
+        payload.resume_from_us > payload.checkpoint_us)) ||
+    !Array.isArray(payload.pending_trace_ids) ||
+    payload.pending_trace_ids.length > 25 ||
+    payload.pending_trace_ids.some(
+      (traceId) =>
+        typeof traceId !== "string" ||
+        !/^Tr[A-Za-z0-9_-]{1,125}$/u.test(traceId),
+    ) ||
+    new Set(payload.pending_trace_ids).size !==
+      payload.pending_trace_ids.length ||
+    !Number.isSafeInteger(payload.pending_trace_total) ||
+    payload.pending_trace_total < payload.pending_trace_ids.length ||
+    (payload.pending_trace_total > 0 &&
+      payload.pending_trace_ids.length === 0) ||
+    (payload.pending_trace_total === 0) !==
+      (payload.pending_trace_oldest_us === null) ||
+    (payload.pending_trace_oldest_us !== null &&
+      (!Number.isSafeInteger(payload.pending_trace_oldest_us) ||
+        payload.pending_trace_oldest_us < 0))
   ) {
     throw unavailable();
   }
   return Object.freeze({
     checkpointUs: payload.checkpoint_us,
-    reconciliationVersion: 3,
+    reconciliationVersion: 5,
+    resumeFromUs: payload.resume_from_us,
+    pendingTraceIds: Object.freeze([...payload.pending_trace_ids]),
+    pendingTraceTotal: payload.pending_trace_total,
+    pendingTraceOldestUs: payload.pending_trace_oldest_us,
   });
 }
 

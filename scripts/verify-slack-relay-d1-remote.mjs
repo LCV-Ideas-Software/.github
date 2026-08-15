@@ -93,10 +93,10 @@ export const REAPER_WORST_CASE_RUNTIME_MS =
   REAPER_API_REQUEST_CAP * API_TIMEOUT_MS +
   REAPER_MAX_DATABASES_PER_RUN * REAPER_RETRY_DELAY_BUDGET_MS;
 const REMOTE_PROOF_OWNERSHIP_BARRIERS = 6;
-// Successful proof path: one absence check, one create, 32 seed/assertion
+// Successful proof path: one absence check, one create, 35 seed/assertion
 // queries, six ownership barriers, and one bounded deletion. Wrangler's own
 // remote calls stay inside its three separately bounded subprocesses.
-const REMOTE_PROOF_SQL_API_REQUESTS = 32;
+const REMOTE_PROOF_SQL_API_REQUESTS = 35;
 const OWNERSHIP_RETRY_DELAY_BUDGET_MS = Array.from(
   { length: DELETE_CONFIRMATION_ATTEMPTS - 1 },
   (_, attempt) => 250 * 2 ** attempt,
@@ -1651,19 +1651,24 @@ async function proveMigratedState(configuration, databaseId, names) {
   const state = await d1Query(
     configuration,
     databaseId,
-    `SELECT slack_activity_checkpoint_us, slack_delivery_protocol_active,
+    `SELECT relay.slack_activity_checkpoint_us, scan.resume_from_us,
+            slack_delivery_protocol_active,
             slack_delivery_protocol_revision,
             slack_delivery_protocol_activated_at,
             slack_delivery_protocol_activation_id,
             slack_delivery_protocol_schema_revision,
             slack_delivery_protocol_confirmation_open
-     FROM relay_state WHERE singleton_id = 1`,
+     FROM relay_state AS relay
+     JOIN slack_activity_scan_state AS scan
+       ON scan.singleton_id = relay.singleton_id
+     WHERE relay.singleton_id = 1`,
   );
   exactRows(
     state.results,
     [
       {
         slack_activity_checkpoint_us: 0,
+        resume_from_us: null,
         slack_delivery_protocol_active: 1,
         slack_delivery_protocol_revision: SEALED_PROTOCOL_REVISION,
         slack_delivery_protocol_activated_at: SEALED_PROTOCOL_ACTIVATED_AT,
@@ -1714,15 +1719,21 @@ export async function proveSchemaInventory(
         type: "index",
         name: "idx_slack_reconciliation_reports_completed",
       },
+      {
+        type: "index",
+        name: "idx_slack_trace_hydration_registry_pending",
+      },
       { type: "index", name: "idx_slack_workflow_traces_delivery" },
       { type: "index", name: "idx_slack_workflow_traces_message" },
       { type: "index", name: "idx_slack_workflow_traces_send_execution" },
       { type: "table", name: "d1_migrations" },
       { type: "table", name: "deliveries" },
       { type: "table", name: "relay_state" },
+      { type: "table", name: "slack_activity_scan_state" },
       { type: "table", name: "slack_delivery_recovery_audit" },
       { type: "table", name: "slack_reconciliation_report_errors" },
       { type: "table", name: "slack_reconciliation_reports" },
+      { type: "table", name: "slack_trace_hydration_registry" },
       { type: "table", name: "slack_workflow_traces" },
       {
         type: "trigger",
@@ -1847,6 +1858,97 @@ export async function proveSchemaInventory(
     "Slack reconciliation error receipt column inventory",
   );
 
+  const scanStateColumns = await query(
+    configuration,
+    databaseId,
+    `SELECT name, type, "notnull", pk
+     FROM pragma_table_info('slack_activity_scan_state') ORDER BY cid`,
+  );
+  exactRows(
+    scanStateColumns.results,
+    [
+      { name: "singleton_id", type: "INTEGER", notnull: 1, pk: 1 },
+      { name: "resume_from_us", type: "INTEGER", notnull: 0, pk: 0 },
+    ],
+    "Slack activity scan-state column inventory",
+  );
+
+  const hydrationColumns = await query(
+    configuration,
+    databaseId,
+    `SELECT name, type, "notnull", pk
+     FROM pragma_table_info('slack_trace_hydration_registry') ORDER BY cid`,
+  );
+  exactRows(
+    hydrationColumns.results,
+    [
+      { name: "trace_id", type: "TEXT", notnull: 1, pk: 1 },
+      { name: "first_observed_us", type: "INTEGER", notnull: 1, pk: 0 },
+      { name: "last_observed_us", type: "INTEGER", notnull: 1, pk: 0 },
+      { name: "last_hydrated_at", type: "INTEGER", notnull: 1, pk: 0 },
+      { name: "status", type: "TEXT", notnull: 1, pk: 0 },
+      { name: "debt_reason", type: "TEXT", notnull: 0, pk: 0 },
+      { name: "updated_at", type: "INTEGER", notnull: 1, pk: 0 },
+    ],
+    "Slack trace hydration column inventory",
+  );
+
+  const hydrationIndexes = await query(
+    configuration,
+    databaseId,
+    `SELECT indexes.name AS index_name, indexes."unique", indexes.origin,
+            indexes.partial, columns.seqno, columns.name AS column_name
+     FROM pragma_index_list('slack_trace_hydration_registry') AS indexes
+     JOIN pragma_index_info(indexes.name) AS columns
+     ORDER BY index_name, columns.seqno`,
+  );
+  exactRows(
+    hydrationIndexes.results,
+    [
+      {
+        index_name: "idx_slack_trace_hydration_registry_pending",
+        unique: 0,
+        origin: "c",
+        partial: 0,
+        seqno: 0,
+        column_name: "status",
+      },
+      {
+        index_name: "idx_slack_trace_hydration_registry_pending",
+        unique: 0,
+        origin: "c",
+        partial: 0,
+        seqno: 1,
+        column_name: "last_hydrated_at",
+      },
+      {
+        index_name: "idx_slack_trace_hydration_registry_pending",
+        unique: 0,
+        origin: "c",
+        partial: 0,
+        seqno: 2,
+        column_name: "first_observed_us",
+      },
+      {
+        index_name: "idx_slack_trace_hydration_registry_pending",
+        unique: 0,
+        origin: "c",
+        partial: 0,
+        seqno: 3,
+        column_name: "trace_id",
+      },
+      {
+        index_name: "sqlite_autoindex_slack_trace_hydration_registry_1",
+        unique: 1,
+        origin: "pk",
+        partial: 0,
+        seqno: 0,
+        column_name: "trace_id",
+      },
+    ],
+    "Slack trace hydration index inventory",
+  );
+
   const reconciliationIndexes = await query(
     configuration,
     databaseId,
@@ -1932,8 +2034,10 @@ export async function proveSchemaInventory(
     `SELECT type, name, tbl_name, sql
      FROM sqlite_schema
      WHERE tbl_name IN (
+       'slack_activity_scan_state',
        'slack_reconciliation_reports',
-       'slack_reconciliation_report_errors'
+       'slack_reconciliation_report_errors',
+       'slack_trace_hydration_registry'
        )
        AND sql IS NOT NULL
      ORDER BY type, name`,
