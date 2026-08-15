@@ -36,6 +36,19 @@ test("the relay required context pins NEXT as the expanded runtime signer", () =
   );
 });
 
+test("the relay dispatch mode only accepts the ADR-001 ladder", () => {
+  rejectsMutation(
+    "workers/github-slack-relay/wrangler.jsonc",
+    '"DISPATCH_MODE": "off"',
+    '"DISPATCH_MODE": "prod"',
+  );
+  rejectsMutation(
+    "workers/github-slack-relay/wrangler.jsonc",
+    '    "DISPATCH_MODE": "off",\n',
+    "",
+  );
+});
+
 test("the relay cannot lose Smart Placement for its D1 reconciliation path", () => {
   rejectsMutation(
     "workers/github-slack-relay/wrangler.jsonc",

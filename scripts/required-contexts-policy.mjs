@@ -424,10 +424,15 @@ function validateRelayConfig(source) {
     fail(`${RELAY_CONFIG_PATH} JSONC is invalid: ${error.message}`);
   }
   plainObject(config, RELAY_CONFIG_PATH);
+  const { DISPATCH_MODE: dispatchMode, ...signerVars } = config.vars ?? {};
   exact(
-    config.vars,
+    signerVars,
     { SLACK_RELAY_SIGNING_ACTIVE_SLOT: "next" },
     `${RELAY_CONFIG_PATH} relay signer selection`,
+  );
+  requirePolicy(
+    dispatchMode === "off" || dispatchMode === "shadow" || dispatchMode === "primary",
+    `${RELAY_CONFIG_PATH} dispatch mode is outside the ADR-001 ladder`,
   );
   exact(
     config.placement,
