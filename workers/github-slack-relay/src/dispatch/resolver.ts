@@ -9,6 +9,8 @@ import {
   RESOLVER_PAGES_PER_ROW,
   RESOLVER_ROWS_PER_RUN,
   RESOLVER_SCAN_LOOKBACK_SECONDS,
+  VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+  VERIFY_DEFERRAL_BACKOFF_CAP_MS,
   VERIFY_FIRST_SCAN_DELAY_MS,
   VERIFY_SECOND_SCAN_DELAY_MS,
   type DispatchDestination,
@@ -210,8 +212,46 @@ async function scanHistory(
   return { kind: "scanned", matches, exhausted: false, pages };
 }
 
+// Copilot finding (resolver starvation): an inconclusive verification scan
+// (history error/partial) or a scan with no match must push verify_after_ms
+// forward — otherwise the row stays due forever, is re-selected every cron
+// and starves the ambiguous backlog. Bounded backoff: the §6.3.3 first-scan
+// delay doubled per CONSECUTIVE deferral, capped at 24 h, derived from the
+// dispatch_audit markers. §6.3.3 invariant preserved: verify_scans_remaining
+// is never decremented by a failed scan.
+async function deferVerification(
+  row: DispatchOutboxRow,
+  deps: ResolverDeps,
+  now: number,
+  reason: string,
+): Promise<void> {
+  if (row.state !== "delivered" || row.verifyScansRemaining <= 0) return;
+  const priorDeferrals =
+    await deps.store.consecutiveVerificationDeferrals(row.deliveryId);
+  const delayMs = Math.min(
+    VERIFY_DEFERRAL_BACKOFF_BASE_MS * 2 ** priorDeferrals,
+    VERIFY_DEFERRAL_BACKOFF_CAP_MS,
+  );
+  const nextVerifyAfterMs = now + delayMs;
+  await deps.store.deferVerificationScan(
+    row.deliveryId,
+    now,
+    nextVerifyAfterMs,
+    JSON.stringify({
+      verification_deferred: true,
+      reason,
+      consecutive_deferrals: priorDeferrals + 1,
+      next_verify_after_ms: nextVerifyAfterMs,
+    }),
+  );
+}
+
 // §6.3.3: delivered_at is recoverable from the first scan's schedule
 // (verify_after_ms − 15 min); the second scan runs at delivered_at + 24 h.
+// After a deferral that derivation shifts, and only in the safe direction: a
+// deferred due time is always ≥ delivered_at + 15 min, so the derived second
+// scan lands LATER than delivered_at + 24 h, never earlier — and any later
+// scan applies the same repair (R19).
 async function completeScan(
   row: DispatchOutboxRow,
   deps: ResolverDeps,
@@ -287,7 +327,9 @@ async function recordInconclusive(
 ): Promise<ResolverVerdict> {
   if (row.state !== "ambiguous") {
     // §6.3.3: verification scans are INCONCLUSIVE-safe — no counter
-    // decrement, no bookkeeping against the delivered row.
+    // decrement. The row is nevertheless rescheduled with bounded backoff,
+    // or it would consume the verification budget on every cron forever.
+    await deferVerification(row, deps, now, reason);
     return { kind: "inconclusive", reason };
   }
   const attempts = await deps.store.incrementResolverAttempts(
@@ -498,6 +540,9 @@ export async function resolveAmbiguousRow(
     return { kind: "found_many", canonicalTs, channel, duplicateTs };
   }
   if (row.state === "delivered") {
+    // A verification scan that found nothing is inconclusive too: the
+    // counter stays, the next scan is deferred with bounded backoff.
+    await deferVerification(row, deps, now, "verification_scan_no_match");
     return { kind: "inconclusive", reason: "verification_scan_no_match" };
   }
   // §6.3.1/R12: PROVEN-ABSENT only when the cooling-off floor passed AND
@@ -543,10 +588,14 @@ export async function runResolverPass(
   await deps.store.normalizeExpiredLeases(now);
   let examined = 0;
   // §6.3.3: verification-due delivered rows share the resolver's budget and
-  // run before the ambiguous backlog.
+  // run before the ambiguous backlog. Copilot finding (resolver starvation):
+  // they may take at most HALF of it (floor), so a due ambiguous row is
+  // always examined even while verification rows are due. The total budget
+  // is unchanged; an unused verification slot is not handed to a second
+  // verification row.
   const verificationRows = await deps.store.verificationRowsDue(
     now,
-    RESOLVER_ROWS_PER_RUN,
+    Math.floor(RESOLVER_ROWS_PER_RUN / 2),
   );
   for (const row of verificationRows) {
     await resolveAmbiguousRow(row, deps);

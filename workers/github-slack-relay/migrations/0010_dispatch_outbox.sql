@@ -41,9 +41,24 @@ CREATE TABLE dispatch_outbox (
       AND slack_channel_id NOT GLOB '*[^A-Z0-9]*'
     )
   ),
+  -- Same contract as SLACK_MESSAGE_TS_PATTERN (src/index.ts):
+  -- /^\d{10,13}\.\d{6}$/ — 10-13 digits, one literal dot, exactly six
+  -- digits. SQLite GLOB has no repetition ranges (and `*` matches ANY
+  -- character sequence, so '1garbage.123456' satisfies a naive GLOB), so
+  -- the format is composed from length + position + charset predicates:
+  -- total length 17-20 => seconds length (total - 7) is 10-13; the 7th
+  -- character from the right is the dot; the last 6 characters and the
+  -- leading (total - 7) characters are digits only. Those three ranges
+  -- partition every character of the value, so nothing is left unchecked.
   slack_message_ts TEXT CHECK (
     slack_message_ts IS NULL
-    OR slack_message_ts GLOB '[0-9]*.[0-9][0-9][0-9][0-9][0-9][0-9]'
+    OR (
+      length(slack_message_ts) BETWEEN 17 AND 20
+      AND substr(slack_message_ts, -7, 1) = '.'
+      AND substr(slack_message_ts, -6) NOT GLOB '*[^0-9]*'
+      AND substr(slack_message_ts, 1, length(slack_message_ts) - 7)
+        NOT GLOB '*[^0-9]*'
+    )
   ),
   last_error TEXT,
   created_ms INTEGER NOT NULL CHECK (created_ms > 0),

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DISPATCH_LEASE_MS,
   STALE_QUEUED_REQUEUE_AFTER_MS,
+  VERIFY_DEFERRAL_BACKOFF_BASE_MS,
 } from "../src/dispatch/contract";
 import type { DispatchOutboxRow } from "../src/dispatch/contract";
 import { D1DispatchStore } from "../src/dispatch/outbox";
@@ -207,6 +208,57 @@ describe("migration 0010 dispatch schema (ADR §6.4)", () => {
         state: "delivered",
       }),
     ).not.toThrow();
+  });
+
+  // Copilot finding: the previous GLOB accepted '1garbage.123456' because
+  // SQLite `*` matches ANY character sequence. The CHECK now pins exactly
+  // the src/index.ts contract SLACK_MESSAGE_TS_PATTERN = /^\d{10,13}\.\d{6}$/.
+  it("0010: slack_message_ts enforces the 10-13 digit seconds + six digit fraction format", () => {
+    const { database } = dispatchDatabase();
+    const rejected = [
+      // The exact value Copilot showed passing the old GLOB.
+      "1garbage.123456",
+      // Same shape, padded to a legal length so only the charset predicate
+      // can reject it.
+      "1garbagexy.123456",
+      // 9-digit seconds.
+      "178673714.039589",
+      // 5-digit fraction (short, and again at a legal total length).
+      "1786737141.03958",
+      "1786737141039.03958",
+      // No dot at all (short, and again at a legal total length).
+      "1786737141039589",
+      "17867371410395891234",
+      // Two dots inside the seconds field.
+      "178673714.0.039589",
+      "",
+    ];
+    for (const [index, value] of rejected.entries()) {
+      expect(() =>
+        insertRawOutboxRow(database, {
+          deliveryId: `red-0010-ts-rejected-${index}`,
+          destination: "alerts",
+          state: "queued",
+          slackMessageTs: value,
+        }),
+      ).toThrow(/CHECK constraint failed/);
+    }
+    const accepted = [
+      // 10-digit seconds (the live Slack shape).
+      "1786737141.039589",
+      // 13-digit seconds (upper bound of the contract).
+      "1786737141039.039589",
+    ];
+    for (const [index, value] of accepted.entries()) {
+      expect(() =>
+        insertRawOutboxRow(database, {
+          deliveryId: `red-0010-ts-accepted-${index}`,
+          destination: "alerts",
+          state: "queued",
+          slackMessageTs: value,
+        }),
+      ).not.toThrow();
+    }
   });
 
   it("0010: UNIQUE(destination, slack_message_ts) blocks a second delivered row per destination but allows the same ts across destinations", () => {
@@ -709,6 +761,42 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     ).toBe(true);
     expect(outboxRow(database, deliveryId)).toMatchObject({ state: "queued" });
     expect(auditRows(database, deliveryId)).toHaveLength(5);
+
+    expect(
+      await store.claim(deliveryId, DISPATCH_TEST_NOW + 4_000),
+    ).not.toBeNull();
+    expect(auditRows(database, deliveryId)).toHaveLength(6);
+
+    expect(
+      await store.markDelivered(
+        deliveryId,
+        DISPATCH_TEST_NOW + 5_000,
+        "1786665495.000200",
+        ALERTS_CHANNEL,
+        "consumer",
+        ["sending"],
+        '{"source":"chat.postMessage"}',
+      ),
+    ).toBe(true);
+    expect(auditRows(database, deliveryId)).toHaveLength(7);
+
+    // Copilot finding (resolver starvation): the deferral is a mutation too —
+    // verify_after_ms moves forward in one batch with its marker, and the
+    // §6.3.3 counter is untouched.
+    expect(
+      await store.deferVerificationScan(
+        deliveryId,
+        DISPATCH_TEST_NOW + 6_000,
+        DISPATCH_TEST_NOW + 6_000 + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+        '{"verification_deferred":true,"reason":"history_error_internal"}',
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      verify_scans_remaining: 2,
+      verify_after_ms: DISPATCH_TEST_NOW + 6_000 + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+    });
+    expect(auditRows(database, deliveryId)).toHaveLength(8);
   });
 
   it("F7: operatorResend recovers a dead_letter row and still refuses non-menu states (ADR §6.2)", async () => {

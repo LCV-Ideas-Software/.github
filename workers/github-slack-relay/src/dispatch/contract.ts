@@ -100,6 +100,13 @@ export const RESOLVER_PAGES_PER_ROW = 3;
 export const RESOLVER_SCAN_LOOKBACK_SECONDS = 300;
 export const VERIFY_FIRST_SCAN_DELAY_MS = 15 * 60 * 1_000;
 export const VERIFY_SECOND_SCAN_DELAY_MS = 24 * 60 * 60 * 1_000;
+// Copilot finding (resolver starvation): an inconclusive verification scan
+// leaves verify_after_ms in the past, so the row stays permanently due and
+// consumes the whole per-run budget forever. The deferral doubles from the
+// §6.3.3 first-scan delay and is capped at 24 h; it NEVER decrements
+// verify_scans_remaining (§6.3.3 invariant).
+export const VERIFY_DEFERRAL_BACKOFF_BASE_MS = VERIFY_FIRST_SCAN_DELAY_MS;
+export const VERIFY_DEFERRAL_BACKOFF_CAP_MS = 24 * 60 * 60 * 1_000;
 export const STALE_QUEUED_REQUEUE_AFTER_MS = 5 * 60 * 1_000;
 
 // ADR §6.1 — metadata event type used for the resolver's match rule.
@@ -182,6 +189,18 @@ export interface DispatchStore {
     now: number,
     nextVerifyAfterMs: number | null,
     expectedRemaining: number,
+  ): Promise<boolean>;
+  // Copilot finding (resolver starvation): an inconclusive verification scan
+  // reschedules the row instead of leaving verify_after_ms in the past. The
+  // consecutive-deferral count is derived from the dispatch_audit markers
+  // (no schema column), and the deferral never touches
+  // verify_scans_remaining (§6.3.3).
+  consecutiveVerificationDeferrals(deliveryId: string): Promise<number>;
+  deferVerificationScan(
+    deliveryId: string,
+    now: number,
+    nextVerifyAfterMs: number,
+    evidenceJson: string,
   ): Promise<boolean>;
   updateCanonicalTs(
     deliveryId: string,

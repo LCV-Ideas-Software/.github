@@ -50,6 +50,9 @@ const WEBHOOK_PATH = "/github/webhook";
 const HEALTH_PATH = "/healthz";
 // ADR-001 §6.7: read-only aggregate counters for the dispatch outbox.
 const DISPATCH_STATUS_PATH = "/status";
+// ADR-001 §6.2/§6.3 (I1) audited operator menu — the ONLY resend path, and
+// the only way a manual/dead_letter row leaves its parked state.
+const DISPATCH_OPERATOR_PATH = "/dispatch/operator";
 const SLACK_PROGRESS_PATH = "/slack/progress";
 const SLACK_RECONCILIATION_PATH = "/slack/reconciliation";
 const SLACK_CHECKPOINT_PATH = "/slack/reconciliation/checkpoint";
@@ -71,6 +74,7 @@ const MAXIMUM_CONTROL_BODY_BYTES = 128_000;
 const AUTHENTICATED_REQUEST_MAX_AGE_SECONDS = 300;
 const AUTHENTICATED_REQUEST_MAX_FUTURE_SECONDS = 60;
 const SLACK_MESSAGE_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
+const OPERATOR_EVIDENCE_MAXIMUM_CHARACTERS = 512;
 const SLACK_TRACE_ID_PATTERN = /^Tr[A-Za-z0-9_-]{1,125}$/u;
 const SLACK_RECONCILIATION_TRACE_LIMIT = 25;
 const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
@@ -349,6 +353,93 @@ function parseSlackCheckpointRequest(
     request_timestamp: requestTimestamp,
     request_signature: requestSignature,
   };
+}
+
+// ADR-001 §6.2/§6.3 operator menu. The wire format follows the existing
+// signed control requests: the signature travels inside the body over a
+// canonical array whose first element is a version tag, so this message can
+// never be confused with a progress receipt, a reconciliation report or a
+// checkpoint request signed by the same secret.
+interface DispatchOperatorCommand {
+  action: "resend" | "close_manual";
+  delivery_id: string;
+  evidence: string;
+  request_timestamp: string;
+  request_signature: string;
+}
+
+function canonicalDispatchOperatorCommand(
+  command: Omit<DispatchOperatorCommand, "request_signature">,
+): string {
+  return JSON.stringify([
+    "dispatch_operator_action_v1",
+    command.action,
+    command.delivery_id,
+    command.evidence,
+    command.request_timestamp,
+  ]);
+}
+
+function parseDispatchOperatorCommand(
+  record: Record<string, unknown>,
+  now: number,
+): DispatchOperatorCommand | null {
+  if (
+    !exactKeys(record, [
+      "action",
+      "delivery_id",
+      "evidence",
+      "request_timestamp",
+      "request_signature",
+    ])
+  ) {
+    return null;
+  }
+  const action = record.action;
+  const deliveryId = record.delivery_id;
+  const evidence = record.evidence;
+  const requestTimestamp = record.request_timestamp;
+  const requestSignature = record.request_signature;
+  if (
+    (action !== "resend" && action !== "close_manual") ||
+    !validDeliveryId(deliveryId) ||
+    typeof evidence !== "string" ||
+    evidence.length === 0 ||
+    evidence.length > OPERATOR_EVIDENCE_MAXIMUM_CHARACTERS ||
+    typeof requestTimestamp !== "string" ||
+    !authenticatedTimestampIsFresh(requestTimestamp, now) ||
+    typeof requestSignature !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(requestSignature)
+  ) {
+    return null;
+  }
+  return {
+    action,
+    delivery_id: deliveryId,
+    evidence,
+    request_timestamp: requestTimestamp,
+    request_signature: requestSignature,
+  };
+}
+
+async function verifyDispatchOperatorCommand(
+  command: DispatchOperatorCommand,
+  secret: string,
+): Promise<boolean> {
+  // security.ts exports exactly one generic timing-safe HMAC verifier
+  // (verifyGitHubSignature: sha256=<hex> over raw bytes); it is applied here
+  // to the canonical message bytes. Failures to compare are thrown, never
+  // reported as a bad signature — the caller maps them to 503.
+  const message = new TextEncoder().encode(
+    canonicalDispatchOperatorCommand(command),
+  );
+  const preimage = new ArrayBuffer(message.byteLength);
+  new Uint8Array(preimage).set(message);
+  return verifyGitHubSignature(
+    preimage,
+    `sha256=${command.request_signature}`,
+    secret,
+  );
 }
 
 function parseSlackReconciliation(
@@ -861,6 +952,107 @@ async function handleSlackControlRequest(
   }
 }
 
+// ADR-001 §6.2/§6.3/§6.9 — the audited operator menu (Copilot finding: the
+// advertised recovery path had no route, so every manual/dead_letter row was
+// parked permanently). AUTHENTICATION reuses the machinery of
+// handleSlackControlRequest against an EXISTING binding — no new binding, no
+// new secret: the SLACK_RELAY_SIGNING_SECRET pair with its active-slot
+// selection (relaySigningConfiguration), the same 128 KB control-body cap
+// (readControlRecord), the same freshness window
+// (authenticatedTimestampIsFresh) and security.ts's timing-safe HMAC
+// verifier. The route never posts to Slack: a resend only re-enters the row
+// into the normal pipeline, so it works in every DISPATCH_MODE and the
+// consumer applies the mode active at consume time (R20).
+async function handleDispatchOperatorRequest(
+  request: Request,
+  env: Env,
+  dependencies: Required<RuntimeOverrides>,
+): Promise<Response> {
+  if (request.method !== "POST") {
+    return jsonResponse({ error: "method_not_allowed" }, 405);
+  }
+  const record = await readControlRecord(request);
+  if (record === null) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+  const now = dependencies.now();
+  const command = parseDispatchOperatorCommand(record, now);
+  if (command === null) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+  const signing = await relaySigningConfiguration(env);
+  if (signing === null) {
+    return jsonResponse({ error: "authentication_unavailable" }, 503);
+  }
+  let signatureIsValid: boolean;
+  try {
+    signatureIsValid = await verifyDispatchOperatorCommand(
+      command,
+      signing.active,
+    );
+  } catch {
+    return jsonResponse({ error: "authentication_unavailable" }, 503);
+  }
+  if (!signatureIsValid) {
+    return jsonResponse({ error: "invalid_signature" }, 401);
+  }
+
+  const dispatchStore = new D1DispatchStore(env.DB);
+  if (command.action === "close_manual") {
+    let closed: boolean;
+    try {
+      closed = await dispatchStore.operatorCloseManual(
+        command.delivery_id,
+        now,
+        JSON.stringify({
+          operator_action: "close_manual",
+          evidence: command.evidence,
+        }),
+      );
+    } catch {
+      return jsonResponse({ error: "persistence_unavailable" }, 503);
+    }
+    return closed
+      ? jsonResponse({ ok: true, state: "closed_manual" }, 200)
+      : jsonResponse({ error: "delivery_state_conflict" }, 409);
+  }
+
+  // I1 (§6.3): the ONLY resend path — audited, marked possible-duplicate,
+  // and arming the §6.3.3 verification scans inside the store CAS.
+  let resent: boolean;
+  try {
+    resent = await dispatchStore.operatorResend(
+      command.delivery_id,
+      now,
+      JSON.stringify({
+        operator_action: "resend",
+        possible_duplicate: true,
+        evidence: command.evidence,
+      }),
+    );
+  } catch {
+    return jsonResponse({ error: "persistence_unavailable" }, 503);
+  }
+  if (!resent) {
+    return jsonResponse({ error: "delivery_state_conflict" }, 409);
+  }
+  try {
+    // §10/H2: the dispatcher carries the single destination "alerts", so the
+    // marked job goes to the alerts queue and the row re-enters the pipeline.
+    await destinationQueue(env, "alerts").send(
+      dispatchQueueJobBody(command.delivery_id),
+    );
+  } catch {
+    // R13: the row is already durably queued; the cron republishes stale
+    // queued rows (itself gated on mode !== "off", per R20).
+    return jsonResponse(
+      { ok: true, queued: false, recovery_scheduled: true },
+      200,
+    );
+  }
+  return jsonResponse({ ok: true, queued: true }, 200);
+}
+
 export async function handleFetch(
   request: Request,
   env: Env,
@@ -927,6 +1119,10 @@ export async function handleFetch(
     } catch {
       return jsonResponse({ error: "status_unavailable" }, 503);
     }
+  }
+
+  if (url.pathname === DISPATCH_OPERATOR_PATH) {
+    return handleDispatchOperatorRequest(request, env, dependencies);
   }
 
   if (url.pathname !== WEBHOOK_PATH) {

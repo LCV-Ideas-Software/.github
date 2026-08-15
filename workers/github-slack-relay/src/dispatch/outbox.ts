@@ -638,6 +638,62 @@ export class D1DispatchStore implements DispatchStore {
     return changed(results[1]);
   }
 
+  async consecutiveVerificationDeferrals(deliveryId: string): Promise<number> {
+    // Copilot finding (resolver starvation): the deferral streak is derived
+    // from the audit journal — the TRAILING run of deferral markers, i.e.
+    // every marker written after the last audit row for this delivery that
+    // is not one (a completed scan, a repair, a state transition all reset
+    // the streak). No schema column is added for it.
+    const count = await this.#database
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM dispatch_audit
+         WHERE delivery_id = ?
+           AND json_extract(evidence_json, '$.verification_deferred') = 1
+           AND seq > COALESCE((
+             SELECT MAX(seq)
+             FROM dispatch_audit
+             WHERE delivery_id = ?
+               AND COALESCE(
+                 json_extract(evidence_json, '$.verification_deferred'), 0
+               ) != 1
+           ), 0)`,
+      )
+      .bind(deliveryId, deliveryId)
+      .first<number>("n");
+    return count ?? 0;
+  }
+
+  async deferVerificationScan(
+    deliveryId: string,
+    now: number,
+    nextVerifyAfterMs: number,
+    evidenceJson: string,
+  ): Promise<boolean> {
+    // §6.3.3: verification scans are INCONCLUSIVE-safe — the counter is
+    // untouched; only verify_after_ms moves forward, so the row leaves the
+    // due set and a due ambiguous row can be examined.
+    const predicate =
+      " AND state = 'delivered' AND shadow = 0 AND verify_scans_remaining > 0";
+    const audit = this.#inPlaceAudit(
+      deliveryId,
+      asEvidenceJson(evidenceJson),
+      "resolver",
+      now,
+      predicate,
+    );
+    const update = this.#database
+      .prepare(
+        `UPDATE dispatch_outbox
+         SET verify_after_ms = ?,
+             updated_ms = ?
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(nextVerifyAfterMs, now, deliveryId);
+    const results = await this.#database.batch([audit, update]);
+    return changed(results[1]);
+  }
+
   async updateCanonicalTs(
     deliveryId: string,
     now: number,

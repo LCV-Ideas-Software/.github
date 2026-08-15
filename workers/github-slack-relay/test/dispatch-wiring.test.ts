@@ -50,6 +50,7 @@ import {
   makeEnv,
   MemoryDeliveryStore,
   signedRequest,
+  TEST_RELAY_SIGNING_SECRET_NEXT,
   workflowPayload,
 } from "./helpers";
 
@@ -1206,5 +1207,227 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
       ),
     ).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Copilot finding: operatorResend/operatorCloseManual had no route, so the
+// audited operator menu of ADR §6.2/§6.3/§6.9 was unreachable and every
+// manual/dead_letter row was parked permanently. The route authenticates
+// with the EXISTING SLACK_RELAY_SIGNING_SECRET machinery (active slot), so
+// no new binding and no new secret enter the worker.
+describe("operator menu route (ADR §6.2/§6.3 I1)", () => {
+  const OPERATOR_TIMESTAMP = String(Math.floor(DISPATCH_TEST_NOW / 1_000));
+  const OPERATOR_EVIDENCE = "issue #192 operator menu fixture";
+
+  async function hmacHexadecimal(
+    message: string,
+    secret: string,
+  ): Promise<string> {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { hash: "SHA-256", name: "HMAC" },
+      false,
+      ["sign"],
+    );
+    const signature = new Uint8Array(
+      await crypto.subtle.sign(
+        { name: "HMAC" },
+        key,
+        new TextEncoder().encode(message),
+      ),
+    );
+    return [...signature]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  // Mirrors the wire format pinned in src/index.ts: the signature travels
+  // inside the body, over the version-tagged canonical array.
+  async function operatorRequest(
+    action: "resend" | "close_manual",
+    deliveryId: string,
+    options: { secret?: string; signature?: string } = {},
+  ): Promise<Request> {
+    const canonical = JSON.stringify([
+      "dispatch_operator_action_v1",
+      action,
+      deliveryId,
+      OPERATOR_EVIDENCE,
+      OPERATOR_TIMESTAMP,
+    ]);
+    const signature =
+      options.signature ??
+      (await hmacHexadecimal(
+        canonical,
+        // makeEnv pins SLACK_RELAY_SIGNING_ACTIVE_SLOT to "next".
+        options.secret ?? TEST_RELAY_SIGNING_SECRET_NEXT,
+      ));
+    return new Request("https://relay.example/dispatch/operator", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action,
+        delivery_id: deliveryId,
+        evidence: OPERATOR_EVIDENCE,
+        request_timestamp: OPERATOR_TIMESTAMP,
+        request_signature: signature,
+      }),
+    });
+  }
+
+  it("a signed resend on a manual row queues it, publishes the marked job and audits the operator action", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-manual";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+
+    const response = await handleFetch(
+      await operatorRequest("resend", deliveryId),
+      makeEnv(queue, { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, queued: true });
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "queued",
+      // §6.3.3: the resend arms the two mandatory verification scans.
+      verify_scans_remaining: 2,
+    });
+    expect(queue.sent).toEqual([{ deliveryId, path: "dispatch" }]);
+    const entries = auditRows(database, deliveryId);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      actor: "operator",
+      from_state: "manual",
+      to_state: "queued",
+    });
+    expect(String(entries[0]?.["evidence_json"])).toContain(
+      '"possible_duplicate":true',
+    );
+  });
+
+  it("a signed resend on a dead_letter row takes the same audited path", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-dead-letter";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "dead_letter",
+    });
+
+    const response = await handleFetch(
+      await operatorRequest("resend", deliveryId),
+      makeEnv(queue, { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(200);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "queued",
+      verify_scans_remaining: 2,
+    });
+    expect(queue.sent).toEqual([{ deliveryId, path: "dispatch" }]);
+    expect(auditRows(database, deliveryId)).toMatchObject([
+      { actor: "operator", from_state: "dead_letter", to_state: "queued" },
+    ]);
+  });
+
+  it("an unsigned or wrongly signed request is 401 with zero state change", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-unsigned";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+    const env = makeEnv(queue, { db: d1 });
+
+    // Well-formed body, signature computed with the wrong secret.
+    const forged = await handleFetch(
+      await operatorRequest("resend", deliveryId, {
+        secret: "forged-operator-secret-at-least-32-bytes",
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(forged.status).toBe(401);
+    expect(await forged.json()).toEqual({ error: "invalid_signature" });
+
+    // Structurally valid but meaningless signature.
+    const unsigned = await handleFetch(
+      await operatorRequest("resend", deliveryId, { signature: "0".repeat(64) }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(unsigned.status).toBe(401);
+
+    expect(outboxState(database, deliveryId)).toBe("manual");
+    expect(queue.sent).toHaveLength(0);
+    expect(auditRows(database, deliveryId)).toHaveLength(0);
+  });
+
+  it("a resend on a delivered row is 409 with zero state change (CAS changed nothing)", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-delivered";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786708800.000500",
+    });
+
+    const response = await handleFetch(
+      await operatorRequest("resend", deliveryId),
+      makeEnv(queue, { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "delivery_state_conflict" });
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      slack_message_ts: "1786708800.000500",
+      verify_scans_remaining: 0,
+    });
+    expect(queue.sent).toHaveLength(0);
+    expect(auditRows(database, deliveryId)).toHaveLength(0);
+  });
+
+  it("a signed close_manual on a manual row closes it without any Slack egress or queue publish", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-close";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+
+    const response = await handleFetch(
+      await operatorRequest("close_manual", deliveryId),
+      makeEnv(queue, { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      state: "closed_manual",
+    });
+    expect(outboxState(database, deliveryId)).toBe("closed_manual");
+    expect(queue.sent).toHaveLength(0);
+    expect(auditRows(database, deliveryId)).toMatchObject([
+      { actor: "operator", from_state: "manual", to_state: "closed_manual" },
+    ]);
   });
 });

@@ -10,6 +10,8 @@ import {
   RESOLVER_COOLING_OFF_FLOOR_MS,
   RESOLVER_MAX_ATTEMPTS,
   RESOLVER_PAGES_PER_ROW,
+  VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+  VERIFY_DEFERRAL_BACKOFF_CAP_MS,
   VERIFY_FIRST_SCAN_DELAY_MS,
   VERIFY_SECOND_SCAN_DELAY_MS,
 } from "../src/dispatch/contract";
@@ -1126,6 +1128,157 @@ describe("post-resend verification (R18)", () => {
     expect(row.state).toBe("delivered");
     expect(row.slackMessageTs).toBe(TS_EARLY);
     expect(row.verifyScansRemaining).toBe(2);
+  });
+});
+
+// Copilot finding (resolver starvation): due verification rows used to
+// consume the entire per-run budget, and an inconclusive verification scan
+// left verify_after_ms in the past — so the same two rows were selected every
+// cron forever and no ambiguous row was ever examined.
+describe("resolver starvation (budget reservation + deferral backoff)", () => {
+  it("two due verification rows never crowd out a due ambiguous row in the same pass", async () => {
+    const { store } = makeStore();
+    const firstVerify = "starve-verify-first";
+    const secondVerify = "starve-verify-second";
+    const ambiguous = "starve-ambiguous";
+    const firstTs = "1786664100.000300";
+    const secondTs = "1786664100.000301";
+    const ambiguousTs = "1786664100.000302";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    // BOTH are due at DISPATCH_TEST_NOW; ordered by verify_after_ms, the
+    // FIRST row is the one the reserved verification slot must select.
+    await deliverViaOperatorResend(
+      store,
+      firstVerify,
+      deliveredMs - 1_000,
+      firstTs,
+    );
+    await deliverViaOperatorResend(store, secondVerify, deliveredMs, secondTs);
+    await seedAmbiguous(store, ambiguous);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([
+            historyMessage({ ts: firstTs, deliveryId: firstVerify }),
+            historyMessage({ ts: secondTs, deliveryId: secondVerify }),
+            historyMessage({ ts: ambiguousTs, deliveryId: ambiguous }),
+          ])
+        : undefined,
+    );
+
+    const pass = await runResolverPass(resolverDeps(store, fetchStub));
+
+    expect(pass.examined).toBe(2);
+    // The ambiguous row WAS examined: its found verdict delivered it.
+    const ambiguousRow = await mustGet(store, ambiguous);
+    expect(ambiguousRow.state).toBe("delivered");
+    expect(ambiguousRow.slackMessageTs).toBe(ambiguousTs);
+    // Verification took at most half the budget: only the earliest-due row.
+    expect((await mustGet(store, firstVerify)).verifyScansRemaining).toBe(1);
+    expect((await mustGet(store, secondVerify)).verifyScansRemaining).toBe(2);
+  });
+
+  it("an inconclusive verification scan reschedules into the future, keeps the counter, and backs off further on the next one", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "starve-deferral-backoff";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryError("internal_error")
+        : undefined,
+    );
+
+    await runResolverPass(resolverDeps(store, fetchStub));
+
+    const first = await mustGet(store, deliveryId);
+    expect(first.verifyScansRemaining).toBe(2);
+    expect(first.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+    );
+    expect(
+      await store.verificationRowsDue(DISPATCH_TEST_NOW, 10),
+    ).toHaveLength(0);
+
+    // Second consecutive deferral, taken at the rescheduled due time.
+    const secondNow = DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_BASE_MS;
+    const secondPass = await runResolverPass(
+      resolverDeps(store, fetchStub, { now: () => secondNow }),
+    );
+
+    expect(secondPass.examined).toBe(1);
+    const second = await mustGet(store, deliveryId);
+    expect(second.verifyScansRemaining).toBe(2);
+    expect(second.verifyAfterMs).toBe(
+      secondNow + VERIFY_DEFERRAL_BACKOFF_BASE_MS * 2,
+    );
+    const markers = auditRows(database, deliveryId).filter((entry) =>
+      String(entry["evidence_json"]).includes('"verification_deferred":true'),
+    );
+    expect(markers).toHaveLength(2);
+    expect(
+      markers.map(
+        (entry) =>
+          (
+            JSON.parse(String(entry["evidence_json"])) as {
+              consecutive_deferrals: number;
+            }
+          ).consecutive_deferrals,
+      ),
+    ).toEqual([1, 2]);
+  });
+
+  it("the deferral backoff is capped at 24 h", async () => {
+    const { store } = makeStore();
+    const deliveryId = "starve-deferral-cap";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    // Eight consecutive deferrals already recorded: 15 min << 2^8 is far
+    // past the cap.
+    for (let index = 0; index < 8; index += 1) {
+      await store.appendAudit({
+        deliveryId,
+        fromState: "delivered",
+        toState: "delivered",
+        evidenceJson: JSON.stringify({
+          verification_deferred: true,
+          reason: "history_error_internal_error",
+          consecutive_deferrals: index + 1,
+        }),
+        actor: "resolver",
+        atMs: deliveredMs + index,
+      });
+    }
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryError("internal_error")
+        : undefined,
+    );
+
+    await runResolverPass(resolverDeps(store, fetchStub));
+
+    const row = await mustGet(store, deliveryId);
+    expect(row.verifyScansRemaining).toBe(2);
+    expect(row.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_CAP_MS,
+    );
+  });
+
+  it("a verification scan with no match defers instead of leaving the row permanently due", async () => {
+    const { store } = makeStore();
+    const deliveryId = "starve-no-match";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history") ? slackHistoryPage([]) : undefined,
+    );
+
+    await runResolverPass(resolverDeps(store, fetchStub));
+
+    const row = await mustGet(store, deliveryId);
+    expect(row.verifyScansRemaining).toBe(2);
+    expect(row.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+    );
   });
 });
 
