@@ -1,4 +1,5 @@
 name: Dependency Review
+
 on:
   pull_request:
     branches:
@@ -6,43 +7,26 @@ on:
   merge_group:
     types:
       - checks_requested
+
 permissions: {}
+
 concurrency:
   group: dependency-review-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   dependency-review:
-    permissions:
-      contents: read
     name: Dependency Review
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Setup latest Node.js 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          check-latest: true
-          cache: npm
-      - name: Install policy dependencies
-        run: |
-          set -euo pipefail
-          test "$(npm config get registry)" = "https://registry.npmjs.org/"
-          npm ci --ignore-scripts --no-audit --no-fund
-      - name: Test required context policy
-        run: node --test scripts/required-contexts-policy.test.mjs
-      - name: Validate all required context contracts
-        run: node scripts/required-contexts-policy.mjs
-      - name: Test immutable Zizmor policy baseline
-        run: node --test scripts/zizmor-policy-baseline.test.mjs
-      - name: Test Dependency Review workflow contract
-        run: node --test scripts/dependency-review-workflow.test.mjs
-      - name: Test GitHub Actions pin auditor
-        run: node --test scripts/github-actions-pin-audit.test.mjs
+
       - name: Review pull request dependencies
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

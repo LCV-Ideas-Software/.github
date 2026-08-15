@@ -14,8 +14,6 @@
 /.github/copilot-instructions.md @lcv-leo
 /.github/dependabot.yml @lcv-leo
 /.github/workflows/ @lcv-leo
-/.github/zizmor/ @lcv-leo
-/.github/zizmor.yml @lcv-leo
 /.npmrc @lcv-leo
 /docs/GITHUB_SLACK_INTEGRATION.md @lcv-leo
 /scripts/ @lcv-leo

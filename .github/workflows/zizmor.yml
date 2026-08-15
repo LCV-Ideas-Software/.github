@@ -1,7 +1,6 @@
 name: Zizmor
 
 on:
-  workflow_call:
   push:
     branches:
       - main
@@ -15,167 +14,27 @@ on:
     - cron: "43 5 * * *"
   workflow_dispatch:
 
-# Fail closed for every present and future job. The analyzer job receives only
-# repository read access and the dedicated SARIF upload capability.
 permissions: {}
 
 concurrency:
-  group: zizmor-${{ github.repository }}-${{ github.ref }}
+  group: zizmor-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   zizmor:
     name: Run zizmor
-    permissions:
-      actions: read # CodeQL upload-sarif reads workflow-run metadata.
-      contents: read
-      security-events: write # Upload the SARIF to GitHub code scanning.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
+    permissions:
+      security-events: write # Upload Zizmor results to code scanning.
     steps:
-      - name: Verify reusable workflow identity
-        shell: bash
-        env:
-          TOOLING_REPOSITORY: ${{ job.workflow_repository }}
-          TOOLING_SHA: ${{ job.workflow_sha }}
-        run: |
-          set -euo pipefail
-          test "$TOOLING_REPOSITORY" = "LCV-Ideas-Software/.github"
-          [[ "$TOOLING_SHA" =~ ^[0-9a-f]{40}$ ]]
-
-      - name: Checkout this reusable workflow's immutable tooling source
+      - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .lcv-zizmor-tooling
-          sparse-checkout: |
-            .github/zizmor/Dockerfile
-            .github/zizmor/policy-baselines.v1.json
-            scripts/zizmor-policy-baseline.mjs
-          sparse-checkout-cone-mode: false
           persist-credentials: false
-          fetch-depth: 1
 
-      - name: Resolve immutable Zizmor policy snapshots
-        id: policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          node .lcv-zizmor-tooling/scripts/zizmor-policy-baseline.mjs resolve \
-            --event-path "$GITHUB_EVENT_PATH" \
-            --event "$GITHUB_EVENT_NAME" \
-            --repository "$GITHUB_REPOSITORY" \
-            --sha "$GITHUB_SHA" \
-            --ref "$GITHUB_REF" \
-            --output "$GITHUB_OUTPUT"
-
-      - name: Checkout candidate repository snapshot
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run Zizmor
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
-          repository: ${{ github.repository }}
-          ref: ${{ steps.policy.outputs.candidate_sha }}
-          path: .lcv-audit-target
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Checkout base repository snapshot
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ steps.policy.outputs.base_sha }}
-          path: .lcv-audit-base
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Validate immutable Zizmor policy baseline
-        shell: bash
-        env:
-          BASE_SHA: ${{ steps.policy.outputs.base_sha }}
-          CANDIDATE_SHA: ${{ steps.policy.outputs.candidate_sha }}
-        run: |
-          set -euo pipefail
-          node .lcv-zizmor-tooling/scripts/zizmor-policy-baseline.mjs validate \
-            --manifest .lcv-zizmor-tooling/.github/zizmor/policy-baselines.v1.json \
-            --repository "$GITHUB_REPOSITORY" \
-            --base-dir .lcv-audit-base \
-            --base-sha "$BASE_SHA" \
-            --candidate-dir .lcv-audit-target \
-            --candidate-sha "$CANDIDATE_SHA"
-
-      - name: Build the digest-pinned zizmor runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build \
-            --pull \
-            --no-cache \
-            --file .lcv-zizmor-tooling/.github/zizmor/Dockerfile \
-            --tag lcv-zizmor:audited \
-            .lcv-zizmor-tooling/.github/zizmor
-
-      - name: Analyze workflows and capture the enforcement result
-        id: audit
-        shell: bash
-        run: |
-          set -euo pipefail
-          zizmor=(
-            docker run
-            --rm
-            --network none
-            --read-only
-            --cap-drop=ALL
-            --security-opt no-new-privileges
-            --pids-limit 128
-            --volume "${GITHUB_WORKSPACE}/.lcv-audit-target:/workspace:ro"
-            --workdir /workspace
-            lcv-zizmor:audited
-            --offline \
-            --persona=auditor \
-            --strict-collection \
-            --collect=all \
-            --color=never
-          )
-
-          # SARIF intentionally exits zero even when findings exist. Capture the
-          # normal formatter's exit status as the independent enforcement gate,
-          # while still producing SARIF before the job is allowed to fail.
-          set +e
-          "${zizmor[@]}" . 2>&1 | tee "${RUNNER_TEMP}/zizmor-findings.txt"
-          zizmor_exit="${PIPESTATUS[0]}"
-          set -e
-
-          "${zizmor[@]}" \
-            --format=sarif \
-            . > "${RUNNER_TEMP}/zizmor-results.sarif"
-          test -s "${RUNNER_TEMP}/zizmor-results.sarif"
-          if [[ ! "$zizmor_exit" =~ ^[0-9]+$ ]]; then
-            echo "::error::Invalid zizmor exit code: $zizmor_exit" >&2
-            exit 1
-          fi
-          printf 'exit_code=%s\n' "$zizmor_exit" >> "$GITHUB_OUTPUT"
-
-      - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
-        with:
-          sarif_file: ${{ runner.temp }}/zizmor-results.sarif
-          checkout_path: ${{ github.workspace }}/.lcv-audit-target
-          category: zizmor
-
-      - name: Enforce zero active zizmor findings
-        shell: bash
-        env:
-          ZIZMOR_EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$ZIZMOR_EXIT_CODE" =~ ^[0-9]+$ ]]; then
-            echo "::error::Missing or invalid zizmor enforcement result." >&2
-            exit 1
-          fi
-          if [ "$ZIZMOR_EXIT_CODE" -ne 0 ]; then
-            echo "::error::zizmor reported active findings; see the analyzer output and SARIF results." >&2
-            exit "$ZIZMOR_EXIT_CODE"
-          fi
-          echo "zizmor reported zero active findings."
+          collect: all
+          persona: auditor

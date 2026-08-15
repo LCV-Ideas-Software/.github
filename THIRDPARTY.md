@@ -3,22 +3,17 @@
 Scope of this inventory: every **direct** dependency declared by a manifest committed to this
 repository, plus every third-party script loaded at runtime by a page this repository publishes.
 
-Transitive dependencies are not listed individually; they are pinned by the committed lockfiles, and
-each lockfile is audited by a different set of tools rather than by all of them:
-`package-lock.json` and `workers/github-slack-relay/package-lock.json` by Dependency Review,
-`npm audit` and the weekly OSV-Scanner sweep; `slack/github-integration/deno.lock` by
-`deno task audit` alone — the OSV collector selects only `package-lock.json` and `Cargo.lock`
-(`.github/workflows/oss-advisory-watch.yml:126-129`), so the Deno graph never reaches that scanner. GitHub Actions are not listed here either: they
-are pinned by immutable commit SHA and audited daily by `GitHub Actions Pin Audit`. The single
-container image committed here, in `.github/zizmor/Dockerfile`, is pinned by immutable digest and
-watched daily by the `docker` Dependabot ecosystem; the pin auditor does not cover it, because it
-audits `docker://` references declared by Docker Actions rather than `FROM` lines in a Dockerfile.
+Transitive dependencies are not listed individually; they are pinned by the committed lockfiles.
+Dependabot covers each declared ecosystem, while the repository workflows run the applicable native
+package-manager audits. GitHub Actions are not listed here: they are pinned by full commit SHA and
+updated through Dependabot. The repository intentionally has no parallel scanner, pin auditor,
+containerized Zizmor runtime, or policy wrapper of its own.
 
 Versions and licenses below were read from each package's own published manifest or from its
 upstream repository, not inferred. Versions are the ones actually resolved by the committed
 lockfiles, not the ranges declared in the manifests: the root `package.json` requests `prettier`
-as `^3.9.6` and resolves it to `3.9.6`; the structural workflow policy parser is pinned exactly as
-`yaml@2.9.0`.
+as `^3.9.6` and resolves it to `3.9.6`; the Slack workflow and relay contract tests use the exact
+`yaml@2.9.0` parser.
 
 ## Repository root — `package.json`
 

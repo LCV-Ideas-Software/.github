@@ -1,9 +1,0 @@
-rules:
-  dependabot-cooldown:
-    # Security updates bypass Dependabot cooldowns. Version updates are checked
-    # daily and use zizmor's recommended supply-chain stabilization window,
-    # except for GitHub Actions: that ecosystem excludes every package from the
-    # cooldown, so its releases are evaluated as soon as provenance, security
-    # and compatibility are validated. See .github/dependabot.yml.
-    config:
-      days: 7
