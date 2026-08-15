@@ -125,6 +125,19 @@ export const VERIFY_SECOND_SCAN_DELAY_MS = 24 * 60 * 60 * 1_000;
 // verify_scans_remaining (§6.3.3 invariant).
 export const VERIFY_DEFERRAL_BACKOFF_BASE_MS = VERIFY_FIRST_SCAN_DELAY_MS;
 export const VERIFY_DEFERRAL_BACKOFF_CAP_MS = 24 * 60 * 60 * 1_000;
+// Audit finding B1 / ADR §10 H14: a verification scan that makes NO PROGRESS
+// re-arms itself — a partial (non-exhausted) scan, a failed history read, a
+// scan with no match, a failed chat.delete. The non-exhausted re-arm was flat
+// (verify_after_ms = now + 15 min, forever) and completeScan is gated on
+// exhaustion, so the row re-scanned every 15 min with no exit and no alarm.
+// Every no-progress re-arm now shares ONE bounded backoff and ONE streak (the
+// `no_progress` audit marker, counted as a trailing run — two separate streaks
+// would cancel each other whenever the failure kind alternates), and after
+// this ceiling the row stops re-arming: it stays `delivered`, is audited with
+// `verification_abandoned` and raises the observer alarm. The value walks the
+// backoff ladder to its documented cap exactly once — 15 m, 30 m, 1 h, 2 h,
+// 4 h, 8 h, 16 h, 24 h (capped) — and the next no-progress scan parks the row.
+export const VERIFY_NO_PROGRESS_CEILING = 8;
 export const STALE_QUEUED_REQUEUE_AFTER_MS = 5 * 60 * 1_000;
 // ADR §4 item 4 (~1 msg/sec/channel with burst). Copilot suppressed comment
 // (F7): max_concurrency 1 serializes consumers but still permits consecutive
@@ -175,6 +188,10 @@ export interface DispatchStore {
     actor: "consumer" | "resolver" | "operator",
     expectedStates: readonly DispatchState[],
     evidenceJson: string,
+    // Copilot suppressed comment (F4): supplied ONLY by the operator menu's
+    // `mark_delivered`, where it makes the command one-shot inside this
+    // batch (see operatorCommandApplied). Absent for consumer/resolver.
+    requestSignatureSha256?: string | null,
   ): Promise<boolean>;
   markManual(
     deliveryId: string,
@@ -191,6 +208,11 @@ export interface DispatchStore {
     actor: "consumer" | "resolver",
     expectedStates: readonly DispatchState[],
   ): Promise<boolean>;
+  // Audit finding B3/B8 (ADR §10 H15 narrowing H9): dead-letters ONLY a
+  // `sending` row whose lease has EXPIRED. The wider `state IN
+  // ('queued','sending')` predicate killed a row under a live lease (a send in
+  // flight) and admitted the `queued -> dead_letter` transition H9 declares
+  // impossible.
   markDeadLetter(deliveryId: string, now: number, reason: string): Promise<boolean>;
   // Late-proof rule (ADR §6.3, R2): unconditional audit append, then
   // CAS ambiguous->delivered first, manual->delivered fallback.
@@ -241,6 +263,7 @@ export interface DispatchStore {
     deliveryId: string,
     now: number,
     evidenceJson: string,
+    requestSignatureSha256: string | null,
   ): Promise<boolean>;
   // CAS on the caller's snapshot of verify_scans_remaining, so overlapping
   // resolver passes cannot double-decrement (panel finding V13). Copilot
@@ -257,16 +280,38 @@ export interface DispatchStore {
     expectedRemaining: number,
     expectedVerifyAfterMs: number | null,
   ): Promise<boolean>;
-  // Copilot finding (resolver starvation): an inconclusive verification scan
-  // reschedules the row instead of leaving verify_after_ms in the past. The
-  // consecutive-deferral count is derived from the dispatch_audit markers
-  // (no schema column), and the deferral never touches
-  // verify_scans_remaining (§6.3.3).
-  consecutiveVerificationDeferrals(deliveryId: string): Promise<number>;
+  // Copilot finding (resolver starvation) + audit finding B1: an inconclusive
+  // verification scan reschedules the row instead of leaving verify_after_ms
+  // in the past. The count is derived from the dispatch_audit markers (no
+  // schema column) and covers EVERY no-progress re-arm — deferrals and
+  // duplicate-repair re-arms alike — as one trailing run: a streak per failure
+  // kind would reset the other, and an alternating sequence (partial scan,
+  // then 429, then partial…) would never reach any ceiling. Only real progress
+  // (a completed scan, a repair, a state transition) or the abandon marker
+  // resets it.
+  consecutiveNoProgressScans(deliveryId: string): Promise<number>;
+  // Audit finding B7: the caller's OBSERVED verify_after_ms joins the CAS, as
+  // completeVerificationScan already does, so a pass acting on a stale
+  // snapshot cannot overwrite a due time re-armed after that snapshot
+  // (including an operator sweep, ADR §10 H11).
   deferVerificationScan(
     deliveryId: string,
     now: number,
     nextVerifyAfterMs: number,
+    evidenceJson: string,
+    expectedVerifyAfterMs: number | null,
+  ): Promise<boolean>;
+  // Audit finding B1 / ADR §10 H14: after VERIFY_NO_PROGRESS_CEILING
+  // consecutive no-progress scans the row stops re-arming. It stays
+  // `delivered` and keeps its counter as evidence; only verify_after_ms is
+  // cleared, which removes it from verificationRowsDue. Same snapshot guard as
+  // deferVerificationScan (B7), so a sweep that lands first is never
+  // abandoned. An operator sweep (H11) stamps verify_after_ms = now and
+  // restarts verification with a fresh streak.
+  abandonVerification(
+    deliveryId: string,
+    now: number,
+    expectedVerifyAfterMs: number | null,
     evidenceJson: string,
   ): Promise<boolean>;
   updateCanonicalTs(
@@ -276,29 +321,55 @@ export interface DispatchStore {
     evidenceJson: string,
   ): Promise<boolean>;
   // Copilot finding F5 (ADR §6.3.2/R19): a detected duplicate whose deletion
-  // failed re-arms verification (at least one scan, due at the §6.3.3
-  // first-scan delay) and records the pending marker — one batch + audit.
+  // failed, or a partial scan, re-arms verification (at least one scan) and
+  // records the pending marker — one batch + audit. Audit finding B1: the due
+  // time is the CALLER's, taken from the shared no-progress backoff, instead
+  // of a flat +15 min that never terminated.
   flagDuplicateRepairPending(
     deliveryId: string,
     now: number,
+    nextVerifyAfterMs: number,
     evidenceJson: string,
   ): Promise<boolean>;
   // Operator menu (I1: the only resend path; marked possible-duplicate).
-  operatorResend(deliveryId: string, now: number, evidenceJson: string): Promise<boolean>;
-  operatorCloseManual(deliveryId: string, now: number, evidenceJson: string): Promise<boolean>;
+  // Copilot suppressed comment (F4): every operator mutation takes the SHA-256
+  // of its request signature and CONSUMES it inside its own batch — the audit
+  // INSERT refuses a digest already recorded for the delivery and the UPDATE
+  // is bound to that decision, so two concurrent identical commands apply
+  // exactly once. `null` means "no one-shot guard" and is reserved for
+  // non-route callers (tests, fixtures).
+  operatorResend(
+    deliveryId: string,
+    now: number,
+    evidenceJson: string,
+    requestSignatureSha256: string | null,
+  ): Promise<boolean>;
+  operatorCloseManual(
+    deliveryId: string,
+    now: number,
+    evidenceJson: string,
+    requestSignatureSha256: string | null,
+  ): Promise<boolean>;
   // Copilot finding F6 (operator command replay): the freshness window bounds
   // replay to five minutes but does not make a non-idempotent command
   // one-shot. Every operator transition bakes the SHA-256 of its request
   // signature into its audit evidence; this read answers "has this exact
   // signed command already been applied?". No schema column — the binding
   // lives for the retention of dispatch_audit (see the route's trade-off
-  // note in src/index.ts).
+  // note in src/index.ts). Copilot suppressed comment (F4): this read is now
+  // only the FAST 409 path — the binding one-shot property is enforced
+  // atomically inside each mutation's batch.
   operatorCommandApplied(
     deliveryId: string,
     requestSignatureSha256: string,
   ): Promise<boolean>;
   // Cron: stale queued re-enqueue inputs (R13).
   staleQueuedRows(now: number, limit: number): Promise<DispatchOutboxRow[]>;
+  // Audit finding B3 (the DLQ amplifier): the cron republished the SAME stale
+  // queued row on every pass, because the republish changed nothing on the
+  // row. Stamping updated_ms restarts the STALE_QUEUED_REQUEUE_AFTER_MS window
+  // for it, so the republish is spaced instead of continuous.
+  markQueuedRepublished(deliveryId: string, now: number): Promise<boolean>;
   // /status + observer (ADR §6.7) — read-only aggregates.
   statusCounters(now: number): Promise<DispatchStatusCounters>;
   appendAudit(entry: Omit<DispatchAuditEntry, "seq">): Promise<void>;
@@ -321,6 +392,10 @@ export interface DispatchStatusCounters {
   // queued-backlog alarm and the drain view.
   oldestAmbiguousAgeMs: number | null;
   repairedDuplicates: number;
+  // Audit finding B1 / ADR §10 H14: delivered rows whose verification stopped
+  // re-arming (scans remaining, no due time). Row-derived, not marker-derived,
+  // so an operator sweep clears the alarm.
+  verificationAbandoned: number;
 }
 
 // ADR §6.7 — observe-only alarm predicate inputs. `queued` and
@@ -333,4 +408,7 @@ export interface ObserverSnapshot {
   repairedDuplicates: number;
   queued?: number;
   oldestNonTerminalAgeMs?: number | null;
+  // Audit finding B1 / ADR §10 H14: a row that gave up on verification must be
+  // VISIBLE instead of silent. Optional so pre-existing callers stay valid.
+  verificationAbandoned?: number;
 }

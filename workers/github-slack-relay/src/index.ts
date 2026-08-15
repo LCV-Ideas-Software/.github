@@ -41,6 +41,7 @@ import { D1DispatchStore } from "./dispatch/outbox";
 import {
   acceptPrimary,
   channelForDestination,
+  DispatchCronPassError,
   dispatchQueueJobBody,
   dispatchStatusBody,
   insertLegacyFenced,
@@ -1076,6 +1077,14 @@ async function handleDispatchOperatorRequest(
   // whose CAS changed nothing (409) writes no audit row, because the audit
   // INSERT shares the CAS predicate, so retrying it after the row returns to
   // an eligible state is still allowed by design.
+  // Copilot suppressed comment (F4): this READ-THEN-ACT check is only the fast
+  // 409 path. It cannot make a command one-shot under concurrency — two
+  // identical requests both observe no digest, and for a delivered row with
+  // zero scans the first sweep increments 0 -> 1 while the second still
+  // satisfies verify_scans_remaining < 2 and increments 1 -> 2, applying the
+  // same command twice. The digest is therefore also carried INTO every
+  // operator mutation, where its own batch consumes it atomically with the
+  // transition (src/dispatch/outbox.ts).
   let signatureDigest: string;
   try {
     signatureDigest = await dispatchOperatorSignatureDigest(
@@ -1104,6 +1113,7 @@ async function handleDispatchOperatorRequest(
           evidence: command.evidence,
           request_signature_sha256: signatureDigest,
         }),
+        signatureDigest,
       );
     } catch {
       return jsonResponse({ error: "persistence_unavailable" }, 503);
@@ -1131,6 +1141,7 @@ async function handleDispatchOperatorRequest(
           evidence: command.evidence,
           request_signature_sha256: signatureDigest,
         }),
+        signatureDigest,
       );
     } catch {
       return jsonResponse({ error: "persistence_unavailable" }, 503);
@@ -1164,6 +1175,7 @@ async function handleDispatchOperatorRequest(
           evidence: command.evidence,
           request_signature_sha256: signatureDigest,
         }),
+        signatureDigest,
       );
     } catch {
       return jsonResponse({ error: "persistence_unavailable" }, 503);
@@ -1186,6 +1198,7 @@ async function handleDispatchOperatorRequest(
         evidence: command.evidence,
         request_signature_sha256: signatureDigest,
       }),
+      signatureDigest,
     );
   } catch {
     return jsonResponse({ error: "persistence_unavailable" }, 503);
@@ -2185,6 +2198,9 @@ export async function runDispatchScheduled(
           shadow_processed: dispatchResult.shadowProcessed,
           requeued: dispatchResult.requeued,
           resolver_examined: dispatchResult.resolverExamined,
+          // Audit finding B4: rows whose examination threw and was contained
+          // so the pass could finish — visible instead of lost.
+          resolver_failed: dispatchResult.resolverFailed,
           alarm_count: dispatchResult.alarms.length,
         }),
       );
@@ -2195,12 +2211,26 @@ export async function runDispatchScheduled(
       }
     }
   } catch (error) {
+    // Copilot suppressed comment (F3) / ADR §6.7 (R5): the observe-only alarms
+    // are computed even when the pass fails, so a Slack or Secrets Store
+    // outage no longer silences manual_present, dead_letter_present,
+    // ambiguous_stale or the queued backlog. The failure summary keeps
+    // pointing at the ORIGINAL error, carried as `cause`.
+    const failure =
+      error instanceof DispatchCronPassError ? error.cause : error;
     console.error(
       JSON.stringify({
         event: "dispatch_cron_pass_failed",
-        ...safeFailureSummary(error),
+        ...safeFailureSummary(failure),
       }),
     );
+    if (error instanceof DispatchCronPassError) {
+      for (const alarm of error.alarms) {
+        console.error(
+          JSON.stringify({ event: "dispatch_observer_alarm", alarm }),
+        );
+      }
+    }
   }
 }
 

@@ -536,6 +536,136 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     expect(String(last?.["evidence_json"] ?? "")).toContain(lateTs);
   });
 
+  // Copilot suppressed comment (F2): the proof audit used to commit in a
+  // SEPARATE database operation from the CAS that follows it. A worker
+  // termination in that window left the row `manual` with the proof only in
+  // the journal, and queue redelivery then ACKed an unclaimable manual row —
+  // canonical proof never won over inference without operator intervention.
+  it("suppressed F2: the late proof and the ambiguous->delivered CAS commit in ONE batch, and the manual guard stays a no-op", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "suppressed-f2-atomic-ambiguous";
+    const lateTs = "1786665495.000400";
+
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(deliveryId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(
+      await store.markAmbiguous(
+        deliveryId,
+        DISPATCH_TEST_NOW + 1_000,
+        "http_500",
+        null,
+        "consumer",
+        ["sending"],
+      ),
+    ).toBe(true);
+    const before = auditRows(database, deliveryId).length;
+
+    expect(
+      await store.recordLateProof(
+        deliveryId,
+        DISPATCH_TEST_NOW + 2_000,
+        lateTs,
+        ALERTS_CHANNEL,
+        "consumer",
+      ),
+    ).toBe("ambiguous_cas");
+
+    const entries = auditRows(database, deliveryId).slice(before);
+    // Exactly the proof append plus ONE transition: the manual-guarded
+    // statements of the same batch see the row already `delivered`, so their
+    // state predicate makes them in-batch no-ops.
+    expect(entries).toHaveLength(2);
+    expect(
+      entries.filter((entry) => entry["to_state"] === "delivered"),
+    ).toHaveLength(1);
+    // The unconditional proof append runs FIRST, so it records the state as it
+    // was BEFORE the transition — reordering the batch would rewrite this.
+    expect(entries[0]).toMatchObject({
+      from_state: "ambiguous",
+      to_state: "ambiguous",
+    });
+    expect(String(entries[0]?.["evidence_json"])).toContain('"late_proof":true');
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      slack_message_ts: lateTs,
+    });
+  });
+
+  it("suppressed F2: a late-proof batch that violates UNIQUE(destination, ts) leaves NEITHER the audit nor the transition", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const winnerId = "suppressed-f2-rollback-winner";
+    const loserId = "suppressed-f2-rollback-loser";
+    const ts = "1786665495.000410";
+
+    // The ts is already recorded on another delivered row of the same
+    // destination, so the late-proof UPDATE violates the UNIQUE index.
+    await store.insert({
+      deliveryId: winnerId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(winnerId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(
+      await store.markDelivered(
+        winnerId,
+        DISPATCH_TEST_NOW + 500,
+        ts,
+        ALERTS_CHANNEL,
+        "consumer",
+        ["sending"],
+        '{"outcome":"ok"}',
+      ),
+    ).toBe(true);
+
+    await store.insert({
+      deliveryId: loserId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(loserId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(
+      await store.markManual(
+        loserId,
+        DISPATCH_TEST_NOW + 600,
+        "channel_not_found",
+        "consumer",
+        ["sending"],
+      ),
+    ).toBe(true);
+    const before = auditRows(database, loserId).length;
+
+    // §6.1: whether the store surfaces the failure as a throw or a false
+    // return, no partial write may survive — the proof append is inside the
+    // same batch as the transition it guards.
+    await store
+      .recordLateProof(
+        loserId,
+        DISPATCH_TEST_NOW + 1_000,
+        ts,
+        ALERTS_CHANNEL,
+        "consumer",
+      )
+      .catch(() => undefined);
+
+    expect(outboxRow(database, loserId)).toMatchObject({
+      state: "manual",
+      slack_message_ts: null,
+    });
+    expect(auditRows(database, loserId)).toHaveLength(before);
+  });
+
   // §10 narrows R6: with a single destination, "one destination never touches
   // the other" is vacuous, so the RED is restated as row independence inside
   // `alerts` — the property the transitions actually have to carry.
@@ -624,6 +754,164 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
       stale.map((row: DispatchOutboxRow) => row.deliveryId),
     ).toEqual([staleId]);
     expect(stale[0]?.state).toBe("queued");
+
+    // Audit finding B3 (the DLQ amplifier): a republished row must leave the
+    // stale set for a full interval, or every cron pass republishes it again.
+    expect(
+      await store.markQueuedRepublished(staleId, DISPATCH_TEST_NOW),
+    ).toBe(true);
+    expect(await store.staleQueuedRows(DISPATCH_TEST_NOW, 10)).toHaveLength(0);
+    expect(
+      (
+        await store.staleQueuedRows(
+          DISPATCH_TEST_NOW + STALE_QUEUED_REQUEUE_AFTER_MS + 1,
+          10,
+        )
+      ).map((row: DispatchOutboxRow) => row.deliveryId),
+      // The fresh row has aged past the threshold by then too; what this pins
+      // is that the republished row comes back exactly one interval later.
+    ).toContain(staleId);
+    // It is a `queued`-only stamp: a claimed row is never touched by it.
+    expect(
+      await store.markQueuedRepublished(sendingId, DISPATCH_TEST_NOW),
+    ).toBe(false);
+  });
+
+  // Audit finding B3/B8 (ADR §10 H15, narrowing H9): markDeadLetter CASed on
+  // `state IN ('queued','sending')` with no lease term, so a row in `sending`
+  // under a LIVE lease — a send genuinely in flight — was dead-lettered by a
+  // duplicate DLQ arrival, and an operator resend landing between the DLQ
+  // handler's read and its write produced the `queued -> dead_letter`
+  // transition H9 declares impossible.
+  it("B3: markDeadLetter spares a live lease and a queued row, and dead-letters only a crashed send", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const liveId = "b3-live-lease";
+    const queuedId = "b3-queued-row";
+
+    await store.insert({
+      deliveryId: liveId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(liveId, DISPATCH_TEST_NOW)).not.toBeNull();
+    const auditsBefore = auditRows(database, liveId).length;
+
+    // Inside the 90 s lease: the send is in flight, the DLQ arrival is a
+    // duplicate queue message — the row must survive untouched.
+    expect(
+      await store.markDeadLetter(
+        liveId,
+        DISPATCH_TEST_NOW + DISPATCH_LEASE_MS - 1,
+        "cloudflare_queue_dead_letter",
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, liveId)).toMatchObject({
+      state: "sending",
+      last_error: null,
+    });
+    // Atomic with the refused UPDATE: no audit row for a transition that did
+    // not happen.
+    expect(auditRows(database, liveId)).toHaveLength(auditsBefore);
+
+    // Past the lease: a crash between claim and outcome — H9's case.
+    expect(
+      await store.markDeadLetter(
+        liveId,
+        DISPATCH_TEST_NOW + DISPATCH_LEASE_MS + 1,
+        "cloudflare_queue_dead_letter",
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, liveId)).toMatchObject({
+      state: "dead_letter",
+      last_error: "cloudflare_queue_dead_letter",
+    });
+    expect(auditRows(database, liveId).at(-1)).toMatchObject({
+      from_state: "sending",
+      to_state: "dead_letter",
+    });
+
+    // A `queued` row is never dead-lettered, whatever the clock says: H9
+    // declares `queued -> dead_letter` impossible, and the predicate — not
+    // only the handler's snapshot — now enforces it.
+    await store.insert({
+      deliveryId: queuedId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(
+      await store.markDeadLetter(
+        queuedId,
+        DISPATCH_TEST_NOW + 10 * DISPATCH_LEASE_MS,
+        "cloudflare_queue_dead_letter",
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, queuedId)).toMatchObject({ state: "queued" });
+    expect(auditRows(database, queuedId)).toHaveLength(1);
+  });
+
+  // Audit finding B7: deferVerificationScan predicated only on
+  // state/shadow/counter, so a pass acting on a STALE snapshot overwrote a due
+  // time re-armed after that snapshot — including an operator sweep's
+  // "due now", the whole point of H11.
+  it("B7: a deferral holding a stale verify_after_ms cannot overwrite a newer re-arm", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "b7-stale-deferral";
+    const deliveredMs = DISPATCH_TEST_NOW + 2_000;
+    await seedOperatorResentDelivered(store, deliveryId, deliveredMs);
+    const staleDueMs = deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS;
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_after_ms: staleDueMs,
+    });
+
+    // The operator sweeps: at least one scan armed and due NOW (H11).
+    const sweepNow = staleDueMs + 30_000;
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        sweepNow,
+        JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+        null,
+      ),
+    ).toBe(true);
+    const auditsAfterSweep = auditRows(database, deliveryId).length;
+
+    // The in-flight pass, still holding the pre-sweep snapshot, defers.
+    expect(
+      await store.deferVerificationScan(
+        deliveryId,
+        sweepNow + 1_000,
+        sweepNow + 1_000 + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+        '{"verification_deferred":true,"no_progress":true}',
+        staleDueMs,
+      ),
+    ).toBe(false);
+    // The operator's scan is intact: still due now, still unaudited by the
+    // refused deferral.
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_after_ms: sweepNow,
+      verify_scans_remaining: 2,
+    });
+    expect(auditRows(database, deliveryId)).toHaveLength(auditsAfterSweep);
+
+    // Positive control: the pass holding the CURRENT snapshot still defers.
+    expect(
+      await store.deferVerificationScan(
+        deliveryId,
+        sweepNow + 2_000,
+        sweepNow + 2_000 + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+        '{"verification_deferred":true,"no_progress":true}',
+        sweepNow,
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_after_ms: sweepNow + 2_000 + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+    });
   });
 
   it("R16: statusCounters reflects ambiguous -> manual, and manual is non-terminal for the drain view", async () => {
@@ -654,10 +942,14 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         '{"outcome":"ok"}',
       ),
     ).toBe(true);
+    // Audit finding B3 (ADR §10 H15): dead_letter is reachable only from
+    // `sending` with an EXPIRED lease — a crashed send, never a live one — so
+    // the DLQ arrival is placed after the row's 90 s lease ran out. The row's
+    // state at every later assertion is unchanged.
     expect(
       await store.markDeadLetter(
         deadId,
-        DISPATCH_TEST_NOW + 500,
+        DISPATCH_TEST_NOW + DISPATCH_LEASE_MS + 500,
         "queue_retries_exhausted",
       ),
     ).toBe(true);
@@ -707,6 +999,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         parkedId,
         DISPATCH_TEST_NOW + 5_000,
         '{"decision":"closed after review"}',
+        null,
       ),
     ).toBe(true);
     counters = await store.statusCounters(DISPATCH_TEST_NOW + 6_000);
@@ -764,6 +1057,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         deliveryId,
         DISPATCH_TEST_NOW + 3_000,
         '{"resend":"possible-duplicate accepted by operator"}',
+        null,
       ),
     ).toBe(true);
     expect(outboxRow(database, deliveryId)).toMatchObject({ state: "queued" });
@@ -790,12 +1084,15 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     // Copilot finding (resolver starvation): the deferral is a mutation too —
     // verify_after_ms moves forward in one batch with its marker, and the
     // §6.3.3 counter is untouched.
+    // Audit finding B7: the deferral now CASes on the caller's observed
+    // verify_after_ms too — here the value markDelivered stamped above.
     expect(
       await store.deferVerificationScan(
         deliveryId,
         DISPATCH_TEST_NOW + 6_000,
         DISPATCH_TEST_NOW + 6_000 + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
         '{"verification_deferred":true,"reason":"history_error_internal"}',
+        DISPATCH_TEST_NOW + 5_000 + VERIFY_FIRST_SCAN_DELAY_MS,
       ),
     ).toBe(true);
     expect(outboxRow(database, deliveryId)).toMatchObject({
@@ -812,14 +1109,18 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     const deadId = "f7-dead-letter-resend";
     const deliveredId = "f7-delivered-refused";
 
+    // Audit finding B3 (ADR §10 H15): a crashed send — claimed long enough ago
+    // for its 90 s lease to have expired — is the only shape that reaches
+    // dead_letter now. Everything from DISPATCH_TEST_NOW onward is unchanged.
+    const crashedSendMs = DISPATCH_TEST_NOW - DISPATCH_LEASE_MS - 2_000;
     await store.insert({
       deliveryId: deadId,
       destination: "alerts",
       shadow: false,
       payloadJson: "{}",
-      now: DISPATCH_TEST_NOW,
+      now: crashedSendMs,
     });
-    expect(await store.claim(deadId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(await store.claim(deadId, crashedSendMs + 1_000)).not.toBeNull();
     expect(
       await store.markDeadLetter(
         deadId,
@@ -835,6 +1136,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         deadId,
         DISPATCH_TEST_NOW + 1_000,
         '{"resend":"possible-duplicate accepted by operator"}',
+        null,
       ),
     ).toBe(true);
     expect(outboxRow(database, deadId)).toMatchObject({
@@ -875,6 +1177,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         deliveredId,
         DISPATCH_TEST_NOW + 1_000,
         '{"resend":"refused"}',
+        null,
       ),
     ).toBe(false);
     expect(outboxRow(database, deliveredId)).toMatchObject({
@@ -1146,14 +1449,19 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     deliveryId: string,
     deliveredMs: number,
   ): Promise<void> => {
+    // Audit finding B3 (ADR §10 H15): the seeded DLQ trip is a CRASHED send —
+    // claimed long enough ago for its 90 s lease to have expired, the only
+    // shape that still reaches dead_letter. The sweep timeline below (from
+    // DISPATCH_TEST_NOW onward) is untouched.
+    const crashedSendMs = DISPATCH_TEST_NOW - DISPATCH_LEASE_MS - 2_000;
     await store.insert({
       deliveryId,
       destination: "alerts",
       shadow: false,
       payloadJson: "{}",
-      now: DISPATCH_TEST_NOW,
+      now: crashedSendMs,
     });
-    await store.claim(deliveryId, DISPATCH_TEST_NOW);
+    await store.claim(deliveryId, crashedSendMs + 1_000);
     await store.markDeadLetter(
       deliveryId,
       DISPATCH_TEST_NOW + 500,
@@ -1164,6 +1472,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
       deliveryId,
       DISPATCH_TEST_NOW + 1_000,
       '{"resend":"possible-duplicate accepted by operator"}',
+      null,
     );
     await store.claim(deliveryId, deliveredMs);
     // markDelivered preserves the counter and stamps the first scan.
@@ -1199,6 +1508,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         deliveryId,
         sweepNow,
         JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+        null,
       ),
     ).toBe(true);
 
@@ -1254,6 +1564,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         deliveryId,
         sweepNow,
         JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+        null,
       ),
     ).toBe(true);
     expect(outboxRow(database, deliveryId)).toMatchObject({
@@ -1281,6 +1592,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         deliveryId,
         sweepNow,
         JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+        null,
       ),
     ).toBe(false);
     expect(outboxRow(database, deliveryId)).toMatchObject({
@@ -1307,6 +1619,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         deliveryId,
         sweepNow,
         JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+        null,
       ),
     ).toBe(true);
     const auditsAfterSweep = auditRows(database, deliveryId).length;
@@ -1342,5 +1655,206 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     expect(outboxRow(database, deliveryId)).toMatchObject({
       verify_scans_remaining: 1,
     });
+  });
+
+  // Copilot suppressed comment (F4) / ADR §10 H12: the route's read-then-act
+  // digest check does not make a command one-shot under concurrency. Both
+  // requests observe no digest; for a delivered row with zero scans the first
+  // sweep increments 0 -> 1 and the second still satisfies
+  // verify_scans_remaining < 2, increments 1 -> 2 and writes the same command
+  // twice. These tests execute the STORE call twice with the same digest and
+  // NO intervening pre-check — the concurrent shape.
+  const OPERATOR_DIGEST = "9".repeat(64);
+  const OTHER_DIGEST = "7".repeat(64);
+
+  it("suppressed F4: two concurrent-shaped identical sweeps apply exactly once", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "f4-concurrent-sweep";
+    // The R19 shape the finding names: delivered, both automatic scans spent.
+    insertRawOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786665495.000500",
+    });
+    const evidence = JSON.stringify({
+      operator_action: "sweep",
+      verification_armed: true,
+      request_signature_sha256: OPERATOR_DIGEST,
+    });
+
+    const first = await store.operatorSweepVerification(
+      deliveryId,
+      DISPATCH_TEST_NOW,
+      evidence,
+      OPERATOR_DIGEST,
+    );
+    const second = await store.operatorSweepVerification(
+      deliveryId,
+      DISPATCH_TEST_NOW,
+      evidence,
+      OPERATOR_DIGEST,
+    );
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    // Incremented ONCE (0 -> 1, not 0 -> 2)...
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      verify_scans_remaining: 1,
+      verify_after_ms: DISPATCH_TEST_NOW,
+    });
+    // ...and exactly one audit row: the ledger entry IS the guard.
+    expect(auditRows(database, deliveryId)).toHaveLength(1);
+
+    // A different signed command on the same row still applies.
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        DISPATCH_TEST_NOW + 1_000,
+        JSON.stringify({
+          operator_action: "sweep",
+          request_signature_sha256: OTHER_DIGEST,
+        }),
+        OTHER_DIGEST,
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_scans_remaining: 2,
+    });
+    expect(auditRows(database, deliveryId)).toHaveLength(2);
+  });
+
+  it("suppressed F4: two concurrent-shaped identical resends apply exactly once", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "f4-concurrent-resend";
+    insertRawOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+    const evidence = JSON.stringify({
+      operator_action: "resend",
+      possible_duplicate: true,
+      request_signature_sha256: OPERATOR_DIGEST,
+    });
+
+    expect(
+      await store.operatorResend(
+        deliveryId,
+        DISPATCH_TEST_NOW,
+        evidence,
+        OPERATOR_DIGEST,
+      ),
+    ).toBe(true);
+    // The resend fails and the row returns to `manual` — without the in-batch
+    // guard the state CAS alone would accept the same command again and
+    // initiate a SECOND operator-marked possible duplicate.
+    database
+      .prepare(
+        "UPDATE dispatch_outbox SET state = 'manual' WHERE delivery_id = ?",
+      )
+      .run(deliveryId);
+
+    expect(
+      await store.operatorResend(
+        deliveryId,
+        DISPATCH_TEST_NOW,
+        evidence,
+        OPERATOR_DIGEST,
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, deliveryId)).toMatchObject({ state: "manual" });
+    expect(auditRows(database, deliveryId)).toHaveLength(1);
+  });
+
+  it("suppressed F4: close_manual and mark_delivered are one-shot inside their own batch", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const closedId = "f4-concurrent-close";
+    const markedId = "f4-concurrent-mark-delivered";
+    insertRawOutboxRow(database, {
+      deliveryId: closedId,
+      destination: "alerts",
+      state: "manual",
+    });
+    insertRawOutboxRow(database, {
+      deliveryId: markedId,
+      destination: "alerts",
+      state: "manual",
+    });
+    const backToManual = (deliveryId: string): void => {
+      database
+        .prepare(
+          "UPDATE dispatch_outbox SET state = 'manual'," +
+            " slack_message_ts = NULL, slack_channel_id = NULL" +
+            " WHERE delivery_id = ?",
+        )
+        .run(deliveryId);
+    };
+
+    const closeEvidence = JSON.stringify({
+      operator_action: "close_manual",
+      request_signature_sha256: OPERATOR_DIGEST,
+    });
+    expect(
+      await store.operatorCloseManual(
+        closedId,
+        DISPATCH_TEST_NOW,
+        closeEvidence,
+        OPERATOR_DIGEST,
+      ),
+    ).toBe(true);
+    backToManual(closedId);
+    expect(
+      await store.operatorCloseManual(
+        closedId,
+        DISPATCH_TEST_NOW,
+        closeEvidence,
+        OPERATOR_DIGEST,
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, closedId)).toMatchObject({ state: "manual" });
+    expect(auditRows(database, closedId)).toHaveLength(1);
+
+    const proofTs = "1786665495.000510";
+    const markEvidence = JSON.stringify({
+      operator_action: "mark_delivered",
+      ts: proofTs,
+      request_signature_sha256: OPERATOR_DIGEST,
+    });
+    expect(
+      await store.markDelivered(
+        markedId,
+        DISPATCH_TEST_NOW,
+        proofTs,
+        ALERTS_CHANNEL,
+        "operator",
+        ["manual"],
+        markEvidence,
+        OPERATOR_DIGEST,
+      ),
+    ).toBe(true);
+    backToManual(markedId);
+    expect(
+      await store.markDelivered(
+        markedId,
+        DISPATCH_TEST_NOW,
+        proofTs,
+        ALERTS_CHANNEL,
+        "operator",
+        ["manual"],
+        markEvidence,
+        OPERATOR_DIGEST,
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, markedId)).toMatchObject({
+      state: "manual",
+      slack_message_ts: null,
+    });
+    expect(auditRows(database, markedId)).toHaveLength(1);
   });
 });

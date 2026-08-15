@@ -15,12 +15,17 @@ import {
   VERIFY_DEFERRAL_BACKOFF_BASE_MS,
   VERIFY_DEFERRAL_BACKOFF_CAP_MS,
   VERIFY_FIRST_SCAN_DELAY_MS,
+  VERIFY_NO_PROGRESS_CEILING,
   VERIFY_SECOND_SCAN_DELAY_MS,
   type DispatchDestination,
   type DispatchOutboxRow,
   type DispatchStore,
   type ResolverVerdict,
 } from "./contract";
+// Copilot suppressed comment (F1): the resolver validates a matched history
+// entry's ts with the SAME canonical pattern the §6.2 classifier applies to a
+// chat.postMessage body — one shape, one source (migration 0010's CHECK).
+import { CANONICAL_TS_PATTERN } from "./classifier";
 
 const HISTORY_URL = "https://slack.com/api/conversations.history";
 const DELETE_URL = "https://slack.com/api/chat.delete";
@@ -40,6 +45,9 @@ export interface ResolverDeps {
 
 export interface ResolverPassResult {
   examined: number;
+  // Audit finding B4: rows whose examination THREW. The pass keeps going and
+  // reports them instead of aborting; the cron logs the count.
+  failed: number;
 }
 
 type ScanResult =
@@ -90,19 +98,44 @@ function nextCursorOf(body: Record<string, unknown>): string {
   return typeof cursor === "string" ? cursor : "";
 }
 
-// §6.3.1 match rule (R14): top-level messages only (any thread_ts
-// disqualifies — R15), exact event_type and event_payload.delivery_id.
+// §6.3.1 match rule (R14): top-level messages only (R15), exact event_type
+// and event_payload.delivery_id.
+// Audit finding B2 (BLOCKER): "any thread_ts disqualifies" is NOT what
+// top-level means. Slack documents, verbatim: "One quirk of threaded messages
+// is that a parent message object will retain a `thread_ts` value, even if all
+// its replies have been deleted." A parent carries `thread_ts === ts`, so the
+// moment a human replies in-thread to one of our alerts — the ordinary way
+// people use an alert channel — our own message became invisible to the
+// resolver: a verification scan then saw only the duplicate, deleted nothing,
+// and still recorded the canonical ts, so D1 looked clean while the duplicate
+// survived; on an ambiguous row the same filter could manufacture a false
+// proven_absent. A message is a thread REPLY only when it carries a thread_ts
+// that DIFFERS from its own ts; parents and unthreaded messages both match.
+// Copilot suppressed comment (F1, SEVERE): a MATCHING entry whose `ts` is
+// missing, non-string or malformed used to be dropped silently, so an
+// exhausted scan could report absence for a delivery whose message is right
+// there in the history — and a non-empty malformed ts that DID pass would
+// later violate migration 0010's slack_message_ts CHECK and abort the whole
+// resolver pass. Such an entry now makes the scan INCONCLUSIVE (returns
+// true), validated with CANONICAL_TS_PATTERN — the exact pattern the §6.2
+// classifier applies to a chat.postMessage body, so the resolver and the
+// consumer accept the same canonical shape. A NON-matching entry is still
+// skipped silently: the guard is scoped to entries whose metadata identifies
+// THIS delivery.
 function collectMatches(
   body: Record<string, unknown>,
   deliveryId: string,
   matches: string[],
-): void {
+): boolean {
   const messages = body["messages"];
-  if (!Array.isArray(messages)) return;
+  if (!Array.isArray(messages)) return false;
+  let malformedMatch = false;
   for (const message of messages) {
     if (typeof message !== "object" || message === null) continue;
     const candidate = message as Record<string, unknown>;
-    if (candidate["thread_ts"] !== undefined) continue;
+    // B2: a reply, never a parent (thread_ts === ts) or an unthreaded message.
+    const threadTs = candidate["thread_ts"];
+    if (threadTs !== undefined && threadTs !== candidate["ts"]) continue;
     const metadata = candidate["metadata"];
     if (typeof metadata !== "object" || metadata === null) continue;
     const meta = metadata as Record<string, unknown>;
@@ -113,8 +146,13 @@ function collectMatches(
       continue;
     }
     const ts = candidate["ts"];
-    if (typeof ts === "string" && ts.length > 0) matches.push(ts);
+    if (typeof ts === "string" && CANONICAL_TS_PATTERN.test(ts)) {
+      matches.push(ts);
+      continue;
+    }
+    malformedMatch = true;
   }
+  return malformedMatch;
 }
 
 // slack ts ("seconds.fraction") ordered without float arithmetic — the
@@ -225,7 +263,19 @@ async function scanHistory(
         retryAfterMs: null,
       };
     }
-    collectMatches(body, row.deliveryId, matches);
+    if (collectMatches(body, row.deliveryId, matches)) {
+      // Copilot suppressed comment (F1): a matching entry without a canonical
+      // timestamp is a MALFORMED scan, never absence. The whole scan is
+      // discarded — exactly as history_malformed_page above — so this pass
+      // can neither park the row by proven-absence nor persist the malformed
+      // ts; retention is "never delete" (§9.A4), so a later scan re-finds the
+      // matches collected before this page.
+      return {
+        kind: "failed",
+        reason: "history_malformed_match",
+        retryAfterMs: null,
+      };
+    }
     const nextCursor = nextCursorOf(body);
     const hasMore = body["has_more"] === true;
     if (nextCursor === "" && !hasMore) {
@@ -247,9 +297,53 @@ async function scanHistory(
 // (history error/partial) or a scan with no match must push verify_after_ms
 // forward — otherwise the row stays due forever, is re-selected every cron
 // and starves the ambiguous backlog. Bounded backoff: the §6.3.3 first-scan
-// delay doubled per CONSECUTIVE deferral, capped at 24 h, derived from the
-// dispatch_audit markers. §6.3.3 invariant preserved: verify_scans_remaining
-// is never decremented by a failed scan.
+// delay doubled per CONSECUTIVE no-progress scan, capped at 24 h, derived from
+// the dispatch_audit markers. §6.3.3 invariant preserved:
+// verify_scans_remaining is never decremented by a failed scan.
+// Audit finding B1 / ADR §10 H14: the SAME backoff now also governs the
+// duplicate-repair re-arm (which was flat 15 min, for ever), both kinds share
+// ONE streak, and the streak has a ceiling.
+function noProgressDelayMs(
+  priorNoProgress: number,
+  retryAfterMs: number | null,
+): number {
+  const backoffMs = Math.min(
+    VERIFY_DEFERRAL_BACKOFF_BASE_MS * 2 ** priorNoProgress,
+    VERIFY_DEFERRAL_BACKOFF_CAP_MS,
+  );
+  // Copilot finding F3 / ADR R4 ("recorded Retry-After honored by the
+  // resolver's scan scheduling"): a verification scan rejected with 429 +
+  // Retry-After was deferred by the generic backoff and the header was
+  // discarded, so the next scan could hit Slack before the advertised wait.
+  // The deferral takes the LARGER of the two — the backoff stays bounded by
+  // its cap, the header is honored even past it.
+  return Math.max(backoffMs, retryAfterMs ?? 0);
+}
+
+// B1 / H14: the exit. The row stays `delivered` with its counter intact, its
+// due time is cleared (so no pass selects it again), the marker is
+// distinguishable from every re-arm, and statusCounters turns the resulting
+// shape into the `verification_abandoned` observer alarm. An operator sweep
+// (H11) re-arms it and restarts the streak.
+async function abandonVerification(
+  row: DispatchOutboxRow,
+  deps: ResolverDeps,
+  now: number,
+  reason: string,
+): Promise<void> {
+  await deps.store.abandonVerification(
+    row.deliveryId,
+    now,
+    row.verifyAfterMs,
+    JSON.stringify({
+      verification_abandoned: true,
+      reason,
+      consecutive_no_progress: VERIFY_NO_PROGRESS_CEILING,
+      verify_scans_remaining: row.verifyScansRemaining,
+    }),
+  );
+}
+
 async function deferVerification(
   row: DispatchOutboxRow,
   deps: ResolverDeps,
@@ -258,30 +352,61 @@ async function deferVerification(
   retryAfterMs: number | null,
 ): Promise<void> {
   if (row.state !== "delivered" || row.verifyScansRemaining <= 0) return;
-  const priorDeferrals =
-    await deps.store.consecutiveVerificationDeferrals(row.deliveryId);
-  const backoffMs = Math.min(
-    VERIFY_DEFERRAL_BACKOFF_BASE_MS * 2 ** priorDeferrals,
-    VERIFY_DEFERRAL_BACKOFF_CAP_MS,
+  const priorNoProgress = await deps.store.consecutiveNoProgressScans(
+    row.deliveryId,
   );
-  // Copilot finding F3 / ADR R4 ("recorded Retry-After honored by the
-  // resolver's scan scheduling"): a verification scan rejected with 429 +
-  // Retry-After was deferred by the generic backoff and the header was
-  // discarded, so the next scan could hit Slack before the advertised wait.
-  // The deferral takes the LARGER of the two — the backoff stays bounded by
-  // its cap, the header is honored even past it. §6.3.3 invariant preserved:
-  // a deferral never decrements verify_scans_remaining.
-  const delayMs = Math.max(backoffMs, retryAfterMs ?? 0);
-  const nextVerifyAfterMs = now + delayMs;
+  if (priorNoProgress >= VERIFY_NO_PROGRESS_CEILING) {
+    await abandonVerification(row, deps, now, reason);
+    return;
+  }
+  const nextVerifyAfterMs =
+    now + noProgressDelayMs(priorNoProgress, retryAfterMs);
   await deps.store.deferVerificationScan(
     row.deliveryId,
     now,
     nextVerifyAfterMs,
     JSON.stringify({
       verification_deferred: true,
+      // B1: the shared streak field — see consecutiveNoProgressScans.
+      no_progress: true,
       reason,
-      consecutive_deferrals: priorDeferrals + 1,
+      consecutive_no_progress: priorNoProgress + 1,
       retry_after_ms: retryAfterMs,
+      next_verify_after_ms: nextVerifyAfterMs,
+    }),
+    // B7: the caller's observed due time joins the CAS.
+    row.verifyAfterMs,
+  );
+}
+
+// B1 / H14: the duplicate-repair re-arm — a partial scan, a failed deletion, a
+// lost CAS. It used to write a flat `verify_after_ms = now + 15 min` with no
+// backoff, no cap and no exit, and completeScan is gated on exhaustion, so a
+// row whose window can never be exhausted re-scanned every 15 minutes for
+// ever, invisible to every observer alarm. It now shares the deferral's
+// bounded backoff and the same streak and ceiling.
+async function armDuplicateRepair(
+  row: DispatchOutboxRow,
+  deps: ResolverDeps,
+  now: number,
+  marker: Record<string, unknown>,
+): Promise<void> {
+  const priorNoProgress = await deps.store.consecutiveNoProgressScans(
+    row.deliveryId,
+  );
+  if (priorNoProgress >= VERIFY_NO_PROGRESS_CEILING) {
+    await abandonVerification(row, deps, now, "duplicate_repair_no_progress");
+    return;
+  }
+  const nextVerifyAfterMs = now + noProgressDelayMs(priorNoProgress, null);
+  await deps.store.flagDuplicateRepairPending(
+    row.deliveryId,
+    now,
+    nextVerifyAfterMs,
+    JSON.stringify({
+      ...marker,
+      no_progress: true,
+      consecutive_no_progress: priorNoProgress + 1,
       next_verify_after_ms: nextVerifyAfterMs,
     }),
   );
@@ -354,18 +479,33 @@ async function deleteDuplicate(
     deleted = false;
   }
   if (!deleted) return false;
-  await deps.store.appendAudit({
-    deliveryId: row.deliveryId,
-    fromState: "delivered",
-    toState: "delivered",
-    evidenceJson: JSON.stringify({
-      repaired_duplicate: true,
-      canonical_ts: canonicalTs,
-      deleted_ts: duplicateTs,
-    }),
-    actor: "resolver",
-    atMs: now,
-  });
+  // Audit finding B4: this append is a bare prepare/bind/run and rejects on a
+  // transient D1 error. Unguarded, that rejection escaped the deletion loop,
+  // resolveAmbiguousRow and runResolverPass — one failed audit aborted the
+  // whole cron pass. Worse than the lost pass: an ambiguous row marked
+  // delivered moments earlier would have been left with the duplicate
+  // undeleted, no pending marker and (its counter being 0) no scan to find it
+  // again. A failed audit is therefore reported as "not repaired", exactly
+  // like a failed chat.delete (F5): the copy joins pendingTs and a later scan
+  // completes the repair (R19). The copy is already gone from Slack, so the
+  // later scan simply will not see it; the cost is one uncounted
+  // repaired_duplicates marker, never a surviving duplicate.
+  try {
+    await deps.store.appendAudit({
+      deliveryId: row.deliveryId,
+      fromState: "delivered",
+      toState: "delivered",
+      evidenceJson: JSON.stringify({
+        repaired_duplicate: true,
+        canonical_ts: canonicalTs,
+        deleted_ts: duplicateTs,
+      }),
+      actor: "resolver",
+      atMs: now,
+    });
+  } catch {
+    return false;
+  }
   return true;
 }
 
@@ -497,16 +637,13 @@ export async function resolveAmbiguousRow(
         // duplicate completeness need exhaustion. Arm verification so a
         // future full-window scan re-runs the match rule; a partial
         // verification scan never consumes the §6.3.3 counter.
-        await deps.store.flagDuplicateRepairPending(
-          row.deliveryId,
-          now,
-          JSON.stringify({
-            duplicate_repair_pending: true,
-            partial_scan: true,
-            canonical_ts: canonicalTs,
-            pending_ts: [],
-          }),
-        );
+        // B1: the re-arm is bounded and terminating (armDuplicateRepair).
+        await armDuplicateRepair(row, deps, now, {
+          duplicate_repair_pending: true,
+          partial_scan: true,
+          canonical_ts: canonicalTs,
+          pending_ts: [],
+        });
       } else if (row.state === "delivered") {
         await completeScan(row, deps, now);
       }
@@ -553,17 +690,13 @@ export async function resolveAmbiguousRow(
           // would stay permanently undiscovered. Arm unconditionally: the
           // store predicate (state = 'delivered' AND shadow = 0) makes it a
           // no-op unless the row really is delivered.
-          await deps.store.flagDuplicateRepairPending(
-            row.deliveryId,
-            now,
-            JSON.stringify({
-              duplicate_repair_pending: true,
-              // Copilot finding F9: a live cursor marks the scan partial.
-              ...(scan.exhausted ? {} : { partial_scan: true }),
-              canonical_ts: canonicalTs,
-              pending_ts: duplicateTs,
-            }),
-          );
+          await armDuplicateRepair(row, deps, now, {
+            duplicate_repair_pending: true,
+            // Copilot finding F9: a live cursor marks the scan partial.
+            ...(scan.exhausted ? {} : { partial_scan: true }),
+            canonical_ts: canonicalTs,
+            pending_ts: duplicateTs,
+          });
           return { kind: "found_many", canonicalTs, channel, duplicateTs };
         }
         const observedTs = fresh.slackMessageTs;
@@ -617,16 +750,12 @@ export async function resolveAmbiguousRow(
       // (live cursor) also arms — unseen pages may hold an earlier
       // canonical or more duplicates — and never consumes the §6.3.3
       // counter.
-      await deps.store.flagDuplicateRepairPending(
-        row.deliveryId,
-        now,
-        JSON.stringify({
-          duplicate_repair_pending: true,
-          ...(scan.exhausted ? {} : { partial_scan: true }),
-          canonical_ts: canonicalTs,
-          pending_ts: pendingTs,
-        }),
-      );
+      await armDuplicateRepair(row, deps, now, {
+        duplicate_repair_pending: true,
+        ...(scan.exhausted ? {} : { partial_scan: true }),
+        canonical_ts: canonicalTs,
+        pending_ts: pendingTs,
+      });
     } else if (row.state === "delivered") {
       await completeScan(row, deps, now);
     }
@@ -686,6 +815,23 @@ export async function runResolverPass(
   // §6.3.1: normalization first — expired leases become resolver input.
   await deps.store.normalizeExpiredLeases(now);
   let examined = 0;
+  let failed = 0;
+  // Audit finding B4: one row's failure must not abort the pass. There was no
+  // per-row guard anywhere below this line — not in the deletion loop, not in
+  // resolveAmbiguousRow, not here — so a single transient D1 rejection while
+  // auditing a repair skipped every remaining row. (The observe-only alarms
+  // survive independently: runDispatchCronPass catches the pass failure and
+  // still computes them — src/dispatch/wiring.ts, suppressed finding F3.)
+  const examine = async (row: DispatchOutboxRow): Promise<void> => {
+    try {
+      await resolveAmbiguousRow(row, deps);
+    } catch {
+      // The row keeps its state, its counter and its due time, so the next
+      // pass re-examines it; only this pass's work on it is lost.
+      failed += 1;
+    }
+    examined += 1;
+  };
   // §6.3.3: verification-due delivered rows share the resolver's budget and
   // run before the ambiguous backlog. Copilot finding (resolver starvation):
   // they may take at most HALF of it (floor), so a due ambiguous row is
@@ -697,16 +843,14 @@ export async function runResolverPass(
     Math.floor(RESOLVER_ROWS_PER_RUN / 2),
   );
   for (const row of verificationRows) {
-    await resolveAmbiguousRow(row, deps);
-    examined += 1;
+    await examine(row);
   }
   const remaining = RESOLVER_ROWS_PER_RUN - examined;
   if (remaining > 0) {
     const ambiguousRows = await deps.store.ambiguousRowsDue(now, remaining);
     for (const row of ambiguousRows) {
-      await resolveAmbiguousRow(row, deps);
-      examined += 1;
+      await examine(row);
     }
   }
-  return { examined };
+  return { examined, failed };
 }

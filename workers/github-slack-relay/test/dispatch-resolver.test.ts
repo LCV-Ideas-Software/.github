@@ -16,6 +16,7 @@ import {
   VERIFY_DEFERRAL_BACKOFF_BASE_MS,
   VERIFY_DEFERRAL_BACKOFF_CAP_MS,
   VERIFY_FIRST_SCAN_DELAY_MS,
+  VERIFY_NO_PROGRESS_CEILING,
   VERIFY_SECOND_SCAN_DELAY_MS,
 } from "../src/dispatch/contract";
 import type {
@@ -23,6 +24,7 @@ import type {
   DispatchOutboxRow,
   DispatchStore,
 } from "../src/dispatch/contract";
+import { observerAlarms } from "../src/dispatch/observer";
 import { D1DispatchStore } from "../src/dispatch/outbox";
 import { resolveAmbiguousRow, runResolverPass } from "../src/dispatch/resolver";
 import type { ResolverDeps } from "../src/dispatch/resolver";
@@ -179,6 +181,7 @@ async function deliverViaOperatorResend(
     deliveryId,
     t0 + 3_000,
     JSON.stringify({ menu: "possible-duplicate" }),
+    null,
   );
   if (!resent) throw new Error(`operator_resend_failed:${deliveryId}`);
   const claimed = await store.claim(deliveryId, t0 + 4_000);
@@ -643,6 +646,88 @@ describe("resolver verdicts (R3/R9/R12/R14)", () => {
     expect(updated.state).toBe("delivered");
     expect(updated.slackMessageTs).toBe(TS_LATE);
     expect(deleteCalls(calls)).toHaveLength(0);
+  });
+
+  // Audit finding B2 (BLOCKER). Slack, verbatim: "One quirk of threaded
+  // messages is that a parent message object will retain a `thread_ts` value,
+  // even if all its replies have been deleted." A parent carries
+  // `thread_ts === ts`, so the old filter ("any thread_ts disqualifies")
+  // dropped OUR OWN message from the match the moment a human replied to it
+  // in-thread — the ordinary way an alert channel is used.
+  it("B2: a parent message carrying thread_ts === ts is a top-level match; a genuine reply is still ignored", async () => {
+    const { store } = makeStore();
+    const deliveryId = "b2-parent-with-replies";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub, calls } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([
+            // Our canonical message, after a human replied to it: Slack
+            // stamps the PARENT with thread_ts equal to its own ts.
+            historyMessage({
+              ts: TS_EARLY,
+              deliveryId,
+              threadTs: TS_EARLY,
+            }),
+          ])
+        : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "found",
+      ts: TS_EARLY,
+      channel: ALERTS_CHANNEL,
+    });
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    expect(deleteCalls(calls)).toHaveLength(0);
+  });
+
+  // The other half of B2's fix, on the verification path where the finding
+  // does real damage: with the parent invisible, a scan over a delivered row
+  // saw ONLY the duplicate, deleted nothing, and still recorded the canonical
+  // ts — D1 looked clean while the duplicate survived in Slack.
+  it("B2: a verification scan repairs a duplicate even after our own message acquired an in-thread reply", async () => {
+    const { store } = makeStore();
+    const deliveryId = "b2-verification-parent";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    const { fetch: fetchStub, calls } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([
+            // The canonical copy, now a thread parent (a human replied).
+            historyMessage({ ts: TS_EARLY, deliveryId, threadTs: TS_EARLY }),
+            // The late server-side materialization §6.3.3 exists to repair.
+            historyMessage({ ts: TS_LATE, deliveryId }),
+            // A genuine reply carrying the same metadata is NOT a third copy.
+            historyMessage({
+              ts: "1786664950.000210",
+              deliveryId,
+              threadTs: TS_EARLY,
+            }),
+          ])
+        : url.includes("chat.delete")
+          ? slackDeleteOk()
+          : undefined,
+    );
+
+    const pass = await runResolverPass(resolverDeps(store, fetchStub));
+
+    expect(pass.examined).toBe(1);
+    // The EARLIEST ts stays canonical (§6.3.2) and only the later copy is
+    // deleted — the reply is never a deletion target.
+    const repaired = await mustGet(store, deliveryId);
+    expect(repaired.state).toBe("delivered");
+    expect(repaired.slackMessageTs).toBe(TS_EARLY);
+    expect(deleteCalls(calls).map((call) => call.body?.["ts"])).toEqual([
+      TS_LATE,
+    ]);
+    expect(await store.repairedDuplicatesTotal()).toBe(1);
   });
 });
 
@@ -1459,14 +1544,18 @@ describe("resolver starvation (budget reservation + deferral backoff)", () => {
       String(entry["evidence_json"]).includes('"verification_deferred":true'),
     );
     expect(markers).toHaveLength(2);
+    // Audit finding B1: the streak field is `consecutive_no_progress` — one
+    // streak shared by the deferral and the duplicate-repair re-arm, because
+    // two separate streaks reset each other whenever the failure kind
+    // alternates (see the alternation test below).
     expect(
       markers.map(
         (entry) =>
           (
             JSON.parse(String(entry["evidence_json"])) as {
-              consecutive_deferrals: number;
+              consecutive_no_progress: number;
             }
-          ).consecutive_deferrals,
+          ).consecutive_no_progress,
       ),
     ).toEqual([1, 2]);
   });
@@ -1476,17 +1565,21 @@ describe("resolver starvation (budget reservation + deferral backoff)", () => {
     const deliveryId = "starve-deferral-cap";
     const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
     await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
-    // Eight consecutive deferrals already recorded: 15 min << 2^8 is far
-    // past the cap.
-    for (let index = 0; index < 8; index += 1) {
+    // Seven consecutive no-progress scans already recorded: 15 min x 2^7 is
+    // past the 24 h cap. Audit finding B1: the streak marker is the shared
+    // `no_progress` field, and SEVEN is the last value below
+    // VERIFY_NO_PROGRESS_CEILING — the eighth deferral is the one that walks
+    // the ladder to its cap, and the ninth no-progress scan abandons (H14).
+    for (let index = 0; index < VERIFY_NO_PROGRESS_CEILING - 1; index += 1) {
       await store.appendAudit({
         deliveryId,
         fromState: "delivered",
         toState: "delivered",
         evidenceJson: JSON.stringify({
           verification_deferred: true,
+          no_progress: true,
           reason: "history_error_internal_error",
-          consecutive_deferrals: index + 1,
+          consecutive_no_progress: index + 1,
         }),
         actor: "resolver",
         atMs: deliveredMs + index,
@@ -1523,6 +1616,300 @@ describe("resolver starvation (budget reservation + deferral backoff)", () => {
     expect(row.verifyAfterMs).toBe(
       DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
     );
+  });
+});
+
+// Audit finding B1 (BLOCKER) / ADR §10 H14 — the non-exhausted scan
+// livelocked: `flagDuplicateRepairPending` re-armed it at a flat +15 min with
+// no backoff, no cap and no ceiling, `completeScan` is gated on exhaustion, and
+// no observer alarm matched a livelocked `delivered` row. The row re-scanned
+// every 15 minutes for ever, silently, with no operator exit.
+describe("B1: the non-exhausted verification scan terminates (H14)", () => {
+  // Every page carries a live cursor, so the 3-page budget always runs out:
+  // the scan is PARTIAL for ever, which is the livelock's precondition.
+  function neverExhaustingHistory(deliveryId: string): typeof fetch {
+    return scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })], {
+            nextCursor: "cursor-page-2",
+            hasMore: true,
+          })
+        : undefined,
+    ).fetch;
+  }
+
+  // Drives the row through consecutive no-progress scans, always at its own
+  // due time, and returns the last `now` used.
+  async function runNoProgressScans(
+    store: D1DispatchStore,
+    deliveryId: string,
+    fetchStub: typeof fetch,
+    count: number,
+  ): Promise<number> {
+    let now = DISPATCH_TEST_NOW;
+    for (let scan = 0; scan < count; scan += 1) {
+      const row = await mustGet(store, deliveryId);
+      if (row.verifyAfterMs === null) {
+        throw new Error(`row_not_armed_before_scan_${scan}`);
+      }
+      now = Math.max(now, row.verifyAfterMs);
+      const pass = await runResolverPass(
+        resolverDeps(store, fetchStub, { now: () => now }),
+      );
+      expect(pass.examined).toBe(1);
+    }
+    return now;
+  }
+
+  it("B1: a scan that can never exhaust stops re-arming at the ceiling, parks the row alarmed, and an operator sweep restarts it", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "b1-livelock-terminates";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    const fetchStub = neverExhaustingHistory(deliveryId);
+
+    // The ceiling's worth of re-arms: bounded backoff, capped, always armed.
+    const lastArmedNow = await runNoProgressScans(
+      store,
+      deliveryId,
+      fetchStub,
+      VERIFY_NO_PROGRESS_CEILING,
+    );
+    const armed = await mustGet(store, deliveryId);
+    expect(armed.verifyAfterMs).toBe(
+      lastArmedNow + VERIFY_DEFERRAL_BACKOFF_CAP_MS,
+    );
+    expect(armed.verifyScansRemaining).toBe(2);
+
+    // The next no-progress scan PARKS the row instead of re-arming it.
+    const parkNow = armed.verifyAfterMs ?? lastArmedNow;
+    await runResolverPass(
+      resolverDeps(store, fetchStub, { now: () => parkNow }),
+    );
+    const parked = await mustGet(store, deliveryId);
+    expect(parked.state).toBe("delivered");
+    expect(parked.verifyAfterMs).toBeNull();
+    // The counter survives as evidence of the unfinished verification.
+    expect(parked.verifyScansRemaining).toBe(2);
+    // The livelock is over: no future pass, however far ahead, selects it.
+    expect(
+      await store.verificationRowsDue(parkNow + 365 * 24 * 3_600_000, 10),
+    ).toHaveLength(0);
+
+    // Distinguishable audit marker...
+    const marker = auditRows(database, deliveryId).at(-1);
+    expect(marker).toMatchObject({ actor: "resolver", to_state: "delivered" });
+    expect(JSON.parse(String(marker?.["evidence_json"]))).toMatchObject({
+      verification_abandoned: true,
+      consecutive_no_progress: VERIFY_NO_PROGRESS_CEILING,
+    });
+    // ...and an observer alarm, so the park is visible instead of silent.
+    const counters = await store.statusCounters(parkNow);
+    expect(counters.verificationAbandoned).toBe(1);
+    expect(
+      observerAlarms(
+        {
+          deadLetter: 0,
+          manual: 0,
+          oldestAmbiguousAgeMs: null,
+          repairedDuplicates: counters.repairedDuplicates,
+          verificationAbandoned: counters.verificationAbandoned,
+        },
+        null,
+      ),
+    ).toContain("verification_abandoned");
+
+    // R19/H11: the operator sweep restarts verification — and clears the alarm.
+    const sweepNow = parkNow + 60_000;
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        sweepNow,
+        JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+        null,
+      ),
+    ).toBe(true);
+    const swept = await mustGet(store, deliveryId);
+    expect(swept.verifyAfterMs).toBe(sweepNow);
+    expect((await store.statusCounters(sweepNow)).verificationAbandoned).toBe(0);
+
+    // The streak restarted with it: the next no-progress scan re-arms from the
+    // base delay instead of parking the row again.
+    await runResolverPass(
+      resolverDeps(store, fetchStub, { now: () => sweepNow }),
+    );
+    expect((await mustGet(store, deliveryId)).verifyAfterMs).toBe(
+      sweepNow + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+    );
+  });
+
+  it("B1: alternating no-progress kinds still reach the ceiling — one streak, not two", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "b1-alternating-no-progress";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    // The shape a busy channel with occasional 429s actually produces: a
+    // partial scan (duplicate_repair_pending marker) alternating with a failed
+    // history read (verification_deferred marker). A streak per marker kind
+    // would reset the other one on every step and NEITHER would ever reach a
+    // ceiling — the livelock would survive the fix.
+    // The kind is flipped between PASSES (not between pages of one scan).
+    let partial = true;
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      !url.includes("conversations.history")
+        ? undefined
+        : partial
+          ? slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })], {
+              nextCursor: "cursor-page-2",
+              hasMore: true,
+            })
+          : slackHistoryError("internal_error"),
+    );
+
+    let lastArmedNow = DISPATCH_TEST_NOW;
+    for (let scan = 0; scan < VERIFY_NO_PROGRESS_CEILING; scan += 1) {
+      const row = await mustGet(store, deliveryId);
+      expect(row.verifyAfterMs).not.toBeNull();
+      lastArmedNow = Math.max(lastArmedNow, row.verifyAfterMs ?? 0);
+      await runResolverPass(
+        resolverDeps(store, fetchStub, { now: () => lastArmedNow }),
+      );
+      partial = !partial;
+    }
+    const markers = auditRows(database, deliveryId).filter((entry) =>
+      String(entry["evidence_json"]).includes('"no_progress":true'),
+    );
+    // Both kinds are present, and they counted as ONE streak.
+    expect(
+      markers.filter((entry) =>
+        String(entry["evidence_json"]).includes('"duplicate_repair_pending"'),
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      markers.filter((entry) =>
+        String(entry["evidence_json"]).includes('"verification_deferred"'),
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(markers).toHaveLength(VERIFY_NO_PROGRESS_CEILING);
+
+    const armed = await mustGet(store, deliveryId);
+    const parkNow = armed.verifyAfterMs ?? lastArmedNow;
+    await runResolverPass(
+      resolverDeps(store, fetchStub, { now: () => parkNow }),
+    );
+
+    const parked = await mustGet(store, deliveryId);
+    expect(parked.verifyAfterMs).toBeNull();
+    expect(
+      JSON.parse(String(auditRows(database, deliveryId).at(-1)?.["evidence_json"])),
+    ).toMatchObject({ verification_abandoned: true });
+  });
+});
+
+// Audit finding B4 — the try/catch in deleteDuplicate wrapped ONLY the fetch,
+// so the unguarded appendAudit that follows it rejected on any transient D1
+// error and the rejection escaped every frame up to the cron's top-level
+// catch: the remaining rows of the pass were skipped.
+describe("B4: one row's failure never aborts the resolver pass", () => {
+  // Fails the named store method N times, then behaves normally.
+  function storeWithFailing(
+    store: DispatchStore,
+    method: keyof DispatchStore,
+    failures: number,
+  ): DispatchStore {
+    let remaining = failures;
+    return new Proxy(store, {
+      get(target, property, _receiver) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (property !== method) return bound;
+        return async (...args: unknown[]): Promise<unknown> => {
+          if (remaining > 0) {
+            remaining -= 1;
+            throw new Error("d1_transient_failure");
+          }
+          return bound(...args);
+        };
+      },
+    }) as DispatchStore;
+  }
+
+  it("B4: a transient failure while auditing a repair is contained — the second row is still examined and the failure is reported", async () => {
+    const { store } = makeStore();
+    const repairId = "b4-repair-audit-fails";
+    const ambiguousId = "b4-second-row";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    // Row 1 is a verification row that will find a duplicate — the repair path
+    // whose audit append is the finding's failure point. Row 2 is a due
+    // ambiguous row whose message is right there in the history.
+    await deliverViaOperatorResend(store, repairId, deliveredMs, TS_EARLY);
+    await seedAmbiguous(store, ambiguousId);
+    const ambiguousTs = "1786664100.000700";
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([
+            historyMessage({ ts: TS_EARLY, deliveryId: repairId }),
+            historyMessage({ ts: TS_LATE, deliveryId: repairId }),
+            historyMessage({ ts: ambiguousTs, deliveryId: ambiguousId }),
+          ])
+        : url.includes("chat.delete")
+          ? slackDeleteOk()
+          : undefined,
+    );
+
+    const pass = await runResolverPass({
+      ...resolverDeps(store, fetchStub),
+      store: storeWithFailing(store, "appendAudit", 1),
+    });
+
+    // The pass finished BOTH rows and reported nothing as failed: the repair
+    // audit failure is absorbed by deleteDuplicate as "not repaired".
+    expect(pass).toEqual({ examined: 2, failed: 0 });
+    // The second row's verdict landed — the finding's actual damage.
+    const second = await mustGet(store, ambiguousId);
+    expect(second.state).toBe("delivered");
+    expect(second.slackMessageTs).toBe(ambiguousTs);
+    // The uncounted copy keeps a future scan armed (R19), so the repair is
+    // never lost: the row stays verification-eligible.
+    const repaired = await mustGet(store, repairId);
+    expect(repaired.verifyScansRemaining).toBeGreaterThan(0);
+    expect(repaired.verifyAfterMs).not.toBeNull();
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+  });
+
+  it("B4: a row whose examination throws outright is counted and the pass continues", async () => {
+    const { store } = makeStore();
+    const failingId = "b4-throwing-row";
+    const ambiguousId = "b4-survivor-row";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, failingId, deliveredMs, TS_EARLY);
+    await seedAmbiguous(store, ambiguousId);
+    const ambiguousTs = "1786664100.000701";
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([
+            historyMessage({ ts: TS_EARLY, deliveryId: failingId }),
+            historyMessage({ ts: ambiguousTs, deliveryId: ambiguousId }),
+          ])
+        : undefined,
+    );
+
+    // completeVerificationScan runs on the verification row only; the failure
+    // therefore lands inside the FIRST examination of the pass.
+    const pass = await runResolverPass({
+      ...resolverDeps(store, fetchStub),
+      store: storeWithFailing(store, "completeVerificationScan", 1),
+    });
+
+    expect(pass).toEqual({ examined: 2, failed: 1 });
+    const survivor = await mustGet(store, ambiguousId);
+    expect(survivor.state).toBe("delivered");
+    expect(survivor.slackMessageTs).toBe(ambiguousTs);
+    // The failed row is untouched, so the next pass re-examines it.
+    const failed = await mustGet(store, failingId);
+    expect(failed.verifyScansRemaining).toBe(2);
+    expect(failed.verifyAfterMs).toBe(deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS);
   });
 });
 
@@ -1645,9 +2032,13 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
     await deliverViaConsumer(store, deliveryId, deliveredMs, TS_EARLY);
     // One scan armed and due: the shape left by a partial scan or a failed
     // duplicate deletion (flagDuplicateRepairPending).
+    // B1: the due time is the CALLER's now (the flat +15 min the store used to
+    // hard-code is now the resolver's bounded no-progress backoff) — the same
+    // value this test always asserted.
     await store.flagDuplicateRepairPending(
       deliveryId,
       deliveredMs,
+      deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS,
       JSON.stringify({
         duplicate_repair_pending: true,
         partial_scan: true,
@@ -1664,6 +2055,7 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
     await store.flagDuplicateRepairPending(
       deliveryId,
       scanNow,
+      scanNow + VERIFY_FIRST_SCAN_DELAY_MS,
       JSON.stringify({
         duplicate_repair_pending: true,
         partial_scan: true,
@@ -1710,6 +2102,7 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
     await store.flagDuplicateRepairPending(
       deliveryId,
       deliveredMs,
+      deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS,
       JSON.stringify({
         duplicate_repair_pending: true,
         canonical_ts: TS_EARLY,
@@ -1727,6 +2120,7 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
         deliveryId,
         scanNow,
         JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+        null,
       ),
     ).toBe(true);
     const swept = await mustGet(store, deliveryId);
@@ -1996,6 +2390,147 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
       resolverDeps(store, fetchStub),
     );
 
+    expect(verdict.kind).toBe("proven_absent");
+    expect((await mustGet(store, deliveryId)).state).toBe("manual");
+  });
+
+  // Copilot suppressed comment (F1, SEVERE): a history entry whose metadata
+  // MATCHES the delivery but whose `ts` is missing was ignored, so an
+  // exhausted scan could manufacture proven_absent for a message that is
+  // present; and a non-empty malformed ts was accepted, later violating
+  // migration 0010's slack_message_ts CHECK and aborting the resolver pass.
+  // Both are now one INCONCLUSIVE malformed scan.
+  it("suppressed F1 (malformed match): a matching entry with no ts is inconclusive, never proven_absent", async () => {
+    const { store } = makeStore();
+    const deliveryId = "suppressed-f1-match-without-ts";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? {
+            status: 200,
+            body: {
+              ok: true,
+              has_more: false,
+              response_metadata: { next_cursor: "" },
+              messages: [
+                {
+                  type: "message",
+                  text: "matching entry with no ts",
+                  metadata: {
+                    event_type: DISPATCH_METADATA_EVENT_TYPE,
+                    event_payload: { delivery_id: deliveryId },
+                  },
+                },
+              ],
+            },
+          }
+        : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "inconclusive",
+      reason: "history_malformed_match",
+    });
+    const updated = await mustGet(store, deliveryId);
+    // The verdict that would have been manufactured is proven_absent.
+    expect(updated.state).toBe("ambiguous");
+    expect(updated.slackMessageTs).toBeNull();
+    expect(updated.resolverAttempts).toBe(1);
+  });
+
+  it("suppressed F1 (malformed match): a matching entry with a non-canonical ts is inconclusive and never persisted", async () => {
+    const { store } = makeStore();
+    const deliveryId = "suppressed-f1-match-malformed-ts";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([
+            historyMessage({ ts: "x", deliveryId }),
+          ])
+        : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "inconclusive",
+      reason: "history_malformed_match",
+    });
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("ambiguous");
+    // A malformed ts never reaches the row: migration 0010 CHECKs the column,
+    // so persisting it would abort the whole resolver pass.
+    expect(updated.slackMessageTs).toBeNull();
+  });
+
+  it("suppressed F1 (malformed match): a well-formed match is still FOUND", async () => {
+    const { store } = makeStore();
+    const deliveryId = "suppressed-f1-well-formed-match";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })])
+        : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "found",
+      ts: TS_EARLY,
+      channel: ALERTS_CHANNEL,
+    });
+    expect(await mustGet(store, deliveryId)).toMatchObject({
+      state: "delivered",
+      slackMessageTs: TS_EARLY,
+    });
+  });
+
+  it("suppressed F1 (malformed match): a NON-matching entry without a ts is skipped silently and absence still proves", async () => {
+    const { store } = makeStore();
+    const deliveryId = "suppressed-f1-non-matching-entry";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? {
+            status: 200,
+            body: {
+              ok: true,
+              has_more: false,
+              response_metadata: { next_cursor: "" },
+              messages: [
+                {
+                  type: "message",
+                  text: "someone else's delivery, no ts",
+                  metadata: {
+                    event_type: DISPATCH_METADATA_EVENT_TYPE,
+                    event_payload: { delivery_id: "another-delivery" },
+                  },
+                },
+              ],
+            },
+          }
+        : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    // The guard is scoped to entries that identify THIS delivery: a foreign
+    // entry never turns a scan inconclusive.
     expect(verdict.kind).toBe("proven_absent");
     expect((await mustGet(store, deliveryId)).state).toBe("manual");
   });

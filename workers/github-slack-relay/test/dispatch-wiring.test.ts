@@ -15,6 +15,7 @@ import type {
 import { processDispatchMessage } from "../src/dispatch/consumer";
 import {
   DISPATCH_CLIENT_TIMEOUT_MS,
+  DISPATCH_LEASE_MS,
   STALE_QUEUED_REQUEUE_AFTER_MS,
   VERIFY_FIRST_SCAN_DELAY_MS,
   type DispatchDestination,
@@ -23,6 +24,7 @@ import { D1DispatchStore } from "../src/dispatch/outbox";
 import {
   acceptPrimary,
   channelForDestination,
+  DispatchCronPassError,
   insertLegacyFenced,
   insertShadowPaired,
   runDispatchCronPass,
@@ -633,6 +635,100 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     expect(readBotToken).not.toHaveBeenCalled();
   });
 
+  // Copilot suppressed comment (F3) / ADR §6.7 + R5: a Secrets Store or Slack
+  // failure threw before the observer snapshot, so every existing alarm
+  // vanished exactly while resolver egress was unhealthy — only the generic
+  // cron failure log remained. The alarms are read-only and must always run.
+  it("suppressed F3: a throwing resolver step still yields the observer alarms, and the original failure still propagates", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const staleCreatedMs = DISPATCH_TEST_NOW - 31 * 60_000;
+    seedOutboxRow(database, {
+      deliveryId: "wiring-f3-manual",
+      destination: "alerts",
+      state: "manual",
+      createdMs: staleCreatedMs,
+    });
+    seedOutboxRow(database, {
+      deliveryId: "wiring-f3-dead-letter",
+      destination: "alerts",
+      state: "dead_letter",
+      createdMs: staleCreatedMs,
+    });
+    seedOutboxRow(database, {
+      deliveryId: "wiring-f3-stale-ambiguous",
+      destination: "alerts",
+      state: "ambiguous",
+      createdMs: staleCreatedMs,
+    });
+
+    const secretFailure = new Error("secrets_store_unavailable");
+    const cronDeps = {
+      database: d1,
+      mode: "primary" as const,
+      fetch: vi.fn<typeof fetch>(),
+      now: () => DISPATCH_TEST_NOW,
+      // The §6.3.1 resolver step: reading the bot token fails.
+      readBotToken: vi.fn(async () => {
+        throw secretFailure;
+      }),
+      publish: async () => {},
+    };
+
+    const failure = await runDispatchCronPass(cronDeps).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(DispatchCronPassError);
+    const passError = failure as InstanceType<typeof DispatchCronPassError>;
+    // The alarms exist DESPITE the failure...
+    expect([...passError.alarms].sort()).toEqual([
+      "ambiguous_stale",
+      "dead_letter_present",
+      "manual_present",
+    ]);
+    // ...and the original error still propagates, untouched, as the cause.
+    expect(passError.cause).toBe(secretFailure);
+
+    // End to end: the scheduled entrypoint logs the same alarm set it would
+    // have logged on a healthy pass, plus the unchanged failure summary.
+    const brokenToken = {
+      get: async () => {
+        throw secretFailure;
+      },
+    } as unknown as SecretsStoreSecret;
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    let logged: string[];
+    try {
+      await runDispatchScheduled(
+        {
+          ...makeEnv(new FakeQueue(), { db: d1, dispatchMode: "primary" }),
+          SLACK_DISPATCH_BOT_TOKEN: brokenToken,
+        },
+        { now: () => DISPATCH_TEST_NOW },
+      );
+      // Read before mockRestore: it resets the recorded calls.
+      logged = errorLog.mock.calls.map((call) => String(call[0]));
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect(
+      logged.filter((line) => line.includes('"dispatch_cron_pass_failed"')),
+    ).toHaveLength(1);
+    for (const alarm of [
+      "manual_present",
+      "dead_letter_present",
+      "ambiguous_stale",
+    ]) {
+      expect(
+        logged.some(
+          (line) =>
+            line.includes('"dispatch_observer_alarm"') && line.includes(alarm),
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("V5/V15 DLQ routing dead-letters a sending row and spares a queued row in mode off", async () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);
@@ -651,10 +747,15 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     });
     expect(await store.claim("wiring-dlq-sending", DISPATCH_TEST_NOW)).not.toBeNull();
     const sendingArrival = markedBatch(ALERT_DLQ, "wiring-dlq-sending");
+    // Audit finding B3 (ADR §10 H15): the DLQ arrival is placed AFTER the 90 s
+    // lease expired, which is the shape H9 means by "a crash between claim and
+    // outcome". A live-lease arrival is spared instead — pinned by the
+    // dedicated test below.
+    const crashedArrivalMs = DISPATCH_TEST_NOW + DISPATCH_LEASE_MS + 1_000;
     await handleQueue(
       sendingArrival.batch,
       makeEnv(queue, { db: d1, dispatchMode: "primary" }),
-      { now: () => DISPATCH_TEST_NOW, fetch: fetchSpy },
+      { now: () => crashedArrivalMs, fetch: fetchSpy },
     );
     expect(sendingArrival.ack).toHaveBeenCalledTimes(1);
     expect(sendingArrival.retry).not.toHaveBeenCalled();
@@ -692,6 +793,143 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
       ),
     ).toHaveLength(0);
     // No send was ever attempted from the DLQ branch.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Audit finding B3/B8 (ADR §10 H15): duplicate DLQ arrivals are routine, and
+  // the handler decided from a bare read-then-act snapshot while the store
+  // predicate did not encode that decision — so a row in `sending` under a
+  // LIVE lease was dead-lettered mid-flight.
+  it("B3: a DLQ arrival while the lease is still live spares the row; the same arrival after the lease dead-letters it", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const queue = new FakeQueue();
+    const fetchSpy = vi.fn<typeof fetch>();
+    const deliveryId = "wiring-dlq-live-lease";
+
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"dlq live lease"}',
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(deliveryId, DISPATCH_TEST_NOW)).not.toBeNull();
+
+    const liveArrival = markedBatch(ALERT_DLQ, deliveryId);
+    await handleQueue(
+      liveArrival.batch,
+      makeEnv(queue, { db: d1, dispatchMode: "primary" }),
+      { now: () => DISPATCH_TEST_NOW + DISPATCH_LEASE_MS - 1, fetch: fetchSpy },
+    );
+
+    // Acked (the row is durable and owned by the in-flight send), untouched.
+    expect(liveArrival.ack).toHaveBeenCalledTimes(1);
+    expect(liveArrival.retry).not.toHaveBeenCalled();
+    expect(outboxState(database, deliveryId)).toBe("sending");
+    expect(
+      auditRows(database, deliveryId).filter(
+        (row) => row.to_state === "dead_letter",
+      ),
+    ).toHaveLength(0);
+
+    // After the lease: the crash between claim and outcome H9 describes.
+    const crashedArrival = markedBatch(ALERT_DLQ, deliveryId);
+    await handleQueue(
+      crashedArrival.batch,
+      makeEnv(queue, { db: d1, dispatchMode: "primary" }),
+      { now: () => DISPATCH_TEST_NOW + DISPATCH_LEASE_MS + 1, fetch: fetchSpy },
+    );
+    expect(outboxState(database, deliveryId)).toBe("dead_letter");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Audit finding B3 (the amplifier): the cron republished every stale queued
+  // row on EVERY pass, because the republish changed nothing on the row.
+  it("B3: the cron republishes a stale queued row once per interval, not once per pass", async () => {
+    const { d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "wiring-republish-spacing";
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"republish spacing"}',
+      now: DISPATCH_TEST_NOW - STALE_QUEUED_AGE_MS,
+    });
+    const published: string[] = [];
+    const cronDeps = (now: number) => ({
+      database: d1,
+      mode: "primary" as const,
+      fetch: vi.fn<typeof fetch>(),
+      now: () => now,
+      readBotToken: async () => "xoxb-unused",
+      publish: async (
+        _destination: DispatchDestination,
+        body: DispatchQueueJobBody,
+      ) => {
+        published.push(body.deliveryId);
+      },
+    });
+
+    expect(await runDispatchCronPass(cronDeps(DISPATCH_TEST_NOW))).toMatchObject(
+      { requeued: 1 },
+    );
+    // The very next cron pass (5 min later, the */5 schedule) must NOT
+    // republish the same row again.
+    expect(
+      await runDispatchCronPass(
+        cronDeps(DISPATCH_TEST_NOW + STALE_QUEUED_REQUEUE_AFTER_MS),
+      ),
+    ).toMatchObject({ requeued: 0 });
+    expect(published).toEqual([deliveryId]);
+
+    // One full interval after the republish it becomes an input again (R13
+    // keeps re-entering the row until it leaves `queued`).
+    expect(
+      await runDispatchCronPass(
+        cronDeps(DISPATCH_TEST_NOW + STALE_QUEUED_REQUEUE_AFTER_MS + 1),
+      ),
+    ).toMatchObject({ requeued: 1 });
+    expect(published).toEqual([deliveryId, deliveryId]);
+  });
+
+  // Audit finding B1 / ADR §10 H14: the livelocked verification had no
+  // observer alarm — observer.ts had no condition matching a `delivered` row.
+  // A row that gave up on verification must be visible in the SAME alarm set
+  // the operator already watches.
+  it("B1: a row whose verification was abandoned raises the observer alarm through the cron pass", async () => {
+    const { database, d1 } = dispatchDatabase();
+    // The shape abandonVerification leaves: delivered, scans still remaining,
+    // no due time — and therefore invisible to verificationRowsDue.
+    seedOutboxRow(database, {
+      deliveryId: "wiring-verification-abandoned",
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786708800.000900",
+      verifyScansRemaining: 2,
+      verifyAfterMs: null,
+      createdMs: DISPATCH_TEST_NOW - 3_600_000,
+    });
+    const readBotToken = vi.fn(async () => "xoxb-unused");
+    const fetchSpy = vi.fn<typeof fetch>();
+
+    const pass = await runDispatchCronPass({
+      database: d1,
+      mode: "primary",
+      fetch: fetchSpy,
+      now: () => DISPATCH_TEST_NOW,
+      readBotToken,
+      publish: async () => {},
+    });
+
+    expect(pass.alarms).toContain("verification_abandoned");
+    // Read-only: the alarm never re-arms the row (R5), and no egress happened.
+    expect(outboxRow(database, "wiring-verification-abandoned")).toMatchObject({
+      verify_after_ms: null,
+      verify_scans_remaining: 2,
+    });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -1839,6 +2077,57 @@ describe("operator menu route (ADR §6.2/§6.3 I1)", () => {
     expect(outboxState(database, deliveryId)).toBe("queued");
     expect(queue.sent).toHaveLength(2);
     expect(auditRows(database, deliveryId)).toHaveLength(2);
+  });
+
+  // Copilot suppressed comment (F4): the one-shot guard only exists if the
+  // route actually CARRIES the digest into the store mutation. Dropping that
+  // argument would leave every other test green — the store tests pass digests
+  // themselves, and a sequential route replay is caught by the read-then-act
+  // pre-check, which is precisely the check F4 says cannot be trusted under
+  // concurrency. This pins the wiring itself, by argument.
+  it("suppressed F4: every operator action carries its request-signature digest INTO the store mutation", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const env = makeEnv(queue, { db: d1 });
+    const digestPattern = /^[0-9a-f]{64}$/u;
+    // [action, seeded state, spied store method, digest argument index]
+    const cases = [
+      ["resend", "manual", "operatorResend", 3],
+      ["close_manual", "manual", "operatorCloseManual", 3],
+      ["sweep", "delivered", "operatorSweepVerification", 3],
+      ["mark_delivered", "manual", "markDelivered", 7],
+    ] as const;
+
+    for (const [action, state, method, digestIndex] of cases) {
+      // delivery_id is CHECKed against A-Za-z0-9- only (migration 0010).
+      const deliveryId = `wiring-operator-digest-${action.replaceAll("_", "-")}`;
+      seedOutboxRow(database, {
+        deliveryId,
+        destination: "alerts",
+        state,
+        // Only the sweep case needs a delivered row, so one ts suffices for
+        // UNIQUE(destination, slack_message_ts).
+        ...(state === "delivered"
+          ? {
+              slackChannelId: ALERTS_CHANNEL,
+              slackMessageTs: "1786708800.001100",
+            }
+          : {}),
+      });
+      const spy = vi.spyOn(D1DispatchStore.prototype, method);
+      try {
+        const response = await handleFetch(
+          await operatorRequest(action, deliveryId),
+          env,
+          { now: () => DISPATCH_TEST_NOW },
+        );
+        expect(response.status).toBe(200);
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0]?.[digestIndex]).toMatch(digestPattern);
+      } finally {
+        spy.mockRestore();
+      }
+    }
   });
 
   it("F8 mark_delivered: a signed mark_delivered records the operator's canonical proof on a manual row", async () => {

@@ -4,6 +4,13 @@
 // predicate as the CAS UPDATE, so both apply or neither (atomic rollback on
 // any constraint violation). CAS semantics: 0 rows changed => false/null,
 // never a throw.
+//
+// ONE deliberate exception (audit finding B3): markQueuedRepublished writes no
+// audit row. It changes no state and carries no decision — it only stamps
+// updated_ms so the cron stops republishing the same stale `queued` row on
+// every pass. Auditing it would append a row per stale row per cron period
+// forever, which is exactly the R20 mode-off shape ("rows accumulate in
+// queued"), so the journal would grow without bound while recording nothing.
 import {
   DISPATCH_LEASE_MS,
   STALE_QUEUED_REQUEUE_AFTER_MS,
@@ -88,6 +95,47 @@ function placeholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(", ");
 }
 
+// Copilot suppressed comment (F4) / ADR §10 H12: the route's read-then-act
+// replay check cannot make an operator command one-shot under concurrency —
+// two identical requests both observe no digest and both mutate. The digest is
+// therefore CONSUMED inside the mutation batch: the audit INSERT, which is the
+// applied-command ledger row itself, refuses to write a digest already
+// recorded for the delivery, and the UPDATE is bound to that decision by
+// `changes() > 0`.
+//
+// Why not the same NOT EXISTS on the UPDATE: the batch is ONE transaction on
+// one connection, so the UPDATE would see the audit row this very batch just
+// inserted and would never fire (probed: audit changes 1, update changes 0).
+// Reversing the order is not available either — the audit INSERT reads
+// `from_state` from the live row and must run BEFORE the UPDATE. The scope
+// (`actor = 'operator'` + the digest key) mirrors operatorCommandApplied
+// exactly, so the fast 409 pre-check and this atomic guard read the same rows.
+const APPLIED_ONCE_AUDIT_GUARD =
+  " AND NOT EXISTS (SELECT 1 FROM dispatch_audit" +
+  " WHERE delivery_id = ? AND actor = 'operator'" +
+  " AND json_extract(evidence_json, '$.request_signature_sha256') = ?)";
+
+function appliedOnceAuditGuard(requestSignatureSha256: string | null): string {
+  return requestSignatureSha256 === null ? "" : APPLIED_ONCE_AUDIT_GUARD;
+}
+
+// Bound only when the guard clause is present, and appended LAST: the clause
+// closes the WHERE, so its parameters are the statement's final ones.
+function appliedOnceBindings(
+  deliveryId: string,
+  requestSignatureSha256: string | null,
+): readonly unknown[] {
+  return requestSignatureSha256 === null
+    ? []
+    : [deliveryId, requestSignatureSha256];
+}
+
+// The mutation half of the guard. Only operator commands carry it, so no
+// consumer/resolver transition inherits the changes() dependency.
+function appliedOnceUpdateGuard(requestSignatureSha256: string | null): string {
+  return requestSignatureSha256 === null ? "" : " AND changes() > 0";
+}
+
 // dispatch_audit.evidence_json is CHECK json_valid: bare error codes are
 // wrapped, JSON evidence passes through untouched.
 function asEvidenceJson(value: string): string {
@@ -115,6 +163,9 @@ export class D1DispatchStore implements DispatchStore {
     evidenceJson: string,
     actor: DispatchAuditEntry["actor"],
     atMs: number,
+    // F4: present only for operator commands — the audit row is the ledger
+    // entry, so refusing to write it here is what makes the command one-shot.
+    requestSignatureSha256: string | null = null,
   ): D1PreparedStatement {
     return this.#database
       .prepare(
@@ -124,9 +175,17 @@ export class D1DispatchStore implements DispatchStore {
          SELECT delivery_id, state, ?, ?, ?, ?
          FROM dispatch_outbox
          WHERE delivery_id = ?
-           AND state IN (${placeholders(expectedStates.length)})`,
+           AND state IN (${placeholders(expectedStates.length)})${appliedOnceAuditGuard(requestSignatureSha256)}`,
       )
-      .bind(toState, evidenceJson, actor, atMs, deliveryId, ...expectedStates);
+      .bind(
+        toState,
+        evidenceJson,
+        actor,
+        atMs,
+        deliveryId,
+        ...expectedStates,
+        ...appliedOnceBindings(deliveryId, requestSignatureSha256),
+      );
   }
 
   // Audit row for a mutation that does not change state (guarded only by the
@@ -256,7 +315,10 @@ export class D1DispatchStore implements DispatchStore {
     return this.get(deliveryId);
   }
 
-  async markDelivered(
+  // The audit + UPDATE pair of a `-> delivered` CAS. Extracted so the single
+  // source of this SQL serves both markDelivered and recordLateProof, whose
+  // batch (Copilot suppressed comment F2) carries TWO of these pairs.
+  #deliveredPair(
     deliveryId: string,
     now: number,
     ts: string,
@@ -264,7 +326,8 @@ export class D1DispatchStore implements DispatchStore {
     actor: "consumer" | "resolver" | "operator",
     expectedStates: readonly DispatchState[],
     evidenceJson: string,
-  ): Promise<boolean> {
+    requestSignatureSha256: string | null,
+  ): [D1PreparedStatement, D1PreparedStatement] {
     const audit = this.#transitionAudit(
       deliveryId,
       expectedStates,
@@ -272,6 +335,7 @@ export class D1DispatchStore implements DispatchStore {
       asEvidenceJson(evidenceJson),
       actor,
       now,
+      requestSignatureSha256,
     );
     // §9.A1: shadow rows are recorded delivered WITHOUT Slack identifiers
     // (no egress ever happened). §6.3.3: a row whose resend armed
@@ -290,7 +354,7 @@ export class D1DispatchStore implements DispatchStore {
              last_error = NULL,
              updated_ms = ?
          WHERE delivery_id = ?
-           AND state IN (${placeholders(expectedStates.length)})`,
+           AND state IN (${placeholders(expectedStates.length)})${appliedOnceUpdateGuard(requestSignatureSha256)}`,
       )
       .bind(
         ts,
@@ -300,7 +364,31 @@ export class D1DispatchStore implements DispatchStore {
         deliveryId,
         ...expectedStates,
       );
-    const results = await this.#database.batch([audit, update]);
+    return [audit, update];
+  }
+
+  async markDelivered(
+    deliveryId: string,
+    now: number,
+    ts: string,
+    channel: string,
+    actor: "consumer" | "resolver" | "operator",
+    expectedStates: readonly DispatchState[],
+    evidenceJson: string,
+    requestSignatureSha256: string | null = null,
+  ): Promise<boolean> {
+    const results = await this.#database.batch(
+      this.#deliveredPair(
+        deliveryId,
+        now,
+        ts,
+        channel,
+        actor,
+        expectedStates,
+        evidenceJson,
+        requestSignatureSha256,
+      ),
+    );
     return changed(results[1]);
   }
 
@@ -378,25 +466,43 @@ export class D1DispatchStore implements DispatchStore {
     now: number,
     reason: string,
   ): Promise<boolean> {
-    const expectedStates: readonly DispatchState[] = ["queued", "sending"];
-    const audit = this.#transitionAudit(
-      deliveryId,
-      expectedStates,
-      "dead_letter",
-      JSON.stringify({ reason }),
-      "consumer",
-      now,
-    );
+    // Audit finding B3/B8 (ADR §10 H15, narrowing H9): the predicate was
+    // `state IN ('queued','sending')` with no lease term, and its only caller
+    // decides from a bare read-then-act snapshot. Two consequences, both
+    // reachable because duplicate DLQ arrivals are routine: a row in `sending`
+    // under a LIVE lease — a send genuinely in flight — was killed mid-flight,
+    // and an operator resend landing between the handler's read and its write
+    // was dead-lettered, recording the `queued -> dead_letter` transition H9
+    // declares impossible. The predicate now encodes the handler's decision:
+    // only a `sending` row whose lease has EXPIRED (a crash between claim and
+    // outcome) dead-letters. A live-lease row is left alone; if that send does
+    // crash, lease expiry hands the row to the resolver (§6.3.1
+    // normalization), which is the safer of the two outcomes.
+    const predicate =
+      " AND state = 'sending'" +
+      " AND lease_until_ms IS NOT NULL AND lease_until_ms < ?";
+    // Inlined rather than via #transitionAudit, which has no bind slot for the
+    // lease parameter: the audit must carry the SAME predicate as the UPDATE
+    // so the journal and the row stay atomic and consistent (§6.1).
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, 'dead_letter', ?, 'consumer', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(JSON.stringify({ reason }), now, deliveryId, now);
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
          SET state = 'dead_letter',
              last_error = ?,
              updated_ms = ?
-         WHERE delivery_id = ?
-           AND state IN (${placeholders(expectedStates.length)})`,
+         WHERE delivery_id = ?${predicate}`,
       )
-      .bind(reason, now, deliveryId, ...expectedStates);
+      .bind(reason, now, deliveryId, now);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -408,50 +514,79 @@ export class D1DispatchStore implements DispatchStore {
     channel: string,
     actor: "consumer" | "resolver",
   ): Promise<"ambiguous_cas" | "manual_cas" | "audit_only"> {
-    // §6.3 (R2): FIRST the unconditional audit append — canonical proof
-    // lands durably no matter which state the resolver reached.
+    // §6.3 (R2): the unconditional audit append — canonical proof lands
+    // durably no matter which state the resolver reached — and the
+    // proof-beats-inference CAS, in ONE batch().
+    // Copilot suppressed comment (F2): the audit used to commit in a separate
+    // database operation from the CAS that follows it. A worker termination in
+    // that window left the row `manual` with the proof recorded only in the
+    // journal; queue redelivery then saw an unclaimable manual row and ACKed
+    // it, so canonical proof never won over inference without operator
+    // intervention. One batch closes the window: either the proof and the
+    // transition both commit, or neither does.
     // Copilot suppressed comment (F6): the resolver also lands here when its
     // FOUND CAS loses, so the provenance of BOTH the proof audit row and the
     // delivered transition is the caller's actor — never a hard-coded
     // `consumer`.
-    const row = await this.get(deliveryId);
     const evidenceJson = JSON.stringify({ late_proof: true, ts, channel });
-    await this.appendAudit({
+    // Statement 1, UNCONDITIONAL (audit_only is the outcome when neither CAS
+    // applies, including a delivery_id with no row at all — hence the
+    // COALESCE to 'unknown' rather than an INSERT ... SELECT from the row).
+    // It runs FIRST so it records the state as it was BEFORE the transitions
+    // below; reordering the batch would silently rewrite that provenance.
+    const proofAudit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         VALUES (
+           ?,
+           COALESCE((
+             SELECT state FROM dispatch_outbox WHERE delivery_id = ?
+           ), 'unknown'),
+           COALESCE((
+             SELECT state FROM dispatch_outbox WHERE delivery_id = ?
+           ), 'unknown'),
+           ?, ?, ?
+         )`,
+      )
+      .bind(deliveryId, deliveryId, deliveryId, evidenceJson, actor, now);
+    // Statements 2-3 then 4-5: CAS ambiguous -> delivered(ts) FIRST, manual ->
+    // delivered(ts) as the fallback (§6.3 late-proof rule, R2 amended). The
+    // manual-guarded pair cannot fire after the ambiguous one delivered the
+    // row: both its statements carry `state IN ('manual')`, and the row is
+    // `delivered` by then — the state predicate makes it an in-batch no-op.
+    // (Pinned by the R2 tests: an ambiguous row returns "ambiguous_cas" with
+    // exactly one transition audit row.)
+    const [ambiguousAudit, ambiguousUpdate] = this.#deliveredPair(
       deliveryId,
-      fromState: row?.state ?? "unknown",
-      toState: row?.state ?? "unknown",
-      evidenceJson,
+      now,
+      ts,
+      channel,
       actor,
-      atMs: now,
-    });
-    // Then CAS ambiguous -> delivered(ts) first, manual -> delivered(ts) as
-    // fallback — proof beats inference.
-    if (
-      await this.markDelivered(
-        deliveryId,
-        now,
-        ts,
-        channel,
-        actor,
-        ["ambiguous"],
-        evidenceJson,
-      )
-    ) {
-      return "ambiguous_cas";
-    }
-    if (
-      await this.markDelivered(
-        deliveryId,
-        now,
-        ts,
-        channel,
-        actor,
-        ["manual"],
-        evidenceJson,
-      )
-    ) {
-      return "manual_cas";
-    }
+      ["ambiguous"],
+      evidenceJson,
+      null,
+    );
+    const [manualAudit, manualUpdate] = this.#deliveredPair(
+      deliveryId,
+      now,
+      ts,
+      channel,
+      actor,
+      ["manual"],
+      evidenceJson,
+      null,
+    );
+    const results = await this.#database.batch([
+      proofAudit,
+      ambiguousAudit,
+      ambiguousUpdate,
+      manualAudit,
+      manualUpdate,
+    ]);
+    if (changed(results[2])) return "ambiguous_cas";
+    if (changed(results[4])) return "manual_cas";
     return "audit_only";
   }
 
@@ -654,6 +789,7 @@ export class D1DispatchStore implements DispatchStore {
     deliveryId: string,
     now: number,
     evidenceJson: string,
+    requestSignatureSha256: string | null,
   ): Promise<boolean> {
     // Copilot finding F5 (ADR §6.3.3/R19 repair-from-anywhere): the operator
     // sweep is the production entry point for a duplicate that materialized
@@ -697,16 +833,22 @@ export class D1DispatchStore implements DispatchStore {
          )
          SELECT delivery_id, state, state, ?, 'operator', ?
          FROM dispatch_outbox
-         WHERE delivery_id = ?${predicate}`,
+         WHERE delivery_id = ?${predicate}${appliedOnceAuditGuard(requestSignatureSha256)}`,
       )
-      .bind(asEvidenceJson(evidenceJson), now, deliveryId, now);
+      .bind(
+        asEvidenceJson(evidenceJson),
+        now,
+        deliveryId,
+        now,
+        ...appliedOnceBindings(deliveryId, requestSignatureSha256),
+      );
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
          SET verify_scans_remaining = MIN(verify_scans_remaining + 1, 2),
              verify_after_ms = ?,
              updated_ms = ?
-         WHERE delivery_id = ?${predicate}`,
+         WHERE delivery_id = ?${predicate}${appliedOnceUpdateGuard(requestSignatureSha256)}`,
       )
       .bind(now, now, deliveryId, now);
     const results = await this.#database.batch([audit, update]);
@@ -771,24 +913,31 @@ export class D1DispatchStore implements DispatchStore {
     return changed(results[1]);
   }
 
-  async consecutiveVerificationDeferrals(deliveryId: string): Promise<number> {
-    // Copilot finding (resolver starvation): the deferral streak is derived
-    // from the audit journal — the TRAILING run of deferral markers, i.e.
-    // every marker written after the last audit row for this delivery that
-    // is not one (a completed scan, a repair, a state transition all reset
-    // the streak). No schema column is added for it.
+  async consecutiveNoProgressScans(deliveryId: string): Promise<number> {
+    // Copilot finding (resolver starvation) + audit finding B1: the streak is
+    // derived from the audit journal — the TRAILING run of no-progress
+    // markers, i.e. every marker written after the last audit row for this
+    // delivery that is not one (a completed scan, a repair, a state
+    // transition, the abandon marker all reset the streak). No schema column
+    // is added for it.
+    // B1: the predicate is the SHARED `no_progress` field, carried by BOTH the
+    // deferral marker and the duplicate-repair-pending re-arm. Two streaks —
+    // one per marker kind — would reset each other, so an alternating sequence
+    // (partial scan, then history 429, then partial again…), the normal shape
+    // on a busy channel, would never reach any ceiling and the livelock would
+    // survive the fix.
     const count = await this.#database
       .prepare(
         `SELECT COUNT(*) AS n
          FROM dispatch_audit
          WHERE delivery_id = ?
-           AND json_extract(evidence_json, '$.verification_deferred') = 1
+           AND json_extract(evidence_json, '$.no_progress') = 1
            AND seq > COALESCE((
              SELECT MAX(seq)
              FROM dispatch_audit
              WHERE delivery_id = ?
                AND COALESCE(
-                 json_extract(evidence_json, '$.verification_deferred'), 0
+                 json_extract(evidence_json, '$.no_progress'), 0
                ) != 1
            ), 0)`,
       )
@@ -802,19 +951,37 @@ export class D1DispatchStore implements DispatchStore {
     now: number,
     nextVerifyAfterMs: number,
     evidenceJson: string,
+    expectedVerifyAfterMs: number | null,
   ): Promise<boolean> {
     // §6.3.3: verification scans are INCONCLUSIVE-safe — the counter is
     // untouched; only verify_after_ms moves forward, so the row leaves the
     // due set and a due ambiguous row can be examined.
+    // Audit finding B7: the caller's OBSERVED verify_after_ms joins the CAS,
+    // exactly as completeVerificationScan carries it. Without it a pass acting
+    // on a stale snapshot pushed the due time of a row that had been re-armed
+    // after that snapshot — including by an operator sweep (H11), whose whole
+    // point is a scan due NOW. `IS ?` rather than `= ?` — NULL-safe equality
+    // in SQLite.
     const predicate =
-      " AND state = 'delivered' AND shadow = 0 AND verify_scans_remaining > 0";
-    const audit = this.#inPlaceAudit(
-      deliveryId,
-      asEvidenceJson(evidenceJson),
-      "resolver",
-      now,
-      predicate,
-    );
+      " AND state = 'delivered' AND shadow = 0" +
+      " AND verify_scans_remaining > 0 AND verify_after_ms IS ?";
+    // Inlined rather than via #inPlaceAudit, which has no bind slot for the
+    // snapshot parameter: the audit carries the SAME predicate as the UPDATE.
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, state, ?, 'resolver', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(
+        asEvidenceJson(evidenceJson),
+        now,
+        deliveryId,
+        expectedVerifyAfterMs,
+      );
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
@@ -822,7 +989,54 @@ export class D1DispatchStore implements DispatchStore {
              updated_ms = ?
          WHERE delivery_id = ?${predicate}`,
       )
-      .bind(nextVerifyAfterMs, now, deliveryId);
+      .bind(nextVerifyAfterMs, now, deliveryId, expectedVerifyAfterMs);
+    const results = await this.#database.batch([audit, update]);
+    return changed(results[1]);
+  }
+
+  async abandonVerification(
+    deliveryId: string,
+    now: number,
+    expectedVerifyAfterMs: number | null,
+    evidenceJson: string,
+  ): Promise<boolean> {
+    // Audit finding B1 / ADR §10 H14: the exit the non-exhausted re-arm never
+    // had. The row stays `delivered` and KEEPS verify_scans_remaining as
+    // evidence of the unfinished verification; clearing verify_after_ms is
+    // what removes it from verificationRowsDue (which requires a non-null due
+    // time), and it is also the signal statusCounters counts for the
+    // `verification_abandoned` alarm. An operator sweep (H11) stamps
+    // verify_after_ms = now and restarts verification — with a fresh streak,
+    // because this marker carries no `no_progress` field and therefore breaks
+    // the trailing run.
+    // Same snapshot guard as deferVerificationScan (B7): a sweep that landed
+    // after this pass's snapshot must never be abandoned by it.
+    const predicate =
+      " AND state = 'delivered' AND shadow = 0" +
+      " AND verify_scans_remaining > 0 AND verify_after_ms IS ?";
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, state, ?, 'resolver', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(
+        asEvidenceJson(evidenceJson),
+        now,
+        deliveryId,
+        expectedVerifyAfterMs,
+      );
+    const update = this.#database
+      .prepare(
+        `UPDATE dispatch_outbox
+         SET verify_after_ms = NULL,
+             updated_ms = ?
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(now, deliveryId, expectedVerifyAfterMs);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -858,12 +1072,17 @@ export class D1DispatchStore implements DispatchStore {
   async flagDuplicateRepairPending(
     deliveryId: string,
     now: number,
+    nextVerifyAfterMs: number,
     evidenceJson: string,
   ): Promise<boolean> {
     // Copilot finding F5 (ADR §6.3.2/R19): a detected duplicate whose
     // deletion failed must keep a future scan — verify_scans_remaining is
-    // raised to at least 1 and the next scan is due at the §6.3.3
-    // first-scan delay. One batch with its pending-marker audit row (§6.1).
+    // raised to at least 1 and the next scan is due at the caller's time.
+    // One batch with its pending-marker audit row (§6.1).
+    // Audit finding B1: the due time used to be a FLAT now + 15 min written
+    // here, which is what made the non-exhausted scan re-arm itself every
+    // 15 minutes for ever. The caller now supplies it from the shared
+    // no-progress backoff and stops re-arming at the ceiling (H14).
     const predicate = " AND state = 'delivered' AND shadow = 0";
     const audit = this.#inPlaceAudit(
       deliveryId,
@@ -880,7 +1099,7 @@ export class D1DispatchStore implements DispatchStore {
              updated_ms = ?
          WHERE delivery_id = ?${predicate}`,
       )
-      .bind(now + VERIFY_FIRST_SCAN_DELAY_MS, now, deliveryId);
+      .bind(nextVerifyAfterMs, now, deliveryId);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -889,6 +1108,7 @@ export class D1DispatchStore implements DispatchStore {
     deliveryId: string,
     now: number,
     evidenceJson: string,
+    requestSignatureSha256: string | null,
   ): Promise<boolean> {
     // ADR §6.2 routes dead_letter to the operator menu alongside manual
     // (Copilot finding F7): same audited possible-duplicate resend, same
@@ -901,6 +1121,7 @@ export class D1DispatchStore implements DispatchStore {
       asEvidenceJson(evidenceJson),
       "operator",
       now,
+      requestSignatureSha256,
     );
     // I1: the ONLY resend path. The resend arms the §6.3.3 verification
     // scans (verify_scans_remaining = 2); verify_after_ms is stamped by
@@ -917,7 +1138,7 @@ export class D1DispatchStore implements DispatchStore {
              last_error = NULL,
              updated_ms = ?
          WHERE delivery_id = ?
-           AND state IN (${placeholders(expectedStates.length)})`,
+           AND state IN (${placeholders(expectedStates.length)})${appliedOnceUpdateGuard(requestSignatureSha256)}`,
       )
       .bind(now, deliveryId, ...expectedStates);
     const results = await this.#database.batch([audit, update]);
@@ -928,6 +1149,7 @@ export class D1DispatchStore implements DispatchStore {
     deliveryId: string,
     now: number,
     evidenceJson: string,
+    requestSignatureSha256: string | null,
   ): Promise<boolean> {
     const audit = this.#transitionAudit(
       deliveryId,
@@ -936,13 +1158,14 @@ export class D1DispatchStore implements DispatchStore {
       asEvidenceJson(evidenceJson),
       "operator",
       now,
+      requestSignatureSha256,
     );
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
          SET state = 'closed_manual',
              updated_ms = ?
-         WHERE delivery_id = ? AND state = 'manual'`,
+         WHERE delivery_id = ? AND state = 'manual'${appliedOnceUpdateGuard(requestSignatureSha256)}`,
       )
       .bind(now, deliveryId);
     const results = await this.#database.batch([audit, update]);
@@ -991,6 +1214,31 @@ export class D1DispatchStore implements DispatchStore {
     return result.results.map(toOutboxRow);
   }
 
+  async markQueuedRepublished(
+    deliveryId: string,
+    now: number,
+  ): Promise<boolean> {
+    // Audit finding B3 (the amplifier behind duplicate DLQ arrivals): the cron
+    // republished every stale `queued` row on EVERY pass, because a republish
+    // changed nothing on the row and staleQueuedRows selects on updated_ms
+    // alone. Stamping updated_ms restarts that window, so the same row is
+    // republished at most once per STALE_QUEUED_REQUEUE_AFTER_MS instead of
+    // once per pass. This reduces duplicate queue messages, it does not
+    // eliminate them (R13 keeps republishing until the row leaves `queued`,
+    // and the queue is at-least-once by construction) — the actual protection
+    // against a duplicate arrival is the claim CAS (R1) and the markDeadLetter
+    // predicate narrowed with this finding. No audit row: see the file header.
+    const result = await this.#database
+      .prepare(
+        `UPDATE dispatch_outbox
+         SET updated_ms = ?
+         WHERE delivery_id = ? AND state = 'queued'`,
+      )
+      .bind(now, deliveryId)
+      .run();
+    return changed(result);
+  }
+
   async statusCounters(now: number): Promise<DispatchStatusCounters> {
     const zero = (): Record<DispatchState, number> => ({
       queued: 0,
@@ -1033,12 +1281,29 @@ export class D1DispatchStore implements DispatchStore {
          WHERE state = 'ambiguous'`,
       )
       .first<number | null>("oldest_ms");
+    // Audit finding B1 / ADR §10 H14: rows that stopped re-arming their
+    // verification — `delivered`, scans still remaining, no due time left.
+    // markDelivered stamps verify_after_ms whenever the counter is positive
+    // and every re-arm sets both, so abandonVerification is the only writer
+    // that produces this shape. Row-derived rather than marker-derived, so an
+    // operator sweep clears the alarm instead of leaving it latched forever.
+    const abandoned = await this.#database
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM dispatch_outbox
+         WHERE state = 'delivered'
+           AND shadow = 0
+           AND verify_scans_remaining > 0
+           AND verify_after_ms IS NULL`,
+      )
+      .first<number>("n");
     return {
       byStateAndDestination,
       oldestNonTerminalAgeMs: oldest === null ? null : now - oldest,
       oldestAmbiguousAgeMs:
         oldestAmbiguous === null ? null : now - oldestAmbiguous,
       repairedDuplicates: await this.repairedDuplicatesTotal(),
+      verificationAbandoned: abandoned ?? 0,
     };
   }
 

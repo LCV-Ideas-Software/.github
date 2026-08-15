@@ -281,7 +281,29 @@ export interface DispatchCronResult {
   shadowProcessed: number;
   requeued: number;
   resolverExamined: number;
+  // Audit finding B4: rows whose examination threw and was contained, so the
+  // pass could finish the remaining rows. Logged by runDispatchScheduled.
+  resolverFailed: number;
   alarms: string[];
+}
+
+// Copilot suppressed comment (F3) / ADR §6.7 + R5: the observe-only alarms are
+// READ-ONLY and must survive any failure of the write/egress steps — a Secrets
+// Store or Slack outage is precisely when `manual_present`,
+// `dead_letter_present`, `ambiguous_stale` and the queued-backlog alarm matter
+// most. The pass therefore computes them even when the stale-requeue, resolver
+// or publish step throws, and reports them on the failure path through this
+// error, so the caller logs the same alarm set it would have logged on
+// success. `cause` carries the ORIGINAL failure untouched, so the existing
+// failure summary is unchanged.
+export class DispatchCronPassError extends Error {
+  readonly alarms: readonly string[];
+
+  constructor(cause: unknown, alarms: readonly string[]) {
+    super("dispatch_cron_pass_failed", { cause });
+    this.name = "DispatchCronPassError";
+    this.alarms = alarms;
+  }
 }
 
 // §6.7 observe-only job + §6.3.1 resolver budget + R13 stale re-enqueue.
@@ -300,6 +322,7 @@ export async function runDispatchCronPass(
       shadowProcessed: 0,
       requeued: 0,
       resolverExamined: 0,
+      resolverFailed: 0,
       alarms: [],
     };
   }
@@ -307,87 +330,132 @@ export async function runDispatchCronPass(
   let shadowProcessed = 0;
   let requeued = 0;
   let resolverExamined = 0;
+  let resolverFailed = 0;
+  // F3: the failure of a write/egress step is captured, never allowed to skip
+  // the observe-only snapshot below; it is rethrown after the alarms exist.
+  let passFailure: unknown;
+  let passFailed = false;
 
-  // R20: in mode off nothing is processed or published — rows accumulate in
-  // queued and the queued_backlog_stale alarm below makes that visible.
-  if (deps.mode !== "off") {
-    const stale = await store.staleQueuedRows(now, CRON_PROCESS_LIMIT);
-    for (const row of stale) {
-      if (row.shadow) {
-        // §9.A1: shadow rows never reach Slack; they are claimed and
-        // terminally recorded here, entirely off-queue.
-        await processDispatchMessage(
-          {
-            body: { deliveryId: row.deliveryId, mode: deps.mode },
-            attempts: 1,
-            ack: () => {},
-            retry: () => {},
-          },
-          {
-            store,
-            fetch: deps.fetch,
-            now: deps.now,
-            botToken: "",
-            channelFor: channelForDestination,
-          },
-        );
-        shadowProcessed += 1;
-      } else {
-        // R13 in primary; §6.8 regime A in shadow — after a rollback flip
-        // the non-shadow backlog must still drain (panel V8/V10). The
-        // consumer applies the mode active at consume time, so a republished
-        // row is deferred (not sent) if the mode is not primary by then.
-        await deps.publish(
-          row.destination,
-          dispatchQueueJobBody(row.deliveryId),
-        );
-        requeued += 1;
+  try {
+    // R20: in mode off nothing is processed or published — rows accumulate in
+    // queued and the queued_backlog_stale alarm below makes that visible.
+    if (deps.mode !== "off") {
+      const stale = await store.staleQueuedRows(now, CRON_PROCESS_LIMIT);
+      for (const row of stale) {
+        if (row.shadow) {
+          // §9.A1: shadow rows never reach Slack; they are claimed and
+          // terminally recorded here, entirely off-queue.
+          await processDispatchMessage(
+            {
+              body: { deliveryId: row.deliveryId, mode: deps.mode },
+              attempts: 1,
+              ack: () => {},
+              retry: () => {},
+            },
+            {
+              store,
+              fetch: deps.fetch,
+              now: deps.now,
+              botToken: "",
+              channelFor: channelForDestination,
+            },
+          );
+          shadowProcessed += 1;
+        } else {
+          // R13 in primary; §6.8 regime A in shadow — after a rollback flip
+          // the non-shadow backlog must still drain (panel V8/V10). The
+          // consumer applies the mode active at consume time, so a republished
+          // row is deferred (not sent) if the mode is not primary by then.
+          await deps.publish(
+            row.destination,
+            dispatchQueueJobBody(row.deliveryId),
+          );
+          // Audit finding B3: the republish changed nothing on the row, and
+          // staleQueuedRows selects on updated_ms alone, so the SAME row was
+          // republished on every pass — the amplifier that made duplicate DLQ
+          // arrivals routine. Stamping updated_ms restarts its stale window.
+          // Stamped AFTER a successful publish: a failed publish must leave
+          // the row immediately re-publishable.
+          await store.markQueuedRepublished(row.deliveryId, deps.now());
+          requeued += 1;
+        }
       }
     }
-  }
 
-  // §6.8/R20 "egress pauses" in mode off: the resolver performs Slack
-  // egress (conversations.history, chat.delete) and therefore never runs in
-  // mode off (panel V2); ambiguous rows wait, alarmed, for re-enable.
-  if (deps.mode !== "off") {
-    const ambiguousTotal =
-      sumState(counters, "ambiguous") + sumState(counters, "sending");
-    const verificationDue = await store.verificationRowsDue(now, 1);
-    if (ambiguousTotal > 0 || verificationDue.length > 0) {
-      const botToken = await deps.readBotToken();
-      const pass = await runResolverPass({
-        store,
-        fetch: deps.fetch,
-        now: deps.now,
-        botToken,
-        channelFor: channelForDestination,
-        retentionVerifiedEvidence: RETENTION_VERIFIED_EVIDENCE,
-      });
-      resolverExamined = pass.examined;
+    // §6.8/R20 "egress pauses" in mode off: the resolver performs Slack
+    // egress (conversations.history, chat.delete) and therefore never runs in
+    // mode off (panel V2); ambiguous rows wait, alarmed, for re-enable.
+    if (deps.mode !== "off") {
+      const ambiguousTotal =
+        sumState(counters, "ambiguous") + sumState(counters, "sending");
+      const verificationDue = await store.verificationRowsDue(now, 1);
+      if (ambiguousTotal > 0 || verificationDue.length > 0) {
+        const botToken = await deps.readBotToken();
+        const pass = await runResolverPass({
+          store,
+          fetch: deps.fetch,
+          now: deps.now,
+          botToken,
+          channelFor: channelForDestination,
+          retentionVerifiedEvidence: RETENTION_VERIFIED_EVIDENCE,
+        });
+        resolverExamined = pass.examined;
+        resolverFailed = pass.failed;
+      }
     }
+  } catch (error) {
+    // F3: a Secrets Store or Slack failure used to throw past the observe-only
+    // snapshot, so the alarms disappeared exactly while egress was unhealthy.
+    // The failure is held here and rethrown below, with the alarms attached.
+    passFailure = error;
+    passFailed = true;
   }
 
-  const after = await store.statusCounters(deps.now());
-  const previousRepaired = await store.repairedDuplicatesBefore(
-    now - OBSERVER_LOOKBACK_MS,
-  );
-  const alarms = observerAlarms(
-    {
-      deadLetter: sumState(after, "dead_letter"),
-      manual: sumState(after, "manual"),
-      // §6.7 (Copilot finding F6): ambiguous_stale takes the per-state
-      // ambiguous age — an old manual row plus a fresh ambiguous row must
-      // not false-alarm. queued_backlog_stale below deliberately keeps the
-      // non-terminal age (R20 backlog approximation).
-      oldestAmbiguousAgeMs: after.oldestAmbiguousAgeMs,
-      repairedDuplicates: after.repairedDuplicates,
-      queued: sumState(after, "queued"),
-      oldestNonTerminalAgeMs: after.oldestNonTerminalAgeMs,
-    },
-    { repairedDuplicates: previousRepaired },
-  );
+  let alarms: string[] = [];
+  try {
+    const after = await store.statusCounters(deps.now());
+    const previousRepaired = await store.repairedDuplicatesBefore(
+      now - OBSERVER_LOOKBACK_MS,
+    );
+    alarms = observerAlarms(
+      {
+        deadLetter: sumState(after, "dead_letter"),
+        manual: sumState(after, "manual"),
+        // §6.7 (Copilot finding F6): ambiguous_stale takes the per-state
+        // ambiguous age — an old manual row plus a fresh ambiguous row must
+        // not false-alarm. queued_backlog_stale below deliberately keeps the
+        // non-terminal age (R20 backlog approximation).
+        oldestAmbiguousAgeMs: after.oldestAmbiguousAgeMs,
+        repairedDuplicates: after.repairedDuplicates,
+        queued: sumState(after, "queued"),
+        oldestNonTerminalAgeMs: after.oldestNonTerminalAgeMs,
+        // Audit finding B1 / ADR §10 H14: a delivered row that stopped
+        // re-arming its verification is alarmed, never silent.
+        verificationAbandoned: after.verificationAbandoned,
+      },
+      { repairedDuplicates: previousRepaired },
+    );
+  } catch (observerError) {
+    // F3: the observer's own failure keeps its previous behavior when the
+    // pass itself was healthy. When the pass had ALREADY failed, the original
+    // failure is the one that must reach the log — the snapshot is simply
+    // empty. Never let the read-only path overwrite the real cause.
+    if (!passFailed) throw observerError;
+  }
 
-  return { skipped: false, shadowProcessed, requeued, resolverExamined, alarms };
+  if (passFailed) {
+    // F3: the alarms are computed and reported; the original failure keeps
+    // propagating (and keeps being logged) exactly as before, as `cause`.
+    throw new DispatchCronPassError(passFailure, alarms);
+  }
+  return {
+    skipped: false,
+    shadowProcessed,
+    requeued,
+    resolverExamined,
+    resolverFailed,
+    alarms,
+  };
 }
 
 function countAllRows(counters: DispatchStatusCounters): number {

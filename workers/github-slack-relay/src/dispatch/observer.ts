@@ -33,6 +33,13 @@ export function observerAlarms(
   ) {
     alarms.push("repaired_duplicates_increased");
   }
+  // Audit finding B1 / ADR §10 H14: a delivered row whose verification stopped
+  // re-arming after VERIFY_NO_PROGRESS_CEILING no-progress scans. It is the
+  // exit the livelocked re-arm never had, so it must be alarmed — an
+  // operator sweep (H11) restarts verification and clears this.
+  if ((current.verificationAbandoned ?? 0) > 0) {
+    alarms.push("verification_abandoned");
+  }
   if (
     (current.queued ?? 0) > 0 &&
     current.oldestNonTerminalAgeMs !== undefined &&
