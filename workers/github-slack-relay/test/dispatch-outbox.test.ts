@@ -31,7 +31,6 @@ import {
 } from "./dispatch-helpers";
 
 const ALERTS_CHANNEL = "C0BMUK793NV";
-const ACTIVITY_CHANNEL = "C0BMQMW3L4E";
 
 const HISTORICAL_DELIVERY_A = "d43b2d70-9772-11f1-805f-1846e9afeb67";
 const HISTORICAL_DELIVERY_B = "0aac32b0-97b8-11f1-825a-68c75513476d";
@@ -2089,5 +2088,96 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
       slack_message_ts: null,
     });
     expect(auditRows(database, markedId)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ADR §10 H46, site 4 — ensureVerificationArmed. The resolver test proves the
+// OUTCOME (a lost arm no longer strands the row); these two prove the method's
+// own contract, which is what keeps that fix from breaking two other
+// invariants it sits next to.
+// ---------------------------------------------------------------------------
+describe("H46: ensureVerificationArmed (ADR §10 H46, site 4)", () => {
+  afterEach(closeDispatchDatabases);
+
+  it("H46: an operator sweep's due time is never overwritten, and no audit row is written", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "h46-sweep-not-postponed";
+    // The exact shape an operator sweep leaves (H11): armed to the schema
+    // maximum and due NOW, because the whole point of the sweep is a scan that
+    // runs on this pass.
+    insertRawOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786664000.000400",
+      verifyScansRemaining: 2,
+      verifyAfterMs: DISPATCH_TEST_NOW,
+    });
+
+    const armed = await store.ensureVerificationArmed(
+      deliveryId,
+      DISPATCH_TEST_NOW + 1_000,
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+      "found_many_delivered_cas_lost",
+    );
+
+    // The row is already scannable, so there is nothing to arm: the write is a
+    // no-op in BOTH halves of its batch. Pushing the due time here would
+    // postpone exactly the scan the sweep promised (§10 H20).
+    expect(armed).toBe(false);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_scans_remaining: 2,
+      verify_after_ms: DISPATCH_TEST_NOW,
+    });
+    expect(auditRows(database, deliveryId)).toHaveLength(0);
+  });
+
+  it("H46: the arm marker is NEUTRAL for the H14 no-progress streak", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "h46-arm-marker-neutral";
+    // Abandoned shape (§10 H14): a counter with no due time — stranded, so the
+    // arm fires.
+    insertRawOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786664000.000401",
+      verifyScansRemaining: 1,
+      verifyAfterMs: null,
+    });
+    await store.appendAudit({
+      deliveryId,
+      fromState: "delivered",
+      toState: "delivered",
+      evidenceJson: JSON.stringify({
+        duplicate_repair_pending: true,
+        no_progress: true,
+      }),
+      actor: "resolver",
+      atMs: DISPATCH_TEST_NOW,
+    });
+    expect(await store.consecutiveNoProgressScans(deliveryId)).toBe(1);
+
+    const armed = await store.ensureVerificationArmed(
+      deliveryId,
+      DISPATCH_TEST_NOW + 1_000,
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+      "found_many_delivered_cas_lost",
+    );
+
+    expect(armed).toBe(true);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_scans_remaining: 1,
+      verify_after_ms: DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    });
+    // The marker is not a scan outcome. Counting it as PROGRESS would reset the
+    // streak on every pass through the lost-CAS branch, and H14's ceiling —
+    // the only exit from the duplicate-repair livelock — would be unreachable.
+    expect(await store.consecutiveNoProgressScans(deliveryId)).toBe(1);
   });
 });

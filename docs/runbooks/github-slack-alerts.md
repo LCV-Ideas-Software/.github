@@ -138,7 +138,7 @@ comando vale **uma única vez** (uma repetição responde `409 already_applied`)
 
 | Ação | Quando usar | Efeito |
 |---|---|---|
-| `resend` | A linha está em `manual` ou `dead_letter` e você aceita o risco de duplicata | Volta para `queued` e republica; a verificação pós-reenvio é armada automaticamente. Em modo `off` a mensagem é confirmada sem envio (R20): a linha só sai quando o modo voltar para `primary` |
+| `resend` | A linha está em `manual` ou `dead_letter` e você aceita o risco de duplicata | Volta para `queued` e republica; a verificação pós-reenvio é armada automaticamente. Em modo `off` a mensagem é confirmada sem envio (R20) e a linha fica parada. **Só `off` segura o reenvio** (§10 H48): o consumidor pausa exclusivamente nesse modo (`src/dispatch/consumer.ts:199`), e o que decide se um envio é simulado é a coluna `shadow` da própria linha (`src/dispatch/consumer.ts:257`), que o reenvio de um alerta real nunca carrega. Em `shadow` a linha é reivindicada e **publicada no Slack de verdade**, na primeira vez que a mensagem for consumida. Se o reenvio precisa continuar pausado — numa transição do F2 ou num rollback pré-F4 —, permaneça em `off`; passar por `shadow` não é etapa intermediária segura |
 | `close_manual` | A linha está em `manual` e o alerta perdeu validade | Encerra com a justificativa registrada, sem enviar |
 | `mark_delivered` | A linha está em `manual` e você tem prova de que a mensagem está no canal (o `ts` dela) | Registra a prova canônica. Exige o estado `manual` (`src/index.ts:1182`) — em qualquer outro estado responde `409 delivery_state_conflict`. O canal precisa ser o `#github-alerts`; qualquer outro é recusado |
 | `sweep` | Você viu uma duplicata que o sistema não reparou, ou precisa limpar `verification_abandoned` | Rearma a verificação para o próximo passe do cron |
@@ -309,8 +309,12 @@ dispatcher. Para parar os envios nesta janela, pause a fila (acima); para voltar
 **Depois do F4** — regime B do ADR (§6.8/R20), quando o caminho legado não existe
 mais —, aí sim `DISPATCH_MODE=off` é a degradação de emergência: troque o modo e
 faça o deploy. Nada se perde: o ingress continua aceitando e persistindo cada GUID
-em `dispatch_outbox`, as linhas se acumulam em `queued` (alarmadas), e ao voltar
-para `primary` o cron republica sozinho, sem passo manual.
+em `dispatch_outbox`, as linhas se acumulam em `queued` (alarmadas), e ao sair de
+`off` o cron republica sozinho, sem passo manual. O gatilho é `mode !== "off"`
+(`src/dispatch/wiring.ts:397`), não `primary`: **`shadow` também drena** o
+acúmulo não-shadow, porque o consumidor só pausa em `off` e a simulação é
+decidida pela coluna `shadow` da linha, não pelo modo (§10 H48). Enquanto o
+acúmulo precisar ficar parado, o único modo que o segura é `off`.
 
 ## 5. O que o sistema NUNCA faz sozinho
 

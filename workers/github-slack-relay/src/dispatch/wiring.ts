@@ -340,8 +340,14 @@ async function processStaleQueuedRow(
   }
   // R13 in primary; §6.8 regime A in shadow — after a rollback flip the
   // non-shadow backlog must still drain (panel V8/V10). The consumer applies
-  // the mode active at consume time, so a republished row is deferred (not
-  // sent) if the mode is not primary by then.
+  // the mode active at consume time, and it pauses on `off` ALONE
+  // (processDispatchMessage), so a republished row is deferred only while the
+  // mode is `off` by then; in `shadow` it is claimed and POSTED, which is the
+  // drain the sentence above requires. Review finding (ADR §10 H48): this
+  // comment used to end "deferred (not sent) if the mode is not primary",
+  // which stated an intent as behaviour, contradicted its own first sentence,
+  // and was the source of the same false claim in the operator runbook. What
+  // makes a send simulated is the ROW's `shadow` column, never the mode.
   await deps.publish(row.destination, dispatchQueueJobBody(row.deliveryId));
   // Audit finding B3: the republish changed nothing on the row, and
   // staleQueuedRows selects on updated_ms alone, so the SAME row was

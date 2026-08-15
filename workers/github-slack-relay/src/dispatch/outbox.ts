@@ -354,6 +354,12 @@ export class D1DispatchStore implements DispatchStore {
     expectedStates: readonly DispatchState[],
     evidenceJson: string,
     requestSignatureSha256: string | null,
+    // Review finding (ADR §10 H46): the caller already KNOWS, at this write,
+    // that a follow-up §6.3.3 scan is owed — the scan was partial, or it
+    // observed duplicates it is about to try to delete. The arm therefore
+    // rides in THIS batch instead of a later, independent
+    // flagDuplicateRepairPending call. See markDelivered for the window.
+    armVerification: boolean,
   ): [D1PreparedStatement, D1PreparedStatement] {
     const audit = this.#transitionAudit(
       deliveryId,
@@ -364,17 +370,32 @@ export class D1DispatchStore implements DispatchStore {
       now,
       requestSignatureSha256,
     );
+    const armFlag = armVerification ? 1 : 0;
     // §9.A1: shadow rows are recorded delivered WITHOUT Slack identifiers
     // (no egress ever happened). §6.3.3: a row whose resend armed
     // verification gets its first scan stamped at delivery time.
+    // H46: the arm is `shadow = 0` for the same reason every other repair
+    // mutation is (flagDuplicateRepairPending, operatorSweepVerification,
+    // deferVerificationScan). A shadow row posted nothing, so an armed one
+    // would be scanned, find nothing, defer for ever — and it could never be
+    // abandoned, because abandonVerification itself requires `shadow = 0`.
+    // SQLite evaluates every SET expression against the row as it was BEFORE
+    // the statement, so `verify_scans_remaining > 0` below still reads the
+    // PRE-update counter and the two branches do not interfere.
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
          SET state = 'delivered',
              slack_message_ts = CASE WHEN shadow = 1 THEN NULL ELSE ? END,
              slack_channel_id = CASE WHEN shadow = 1 THEN NULL ELSE ? END,
+             verify_scans_remaining = CASE
+               WHEN shadow = 0 AND ? = 1
+                 THEN MAX(verify_scans_remaining, 1)
+               ELSE verify_scans_remaining
+             END,
              verify_after_ms = CASE
-               WHEN verify_scans_remaining > 0 THEN ?
+               WHEN verify_scans_remaining > 0 OR (shadow = 0 AND ? = 1)
+                 THEN ?
                ELSE verify_after_ms
              END,
              next_attempt_ms = NULL,
@@ -386,6 +407,8 @@ export class D1DispatchStore implements DispatchStore {
       .bind(
         ts,
         channel,
+        armFlag,
+        armFlag,
         now + VERIFY_FIRST_SCAN_DELAY_MS,
         now,
         deliveryId,
@@ -403,6 +426,21 @@ export class D1DispatchStore implements DispatchStore {
     expectedStates: readonly DispatchState[],
     evidenceJson: string,
     requestSignatureSha256: string | null = null,
+    // Review finding (ADR §10 H46): the resolver used to finalize an ambiguous
+    // row to `delivered` and only THEN arm the follow-up scan, three awaited
+    // D1 calls later (armDuplicateRepair -> get -> consecutiveNoProgressScans
+    // -> flagDuplicateRepairPending). markDelivered never raised the counter —
+    // it stamped a due time only when the counter was ALREADY positive — and an
+    // ordinary ambiguous row carries 0. So if the arm was lost (a transient D1
+    // rejection into runResolverPass's per-row catch, or the invocation ending),
+    // the row sat `delivered` with counter 0 and no due time: selected by
+    // neither verificationRowsDue nor ambiguousRowsDue, and counted by no
+    // observer alarm — `verification_abandoned` requires the counter to be
+    // POSITIVE. A row finalized on an unverified partial scan, or with a known
+    // surviving duplicate, was therefore indistinguishable from a finished one.
+    // Passing true commits the counter and the due time in the SAME batch as
+    // the transition, so both apply or neither.
+    armVerification = false,
   ): Promise<boolean> {
     const results = await this.#database.batch(
       this.#deliveredPair(
@@ -414,6 +452,7 @@ export class D1DispatchStore implements DispatchStore {
         expectedStates,
         evidenceJson,
         requestSignatureSha256,
+        armVerification,
       ),
     );
     return changed(results[1]);
@@ -540,6 +579,12 @@ export class D1DispatchStore implements DispatchStore {
     ts: string,
     channel: string,
     actor: "consumer" | "resolver",
+    // §10 H46: recordLateProof shares #deliveredPair, so ITS ambiguous->delivered
+    // and manual->delivered CASes strand a row exactly the same way when the
+    // caller's follow-up arm is lost. The resolver passes the same flag it gives
+    // markDelivered; on `audit_only` the CAS predicates reject and the flag is
+    // inert, which is correct — that row was delivered by somebody else.
+    armVerification = false,
   ): Promise<"ambiguous_cas" | "manual_cas" | "audit_only"> {
     // §6.3 (R2): the unconditional audit append — canonical proof lands
     // durably no matter which state the resolver reached — and the
@@ -594,6 +639,7 @@ export class D1DispatchStore implements DispatchStore {
       ["ambiguous"],
       evidenceJson,
       null,
+      armVerification,
     );
     const [manualAudit, manualUpdate] = this.#deliveredPair(
       deliveryId,
@@ -604,6 +650,7 @@ export class D1DispatchStore implements DispatchStore {
       ["manual"],
       evidenceJson,
       null,
+      armVerification,
     );
     const results = await this.#database.batch([
       proofAudit,
@@ -960,6 +1007,11 @@ export class D1DispatchStore implements DispatchStore {
     // exactly the unbounded livelock H14 closed. The COMPLETION marker
     // (`repaired_duplicate`) is deliberately NOT neutral: a deleted copy is
     // real progress and resets the streak, as it always did.
+    // Review finding (ADR §10 H46): `verification_armed` joins the neutral set
+    // for the same reason. ensureVerificationArmed makes a stranded row
+    // scannable again; it is not a scan outcome, so counting it as progress
+    // would reset the streak on every pass through the lost-CAS branch and put
+    // H14's ceiling out of reach.
     const count = await this.#database
       .prepare(
         `SELECT COUNT(*) AS n
@@ -980,6 +1032,9 @@ export class D1DispatchStore implements DispatchStore {
                  json_extract(
                    evidence_json, '$.duplicate_deletion_not_applied'
                  ), 0
+               ) != 1
+               AND COALESCE(
+                 json_extract(evidence_json, '$.verification_armed'), 0
                ) != 1
            ), 0)`,
       )
@@ -1197,6 +1252,63 @@ export class D1DispatchStore implements DispatchStore {
     return changed(results[1]);
   }
 
+  async ensureVerificationArmed(
+    deliveryId: string,
+    now: number,
+    nextVerifyAfterMs: number,
+    reason: string,
+  ): Promise<boolean> {
+    // Review finding (ADR §10 H46, site 4): the one branch the atomic arm in
+    // #deliveredPair cannot reach. When the resolver's markDelivered CAS LOSES
+    // to a concurrent writer that already delivered the row, no delivered pair
+    // of this pass fires, so nothing armed — yet the pass then goes on to
+    // reconcile the canonical ts and run the irreversible chat.delete loop
+    // against a row whose counter is whatever that other writer left, typically
+    // 0. This makes the row selectable BEFORE the first deletion.
+    // Two properties the predicate encodes, both load-bearing:
+    //  - it fires ONLY on the stranded shape (counter 0, or armed with no due
+    //    time), so an already-scannable row is untouched and no audit row is
+    //    written;
+    //  - it never OVERWRITES an existing due time (COALESCE), so an operator
+    //    sweep (§10 H11/H20) that stamped `verify_after_ms = now` cannot be
+    //    postponed by it. That is why it needs no CAS parameter: the only rows
+    //    it changes are ones no other writer has a due time on.
+    // The marker carries no `no_progress` field — this is not a scan outcome —
+    // and consecutiveNoProgressScans lists it among the NEUTRAL markers, so it
+    // neither extends the H14 streak nor resets it.
+    const predicate =
+      " AND state = 'delivered' AND shadow = 0" +
+      " AND (verify_scans_remaining = 0 OR verify_after_ms IS NULL)";
+    const evidenceJson = JSON.stringify({
+      verification_armed: true,
+      reason,
+      next_verify_after_ms: nextVerifyAfterMs,
+    });
+    // Inlined rather than via #inPlaceAudit so the audit carries the SAME
+    // predicate as the UPDATE (§6.1).
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, state, ?, 'resolver', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(evidenceJson, now, deliveryId);
+    const update = this.#database
+      .prepare(
+        `UPDATE dispatch_outbox
+         SET verify_scans_remaining = MAX(verify_scans_remaining, 1),
+             verify_after_ms = COALESCE(verify_after_ms, ?),
+             updated_ms = ?
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(nextVerifyAfterMs, now, deliveryId);
+    const results = await this.#database.batch([audit, update]);
+    return changed(results[1]);
+  }
+
   async operatorResend(
     deliveryId: string,
     now: number,
@@ -1346,36 +1458,32 @@ export class D1DispatchStore implements DispatchStore {
       DispatchDestination,
       Record<DispatchState, number>
     > = { alerts: zero() };
-    // Review finding F3 (ADR §10 H18, correcting H3) — and RETAINED under H39
-    // on different grounds. H39 narrowed migration 0010 to
-    // `CHECK (destination = 'alerts')`, so no foreign-destination row can
-    // exist any more and this predicate can no longer change a result set.
-    // It stays because the dereference below is an unchecked dynamic index
-    // into a map declared `{ alerts: … }`, and the predicate — bound from that
-    // map's OWN keys — is the only guard on it the TypeScript compiler can
-    // see; removing it would re-parent that safety onto a CHECK in a .sql file
-    // the compiler cannot read. The history it was written for:
-    // migration 0010 CHECKed
-    // `destination IN ('alerts','activity')` and the schema REDs inserted such
-    // a row, but §10 H2 reduced the dispatcher to `alerts`, so this map — and
-    // the DispatchDestination union it is keyed by — knows only that one. The
-    // grouped query returned every destination the TABLE holds, so a
-    // schema-valid `activity` row made the dereference below throw: `/status`
-    // answered 503 and, because runDispatchCronPass opens with this call,
-    // EVERY dispatch cron pass aborted. The aggregates are therefore scoped to
-    // the destinations the dispatcher owns, and the scope is bound from the
-    // counter map's OWN keys — the query can no longer return a destination
-    // the map lacks, which is exactly the invariant whose absence caused this.
-    const ownedDestinations = Object.keys(byStateAndDestination);
-    const ownedPredicate = `destination IN (${placeholders(ownedDestinations.length)})`;
+    // ADR §10 H49, retiring H18's owned-destination predicate and withdrawing
+    // the reason H39 gave for keeping it. The history: migration 0010 CHECKed
+    // `destination IN ('alerts','activity')` while §10 H2 reduced the
+    // dispatcher to `alerts`, so the grouped query returned a destination this
+    // map lacks and the dereference below threw — `/status` answered 503 and,
+    // because runDispatchCronPass opens with this call, every dispatch cron
+    // pass aborted with it. H18 scoped the four aggregates to the map's own
+    // keys; H39 then closed the same hole at the schema, and kept the
+    // predicate on the claim that it was "the only guard the TypeScript
+    // compiler can see".
+    // That claim was FALSE, and a peer review caught it: the guard the
+    // compiler sees is the generic on `.all<…>()` below, and that generic is an
+    // UNCHECKED ASSERTION — it types the rows because we assert it, not
+    // because the predicate narrows them. Removing the predicate changes
+    // nothing the compiler observes. What actually makes the assertion true is
+    // migration 0010's CHECK, pinned to this map by the F5 test (the schema's
+    // admitted set EQUALS `Object.keys(DISPATCH_CHANNELS)`), which fails if
+    // either side is widened alone. The predicate is therefore unreachable
+    // AND unpinnable — no test can build the row it filtered — so it is
+    // removed rather than kept as a dead guard with a story attached.
     const grouped = await this.#database
       .prepare(
         `SELECT destination, state, COUNT(*) AS n
          FROM dispatch_outbox
-         WHERE ${ownedPredicate}
          GROUP BY destination, state`,
       )
-      .bind(...ownedDestinations)
       .all<{ destination: DispatchDestination; state: DispatchState; n: number }>();
     for (const entry of grouped.results) {
       byStateAndDestination[entry.destination][entry.state] = entry.n;
@@ -1386,10 +1494,8 @@ export class D1DispatchStore implements DispatchStore {
       .prepare(
         `SELECT MIN(created_ms) AS oldest_ms
          FROM dispatch_outbox
-         WHERE state IN ('queued', 'sending', 'ambiguous', 'manual')
-           AND ${ownedPredicate}`,
+         WHERE state IN ('queued', 'sending', 'ambiguous', 'manual')`,
       )
-      .bind(...ownedDestinations)
       .first<number | null>("oldest_ms");
     // Copilot finding F6 (ADR §6.7): ambiguous_stale alarms on the oldest
     // AMBIGUOUS row specifically, never on an old manual/queued row.
@@ -1416,10 +1522,8 @@ export class D1DispatchStore implements DispatchStore {
       .prepare(
         `SELECT MIN(COALESCE(last_send_start_ms, created_ms)) AS oldest_ms
          FROM dispatch_outbox
-         WHERE state = 'ambiguous'
-           AND ${ownedPredicate}`,
+         WHERE state = 'ambiguous'`,
       )
-      .bind(...ownedDestinations)
       .first<number | null>("oldest_ms");
     // Audit finding B1 / ADR §10 H14: rows that stopped re-arming their
     // verification — `delivered`, scans still remaining, no due time left.
@@ -1434,10 +1538,8 @@ export class D1DispatchStore implements DispatchStore {
          WHERE state = 'delivered'
            AND shadow = 0
            AND verify_scans_remaining > 0
-           AND verify_after_ms IS NULL
-           AND ${ownedPredicate}`,
+           AND verify_after_ms IS NULL`,
       )
-      .bind(...ownedDestinations)
       .first<number>("n");
     return {
       byStateAndDestination,

@@ -3213,3 +3213,460 @@ describe("F1/F2: the canonical-ts repair decides from the row, not from the page
     expect(updated.verifyAfterMs).not.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review round 11 (ADR §10 H45-H48). Three defect shapes, one family: a
+// CORRECTIVE second write that is omitted, mis-keyed, or lost, leaving a row
+// or an audit intent that reads "done" to every query the system makes of it.
+// ---------------------------------------------------------------------------
+describe("H45-H48: absence-typed deletions, the atomic arm, single-match reconciliation", () => {
+  afterEach(() => {
+    closeDispatchDatabases();
+  });
+
+  // A ts no history fixture below ever returns — the value a CONCURRENT writer
+  // recorded on the row while this pass was scanning.
+  const TS_MID = "1786664500.000150";
+
+  // Every method of the real store, with ONE forced to reject — the transient
+  // D1 failure that runResolverPass contains per row (resolver.ts:1136-1142).
+  function storeFailingOn(
+    store: DispatchStore,
+    method: keyof DispatchStore,
+  ): DispatchStore {
+    return new Proxy(store, {
+      get(target, property, _receiver) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (property !== method) return bound;
+        return async (): Promise<never> => {
+          throw new Error("d1_transient_failure");
+        };
+      },
+    }) as DispatchStore;
+  }
+
+  // markDelivered loses its CAS because `concurrent` ran first — the exact
+  // interleaving resolver.ts:952-1007 exists for.
+  function storeWithLostDeliveredCas(
+    store: DispatchStore,
+    concurrent: () => Promise<void>,
+    alsoFailing?: keyof DispatchStore,
+  ): DispatchStore {
+    return new Proxy(store, {
+      get(target, property, _receiver) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (property === "markDelivered") {
+          return async (): Promise<boolean> => {
+            await concurrent();
+            return false;
+          };
+        }
+        if (alsoFailing !== undefined && property === alsoFailing) {
+          return async (): Promise<never> => {
+            throw new Error("d1_transient_failure");
+          };
+        }
+        return bound;
+      },
+    }) as DispatchStore;
+  }
+
+  // A scan whose cursor never empties: the page budget is spent, so the scan
+  // is PARTIAL and `exhausted` is false (resolver.ts:295).
+  function partialHistory(
+    messages: readonly Record<string, unknown>[],
+    deleteResponse?: FixtureResponse,
+  ): { fetch: typeof fetch; calls: RecordedSlackCall[] } {
+    let page = 0;
+    return scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        page += 1;
+        return slackHistoryPage(page === 1 ? messages : [], {
+          nextCursor: `live-${page}`,
+          hasMore: true,
+        });
+      }
+      if (url.includes("chat.delete")) return deleteResponse;
+      return undefined;
+    });
+  }
+
+  // An EXHAUSTED scan over two copies of the same delivery, with the scripted
+  // chat.delete outcome. (Local twin of the F2 block's fixture — that one is
+  // scoped to its own describe.)
+  function duplicateHistory(
+    deliveryId: string,
+    deleteResponse: FixtureResponse,
+  ): { fetch: typeof fetch; calls: RecordedSlackCall[] } {
+    return scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return deleteResponse;
+      return undefined;
+    });
+  }
+
+  // A delivered row recording TS_EARLY with both §6.3.3 scans armed.
+  async function deliveredWithVerification(
+    store: D1DispatchStore,
+    deliveryId: string,
+  ): Promise<DispatchOutboxRow> {
+    return deliverViaOperatorResend(
+      store,
+      deliveryId,
+      DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS,
+      TS_EARLY,
+    );
+  }
+
+  function markerFor(
+    database: ReturnType<typeof makeStore>["database"],
+    deliveryId: string,
+    needle: string,
+  ): Record<string, unknown> | undefined {
+    const json = auditRows(database, deliveryId)
+      .map((entry) => String(entry["evidence_json"]))
+      .find((evidence) => evidence.includes(needle));
+    return json === undefined
+      ? undefined
+      : (JSON.parse(json) as Record<string, unknown>);
+  }
+
+  // -------------------------------------------------------------------------
+  // H45 — `message_not_found` is an ABSENCE assertion, not a refusal.
+  // -------------------------------------------------------------------------
+
+  it("H45: a message_not_found deletion writes no outcome marker and reconciles no earlier intent", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "h45-absent-deletion";
+    const row = await deliveredWithVerification(store, deliveryId);
+
+    // Pass A: the response is lost (500 -> AMBIGUOUS), so its intent is
+    // deliberately left dangling — the only trace that survives if Slack DID
+    // apply the deletion (§10 H21).
+    const { fetch: firstFetch } = duplicateHistory(deliveryId, {
+      status: 500,
+      body: {},
+    });
+    await resolveAmbiguousRow(row, resolverDeps(store, firstFetch));
+    expect(
+      (await store.statusCounters(DISPATCH_TEST_NOW))
+        .unreconciledDeletionIntents,
+    ).toBe(1);
+
+    // Pass B targets the SAME ts and Slack answers "it is not there" — which is
+    // consistent with pass A having deleted it. It must not certify pass A.
+    const { fetch: secondFetch } = duplicateHistory(deliveryId, {
+      status: 200,
+      body: { ok: false, error: "message_not_found" },
+    });
+    await resolveAmbiguousRow(
+      await mustGet(store, deliveryId),
+      resolverDeps(store, secondFetch),
+    );
+
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+    expect(counters.unreconciledDeletionIntents).toBe(2);
+    expect(
+      markerFor(database, deliveryId, '"duplicate_deletion_not_applied"'),
+    ).toBeUndefined();
+    expect(
+      observerAlarms(
+        {
+          deadLetter: 0,
+          manual: 0,
+          oldestAmbiguousAgeMs: null,
+          repairedDuplicates: counters.repairedDuplicates,
+          unreconciledDeletionIntents: counters.unreconciledDeletionIntents,
+        },
+        null,
+      ),
+    ).toContain("duplicate_deletion_unreconciled");
+  });
+
+  // -------------------------------------------------------------------------
+  // H46 — the verification arm is committed WITH the delivered transition.
+  // -------------------------------------------------------------------------
+
+  it("H46 (site 1, single match): a lost arm after a partial scan leaves the row selectable", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h46-single-match-arm-lost";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = partialHistory([
+      historyMessage({ ts: TS_EARLY, deliveryId }),
+    ]);
+
+    await expect(
+      resolveAmbiguousRow(row, {
+        ...resolverDeps(store, fetchStub),
+        store: storeFailingOn(store, "flagDuplicateRepairPending"),
+      }),
+    ).rejects.toThrow("d1_transient_failure");
+
+    const stranded = await mustGet(store, deliveryId);
+    expect(stranded.state).toBe("delivered");
+    // The row was finalized on an UNVERIFIED partial scan, so a follow-up scan
+    // is owed. It is owed durably: counter AND due time, or no pass selects it.
+    expect(stranded.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+    // Stamped by the delivered batch itself, not by some later writer: the
+    // §6.3.3 first-scan delay measured from THIS pass's clock.
+    expect(stranded.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    );
+    const due = await store.verificationRowsDue(
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+      10,
+    );
+    expect(due.map((selected) => selected.deliveryId)).toContain(deliveryId);
+  });
+
+  it("H46 (site 2, found_many): a lost arm after an undeleted duplicate leaves the row selectable", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h46-found-many-arm-lost";
+    const row = await seedAmbiguous(store, deliveryId);
+    // The deletion is refused, so a surviving copy is KNOWN to be in Slack.
+    const { fetch: fetchStub } = duplicateHistory(deliveryId, {
+      status: 200,
+      body: { ok: false, error: "cant_delete_message" },
+    });
+
+    await expect(
+      resolveAmbiguousRow(row, {
+        ...resolverDeps(store, fetchStub),
+        store: storeFailingOn(store, "flagDuplicateRepairPending"),
+      }),
+    ).rejects.toThrow("d1_transient_failure");
+
+    const stranded = await mustGet(store, deliveryId);
+    expect(stranded.state).toBe("delivered");
+    expect(stranded.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+    expect(stranded.verifyAfterMs).not.toBeNull();
+  });
+
+  it("H46 (site 3, late proof): a lost arm after recordLateProof delivers the row leaves it selectable", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h46-late-proof-arm-lost";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = duplicateHistory(deliveryId, slackDeleteOk());
+    // The row is parked in `manual` between this pass's scan and its CAS, so
+    // markDelivered loses and recordLateProof's manual->delivered CAS is what
+    // delivers it (outbox.ts:598-607).
+    const lostCas = storeWithLostDeliveredCas(
+      store,
+      async () => {
+        await store.markManual(
+          deliveryId,
+          DISPATCH_TEST_NOW - 1,
+          JSON.stringify({ verdict: "resolver_budget_exhausted" }),
+          "resolver",
+          ["ambiguous"],
+        );
+      },
+      "flagDuplicateRepairPending",
+    );
+
+    await expect(
+      resolveAmbiguousRow(row, {
+        ...resolverDeps(store, fetchStub),
+        store: lostCas,
+      }),
+    ).rejects.toThrow("d1_transient_failure");
+
+    const stranded = await mustGet(store, deliveryId);
+    expect(stranded.state).toBe("delivered");
+    expect(stranded.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+    // The manual->delivered CAS of recordLateProof is what armed it, so the due
+    // time is that batch's stamp — not a backoff written by some later path.
+    expect(stranded.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    );
+  });
+
+  it("H46 (site 4, lost CAS onto a delivered row): the arm precedes the irreversible deletion loop", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h46-lost-cas-delivered-arm";
+    const row = await seedAmbiguous(store, deliveryId);
+    // A concurrent writer delivers the row with a ts this scan never saw and
+    // leaves the counter at 0 — the shape no automatic predicate selects.
+    const lostCas = storeWithLostDeliveredCas(
+      store,
+      async () => {
+        const delivered = await store.markDelivered(
+          deliveryId,
+          DISPATCH_TEST_NOW - 1,
+          TS_MID,
+          ALERTS_CHANNEL,
+          "consumer",
+          ["ambiguous"],
+          JSON.stringify({ source: "concurrent" }),
+        );
+        if (!delivered) throw new Error("concurrent_delivery_failed");
+      },
+      "flagDuplicateRepairPending",
+    );
+    const { fetch: fetchStub } = duplicateHistory(deliveryId, {
+      status: 200,
+      body: { ok: false, error: "cant_delete_message" },
+    });
+
+    await expect(
+      resolveAmbiguousRow(row, {
+        ...resolverDeps(store, fetchStub),
+        store: lostCas,
+      }),
+    ).rejects.toThrow("d1_transient_failure");
+
+    const stranded = await mustGet(store, deliveryId);
+    expect(stranded.state).toBe("delivered");
+    expect(stranded.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+    expect(stranded.verifyAfterMs).not.toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // H47 — the single-match arm reconciles the recorded ts, exactly as the
+  // multi-match arm already does (resolver.ts:1009-1023).
+  // -------------------------------------------------------------------------
+
+  it("H47 (i): an EXHAUSTED single match replaces a recorded ts the census did not see", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h47-exhausted-adopts-survivor";
+    const row = await deliveredWithVerification(store, deliveryId);
+    expect(row.slackMessageTs).toBe(TS_EARLY);
+    // TS_EARLY is gone from the channel; one copy survives.
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_LATE, deliveryId })])
+        : undefined,
+    );
+
+    await resolveAmbiguousRow(row, resolverDeps(store, fetchStub));
+
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.slackMessageTs).toBe(TS_LATE);
+    // The scan observed and repaired, so it may consume its scan.
+    expect(updated.verifyScansRemaining).toBe(row.verifyScansRemaining - 1);
+  });
+
+  it("H47 (ii): a PARTIAL single match earlier than the recorded ts becomes canonical", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h47-partial-earlier-wins";
+    const row = await deliverViaOperatorResend(
+      store,
+      deliveryId,
+      DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS,
+      TS_LATE,
+    );
+    const { fetch: fetchStub } = partialHistory([
+      historyMessage({ ts: TS_EARLY, deliveryId }),
+    ]);
+
+    await resolveAmbiguousRow(row, resolverDeps(store, fetchStub));
+
+    const updated = await mustGet(store, deliveryId);
+    // §6.3.2: the EARLIEST ts is canonical.
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    // A partial scan never consumes the §6.3.3 counter.
+    expect(updated.verifyScansRemaining).toBe(row.verifyScansRemaining);
+  });
+
+  it("H47 (iii): a PARTIAL single match LATER than the recorded ts keeps it, and the marker says so", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "h47-partial-later-pending";
+    const row = await deliveredWithVerification(store, deliveryId);
+    expect(row.slackMessageTs).toBe(TS_EARLY);
+    // Newest-first paging: a budget-stopped scan sees the LATER copy only.
+    const { fetch: fetchStub } = partialHistory([
+      historyMessage({ ts: TS_LATE, deliveryId }),
+    ]);
+
+    await resolveAmbiguousRow(row, resolverDeps(store, fetchStub));
+
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    const marker = markerFor(
+      database,
+      deliveryId,
+      '"duplicate_repair_pending":true',
+    );
+    // The evidence carries the EFFECTIVE canonical ts — the one the row
+    // records — and lists the surviving copy this pass did not delete.
+    expect(marker).toMatchObject({
+      partial_scan: true,
+      canonical_ts: TS_EARLY,
+      pending_ts: [TS_LATE],
+    });
+  });
+
+  it("H47 (iv): a lost canonical CAS on the single-match path arms and does NOT consume a scan", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "h47-single-match-cas-lost";
+    const row = await deliveredWithVerification(store, deliveryId);
+    const casLost = new Proxy(store, {
+      get(target, property, _receiver) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (property !== "updateCanonicalTs") return bound;
+        return async (): Promise<boolean> => false;
+      },
+    }) as DispatchStore;
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_LATE, deliveryId })])
+        : undefined,
+    );
+
+    await resolveAmbiguousRow(row, {
+      ...resolverDeps(store, fetchStub),
+      store: casLost,
+    });
+
+    const updated = await mustGet(store, deliveryId);
+    // A pass that repaired nothing may not consume a §6.3.3 scan.
+    expect(updated.verifyScansRemaining).toBe(row.verifyScansRemaining);
+    expect(
+      markerFor(database, deliveryId, '"canonical_ts_cas_lost":true'),
+    ).toMatchObject({ duplicate_repair_pending: true });
+  });
+
+  it("H47 (v): a lost delivered CAS on the single-match path reconciles the concurrent ts", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h47-single-match-late-proof-reconcile";
+    const row = await seedAmbiguous(store, deliveryId);
+    const lostCas = storeWithLostDeliveredCas(store, async () => {
+      const delivered = await store.markDelivered(
+        deliveryId,
+        DISPATCH_TEST_NOW - 1,
+        TS_MID,
+        ALERTS_CHANNEL,
+        "consumer",
+        ["ambiguous"],
+        JSON.stringify({ source: "concurrent" }),
+      );
+      if (!delivered) throw new Error("concurrent_delivery_failed");
+    });
+    // An EXHAUSTED census that does not contain TS_MID: that message is gone.
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })])
+        : undefined,
+    );
+
+    await resolveAmbiguousRow(row, {
+      ...resolverDeps(store, fetchStub),
+      store: lostCas,
+    });
+
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+  });
+});

@@ -514,7 +514,28 @@ async function completeScan(
 //   answered and applied nothing, so the copy is still in the channel.
 // - "ambiguous": everything else — 429, 5xx, unexpected status, unparseable or
 //   unrecognized body. Slack may have applied the deletion anyway.
-type DeleteOutcome = "deleted" | "refused" | "ambiguous";
+// Review finding (ADR §10 H45): "absent" is split OUT of "refused", because
+// the two say opposite things about the channel. `refused` is defined above as
+// "Slack answered and applied nothing, so the copy is STILL in the channel",
+// and §10 H21's reconciliation reads exactly that: a later outcome marker for
+// a target ts certifies the copy was present at that instant, which is what
+// makes it sound to reconcile every EARLIER intent for the same ts. A 200
+// `ok:false` whose error is `message_not_found` asserts the opposite — the
+// copy is GONE — and absence is the signature of a PRIOR successful deletion,
+// including one whose own repair record was lost (the H21 window). Classifying
+// it as `refused` therefore wrote a `duplicate_deletion_not_applied` marker
+// that retroactively certified an earlier pass's intent as "nothing happened",
+// suppressing `duplicate_deletion_unreconciled` and destroying the only
+// evidence that deletion left. It is treated exactly like "ambiguous": no
+// outcome marker, the intent stays unresolved, the caller reports "not
+// repaired" and R19 keeps a scan armed.
+// SCOPED to `message_not_found` on purpose. `cant_delete_message`,
+// `channel_not_found` and every other chat.delete error ARE genuine refusals —
+// nothing applied, the copy is still there — and must keep writing the marker.
+type DeleteOutcome = "deleted" | "refused" | "absent" | "ambiguous";
+
+// The one Slack error code that asserts the target is not in the channel.
+const DELETE_ABSENCE_ERROR = "message_not_found";
 
 function classifyDeleteOutcome(
   httpStatus: number,
@@ -524,7 +545,9 @@ function classifyDeleteOutcome(
   const body = parseJsonObject(bodyText);
   if (body === null) return "ambiguous";
   if (body["ok"] === true) return "deleted";
-  if (body["ok"] === false) return "refused";
+  if (body["ok"] === false) {
+    return body["error"] === DELETE_ABSENCE_ERROR ? "absent" : "refused";
+  }
   return "ambiguous";
 }
 
@@ -600,6 +623,12 @@ async function deleteDuplicate(
     // If the append below fails, the intent stays dangling too: the fail-safe
     // direction (visible, and cleared by the next scan's outcome marker for the
     // same target ts).
+    // §10 H45: an ABSENT outcome joins AMBIGUOUS here — see classifyDeleteOutcome
+    // for why an absence assertion may not reconcile anything. Declared cost: two
+    // overlapping passes on the same ts now leave the second intent dangling for
+    // ever, so `duplicate_deletion_unreconciled` latches on a benign overlap. A
+    // latched, visible alarm is the correct trade against silently suppressing a
+    // real one whose evidence no later scan can rebuild.
     if (outcome === "refused") {
       try {
         await deps.store.appendAudit({
@@ -873,6 +902,34 @@ export async function resolveAmbiguousRow(
   if (canonicalTs !== undefined) {
     const duplicateTs = sorted.slice(1);
     if (duplicateTs.length === 0) {
+      // Review finding (ADR §10 H47): this arm used to take NONE of the
+      // decisions the multi-match arm below takes — it never called
+      // reconcileCanonicalTs in either exhaustion state, never re-read the row
+      // after a lost CAS, and hard-coded its marker's `canonical_ts` to the
+      // OBSERVED ts with an empty `pending_ts`. One observed copy is not one
+      // FEWER decision than two: the recorded ts still has to be reconciled
+      // against the observation, and the copy this pass leaves alive still has
+      // to be reported. The three consequences are fixed together below.
+      // `deletableTs` is always empty here by construction (the only observed
+      // copy is either canonical or explicitly kept), so nothing in this arm
+      // deletes anything — the change is confined to what is RECORDED.
+      let effectiveCanonicalTs = canonicalTs;
+      let undeletedTs: readonly string[] = [];
+      const armSingleMatch = async (
+        extra: Record<string, unknown>,
+      ): Promise<void> => {
+        await armDuplicateRepair(row, deps, now, {
+          duplicate_repair_pending: true,
+          ...(scan.exhausted ? {} : { partial_scan: true }),
+          // H47: the EFFECTIVE canonical ts — the one the row records — and
+          // the copies this pass deliberately left in Slack. The multi-match
+          // arm already states both (resolver.ts §6.3.2 comments); stating the
+          // observed ts and an empty list here contradicted it.
+          canonical_ts: effectiveCanonicalTs,
+          pending_ts: undeletedTs,
+          ...extra,
+        });
+      };
       if (row.state === "ambiguous") {
         const recorded = await deps.store.markDelivered(
           row.deliveryId,
@@ -882,6 +939,10 @@ export async function resolveAmbiguousRow(
           "resolver",
           ["ambiguous"],
           JSON.stringify({ verdict: "found", ts: canonicalTs }),
+          null,
+          // §10 H46: a partial scan owes a follow-up scan, so the arm commits
+          // with the transition instead of in a later, losable write.
+          !scan.exhausted,
         );
         if (!recorded) {
           // Copilot finding F3 / ADR §6.3 late-proof rule: the row left
@@ -894,26 +955,88 @@ export async function resolveAmbiguousRow(
             canonicalTs,
             channel,
             "resolver",
+            !scan.exhausted,
           );
+          // H47: the multi-match arm re-reads the row here and reconciles the
+          // concurrent writer's ts against this observation (resolver.ts:955).
+          // This arm did neither, so a row delivered concurrently with a ts an
+          // EXHAUSTED census did not see kept pointing at a message that is not
+          // in the channel, while the copy this scan did see went unrecorded.
+          const fresh = await deps.store.get(row.deliveryId);
+          if (
+            fresh !== null &&
+            fresh.state === "delivered" &&
+            fresh.slackMessageTs !== canonicalTs
+          ) {
+            const repair = await reconcileCanonicalTs(
+              row,
+              deps,
+              now,
+              // H25: the ts this decision was taken against — the re-read value.
+              fresh.slackMessageTs,
+              canonicalTs,
+              [],
+              // F4: a concurrent writer owns that ts — never deleted here.
+              true,
+              scan.exhausted,
+            );
+            if (repair.kind === "lost") {
+              await armSingleMatch({
+                canonical_ts_cas_lost: true,
+                pending_ts: [canonicalTs],
+              });
+              return { kind: "found", ts: canonicalTs, channel };
+            }
+            effectiveCanonicalTs = repair.canonicalTs;
+            undeletedTs = repair.undeletedTs;
+          }
         }
+      } else if (row.slackMessageTs !== canonicalTs) {
+        // H47: the delivered entry, mirroring resolver.ts:1009-1023. On an
+        // EXHAUSTED scan the recorded ts the census did not see is GONE, so the
+        // surviving copy becomes canonical; on a PARTIAL scan the earlier of the
+        // two wins, and a later observed copy is reported as pending instead of
+        // being silently dropped.
+        const repair = await reconcileCanonicalTs(
+          row,
+          deps,
+          now,
+          // H25: the pass-start ts this decision was taken against.
+          row.slackMessageTs,
+          canonicalTs,
+          [],
+          // §6.3.3/R18: this pass owns the delivered row.
+          false,
+          scan.exhausted,
+        );
+        if (repair.kind === "lost") {
+          // The same discipline as abortRepair: a pass that repaired nothing
+          // may not consume a §6.3.3 verification scan, so this re-arms and
+          // RETURNS rather than falling through to completeScan.
+          await armSingleMatch({
+            canonical_ts_cas_lost: true,
+            pending_ts: [canonicalTs],
+          });
+          return { kind: "found", ts: canonicalTs, channel };
+        }
+        effectiveCanonicalTs = repair.canonicalTs;
+        undeletedTs = repair.undeletedTs;
       }
-      if (!scan.exhausted) {
+      if (undeletedTs.length > 0 || !scan.exhausted) {
         // Copilot finding F9: a live-cursor scan is PARTIAL — the seen match
         // is canonical delivery proof (§6.2), but canonical-earliest and
         // duplicate completeness need exhaustion. Arm verification so a
         // future full-window scan re-runs the match rule; a partial
         // verification scan never consumes the §6.3.3 counter.
         // B1: the re-arm is bounded and terminating (armDuplicateRepair).
-        await armDuplicateRepair(row, deps, now, {
-          duplicate_repair_pending: true,
-          partial_scan: true,
-          canonical_ts: canonicalTs,
-          pending_ts: [],
-        });
+        // H47: a KNOWN surviving copy arms too, exactly as pendingTs does on
+        // the multi-match arm — an exhausted scan may not consume a scan while
+        // a copy it observed is still in the channel.
+        await armSingleMatch({});
       } else if (row.state === "delivered") {
         await completeScan(row, deps, now);
       }
-      return { kind: "found", ts: canonicalTs, channel };
+      return { kind: "found", ts: effectiveCanonicalTs, channel };
     }
     // §6.3.2 (R17/R18): the EARLIEST ts is canonical; every later copy is
     // deleted, audited, counted.
@@ -948,6 +1071,19 @@ export async function resolveAmbiguousRow(
           canonical_ts: canonicalTs,
           duplicate_ts: duplicateTs,
         }),
+        null,
+        // §10 H46: this pass has OBSERVED duplicates and is about to attempt
+        // irreversible chat.delete calls against them. The follow-up scan is
+        // owed before the first one runs, so the arm commits in this batch
+        // rather than after the loop — the widest window of the four, since the
+        // deletion loop spends up to N egress calls each with a 30 s abort.
+        // Declared consequence: when every deletion succeeds AND the scan was
+        // exhausted, the row now ends with one verification scan armed instead
+        // of none. That scan finds the single surviving copy and completes
+        // normally; the direction is conservative (never FEWER scans than
+        // before) and it confirms the repair that H21 calls the dispatcher's
+        // one irreversible egress.
+        true,
       );
       if (!recorded) {
         // Copilot finding F4: the CAS lost a race — re-read before ANY
@@ -964,6 +1100,11 @@ export async function resolveAmbiguousRow(
             canonicalTs,
             channel,
             "resolver",
+            // §10 H46, site 3: when this proof's own CAS delivers the row
+            // (ambiguous_cas / manual_cas), the arm below is the ONLY thing
+            // that keeps the observed duplicates repairable — so it rides here
+            // too. On `audit_only` the flag is inert.
+            true,
           );
           // Copilot suppressed comment (F4): `audit_only` can also mean that
           // another resolver delivered the row between the re-read above and
@@ -982,6 +1123,19 @@ export async function resolveAmbiguousRow(
           });
           return { kind: "found_many", canonicalTs, channel, duplicateTs };
         }
+        // §10 H46, site 4: the row is delivered by SOMEBODY ELSE, so no
+        // delivered pair of this pass armed anything — yet this pass is about
+        // to repair the canonical ts and run the irreversible deletion loop.
+        // The counter the other writer left is typically 0, so losing the
+        // post-loop arm would strand the row with copies still in the channel.
+        // This makes it scannable first; it is a no-op unless the row really
+        // is in the stranded shape, and it never moves an existing due time.
+        await deps.store.ensureVerificationArmed(
+          row.deliveryId,
+          now,
+          now + VERIFY_FIRST_SCAN_DELAY_MS,
+          "found_many_delivered_cas_lost",
+        );
         const observedTs = fresh.slackMessageTs;
         if (observedTs !== null && observedTs !== canonicalTs) {
           // F4: a concurrent writer recorded a different ts — reconcile the

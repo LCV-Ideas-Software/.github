@@ -1157,8 +1157,20 @@ async function handleDispatchOperatorRequest(
   if (command.action === "mark_delivered") {
     // Copilot finding F8 / ADR §6.2: "manual -> delivered (operator marks
     // with ts evidence)". This records PROOF of a message that already
-    // exists, not a resend, so it arms no §6.3.3 verification and publishes
-    // nothing — the sweep above is the path for re-checking such a row.
+    // exists, not a resend, so it publishes nothing.
+    // ADR §10 H50, correcting this comment's other half (Copilot suppressed
+    // comment, and the code is what was right): it does NOT follow that no
+    // §6.3.3 verification is armed. This call passes no `armVerification`, so
+    // it raises no counter — but `markDelivered` stamps `verify_after_ms`
+    // whenever the counter is ALREADY positive, and the dominant route into
+    // `manual` for this action is an operator RESEND, which sets the counter to
+    // 2. Marking such a row therefore schedules the two scans the resend armed.
+    // That is CORRECT and must not be "fixed": the duplicate risk is real and
+    // was created by that resend — the original message may still be in the
+    // channel beside the resent one — so verifying is exactly what §6.3.3 owes.
+    // What was wrong is this sentence, and H13's clause that operator-supplied
+    // proof arms none; both are withdrawn there. A row that reached `manual`
+    // WITHOUT a resend carries counter 0 and still arms nothing.
     // Review finding N2 (ADR §10 H22): the parser validates the channel's
     // SHAPE, and a well-formed id for ANY other channel — #github-activity's
     // included — passed it. The row would then carry proof pointing at a

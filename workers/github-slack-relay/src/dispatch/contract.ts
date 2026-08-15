@@ -198,6 +198,13 @@ export interface DispatchStore {
     // `mark_delivered`, where it makes the command one-shot inside this
     // batch (see operatorCommandApplied). Absent for consumer/resolver.
     requestSignatureSha256?: string | null,
+    // ADR §10 H46: commit the §6.3.3 arm (counter >= 1 plus a due time) in the
+    // SAME batch as the transition, for a caller that already knows a follow-up
+    // scan is owed — a partial scan, or observed duplicates about to be
+    // deleted. Without it the arm is a separate later write, and losing it
+    // leaves a `delivered` row with counter 0 and no due time: selected by no
+    // predicate, counted by no alarm. Non-shadow rows only (§9.A1).
+    armVerification?: boolean,
   ): Promise<boolean>;
   markManual(
     deliveryId: string,
@@ -232,6 +239,9 @@ export interface DispatchStore {
     ts: string,
     channel: string,
     actor: "consumer" | "resolver",
+    // ADR §10 H46: same arm as markDelivered — both CAS pairs here go through
+    // the same #deliveredPair and strand a row the same way.
+    armVerification?: boolean,
   ): Promise<"ambiguous_cas" | "manual_cas" | "audit_only">;
   // Copilot suppressed comment (F7) / ADR §4 item 4: durable per-destination
   // pacing reservation. Returns 0 when the slot is reserved for this caller,
@@ -347,6 +357,18 @@ export interface DispatchStore {
     evidenceJson: string,
     expectedVerifyAfterMs: number | null,
     expectedScansRemaining: number,
+  ): Promise<boolean>;
+  // ADR §10 H46, site 4: make a `delivered` row scannable again BEFORE an
+  // irreversible chat.delete, on the one branch where no delivered pair of this
+  // pass fired (the markDelivered CAS lost to a concurrent writer). Fires only
+  // on the stranded shape — counter 0, or a counter with no due time — and never
+  // overwrites an existing due time, so it cannot postpone an operator sweep.
+  // Its marker is NEUTRAL for the H14 no-progress streak.
+  ensureVerificationArmed(
+    deliveryId: string,
+    now: number,
+    nextVerifyAfterMs: number,
+    reason: string,
   ): Promise<boolean>;
   // Operator menu (I1: the only resend path; marked possible-duplicate).
   // Copilot suppressed comment (F4): every operator mutation takes the SHA-256

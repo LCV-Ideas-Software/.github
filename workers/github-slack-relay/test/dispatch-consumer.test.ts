@@ -504,6 +504,39 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     expect(recorded.retryOptions).toHaveLength(0);
   });
 
+  // Review finding (ADR §10 H48). NOT a mutation proof — the behaviour below is
+  // the ratified one and is unchanged by this round. It is pinned because the
+  // runbook asserted its OPPOSITE ("a linha só sai quando o modo voltar para
+  // `primary`"), and a documentation claim about runtime behaviour has to be
+  // checked by something. `off` is the ONLY mode that pauses egress
+  // (consumer.ts:199); what makes a row shadow is the ROW's own flag
+  // (consumer.ts:257), which an operator resend of a real alert never carries.
+  it("H48: mode shadow drains a NON-shadow queued row — only mode off pauses it", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "h48-shadow-drains-non-shadow";
+    await seedQueuedRow(store, deliveryId, "alerts");
+    const scripted = scriptedFetch((url) =>
+      url === POST_URL ? slackPostOk(POST_TS) : undefined,
+    );
+    const recorded = recordedMessage(deliveryId, "shadow");
+
+    await processDispatchMessage(
+      recorded.message,
+      consumerDeps(store, scripted.fetch),
+    );
+
+    // The alert really is posted to Slack while the mode reads `shadow`.
+    expect(scripted.calls.map((call) => call.url)).toEqual([POST_URL]);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      shadow: 0,
+      slack_message_ts: POST_TS,
+      slack_channel_id: ALERTS_CHANNEL,
+    });
+    expect(recorded.ackCount()).toBe(1);
+  });
+
   // Copilot suppressed comment (F7) / ADR §4 item 4 (~1 msg/sec/channel):
   // max_concurrency 1 only serializes consumers, so consecutive posts could
   // still outrun Slack's per-channel limit and mint 429s this design never
