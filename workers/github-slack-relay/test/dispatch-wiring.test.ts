@@ -31,6 +31,7 @@ import {
   handleFetch,
   handleQueue,
   runDispatchScheduled,
+  runScheduled,
   runScheduledRecovery,
 } from "../src/index";
 import type { QueueJob } from "../src/store";
@@ -1206,6 +1207,154 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
         (row) => row.to_state !== "dead_letter",
       ),
     ).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Copilot suppressed comment (F1): the bot token used to be read BEFORE the
+  // consume-time mode check, so in mode off a Secrets Store failure retried
+  // the message instead of taking the R20 ack path — consuming max_retries
+  // and recreating the DLQ/mode-flip failure §10.1 Residual 1 eliminated.
+  it("suppressed F1: in mode off a failing bot-token secret still takes the R20 ack path, and the row is untouched", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "wiring-suppressed-f1-mode-off";
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"mode off secret failure"}',
+      now: DISPATCH_TEST_NOW,
+    });
+    const secretRead = vi.fn(async (): Promise<string> => {
+      throw new Error("secrets_store_unavailable");
+    });
+    const brokenToken = { get: secretRead } as unknown as SecretsStoreSecret;
+    const fetchSpy = vi.fn<typeof fetch>();
+
+    const offArrival = markedBatch(ALERT_QUEUE_NAME, deliveryId);
+    await handleQueue(
+      offArrival.batch,
+      {
+        ...makeEnv(queue, { db: d1, dispatchMode: "off" }),
+        SLACK_DISPATCH_BOT_TOKEN: brokenToken,
+      },
+      { now: () => DISPATCH_TEST_NOW, fetch: fetchSpy },
+    );
+
+    // The secret is never read while the mode is off, so its failure cannot
+    // consume the queue's finite retry budget.
+    expect(secretRead).not.toHaveBeenCalled();
+    expect(offArrival.ack).toHaveBeenCalledTimes(1);
+    expect(offArrival.retry).not.toHaveBeenCalled();
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "queued",
+      attempt_count: 0,
+      last_send_start_ms: null,
+      updated_ms: DISPATCH_TEST_NOW,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Outside mode off the deferral path is intact: the same failure retries
+    // the message and still leaves the row queued.
+    const primaryArrival = markedBatch(ALERT_QUEUE_NAME, deliveryId);
+    await handleQueue(
+      primaryArrival.batch,
+      {
+        ...makeEnv(queue, { db: d1, dispatchMode: "primary" }),
+        SLACK_DISPATCH_BOT_TOKEN: brokenToken,
+      },
+      { now: () => DISPATCH_TEST_NOW, fetch: fetchSpy },
+    );
+    expect(secretRead).toHaveBeenCalledTimes(1);
+    expect(primaryArrival.ack).not.toHaveBeenCalled();
+    expect(primaryArrival.retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+    expect(outboxState(database, deliveryId)).toBe("queued");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Copilot suppressed comment (F2): the dispatch pass is documented as
+  // isolated from the legacy recovery, but a rejection from
+  // runScheduledRecovery skipped it entirely.
+  it("suppressed F2: a rejecting legacy recovery still runs the dispatch pass, and the legacy failure still surfaces", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "wiring-suppressed-f2-isolation";
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"isolation"}',
+      now: DISPATCH_TEST_NOW - STALE_QUEUED_AGE_MS,
+    });
+
+    // A D1/protocol lookup failure inside the legacy pass (the seal check
+    // itself swallows errors, so the rejection comes from the next step).
+    const legacyStore = new MemoryDeliveryStore();
+    legacyStore.purgeDeliveredBefore = async (): Promise<number> => {
+      throw new Error("legacy_recovery_failed");
+    };
+    const fetchSpy = vi.fn<typeof fetch>();
+
+    await expect(
+      runScheduled(makeEnv(queue, { db: d1, dispatchMode: "primary" }), {
+        store: legacyStore,
+        now: () => DISPATCH_TEST_NOW,
+        fetch: fetchSpy,
+      }),
+    ).rejects.toThrow("legacy_recovery_failed");
+
+    // Observable effect of the dispatch pass: the stale queued row was
+    // republished (R13) despite the legacy rejection.
+    expect(queue.sent).toEqual([{ deliveryId, path: "dispatch" }]);
+    expect(outboxState(database, deliveryId)).toBe("queued");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Copilot suppressed comment (F7), transport consequence: the pacing retry
+  // consumes the queue's retry budget, so a burst can push a message to the
+  // DLQ while its row is still `queued` and perfectly healthy. §10.1
+  // Residual 1 forbids dead-lettering such a row (it would require an
+  // operator menu step, which §6.8/R20 excludes). Row 16's transport failure
+  // keeps its transition: a `sending` row still dead-letters (V5/V15).
+  it("suppressed F7: a deferral DLQ trip never dead-letters a healthy queued row, in any mode", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "wiring-suppressed-f7-dlq-queued";
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"paced"}',
+      now: DISPATCH_TEST_NOW - STALE_QUEUED_AGE_MS,
+    });
+    const fetchSpy = vi.fn<typeof fetch>();
+
+    const arrival = markedBatch(ALERT_DLQ, deliveryId);
+    await handleQueue(
+      arrival.batch,
+      makeEnv(queue, { db: d1, dispatchMode: "primary" }),
+      { now: () => DISPATCH_TEST_NOW, fetch: fetchSpy },
+    );
+
+    expect(arrival.ack).toHaveBeenCalledTimes(1);
+    expect(arrival.retry).not.toHaveBeenCalled();
+    expect(outboxState(database, deliveryId)).toBe("queued");
+    expect(
+      auditRows(database, deliveryId).filter(
+        (row) => row.to_state === "dead_letter",
+      ),
+    ).toHaveLength(0);
+
+    // The row is durable and re-enters the pipeline through the cron, with
+    // no operator step (§6.8/R20).
+    await runDispatchScheduled(
+      makeEnv(queue, { db: d1, dispatchMode: "primary" }),
+      { now: () => DISPATCH_TEST_NOW, fetch: fetchSpy },
+    );
+    expect(queue.sent).toEqual([{ deliveryId, path: "dispatch" }]);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

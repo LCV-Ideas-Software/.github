@@ -108,3 +108,17 @@ CREATE TABLE dispatch_audit (
 
 CREATE INDEX idx_dispatch_audit_delivery
   ON dispatch_audit (delivery_id, seq);
+
+-- Copilot suppressed comment (F7) / ADR §4 item 4 (~1 msg/sec/channel):
+-- durable per-destination send reservation for the dispatch path. Same
+-- mechanism as the legacy relay_state.next_slack_at (src/store.ts
+-- reserveSlackSlot) on the dispatcher's OWN table — the legacy tables stay
+-- frozen (§6.8, R8). One row per destination; the consumer's upsert
+-- self-heals a missing row, so no seed data is required. next_send_ms is in
+-- milliseconds, like every other column of this migration (§6.4).
+CREATE TABLE dispatch_rate_limit (
+  destination TEXT PRIMARY KEY NOT NULL CHECK (
+    destination IN ('alerts', 'activity')
+  ),
+  next_send_ms INTEGER NOT NULL CHECK (next_send_ms >= 0)
+);

@@ -95,6 +95,24 @@ export const DISPATCH_LEASE_MS = 90_000;
 export const RESOLVER_COOLING_OFF_FLOOR_MS =
   DISPATCH_CLIENT_TIMEOUT_MS + DISPATCH_LEASE_MS + 60_000;
 export const RESOLVER_MAX_ATTEMPTS = 6;
+// ADR §6.3.1, verbatim: "after 6 attempts within 1 h → `manual`". Copilot
+// suppressed comment (F5): the escalation threshold is windowed — a lifetime
+// cumulative counter would park a row in `manual` after six inconclusive
+// scans spread across days.
+export const RESOLVER_ATTEMPT_WINDOW_MS = 60 * 60 * 1_000;
+// ADR §10 H10 — regression caught by an adversarial panel before the push:
+// the windowed threshold above is UNREACHABLE under resolver budget
+// contention. `ambiguousRowsDue` orders by `updated_ms ASC` and every attempt
+// bumps `updated_ms`, so N due ambiguous rows round-robin strictly; with the
+// `*/5` cron (12 passes/h) and RESOLVER_ROWS_PER_RUN = 2 minus the
+// floor(2/2) = 1 slot reserved for verification rows, N = 6 (or N = 3 while a
+// verification row is due) stretches the per-row cadence to 15 min — at most
+// 5 markers in any rolling hour, so the count saturates one short of 6 and no
+// row ever escalates. The window stays the intended, fast trigger; this
+// lifetime ceiling (4 x RESOLVER_MAX_ATTEMPTS = 24) exists ONLY so a
+// contention-starved row still reaches the `manual` park documented in §6.5
+// rows 15-16 — `manual` being the only gateway to the operator menu.
+export const RESOLVER_LIFETIME_ATTEMPT_CEILING = 4 * RESOLVER_MAX_ATTEMPTS;
 export const RESOLVER_ROWS_PER_RUN = 2;
 export const RESOLVER_PAGES_PER_ROW = 3;
 export const RESOLVER_SCAN_LOOKBACK_SECONDS = 300;
@@ -108,6 +126,12 @@ export const VERIFY_SECOND_SCAN_DELAY_MS = 24 * 60 * 60 * 1_000;
 export const VERIFY_DEFERRAL_BACKOFF_BASE_MS = VERIFY_FIRST_SCAN_DELAY_MS;
 export const VERIFY_DEFERRAL_BACKOFF_CAP_MS = 24 * 60 * 60 * 1_000;
 export const STALE_QUEUED_REQUEUE_AFTER_MS = 5 * 60 * 1_000;
+// ADR §4 item 4 (~1 msg/sec/channel with burst). Copilot suppressed comment
+// (F7): max_concurrency 1 serializes consumers but still permits consecutive
+// posts faster than that limit, so the dispatcher paces every real send
+// through a durable per-destination reservation. The value is the legacy
+// path's constant verbatim (MINIMUM_SLACK_INTERVAL_MS, src/index.ts).
+export const DISPATCH_MINIMUM_SEND_INTERVAL_MS = 6_100;
 
 // ADR §6.1 — metadata event type used for the resolver's match rule.
 export const DISPATCH_METADATA_EVENT_TYPE = "github_relay_delivery";
@@ -170,17 +194,38 @@ export interface DispatchStore {
   markDeadLetter(deliveryId: string, now: number, reason: string): Promise<boolean>;
   // Late-proof rule (ADR §6.3, R2): unconditional audit append, then
   // CAS ambiguous->delivered first, manual->delivered fallback.
+  // Copilot suppressed comment (F6): the resolver calls this too (its FOUND
+  // CAS lost the race), so the actor of the proof audit AND of the delivered
+  // transition is the caller's — `resolver` from the resolver, `consumer`
+  // from the queue consumer.
   recordLateProof(
     deliveryId: string,
     now: number,
     ts: string,
     channel: string,
+    actor: "consumer" | "resolver",
   ): Promise<"ambiguous_cas" | "manual_cas" | "audit_only">;
+  // Copilot suppressed comment (F7) / ADR §4 item 4: durable per-destination
+  // pacing reservation. Returns 0 when the slot is reserved for this caller,
+  // otherwise the remaining wait in ms (the consumer retries the queue
+  // message with it — it never sends and never acks).
+  reserveSendSlot(
+    destination: DispatchDestination,
+    now: number,
+    intervalMs: number,
+  ): Promise<number>;
   // Resolver bookkeeping.
   normalizeExpiredLeases(now: number): Promise<number>;
   ambiguousRowsDue(now: number, limit: number): Promise<DispatchOutboxRow[]>;
   verificationRowsDue(now: number, limit: number): Promise<DispatchOutboxRow[]>;
   incrementResolverAttempts(deliveryId: string, now: number): Promise<number>;
+  // Copilot suppressed comment (F5) / ADR §6.3.1 ("after 6 attempts within
+  // 1 h"): windowed count of inconclusive resolver attempts, derived from the
+  // dispatch_audit markers — no schema column.
+  inconclusiveAttemptsSince(
+    deliveryId: string,
+    sinceMs: number,
+  ): Promise<number>;
   armVerification(deliveryId: string, now: number): Promise<boolean>;
   // CAS on the caller's snapshot of verify_scans_remaining, so overlapping
   // resolver passes cannot double-decrement (panel finding V13).

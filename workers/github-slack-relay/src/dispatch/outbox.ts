@@ -406,9 +406,14 @@ export class D1DispatchStore implements DispatchStore {
     now: number,
     ts: string,
     channel: string,
+    actor: "consumer" | "resolver",
   ): Promise<"ambiguous_cas" | "manual_cas" | "audit_only"> {
     // §6.3 (R2): FIRST the unconditional audit append — canonical proof
     // lands durably no matter which state the resolver reached.
+    // Copilot suppressed comment (F6): the resolver also lands here when its
+    // FOUND CAS loses, so the provenance of BOTH the proof audit row and the
+    // delivered transition is the caller's actor — never a hard-coded
+    // `consumer`.
     const row = await this.get(deliveryId);
     const evidenceJson = JSON.stringify({ late_proof: true, ts, channel });
     await this.appendAudit({
@@ -416,7 +421,7 @@ export class D1DispatchStore implements DispatchStore {
       fromState: row?.state ?? "unknown",
       toState: row?.state ?? "unknown",
       evidenceJson,
-      actor: "consumer",
+      actor,
       atMs: now,
     });
     // Then CAS ambiguous -> delivered(ts) first, manual -> delivered(ts) as
@@ -427,7 +432,7 @@ export class D1DispatchStore implements DispatchStore {
         now,
         ts,
         channel,
-        "consumer",
+        actor,
         ["ambiguous"],
         evidenceJson,
       )
@@ -440,7 +445,7 @@ export class D1DispatchStore implements DispatchStore {
         now,
         ts,
         channel,
-        "consumer",
+        actor,
         ["manual"],
         evidenceJson,
       )
@@ -555,18 +560,26 @@ export class D1DispatchStore implements DispatchStore {
     deliveryId: string,
     now: number,
   ): Promise<number> {
+    // Copilot suppressed comment (F3) / ADR §6.3.1: "all verdict CASes run
+    // WHERE state='ambiguous' only". Without the predicate, a row delivered
+    // or parked by another resolver/consumer AFTER the scan snapshot is still
+    // mutated here and gets a false `resolver_attempt_inconclusive` audit
+    // entry. BOTH statements of the batch carry it, so both apply or neither;
+    // the read-back below then returns the CURRENT (unchanged) attempts.
+    const ambiguousOnly = " AND state = 'ambiguous'";
     const audit = this.#inPlaceAudit(
       deliveryId,
       JSON.stringify({ reason: "resolver_attempt_inconclusive" }),
       "resolver",
       now,
+      ambiguousOnly,
     );
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
          SET resolver_attempts = resolver_attempts + 1,
              updated_ms = ?
-         WHERE delivery_id = ?`,
+         WHERE delivery_id = ?${ambiguousOnly}`,
       )
       .bind(now, deliveryId);
     await this.#database.batch([audit, update]);
@@ -577,6 +590,64 @@ export class D1DispatchStore implements DispatchStore {
       .bind(deliveryId)
       .first<number>("resolver_attempts");
     return attempts ?? 0;
+  }
+
+  async inconclusiveAttemptsSince(
+    deliveryId: string,
+    sinceMs: number,
+  ): Promise<number> {
+    // Copilot suppressed comment (F5) / ADR §6.3.1, verbatim: "after 6
+    // attempts within 1 h → `manual`". The threshold is a WINDOW, not the
+    // lifetime `resolver_attempts` counter, so the count is derived from the
+    // inconclusive markers incrementResolverAttempts appends — the same
+    // audit-marker idiom as consecutiveVerificationDeferrals, no schema
+    // column.
+    const count = await this.#database
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM dispatch_audit
+         WHERE delivery_id = ?
+           AND json_extract(evidence_json, '$.reason')
+             = 'resolver_attempt_inconclusive'
+           AND at_ms >= ?`,
+      )
+      .bind(deliveryId, sinceMs)
+      .first<number>("n");
+    return count ?? 0;
+  }
+
+  async reserveSendSlot(
+    destination: DispatchDestination,
+    now: number,
+    intervalMs: number,
+  ): Promise<number> {
+    // Copilot suppressed comment (F7) / ADR §4 item 4 (~1 msg/sec/channel):
+    // max_concurrency 1 only serializes consumers, it does not pace them.
+    // Durable per-destination reservation with the same semantics as the
+    // legacy reserveSlackSlot (src/store.ts, relay_state.next_slack_at) —
+    // reserve or report the remaining wait — but on the dispatcher's own
+    // table, so no legacy row is written. The upsert is a single atomic
+    // statement: it self-heals a missing row and the conditional DO UPDATE
+    // reports 0 changes when the slot is still held.
+    const nextSendMs = now + intervalMs;
+    const reservation = await this.#database
+      .prepare(
+        `INSERT INTO dispatch_rate_limit (destination, next_send_ms)
+         VALUES (?, ?)
+         ON CONFLICT(destination) DO UPDATE SET next_send_ms = ?
+         WHERE dispatch_rate_limit.next_send_ms <= ?`,
+      )
+      .bind(destination, nextSendMs, nextSendMs, now)
+      .run();
+    if (changed(reservation)) return 0;
+    const current = await this.#database
+      .prepare(
+        "SELECT next_send_ms FROM dispatch_rate_limit WHERE destination = ?",
+      )
+      .bind(destination)
+      .first<number>("next_send_ms");
+    if (current === null) return 0;
+    return Math.max(1, current - now);
   }
 
   async armVerification(deliveryId: string, now: number): Promise<boolean> {

@@ -182,6 +182,52 @@ describe("dispatch outcome classifier (ADR §6.2 — R10, R4)", () => {
     expect(outcome).toMatchObject({ kind: "ambiguous" });
   });
 
+  // Copilot suppressed comment (F4): a non-empty but MALFORMED ts or channel
+  // used to reach markDelivered. Migration 0010 CHECKs both columns, so the
+  // write raises a constraint violation inside the consumer and the message
+  // neither acks nor transitions. A malformed success body stays AMBIGUOUS —
+  // the resolver recovers the canonical identifiers from history.
+  it("suppressed F4: an ok:true body with a malformed ts or channel classifies as ambiguous, never delivered", () => {
+    const validTs = "1786737141.039580";
+    const validChannel = "C0BMUK793NV";
+    const malformed = [
+      // Junk in the seconds part (the loose SQL glob would admit it).
+      { ts: "1garbage.123456", channel: validChannel },
+      // Five fraction digits: violates /^\d{10,13}\.\d{6}$/ and 0010's CHECK.
+      { ts: "1786737141.03958", channel: validChannel },
+      // Seven fraction digits, and a bare seconds value with no fraction.
+      { ts: "1786737141.0395801", channel: validChannel },
+      { ts: "1786737141", channel: validChannel },
+      // Channel outside the 0010 shape (C + uppercase alphanumerics, 9-32).
+      { ts: validTs, channel: "not-a-channel" },
+      { ts: validTs, channel: "D0BMUK793NV" },
+      { ts: validTs, channel: "C0BMUK79" },
+      { ts: validTs, channel: "C0bmuk793nv" },
+    ];
+
+    for (const { ts, channel } of malformed) {
+      const outcome = classifyPostMessageOutcome(
+        classifierInput(200, JSON.stringify({ ok: true, channel, ts })),
+      );
+
+      expect(outcome, `ts=${ts} channel=${channel}`).toEqual({
+        kind: "ambiguous",
+        reason: "malformed_canonical_identifiers",
+        retryAfterMs: null,
+      });
+    }
+
+    // The valid pair still classifies as delivered with canonical proof.
+    expect(
+      classifyPostMessageOutcome(
+        classifierInput(
+          200,
+          JSON.stringify({ ok: true, channel: validChannel, ts: validTs }),
+        ),
+      ),
+    ).toEqual({ kind: "delivered", ts: validTs, channel: validChannel });
+  });
+
   it("R10: 5xx responses classify as ambiguous regardless of body", () => {
     // A 5xx may follow a materialized post (ADR §6.5 row 5): neither a
     // delivered-looking nor a MANUAL-looking body may override the status.

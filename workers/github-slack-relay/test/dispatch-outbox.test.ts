@@ -426,11 +426,14 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     ).toBe(true);
 
     const auditCountBefore = auditRows(database, deliveryId).length;
+    // Copilot suppressed comment (F6): the actor is now explicit — this is
+    // the consumer's late proof.
     const result = await store.recordLateProof(
       deliveryId,
       DISPATCH_TEST_NOW + 2_000,
       lateTs,
       ALERTS_CHANNEL,
+      "consumer",
     );
     expect(result).toBe("ambiguous_cas");
     expect(outboxRow(database, deliveryId)).toMatchObject({
@@ -472,6 +475,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
       DISPATCH_TEST_NOW + 2_000,
       lateTs,
       ALERTS_CHANNEL,
+      "consumer",
     );
     expect(result).toBe("manual_cas");
     expect(outboxRow(database, deliveryId)).toMatchObject({
@@ -514,6 +518,7 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
       DISPATCH_TEST_NOW + 2_000,
       lateTs,
       ALERTS_CHANNEL,
+      "consumer",
     );
     expect(result).toBe("audit_only");
     // No CAS matched: the canonical ts stands untouched...
@@ -933,5 +938,195 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
       slack_message_ts: null,
     });
     expect(auditRows(database, loserId)).toHaveLength(2);
+  });
+
+  // Copilot suppressed comment (F3) / ADR §6.3.1: "all verdict CASes run
+  // WHERE state='ambiguous' only". incrementResolverAttempts was unguarded,
+  // so a row delivered or parked by another writer after the scan snapshot
+  // was still mutated and collected a FALSE resolver_attempt_inconclusive
+  // audit entry.
+  it("suppressed F3: incrementResolverAttempts is state-guarded — a row delivered mid-flight is not mutated and gets no false inconclusive audit", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "suppressed-f3-state-guard";
+
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    expect(await store.claim(deliveryId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(
+      await store.markAmbiguous(
+        deliveryId,
+        DISPATCH_TEST_NOW + 1_000,
+        "http_500",
+        null,
+        "consumer",
+        ["sending"],
+      ),
+    ).toBe(true);
+
+    // Ambiguous row: the guard admits the increment (the normal path).
+    expect(
+      await store.incrementResolverAttempts(
+        deliveryId,
+        DISPATCH_TEST_NOW + 2_000,
+      ),
+    ).toBe(1);
+
+    // Another resolver/consumer delivers the row after the scan snapshot.
+    expect(
+      await store.markDelivered(
+        deliveryId,
+        DISPATCH_TEST_NOW + 3_000,
+        "1786665495.000300",
+        ALERTS_CHANNEL,
+        "resolver",
+        ["ambiguous"],
+        '{"verdict":"found"}',
+      ),
+    ).toBe(true);
+    const before = outboxRow(database, deliveryId);
+    const auditCountBefore = auditRows(database, deliveryId).length;
+
+    // The stale in-flight verdict must change NOTHING and report the current
+    // attempts unchanged.
+    expect(
+      await store.incrementResolverAttempts(
+        deliveryId,
+        DISPATCH_TEST_NOW + 4_000,
+      ),
+    ).toBe(1);
+    expect(outboxRow(database, deliveryId)).toEqual(before);
+    const after = auditRows(database, deliveryId);
+    expect(after).toHaveLength(auditCountBefore);
+    expect(
+      after.filter((row) =>
+        String(row["evidence_json"]).includes("resolver_attempt_inconclusive"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  // Copilot suppressed comment (F6): recordLateProof is also called by the
+  // resolver when its FOUND CAS loses, so both the unconditional proof audit
+  // AND the delivered transition must carry the CALLER's actor.
+  it("suppressed F6: a resolver-initiated late proof audits actor resolver; the consumer path still audits consumer", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+
+    async function seedAmbiguousRow(deliveryId: string): Promise<void> {
+      await store.insert({
+        deliveryId,
+        destination: "alerts",
+        shadow: false,
+        payloadJson: "{}",
+        now: DISPATCH_TEST_NOW,
+      });
+      expect(await store.claim(deliveryId, DISPATCH_TEST_NOW)).not.toBeNull();
+      expect(
+        await store.markAmbiguous(
+          deliveryId,
+          DISPATCH_TEST_NOW + 1_000,
+          "http_500",
+          null,
+          "consumer",
+          ["sending"],
+        ),
+      ).toBe(true);
+    }
+
+    const resolverId = "suppressed-f6-resolver-proof";
+    await seedAmbiguousRow(resolverId);
+    expect(
+      await store.recordLateProof(
+        resolverId,
+        DISPATCH_TEST_NOW + 2_000,
+        "1786665495.000400",
+        ALERTS_CHANNEL,
+        "resolver",
+      ),
+    ).toBe("ambiguous_cas");
+    const resolverProof = auditRows(database, resolverId).filter((row) =>
+      String(row["evidence_json"]).includes('"late_proof":true'),
+    );
+    // Both rows: the unconditional append and the delivered transition.
+    expect(resolverProof).toHaveLength(2);
+    expect(resolverProof[0]).toMatchObject({
+      actor: "resolver",
+      from_state: "ambiguous",
+      to_state: "ambiguous",
+    });
+    expect(resolverProof[1]).toMatchObject({
+      actor: "resolver",
+      from_state: "ambiguous",
+      to_state: "delivered",
+    });
+
+    const consumerId = "suppressed-f6-consumer-proof";
+    await seedAmbiguousRow(consumerId);
+    expect(
+      await store.recordLateProof(
+        consumerId,
+        DISPATCH_TEST_NOW + 2_000,
+        "1786665495.000401",
+        ALERTS_CHANNEL,
+        "consumer",
+      ),
+    ).toBe("ambiguous_cas");
+    const consumerProof = auditRows(database, consumerId).filter((row) =>
+      String(row["evidence_json"]).includes('"late_proof":true'),
+    );
+    expect(consumerProof).toHaveLength(2);
+    expect(consumerProof.every((row) => row["actor"] === "consumer")).toBe(
+      true,
+    );
+  });
+
+  // Copilot suppressed comment (F7) / ADR §4 item 4: durable per-destination
+  // pacing reservation, same semantics as the legacy reserveSlackSlot
+  // (relay_state.next_slack_at) on the dispatcher's own table.
+  it("suppressed F7: reserveSendSlot reserves once per interval and reports the remaining wait", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+
+    // First caller: the row does not exist yet — the upsert self-heals it.
+    expect(
+      await store.reserveSendSlot("alerts", DISPATCH_TEST_NOW, 6_100),
+    ).toBe(0);
+    expect(
+      database
+        .prepare("SELECT * FROM dispatch_rate_limit WHERE destination = ?")
+        .get("alerts"),
+    ).toMatchObject({
+      destination: "alerts",
+      next_send_ms: DISPATCH_TEST_NOW + 6_100,
+    });
+
+    // Second caller inside the interval: no reservation, remaining wait.
+    expect(
+      await store.reserveSendSlot("alerts", DISPATCH_TEST_NOW + 100, 6_100),
+    ).toBe(6_000);
+    expect(
+      database
+        .prepare(
+          "SELECT next_send_ms FROM dispatch_rate_limit WHERE destination = ?",
+        )
+        .get("alerts"),
+    ).toMatchObject({ next_send_ms: DISPATCH_TEST_NOW + 6_100 });
+
+    // Once the interval elapsed the slot is reserved again.
+    expect(
+      await store.reserveSendSlot("alerts", DISPATCH_TEST_NOW + 6_100, 6_100),
+    ).toBe(0);
+    expect(
+      database
+        .prepare(
+          "SELECT next_send_ms FROM dispatch_rate_limit WHERE destination = ?",
+        )
+        .get("alerts"),
+    ).toMatchObject({ next_send_ms: DISPATCH_TEST_NOW + 12_200 });
   });
 });

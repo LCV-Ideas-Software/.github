@@ -6,6 +6,7 @@ import { classifyPostMessageOutcome } from "./classifier";
 import {
   DISPATCH_CLIENT_TIMEOUT_MS,
   DISPATCH_METADATA_EVENT_TYPE,
+  DISPATCH_MINIMUM_SEND_INTERVAL_MS,
   type DispatchDestination,
   type DispatchMode,
   type DispatchStore,
@@ -213,6 +214,28 @@ export async function processDispatchMessage(
     message.ack();
     return;
   }
+  if (!row.shadow) {
+    // Copilot suppressed comment (F7) / ADR §4 item 4 (~1 msg/sec/channel):
+    // pace every REAL send through the durable per-destination reservation
+    // before the claim — exactly the order the legacy path uses
+    // (reserveSlackSlot then claimForSlack, src/index.ts). Reserving after
+    // the claim would leave the row in `sending` under a live lease that the
+    // retried message cannot re-claim. Shadow rows perform no egress
+    // (§9.A1/R7) and are never paced; that also keeps the cron's inline
+    // shadow processing, whose retry() is a no-op, free of any wait.
+    const waitMs = await deps.store.reserveSendSlot(
+      row.destination,
+      deps.now(),
+      DISPATCH_MINIMUM_SEND_INTERVAL_MS,
+    );
+    if (waitMs > 0) {
+      // Not acked (the row would be stranded), not sent (that is the 429 the
+      // design never auto-resends): the message returns with the remaining
+      // wait, and the row stays `queued` and claimable.
+      message.retry({ delaySeconds: Math.max(1, Math.ceil(waitMs / 1_000)) });
+      return;
+    }
+  }
   const now = deps.now();
   const claimed = await deps.store.claim(parsed.deliveryId, now);
   if (claimed === null) {
@@ -295,12 +318,14 @@ export async function processDispatchMessage(
     );
     if (!recorded) {
       // §6.3 late-proof rule (R2): the row left `sending` while the send
-      // was in flight — canonical proof still lands durably.
+      // was in flight — canonical proof still lands durably. Copilot
+      // suppressed comment (F6): this call site is the CONSUMER's.
       await deps.store.recordLateProof(
         parsed.deliveryId,
         now,
         outcome.ts,
         outcome.channel,
+        "consumer",
       );
     }
     message.ack();

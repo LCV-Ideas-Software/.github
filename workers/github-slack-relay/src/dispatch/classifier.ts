@@ -10,6 +10,17 @@ export interface PostMessageResponseParts {
   bodyText: string;
 }
 
+// Copilot suppressed comment (F4): a non-empty but MALFORMED ts or channel
+// must not reach markDelivered. Migration 0010 CHECKs both columns, so a
+// malformed value raises a constraint violation inside the consumer — the
+// message would neither ack nor transition. These patterns are the exact
+// shapes 0010 enforces: SLACK_MESSAGE_TS_PATTERN (src/index.ts) for the ts,
+// and C + uppercase alphanumerics, total length 9-32, for the channel id.
+// A malformed success body stays AMBIGUOUS (§6.2 fail-safe) so the resolver
+// recovers the canonical identifiers from conversations.history.
+const CANONICAL_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
+const CANONICAL_CHANNEL_PATTERN = /^C[A-Z0-9]{8,31}$/u;
+
 // ADR §6.2 [E-A12]: Retry-After seconds × 1000; null when absent or invalid.
 function retryAfterMsFrom(headers: {
   get(name: string): string | null;
@@ -75,6 +86,17 @@ export function classifyPostMessageOutcome(
       typeof channel === "string" &&
       channel.length > 0
     ) {
+      // F4: validate the canonical identifiers BEFORE claiming delivery.
+      if (
+        !CANONICAL_TS_PATTERN.test(ts) ||
+        !CANONICAL_CHANNEL_PATTERN.test(channel)
+      ) {
+        return {
+          kind: "ambiguous",
+          reason: "malformed_canonical_identifiers",
+          retryAfterMs: null,
+        };
+      }
       return { kind: "delivered", ts, channel };
     }
     // ok:true without ts — canonical proof missing.

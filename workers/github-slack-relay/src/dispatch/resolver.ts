@@ -4,7 +4,9 @@
 // Verdicts are EVIDENCE, never triggers: the resolver never resends (I1).
 import {
   DISPATCH_METADATA_EVENT_TYPE,
+  RESOLVER_ATTEMPT_WINDOW_MS,
   RESOLVER_COOLING_OFF_FLOOR_MS,
+  RESOLVER_LIFETIME_ATTEMPT_CEILING,
   RESOLVER_MAX_ATTEMPTS,
   RESOLVER_PAGES_PER_ROW,
   RESOLVER_ROWS_PER_RUN,
@@ -336,15 +338,46 @@ async function recordInconclusive(
     row.deliveryId,
     now,
   );
-  if (attempts >= RESOLVER_MAX_ATTEMPTS) {
+  // ADR §6.3.1, verbatim: "INCONCLUSIVE otherwise (history 429/error/partial
+  // scan/floor not reached) → stay `ambiguous`, `resolver_attempts + 1`;
+  // after 6 attempts within 1 h → `manual`; audited per attempt."
+  // Copilot suppressed comment (F5): `attempts` is the LIFETIME counter, so
+  // gating on it alone parks a row that merely accumulated six inconclusive
+  // scans across days. The escalation reads the windowed count instead —
+  // derived from the audit markers written just above.
+  const attemptsInWindow = await deps.store.inconclusiveAttemptsSince(
+    row.deliveryId,
+    now - RESOLVER_ATTEMPT_WINDOW_MS,
+  );
+  // ADR §10 H10: the window is the PRIMARY, fast trigger, but it is
+  // unreachable under resolver budget contention — strict round-robin over N
+  // due rows stretches the per-row cadence past 15 min at N = 6 (N = 3 while
+  // a verification row holds its reserved slot), so no rolling hour ever
+  // holds six markers. The lifetime ceiling only bites in exactly that case,
+  // so a starved row still reaches the `manual` park of §6.5 rows 15-16
+  // instead of being alarmed forever with no gateway to the operator menu.
+  // `attempts` is the read-back of the lifetime counter; if the row left
+  // `ambiguous` concurrently it is the unchanged value, and the markManual
+  // CAS below fails on its own — the ceiling adds no new race.
+  const windowExhausted = attemptsInWindow >= RESOLVER_MAX_ATTEMPTS;
+  if (windowExhausted || attempts >= RESOLVER_LIFETIME_ATTEMPT_CEILING) {
     // §6.3.1: budget exhausted — park in manual with evidence, never a
-    // resend.
+    // resend. A ceiling-triggered park is labelled so the operator can tell
+    // the two escalation causes apart.
     await deps.store.markManual(
       row.deliveryId,
       now,
       JSON.stringify({
         verdict: "resolver_budget_exhausted",
+        ...(windowExhausted
+          ? {}
+          : {
+              reason: "resolver_lifetime_ceiling",
+              lifetime_ceiling: RESOLVER_LIFETIME_ATTEMPT_CEILING,
+            }),
         attempts,
+        attempts_in_window: attemptsInWindow,
+        window_ms: RESOLVER_ATTEMPT_WINDOW_MS,
         last_reason: reason,
       }),
       "resolver",
@@ -397,12 +430,14 @@ export async function resolveAmbiguousRow(
         if (!recorded) {
           // Copilot finding F3 / ADR §6.3 late-proof rule: the row left
           // `ambiguous` mid-resolve (e.g. parked in manual by budget
-          // exhaustion) — canonical proof still lands durably.
+          // exhaustion) — canonical proof still lands durably. Copilot
+          // suppressed comment (F6): the provenance is the RESOLVER.
           await deps.store.recordLateProof(
             row.deliveryId,
             now,
             canonicalTs,
             channel,
+            "resolver",
           );
         }
       }
@@ -452,11 +487,13 @@ export async function resolveAmbiguousRow(
           // Row parked off-delivered mid-resolve: land canonical proof via
           // the §6.3 late-proof rule; delete nothing this pass — a later
           // scan repairs (R19).
+          // Copilot suppressed comment (F6): resolver-initiated proof.
           const proof = await deps.store.recordLateProof(
             row.deliveryId,
             now,
             canonicalTs,
             channel,
+            "resolver",
           );
           if (proof !== "audit_only") {
             await deps.store.flagDuplicateRepairPending(

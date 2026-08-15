@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DISPATCH_METADATA_EVENT_TYPE,
+  RESOLVER_ATTEMPT_WINDOW_MS,
   RESOLVER_COOLING_OFF_FLOOR_MS,
+  RESOLVER_LIFETIME_ATTEMPT_CEILING,
   RESOLVER_MAX_ATTEMPTS,
   RESOLVER_PAGES_PER_ROW,
   VERIFY_DEFERRAL_BACKOFF_BASE_MS,
@@ -488,6 +490,92 @@ describe("resolver verdicts (R3/R9/R12/R14)", () => {
     expect(escalation?.["actor"]).toBe("resolver");
   });
 
+  // Copilot suppressed comment (F5) / ADR §6.3.1, verbatim: "after 6 attempts
+  // within 1 h → `manual`". The threshold used the LIFETIME resolver_attempts
+  // counter, so six inconclusive scans spread across days parked a healthy
+  // row in manual.
+  it("suppressed F5: six inconclusive attempts spread beyond the 1 h window do NOT escalate", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "suppressed-f5-spread";
+    const firstAttemptMs = DISPATCH_TEST_NOW - 6 * RESOLVER_ATTEMPT_WINDOW_MS;
+    await seedAmbiguous(store, deliveryId, {
+      sendStartMs: firstAttemptMs - 60_000,
+    });
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryError("internal_error")
+        : undefined,
+    );
+
+    // One attempt per hour + 1 min: no two attempts ever share a window.
+    for (let attempt = 0; attempt < RESOLVER_MAX_ATTEMPTS; attempt += 1) {
+      const attemptMs =
+        firstAttemptMs + attempt * (RESOLVER_ATTEMPT_WINDOW_MS + 60_000);
+      const verdict = await resolveAmbiguousRow(
+        await mustGet(store, deliveryId),
+        resolverDeps(store, fetchStub, { now: () => attemptMs }),
+      );
+      expect(verdict.kind).toBe("inconclusive");
+      expect((await mustGet(store, deliveryId)).state).toBe("ambiguous");
+    }
+
+    const row = await mustGet(store, deliveryId);
+    // The lifetime counter still records every attempt (§6.3.1 persistence)...
+    expect(row.resolverAttempts).toBe(RESOLVER_MAX_ATTEMPTS);
+    // ...but the WINDOWED count never reached the threshold, so the row is
+    // still resolver-owned instead of parked for the operator.
+    expect(row.state).toBe("ambiguous");
+    expect(
+      auditRows(database, deliveryId).filter(
+        (entry) => entry["to_state"] === "manual",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("suppressed F5: six inconclusive attempts inside the 1 h window escalate to manual with the windowed evidence", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "suppressed-f5-window";
+    const firstAttemptMs = DISPATCH_TEST_NOW - 50 * 60_000;
+    await seedAmbiguous(store, deliveryId, {
+      sendStartMs: firstAttemptMs - 60_000,
+    });
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryError("internal_error")
+        : undefined,
+    );
+
+    // Six attempts, 10 min apart: the sixth still sees all six in its window.
+    for (let attempt = 0; attempt < RESOLVER_MAX_ATTEMPTS; attempt += 1) {
+      const attemptMs = firstAttemptMs + attempt * 10 * 60_000;
+      const verdict = await resolveAmbiguousRow(
+        await mustGet(store, deliveryId),
+        resolverDeps(store, fetchStub, { now: () => attemptMs }),
+      );
+      expect(verdict.kind).toBe("inconclusive");
+      if (attempt < RESOLVER_MAX_ATTEMPTS - 1) {
+        expect((await mustGet(store, deliveryId)).state).toBe("ambiguous");
+      }
+    }
+
+    expect((await mustGet(store, deliveryId)).state).toBe("manual");
+    const escalation = auditRows(database, deliveryId).find(
+      (entry) => entry["to_state"] === "manual",
+    );
+    expect(escalation?.["actor"]).toBe("resolver");
+    expect(
+      JSON.parse(String(escalation?.["evidence_json"])) as Record<
+        string,
+        unknown
+      >,
+    ).toMatchObject({
+      verdict: "resolver_budget_exhausted",
+      attempts: RESOLVER_MAX_ATTEMPTS,
+      attempts_in_window: RESOLVER_MAX_ATTEMPTS,
+      window_ms: RESOLVER_ATTEMPT_WINDOW_MS,
+    });
+  });
+
   it("R14: a message with the right delivery_id but the wrong event_type never matches", async () => {
     const { store } = makeStore();
     const deliveryId = "red14-wrong-event-type";
@@ -553,6 +641,160 @@ describe("resolver verdicts (R3/R9/R12/R14)", () => {
     expect(updated.state).toBe("delivered");
     expect(updated.slackMessageTs).toBe(TS_LATE);
     expect(deleteCalls(calls)).toHaveLength(0);
+  });
+});
+
+// ADR §10 H10 — regression caught by an adversarial panel before the push.
+// The §6.3.1 window is unreachable under resolver budget contention: N due
+// ambiguous rows round-robin strictly (ambiguousRowsDue orders by updated_ms
+// ASC, every attempt bumps updated_ms), so at N = 6 the per-row cadence is
+// 15 min and at most 5 markers ever share a rolling hour. Without the
+// lifetime ceiling NO row in this scenario reaches `manual` — the state that
+// §6.5 rows 15-16 document as the outcome of a prolonged outage, and the only
+// gateway to the operator menu (operatorResend/operatorCloseManual).
+describe("resolver budget contention (H10 lifetime ceiling)", () => {
+  it("H10: six contending ambiguous rows all reach manual although the 1 h window never closes", async () => {
+    const { database, store } = makeStore();
+    const deliveryIds = Array.from(
+      { length: 6 },
+      (_, index) => `h10-contention-${index}`,
+    );
+    for (const [index, deliveryId] of deliveryIds.entries()) {
+      // Staggered so updated_ms is distinct and the round-robin order is
+      // deterministic from the first pass.
+      await seedAmbiguous(store, deliveryId, {
+        sendStartMs:
+          DISPATCH_TEST_NOW -
+          RESOLVER_COOLING_OFF_FLOOR_MS -
+          60_000 -
+          (deliveryIds.length - index) * 1_000,
+      });
+    }
+    // Prolonged outage (§6.5 row 16): every history scan fails.
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryError("internal_error")
+        : undefined,
+    );
+    // The §6.7 `*/5` cron on a synthetic clock.
+    let clock = DISPATCH_TEST_NOW;
+    const deps = resolverDeps(store, fetchStub, { now: () => clock });
+
+    // 24 attempts at ceil(6 / 2) = 3 passes per attempt = 72 passes; the
+    // bound leaves headroom without ever letting the loop run unbounded.
+    const maxPasses = 120;
+    let passes = 0;
+    let escalated = 0;
+    while (passes < maxPasses && escalated < deliveryIds.length) {
+      await runResolverPass(deps);
+      passes += 1;
+      clock += 5 * 60_000;
+      escalated = 0;
+      for (const deliveryId of deliveryIds) {
+        if ((await mustGet(store, deliveryId)).state === "manual") {
+          escalated += 1;
+        }
+      }
+    }
+
+    expect(escalated).toBe(deliveryIds.length);
+    expect(passes).toBeLessThan(maxPasses);
+    // The escalation of the FIRST row proves the window never closed: it
+    // parks while all six rows still contend, so its windowed count is below
+    // the §6.3.1 threshold and only the lifetime ceiling can have fired.
+    const firstEscalation = auditRows(database, deliveryIds[0] ?? "").find(
+      (entry) => entry["to_state"] === "manual",
+    );
+    const evidence = JSON.parse(
+      String(firstEscalation?.["evidence_json"]),
+    ) as Record<string, unknown>;
+    expect(Number(evidence["attempts_in_window"])).toBeLessThan(
+      RESOLVER_MAX_ATTEMPTS,
+    );
+    expect(Number(evidence["attempts"])).toBeGreaterThanOrEqual(
+      RESOLVER_LIFETIME_ATTEMPT_CEILING,
+    );
+  });
+
+  it("H10: a ceiling-triggered escalation is distinguishable from a window-triggered one", async () => {
+    const { database, store } = makeStore();
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryError("internal_error")
+        : undefined,
+    );
+
+    // Ceiling: each attempt sits alone in its own 1 h window, so the windowed
+    // count never exceeds 1 and only the lifetime ceiling can escalate.
+    const ceilingId = "h10-ceiling-evidence";
+    const step = RESOLVER_ATTEMPT_WINDOW_MS + 60_000;
+    const ceilingFirstMs =
+      DISPATCH_TEST_NOW - RESOLVER_LIFETIME_ATTEMPT_CEILING * step;
+    await seedAmbiguous(store, ceilingId, {
+      sendStartMs: ceilingFirstMs - 60_000,
+    });
+    for (
+      let attempt = 0;
+      attempt < RESOLVER_LIFETIME_ATTEMPT_CEILING;
+      attempt += 1
+    ) {
+      const attemptMs = ceilingFirstMs + attempt * step;
+      const verdict = await resolveAmbiguousRow(
+        await mustGet(store, ceilingId),
+        resolverDeps(store, fetchStub, { now: () => attemptMs }),
+      );
+      expect(verdict.kind).toBe("inconclusive");
+    }
+
+    const ceilingRow = await mustGet(store, ceilingId);
+    expect(ceilingRow.state).toBe("manual");
+    expect(ceilingRow.resolverAttempts).toBe(RESOLVER_LIFETIME_ATTEMPT_CEILING);
+    const ceilingEscalation = auditRows(database, ceilingId).find(
+      (entry) => entry["to_state"] === "manual",
+    );
+    expect(ceilingEscalation?.["actor"]).toBe("resolver");
+    expect(
+      JSON.parse(String(ceilingEscalation?.["evidence_json"])) as Record<
+        string,
+        unknown
+      >,
+    ).toMatchObject({
+      verdict: "resolver_budget_exhausted",
+      reason: "resolver_lifetime_ceiling",
+      lifetime_ceiling: RESOLVER_LIFETIME_ATTEMPT_CEILING,
+      attempts: RESOLVER_LIFETIME_ATTEMPT_CEILING,
+      attempts_in_window: 1,
+      window_ms: RESOLVER_ATTEMPT_WINDOW_MS,
+    });
+
+    // Window: the PRIMARY trigger — six attempts inside one hour — must never
+    // be labelled as the ceiling.
+    const windowId = "h10-window-evidence";
+    const windowFirstMs = DISPATCH_TEST_NOW - 50 * 60_000;
+    await seedAmbiguous(store, windowId, {
+      sendStartMs: windowFirstMs - 60_000,
+    });
+    for (let attempt = 0; attempt < RESOLVER_MAX_ATTEMPTS; attempt += 1) {
+      const attemptMs = windowFirstMs + attempt * 10 * 60_000;
+      await resolveAmbiguousRow(
+        await mustGet(store, windowId),
+        resolverDeps(store, fetchStub, { now: () => attemptMs }),
+      );
+    }
+
+    expect((await mustGet(store, windowId)).state).toBe("manual");
+    const windowEscalation = auditRows(database, windowId).find(
+      (entry) => entry["to_state"] === "manual",
+    );
+    const windowEvidence = JSON.parse(
+      String(windowEscalation?.["evidence_json"]),
+    ) as Record<string, unknown>;
+    expect(windowEvidence).toMatchObject({
+      verdict: "resolver_budget_exhausted",
+      attempts_in_window: RESOLVER_MAX_ATTEMPTS,
+    });
+    expect(windowEvidence["reason"]).toBeUndefined();
+    expect(windowEvidence["lifetime_ceiling"]).toBeUndefined();
   });
 });
 

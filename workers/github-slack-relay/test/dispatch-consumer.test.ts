@@ -111,6 +111,17 @@ async function seedQueuedRow(
   expect(inserted).toBe(true);
 }
 
+// The GUID the consumer put in metadata.event_payload (§6.1), so a scripted
+// response can answer per row.
+function metadataDeliveryId(body: Record<string, unknown> | null): string {
+  const metadata = body?.["metadata"];
+  if (typeof metadata !== "object" || metadata === null) return "";
+  const payload = (metadata as Record<string, unknown>)["event_payload"];
+  if (typeof payload !== "object" || payload === null) return "";
+  const deliveryId = (payload as Record<string, unknown>)["delivery_id"];
+  return typeof deliveryId === "string" ? deliveryId : "";
+}
+
 // Serves the scripted response for chat.postMessage ONLY; any other URL
 // throws unscripted_fetch (scriptedFetch), which fails the test loudly.
 function postMessageFetch(response: FixtureResponse): ReturnType<
@@ -411,6 +422,98 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     });
     expect(recorded.ackCount()).toBe(1);
     expect(recorded.retryOptions).toHaveLength(0);
+  });
+
+  // Copilot suppressed comment (F7) / ADR §4 item 4 (~1 msg/sec/channel):
+  // max_concurrency 1 only serializes consumers, so consecutive posts could
+  // still outrun Slack's per-channel limit and mint 429s this design never
+  // auto-resends. The durable reservation paces them, exactly like the legacy
+  // reserveSlackSlot path.
+  it("suppressed F7: consecutive claims are paced — the second is retried with the remaining wait, then posts once the interval elapsed", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const firstId = "suppressed-f7-pacing-first";
+    const secondId = "suppressed-f7-pacing-second";
+    const secondTs = "1786795206.000200";
+    await seedQueuedRow(store, firstId, "alerts");
+    await seedQueuedRow(store, secondId, "alerts");
+    // One ts per row: UNIQUE(destination, slack_message_ts) is a real CHECK.
+    const scripted = scriptedFetch((url, body) =>
+      url === POST_URL
+        ? slackPostOk(
+            metadataDeliveryId(body) === secondId ? secondTs : POST_TS,
+            ALERTS_CHANNEL,
+          )
+        : undefined,
+    );
+    let now = DISPATCH_TEST_NOW;
+    const deps: DispatchConsumerDeps = {
+      ...consumerDeps(store, scripted.fetch),
+      now: () => now,
+    };
+
+    const first = recordedMessage(firstId, "primary");
+    await processDispatchMessage(first.message, deps);
+    expect(scripted.calls).toHaveLength(1);
+    expect(first.ackCount()).toBe(1);
+    expect(outboxRow(database, firstId)).toMatchObject({ state: "delivered" });
+
+    // Same instant: the reservation is held, so the second row is neither
+    // sent nor acked — it comes back with the remaining wait, still queued
+    // and still claimable.
+    const blocked = recordedMessage(secondId, "primary");
+    await processDispatchMessage(blocked.message, deps);
+    expect(scripted.calls).toHaveLength(1);
+    expect(blocked.ackCount()).toBe(0);
+    expect(blocked.retryOptions).toEqual([{ delaySeconds: 7 }]);
+    expect(outboxRow(database, secondId)).toMatchObject({
+      state: "queued",
+      attempt_count: 0,
+      last_send_start_ms: null,
+      lease_until_ms: null,
+    });
+
+    // Interval elapsed: the redelivered message reserves the slot and posts.
+    now = DISPATCH_TEST_NOW + 6_100;
+    const retried = recordedMessage(secondId, "primary");
+    await processDispatchMessage(retried.message, deps);
+    expect(scripted.calls).toHaveLength(2);
+    expect(retried.ackCount()).toBe(1);
+    expect(retried.retryOptions).toHaveLength(0);
+    expect(outboxRow(database, secondId)).toMatchObject({
+      state: "delivered",
+      slack_message_ts: secondTs,
+    });
+  });
+
+  it("suppressed F7: shadow rows are never paced — no reservation, no retry, no egress", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const shadowIds = ["suppressed-f7-shadow-a", "suppressed-f7-shadow-b"];
+    for (const deliveryId of shadowIds) {
+      await seedQueuedRow(store, deliveryId, "alerts", true);
+    }
+    // ANY fetch would throw unscripted_fetch (§9.A1/R7).
+    const scripted = scriptedFetch(() => undefined);
+    const deps = consumerDeps(store, scripted.fetch);
+
+    for (const deliveryId of shadowIds) {
+      const recorded = recordedMessage(deliveryId, "shadow");
+      await processDispatchMessage(recorded.message, deps);
+      expect(recorded.ackCount()).toBe(1);
+      // The cron processes shadow rows INLINE with a no-op retry(), so a
+      // pacing wait here would stall the row forever.
+      expect(recorded.retryOptions).toHaveLength(0);
+      expect(outboxRow(database, deliveryId)).toMatchObject({
+        state: "delivered",
+        shadow: 1,
+        slack_message_ts: null,
+      });
+    }
+    expect(scripted.calls).toHaveLength(0);
+    expect(
+      database.prepare("SELECT COUNT(*) AS n FROM dispatch_rate_limit").get(),
+    ).toMatchObject({ n: 0 });
   });
 });
 

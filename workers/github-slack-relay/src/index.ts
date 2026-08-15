@@ -1813,19 +1813,27 @@ async function processMarkedDispatchMessage(
   dependencies: Required<RuntimeOverrides>,
 ): Promise<void> {
   const job = message.body as unknown as { deliveryId: string };
-  let botToken: string;
-  try {
-    botToken = await readSecret(env.SLACK_DISPATCH_BOT_TOKEN);
-  } catch {
-    retryMessage(message, 60);
-    return;
+  // §6.8/R20: the mode active WHEN CONSUMED governs the message.
+  // Copilot suppressed comment (F1): the mode is parsed FIRST and the secret
+  // is never read while it is off. Reading it first made a Secrets Store
+  // failure retry the message in mode off instead of taking the required R20
+  // ack path — consuming max_retries and recreating the DLQ/mode-flip failure
+  // §10.1 Residual 1 eliminated.
+  const mode = parseDispatchMode(env.DISPATCH_MODE);
+  let botToken = "";
+  if (mode !== "off") {
+    try {
+      botToken = await readSecret(env.SLACK_DISPATCH_BOT_TOKEN);
+    } catch {
+      retryMessage(message, 60);
+      return;
+    }
   }
   await processDispatchMessage(
     {
       body: {
         deliveryId: job.deliveryId,
-        // §6.8/R20: the mode active WHEN CONSUMED governs the message.
-        mode: parseDispatchMode(env.DISPATCH_MODE),
+        mode,
       },
       attempts: message.attempts,
       ack: () => {
@@ -1851,10 +1859,16 @@ async function processMarkedDispatchMessage(
 
 // ADR-001 §6.2/§6.5 row 16: a marked message that exhausted the main
 // queue's retries reaches the DLQ and the row transitions to dead_letter
-// (alarmed via the observer) — EXCEPT when the trips were mode-off
-// deferrals (R20): those are deliberate pauses, not transport failures, so
-// the queued row stays queued for the config-only re-enable and the DLQ
-// message is dropped (the row is durable; the cron republishes it).
+// (alarmed via the observer) — EXCEPT when the trips were DEFERRALS, not
+// transport failures. Every consumer retry path is a deferral that leaves
+// the row `queued` and untouched: the mode-off pause (R20), the F7 pacing
+// reservation (§4 item 4) and the bot-token read failure. §10.1 Residual 1
+// is exactly the failure of dead-lettering a healthy queued row on such a
+// trip — "recoverable only through the operator menu, which §6.8/R20
+// forbids" — so a row still in `queued` is spared in EVERY mode and the DLQ
+// message is dropped (the row is durable; the cron republishes it and the
+// queued_backlog_stale alarm makes the backlog visible). Row 16's transport
+// failure keeps its transition: a row in `sending` still dead-letters.
 async function processDispatchDeadLetterMessage(
   message: Message<QueueJob>,
   env: Env,
@@ -1864,12 +1878,10 @@ async function processDispatchDeadLetterMessage(
   const dispatchStore = new D1DispatchStore(env.DB);
   const now = dependencies.now();
   try {
-    if (parseDispatchMode(env.DISPATCH_MODE) === "off") {
-      const row = await dispatchStore.get(job.deliveryId);
-      if (row === null || row.state === "queued") {
-        message.ack();
-        return;
-      }
+    const row = await dispatchStore.get(job.deliveryId);
+    if (row === null || row.state === "queued") {
+      message.ack();
+      return;
     }
     await dispatchStore.markDeadLetter(
       job.deliveryId,
@@ -2035,6 +2047,24 @@ export async function runDispatchScheduled(
   }
 }
 
+// ADR-001 §6.7/R13/R20 — the scheduled entrypoint runs BOTH passes.
+// Copilot suppressed comment (F2): the dispatch pass is documented as
+// isolated from the legacy recovery, so a rejection from runScheduledRecovery
+// (a D1/protocol lookup failure, say) must not starve outbox lease
+// normalization, resolver work or alarms. The `finally` runs the dispatch
+// pass either way and never swallows the legacy rejection —
+// runDispatchScheduled handles its own errors, so it cannot mask it either.
+export async function runScheduled(
+  env: Env,
+  overrides?: RuntimeOverrides,
+): Promise<void> {
+  try {
+    await runScheduledRecovery(env, overrides);
+  } finally {
+    await runDispatchScheduled(env, overrides);
+  }
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     try {
@@ -2052,7 +2082,6 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
-    await runScheduledRecovery(env);
-    await runDispatchScheduled(env);
+    await runScheduled(env);
   },
 } satisfies ExportedHandler<Env, QueueJob>;

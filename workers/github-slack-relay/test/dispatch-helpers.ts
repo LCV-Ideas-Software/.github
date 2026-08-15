@@ -169,13 +169,18 @@ export function dispatchDatabase(): { database: DatabaseSync; d1: D1Database } {
 
 // Full schema snapshot of the objects owned by migrations 0001-0009,
 // used by R8 to prove the new migrations alter none of them.
+// dispatch_rate_limit joins the excluded set with the other dispatcher-owned
+// objects (Copilot suppressed comment F7): it is created by migration 0010,
+// so R8 must keep comparing the 0001-0009 surface only.
 export function legacySchemaSnapshot(database: DatabaseSync): string {
   const rows = database
     .prepare(
       `SELECT type, name, tbl_name, sql
        FROM sqlite_schema
        WHERE name NOT LIKE 'sqlite_%'
-         AND tbl_name NOT IN ('dispatch_outbox', 'dispatch_audit')
+         AND tbl_name NOT IN (
+           'dispatch_outbox', 'dispatch_audit', 'dispatch_rate_limit'
+         )
          AND name NOT IN ('d1_migrations')
        ORDER BY type, name`,
     )
