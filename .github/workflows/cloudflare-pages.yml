@@ -52,6 +52,5 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: npm
           workingDirectory: "."
-          wranglerVersion: "4.120.1"
           command: pages deploy site --project-name=org-site --branch=main --commit-dirty=true
     timeout-minutes: 30

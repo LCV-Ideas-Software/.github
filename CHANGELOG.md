@@ -29,7 +29,13 @@ presentation rule this organization applies to text meant for people
   auditor, and OSV advisory watcher with direct, SHA-pinned official Actions.
 - Kept CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard active with least-privilege job
   permissions and native Code Scanning uploads.
-- Moved the organization site's Cloudflare Pages deployment to the official Wrangler Action.
+- Moved the organization site's Cloudflare Pages deployment to the official Wrangler Action. The
+  Action reuses the exact lockfile-installed Wrangler verified earlier in the job, while the pinned
+  Zizmor Action selects its scanner through the immutable digest table bundled in that same Action
+  revision; both tools therefore advance through their existing Dependabot ecosystems without a
+  second hand-maintained workflow pin.
+- Recorded the accepted upstream limitation that the official Zizmor Action does not yet expose
+  `--strict-collection`, without recreating a local wrapper or parallel gate.
 - Retired the reusable security components; this repository no longer produces Releases or tags.
 
 ## 14/08/2026 — Zizmor baseline do astrologo-app

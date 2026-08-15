@@ -39,7 +39,8 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - versioned CodeQL Advanced Setup workflows in public repositories containing code;
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
-- a YAML-parsed canonical contract over all seven repository-local required contexts, run independently by Dependency Review and CodeQL on pull requests and merge groups. It fixes the exact triggers, check names and conditions, complete required-job structures, immutable Action references, commands, inputs and paths, and the sole approved Zizmor configuration. This closes single-runner structural regressions; coordinated rewrites of both runners and the candidate-head policy remain inside the external ruleset and review trust boundary;
+- direct, SHA-pinned official CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard Actions. CodeQL remains the native merge-protection signal; Zizmor and Scorecard publish SARIF for stateful security visibility without repository-owned gates, baselines, wrappers, or workflow-contract validators;
+- the official Zizmor Action does not yet expose `--strict-collection` ([upstream #141](https://github.com/zizmorcore/zizmor-action/issues/141)), so collection syntax or schema errors can remain warnings. This accepted upstream limitation is tracked without adding a repository-owned executor or gate;
 - GitHub-to-Slack trigger acceptance is nonterminal: an authenticated pre-send boundary, unique
   Slack message-timestamp receipt, and paginated trace reconciliation are required before D1 calls
   a row delivered. Any uncertainty after the send boundary is retained for manual review and is
