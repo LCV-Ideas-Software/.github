@@ -375,6 +375,42 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     );
   });
 
+  // Review finding B (class E7) — a deadline must be anchored on the clock
+  // sampled AFTER the operation it is meant to follow. `now` was taken before
+  // the request began, so a slow 429 persisted a next_attempt_ms that had
+  // already partly elapsed when it was written.
+  it("B: a Retry-After deadline runs from the response, not from the request start", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "b-retry-after-anchor";
+    await seedQueuedRow(store, deliveryId, "alerts");
+    const SLOW_RESPONSE_MS = 4_000;
+    let responded = false;
+    const scripted = scriptedFetch((url) => {
+      if (url !== POST_URL) return undefined;
+      // The clock advances across the call, as it does in production.
+      responded = true;
+      return slackRateLimited(7);
+    });
+    const recorded = recordedMessage(deliveryId, "primary");
+
+    await processDispatchMessage(recorded.message, {
+      ...consumerDeps(store, scripted.fetch),
+      now: () =>
+        responded ? DISPATCH_TEST_NOW + SLOW_RESPONSE_MS : DISPATCH_TEST_NOW,
+    });
+
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "ambiguous",
+      // Slack asked for 7 s from ITS answer, not from our request.
+      next_attempt_ms: DISPATCH_TEST_NOW + SLOW_RESPONSE_MS + 7_000,
+      // The send-start anchor is untouched: the §6.3.1 cooling-off floor is
+      // measured from when the request STARTED (R12).
+      last_send_start_ms: DISPATCH_TEST_NOW,
+    });
+    expect(recorded.ackCount()).toBe(1);
+  });
+
   it("R12 (consumer precondition): chat.postMessage carries an AbortSignal for the 30 s hard timeout", async () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);

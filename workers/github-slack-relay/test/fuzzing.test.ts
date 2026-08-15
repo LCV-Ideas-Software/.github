@@ -69,7 +69,13 @@ describe("property-based GitHub webhook security", () => {
     );
   });
 
-  it("handles arbitrary signed JSON without an exception or fail-open delivery", async () => {
+  // Same pre-existing flake, and the same remedy, as the 20 s override two
+  // tests below. Measured over three consecutive full-suite runs (13 files in
+  // parallel): 0.68 s, 5.23 s, 1.09 s. The 5.23 s run exceeds the DEFAULT 5 s
+  // budget while the property itself still passes, so the failure is the
+  // budget under load, not the code under test. No assertion and no run count
+  // changes — only the budget.
+  it("handles arbitrary signed JSON without an exception or fail-open delivery", { timeout: 20_000 }, async () => {
     await fc.assert(
       fc.asyncProperty(
         fc.constantFrom(...SUPPORTED_EVENTS),

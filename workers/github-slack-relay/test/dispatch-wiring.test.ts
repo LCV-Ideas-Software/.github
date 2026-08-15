@@ -334,10 +334,16 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     // unauthenticated surface.
     expect(Object.keys(body)).toEqual(["dispatch"]);
     const dispatch = body["dispatch"] as Record<string, unknown>;
+    // Review finding F4: the key set is pinned deliberately and grows by
+    // exactly the two ALARMED aggregates the body used to drop. Both are
+    // counts, so §6.7's "aggregate counters only" rule is unchanged — the
+    // runbook sends the operator here until the F3 channel exists (§10 H26).
     expect(Object.keys(dispatch).sort()).toEqual([
       "counters",
       "oldest_non_terminal_age_ms",
       "repaired_duplicates",
+      "unreconciled_deletion_intents",
+      "verification_abandoned",
     ]);
     const counters = dispatch["counters"] as Record<
       string,
@@ -348,6 +354,57 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     expect(counters["alerts"]).toMatchObject({ queued: 1, sending: 0 });
     expect(dispatch["oldest_non_terminal_age_ms"]).toBe(1_000);
     expect(dispatch["repaired_duplicates"]).toBe(0);
+    expect(dispatch["verification_abandoned"]).toBe(0);
+    expect(dispatch["unreconciled_deletion_intents"]).toBe(0);
+  });
+
+  it("F4 /status surfaces the two alarmed aggregates it used to drop", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    // A delivered row that gave up on verification (§10 H14) — the shape
+    // statusCounters turns into the `verification_abandoned` alarm.
+    seedOutboxRow(database, {
+      deliveryId: "wiring-status-abandoned",
+      destination: "alerts",
+      state: "delivered",
+      slackMessageTs: "1786664000.000100",
+      slackChannelId: "C0BMUK793NV",
+      verifyScansRemaining: 2,
+      verifyAfterMs: null,
+      createdMs: DISPATCH_TEST_NOW - 1_000,
+    });
+    // A duplicate-deletion intent with no outcome marker (§10 H21 + review
+    // finding F3): the chat.delete may have been applied and its repair record
+    // never landed, so it is the one loss no later scan can rebuild.
+    await store.appendAudit({
+      deliveryId: "wiring-status-abandoned",
+      fromState: "delivered",
+      toState: "delivered",
+      evidenceJson: JSON.stringify({
+        duplicate_deletion_intent: true,
+        canonical_ts: "1786664000.000100",
+        target_ts: "1786664900.000200",
+      }),
+      actor: "resolver",
+      atMs: DISPATCH_TEST_NOW - 500,
+    });
+
+    const response = await handleFetch(
+      new Request("https://relay.example/status"),
+      makeEnv(new FakeQueue(), { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(200);
+    const dispatch = ((await response.json()) as Record<string, unknown>)[
+      "dispatch"
+    ] as Record<string, unknown>;
+    // Both alarms are actionable and, until F3, only reachable through here.
+    expect(dispatch["verification_abandoned"]).toBe(1);
+    expect(dispatch["unreconciled_deletion_intents"]).toBe(1);
+    // §6.7 unchanged: no identifiers on the unauthenticated surface.
+    expect(JSON.stringify(dispatch)).not.toContain("wiring-status-abandoned");
+    expect(JSON.stringify(dispatch)).not.toContain("1786664900.000200");
   });
 
   it("V20 primary ingress inserts the outbox row, publishes a marked job and answers duplicate on redelivery", async () => {
@@ -938,6 +995,61 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
       verify_scans_remaining: 2,
     });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Review finding C (class E8) — a failure in one unit of work must not exit
+  // a pass that also carries INDEPENDENT work. The stale-row publish and the
+  // resolver share one try: a queue-only outage froze the resolver too, even
+  // though its recovery path is D1 plus Slack history and never touches the
+  // queue.
+  it("C: a stale-row publish failure does not stop lease normalization or the resolver", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const staleNow = DISPATCH_TEST_NOW - STALE_QUEUED_AGE_MS;
+    // (1) a stale queued row whose republish will reject...
+    await store.insert({
+      deliveryId: "wiring-c-stale-publish-fails",
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"stale"}',
+      now: staleNow,
+    });
+    // (2) ...and an INDEPENDENT row in `sending` with an expired lease, whose
+    // recovery is a pure D1 transition (§6.3.1 normalization, §10 H23).
+    seedOutboxRow(database, {
+      deliveryId: "wiring-c-expired-lease",
+      destination: "alerts",
+      state: "sending",
+      leaseUntilMs: DISPATCH_TEST_NOW - 1_000,
+      lastSendStartMs: DISPATCH_TEST_NOW - 200_000,
+      createdMs: DISPATCH_TEST_NOW - 3_600_000,
+    });
+
+    const pass = await runDispatchCronPass({
+      database: d1,
+      mode: "primary",
+      fetch: vi.fn<typeof fetch>(),
+      now: () => DISPATCH_TEST_NOW,
+      readBotToken: vi.fn(async () => "xoxb-unused"),
+      publish: async () => {
+        throw new Error("queue_unavailable");
+      },
+    });
+
+    // The publish failure is contained and REPORTED, not swallowed...
+    expect(pass.staleFailed).toBe(1);
+    expect(pass.requeued).toBe(0);
+    // ...the stale row keeps its stale window, so R13 re-selects it...
+    expect(outboxRow(database, "wiring-c-stale-publish-fails")).toMatchObject({
+      state: "queued",
+      updated_ms: staleNow,
+    });
+    // ...and the independent row still reached the resolver's input state,
+    // which is what makes it visible to the ambiguous_stale alarm.
+    expect(outboxRow(database, "wiring-c-expired-lease")).toMatchObject({
+      state: "ambiguous",
+    });
+    expect(pass.alarms).toContain("ambiguous_stale");
   });
 
   it("V6 runDispatchScheduled processes the outbox even when the legacy protocol seal defers recovery", async () => {

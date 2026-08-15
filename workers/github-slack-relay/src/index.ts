@@ -2213,6 +2213,10 @@ export async function runDispatchScheduled(
           // Audit finding B4: rows whose examination threw and was contained
           // so the pass could finish — visible instead of lost.
           resolver_failed: dispatchResult.resolverFailed,
+          // Review finding C: stale rows whose publish threw and was contained
+          // so the resolver step still ran — a queue-only outage is visible
+          // here instead of silently freezing the whole pass.
+          stale_failed: dispatchResult.staleFailed,
           alarm_count: dispatchResult.alarms.length,
         }),
       );

@@ -2253,6 +2253,43 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
     });
   });
 
+  // Review finding B (class E7) / ADR §10 H31, on the RESOLVER's own call. The
+  // fix moved `const now = deps.now()` below `scanHistory`, but nothing pinned
+  // it: moving the sample back above the scan broke no test, which makes the
+  // fix a coincidence rather than a guarantee. This test is the guarantee. The
+  // scan is charged real time here, exactly as a slow Slack charges it — up to
+  // RESOLVER_PAGES_PER_ROW requests, each with a 30 s abort — so a deadline
+  // anchored at pass start lands SCAN_COST_MS early and the assertion fails.
+  it("E7: a history 429 defers from the instant the scan returned, not from the pass start", async () => {
+    const { store } = makeStore();
+    const deliveryId = "e7-clock-sampled-after-scan";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    const retryAfterSeconds = 2 * 60 * 60;
+    const SCAN_COST_MS = 25_000;
+    let elapsedMs = 0;
+    const { fetch: fetchStub } = scriptedFetch((url) => {
+      if (!url.includes("conversations.history")) return undefined;
+      elapsedMs += SCAN_COST_MS;
+      return slackRateLimited(retryAfterSeconds);
+    });
+
+    await runResolverPass(
+      resolverDeps(store, fetchStub, {
+        now: () => DISPATCH_TEST_NOW + elapsedMs,
+      }),
+    );
+
+    const row = await mustGet(store, deliveryId);
+    // The row is selected as due at the pass-start instant, so the scan cost
+    // cannot come from the selection: it is in the deadline only because the
+    // clock was read after the response.
+    expect(row.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + SCAN_COST_MS + retryAfterSeconds * 1_000,
+    );
+    expect(row.verifyScansRemaining).toBe(2);
+  });
+
   it("F3 (Retry-After discarded): a shorter Retry-After keeps the bounded backoff", async () => {
     const { store } = makeStore();
     const deliveryId = "hardening-verify-retry-after-small";
@@ -2885,6 +2922,90 @@ describe("F2: every duplicate deletion is recorded before the call", () => {
     expect(pending.verifyAfterMs).not.toBeNull();
   });
 
+  it("F3: an AMBIGUOUS chat.delete outcome leaves the intent unreconciled and alarmed", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f3-delete-ambiguous";
+    const row = await deliveredWithVerification(store, deliveryId);
+    // The one interleaving §6.2's fail-safe rule exists for: Slack applies the
+    // deletion and the response never arrives (our 30 s abort, a socket
+    // failure). The copy may already be gone, and no later history scan can
+    // rediscover it — reconciling this as "not applied" both uncounted the
+    // deletion and suppressed the alarm.
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      // Unscripted => the stub throws, exactly as an aborted fetch does.
+      return undefined;
+    });
+
+    await resolveAmbiguousRow(row, resolverDeps(store, fetchStub));
+
+    expect(deleteCalls(calls)).toHaveLength(1);
+    const entries = auditRows(database, deliveryId).map((entry) =>
+      String(entry["evidence_json"]),
+    );
+    // The intent stands alone: no outcome marker may reconcile an AMBIGUOUS
+    // result.
+    expect(
+      entries.filter((json) => json.includes('"duplicate_deletion_intent"')),
+    ).toHaveLength(1);
+    expect(
+      entries.filter((json) =>
+        json.includes('"duplicate_deletion_not_applied"'),
+      ),
+    ).toHaveLength(0);
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+    expect(counters.unreconciledDeletionIntents).toBe(1);
+    expect(
+      observerAlarms(
+        {
+          deadLetter: 0,
+          manual: 0,
+          oldestAmbiguousAgeMs: null,
+          repairedDuplicates: counters.repairedDuplicates,
+          unreconciledDeletionIntents: counters.unreconciledDeletionIntents,
+        },
+        null,
+      ),
+    ).toContain("duplicate_deletion_unreconciled");
+    // Unchanged by this finding: the copy is reported not repaired, so R19
+    // keeps a scan armed.
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+    const pending = await mustGet(store, deliveryId);
+    expect(pending.verifyScansRemaining).toBeGreaterThan(0);
+    expect(pending.verifyAfterMs).not.toBeNull();
+  });
+
+  it("F3: an HTTP 5xx chat.delete is ambiguous too — only an explicit ok:false reconciles", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f3-delete-5xx";
+    const row = await deliveredWithVerification(store, deliveryId);
+    const { fetch: fetchStub } = duplicateHistory(deliveryId, {
+      status: 503,
+      body: { ok: false, error: "service_unavailable" },
+    });
+
+    await resolveAmbiguousRow(row, resolverDeps(store, fetchStub));
+
+    // §6.2 precedence: the HTTP status is classified FIRST, so an ok:false
+    // body under a non-200 status is not the definite negative it looks like.
+    expect(
+      auditRows(database, deliveryId).filter((entry) =>
+        String(entry["evidence_json"]).includes(
+          '"duplicate_deletion_not_applied"',
+        ),
+      ),
+    ).toHaveLength(0);
+    expect(
+      (await store.statusCounters(DISPATCH_TEST_NOW))
+        .unreconciledDeletionIntents,
+    ).toBe(1);
+  });
+
   it("F2: a completed repair reconciles its intent — the ordinary path raises no alarm", async () => {
     const { store } = makeStore();
     const deliveryId = "f2-repair-completes";
@@ -2908,5 +3029,187 @@ describe("F2: every duplicate deletion is recorded before the call", () => {
         null,
       ),
     ).not.toContain("duplicate_deletion_unreconciled");
+  });
+});
+
+// Review findings F1 and F2 — both are defects INTRODUCED by the previous
+// round's H25 fix. H25 gave updateCanonicalTs a CAS on the caller's observed
+// ts, but left the CALLER deciding from the same pre-guard values: which ts
+// wins (F1) and which copies may be deleted (F2) were still computed as if the
+// observation were complete and the write had succeeded.
+describe("F1/F2: the canonical-ts repair decides from the row, not from the page budget", () => {
+  it("F1: a partial scan never regresses an earlier recorded canonical ts", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f1-partial-scan-regression";
+    // The row already carries canonical proof of the EARLIEST copy.
+    const TS_EARLIEST = "1786663000.000050";
+    const row = await deliverViaOperatorResend(
+      store,
+      deliveryId,
+      DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS,
+      TS_EARLIEST,
+    );
+    // conversations.history returns newest-first, so a scan stopped by the
+    // page budget sees exactly the LATER copies and never reaches TS_EARLIEST.
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage(
+          [
+            historyMessage({ ts: TS_EARLY, deliveryId }),
+            historyMessage({ ts: TS_LATE, deliveryId }),
+          ],
+          { nextCursor: "cursor-live", hasMore: true },
+        );
+      }
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      return undefined;
+    });
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    // §6.3.2: the EARLIEST ts is canonical. The recorded proof stands.
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.slackMessageTs).toBe(TS_EARLIEST);
+    expect(verdict).toMatchObject({
+      kind: "found_many",
+      canonicalTs: TS_EARLIEST,
+    });
+    // No repair was written at all — there was nothing to repair.
+    const entries = auditRows(database, deliveryId).map((entry) =>
+      String(entry["evidence_json"]),
+    );
+    expect(entries.filter((json) => json.includes('"repaired_from"'))).toEqual(
+      [],
+    );
+    // The earliest OBSERVED copy is a later duplicate, but this pass does not
+    // delete it: an exhausted scan that still cannot see TS_EARLIEST may mean
+    // that message is gone (§6.5 row 17), and chat.delete is irreversible.
+    expect(deleteCalls(calls).map((call) => call.body?.["ts"])).toEqual([
+      TS_LATE,
+    ]);
+    // It stays pending instead, so a later scan completes the repair (R19).
+    const pendingMarker = entries.find((json) =>
+      json.includes('"duplicate_repair_pending":true'),
+    );
+    expect(JSON.parse(String(pendingMarker))).toMatchObject({
+      canonical_ts: TS_EARLIEST,
+      pending_ts: [TS_EARLY],
+    });
+    expect(updated.verifyScansRemaining).toBeGreaterThan(0);
+    expect(updated.verifyAfterMs).not.toBeNull();
+  });
+
+  it("F1: an EXHAUSTED scan that cannot see the recorded ts adopts the earliest observed copy", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f1-exhausted-adopts";
+    // Same shape as the partial-scan case, with one difference that changes
+    // the meaning of the evidence: the scan EXHAUSTS. A complete census that
+    // does not contain the recorded ts proves that message is gone (§6.5
+    // row 17), so keeping it as canonical would leave the row pointing at
+    // nothing while both observed copies survive — and repeated scans would
+    // end in `verification_abandoned` without ever restoring the truth.
+    const TS_EARLIEST = "1786663000.000050";
+    const row = await deliverViaOperatorResend(
+      store,
+      deliveryId,
+      DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS,
+      TS_EARLIEST,
+    );
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      return undefined;
+    });
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    // The earliest SURVIVING copy becomes canonical...
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.slackMessageTs).toBe(TS_EARLY);
+    expect(verdict).toMatchObject({ kind: "found_many", canonicalTs: TS_EARLY });
+    expect(
+      auditRows(database, deliveryId).some((entry) =>
+        String(entry["evidence_json"]).includes(
+          `"repaired_from":"${TS_EARLIEST}"`,
+        ),
+      ),
+    ).toBe(true);
+    // ...and every later copy is deleted, so the repair CONVERGES: exactly one
+    // message is left in the channel and the row records it.
+    expect(deleteCalls(calls).map((call) => call.body?.["ts"])).toEqual([
+      TS_LATE,
+    ]);
+    expect(await store.repairedDuplicatesTotal()).toBe(1);
+    expect(updated.verifyScansRemaining).toBe(row.verifyScansRemaining - 1);
+  });
+
+  it("F2: a lost canonical-ts CAS deletes nothing and re-arms instead", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f2-canonical-cas-lost";
+    // The row records the LATE copy; this scan sees an earlier one and will
+    // try to repair the canonical ts to it.
+    const row = await deliverViaOperatorResend(
+      store,
+      deliveryId,
+      DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS,
+      TS_LATE,
+    );
+    // Another resolver records a different ts between this pass's observation
+    // and its write, so the H25 CAS refuses. The result used to be ignored,
+    // and the deletion set — computed from the stale observation — still held
+    // TS_LATE: the pass deleted the ts the row itself records.
+    const casLost = new Proxy(store, {
+      get(target, property, _receiver) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (property !== "updateCanonicalTs") return bound;
+        return async (): Promise<boolean> => false;
+      },
+    }) as DispatchStore;
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      return undefined;
+    });
+
+    const verdict = await resolveAmbiguousRow(row, {
+      ...resolverDeps(store, fetchStub),
+      store: casLost,
+    });
+
+    expect(verdict.kind).toBe("found_many");
+    // Nothing was deleted: the row's own canonical proof survives.
+    expect(deleteCalls(calls)).toHaveLength(0);
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.slackMessageTs).toBe(TS_LATE);
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+    // The pass repaired nothing, so it may not consume a verification scan.
+    expect(updated.verifyScansRemaining).toBe(row.verifyScansRemaining);
+    const marker = auditRows(database, deliveryId)
+      .map((entry) => String(entry["evidence_json"]))
+      .find((json) => json.includes('"canonical_ts_cas_lost":true'));
+    expect(JSON.parse(String(marker))).toMatchObject({
+      duplicate_repair_pending: true,
+      canonical_ts_cas_lost: true,
+      pending_ts: [TS_LATE],
+    });
+    expect(updated.verifyAfterMs).not.toBeNull();
   });
 });

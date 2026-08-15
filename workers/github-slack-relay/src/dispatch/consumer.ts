@@ -315,6 +315,16 @@ export async function processDispatchMessage(
     headers: response.headers,
     bodyText,
   });
+  // Review finding B (class E7): `now` above was sampled BEFORE the request
+  // began, and Retry-After means "wait this long from the RESPONSE". A
+  // chat.postMessage that takes appreciable time before answering 429 would
+  // otherwise persist `next_attempt_ms = request_start + Retry-After`, so near
+  // a cron boundary the resolver could call Slack before the interval Slack
+  // asked for had elapsed ([E-A12]/R4). The clock is re-sampled after the
+  // response is classified, and only the OUTCOME write uses it: `now` stays
+  // the claim/send-start instant, which is what the §6.3.1 cooling-off floor
+  // is measured from (last_send_start_ms).
+  const respondedAtMs = deps.now();
   if (outcome.kind === "delivered") {
     const recorded = await deps.store.markDelivered(
       parsed.deliveryId,
@@ -353,7 +363,10 @@ export async function processDispatchMessage(
   }
   await deps.store.markAmbiguous(
     parsed.deliveryId,
-    now,
+    // Review finding B (E7): the deadline this call derives
+    // (`next_attempt_ms = now + retryAfterMs`) must be anchored on the
+    // response, not on the request start.
+    respondedAtMs,
     outcome.reason,
     outcome.retryAfterMs,
     "consumer",

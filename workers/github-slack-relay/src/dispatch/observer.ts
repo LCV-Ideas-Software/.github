@@ -44,8 +44,13 @@ export function observerAlarms(
   // landed. §6.3.2 requires every deletion to be audited AND alarmed, and the
   // deleted ts is unrecoverable from Slack, so the pre-recorded intent is the
   // only evidence left — it must reach the operator instead of sitting in the
-  // journal. Cleared by the outcome marker of the same target ts, including a
-  // later successful repair of a copy that survived.
+  // journal. Cleared by the outcome marker of the same target ts — which only a
+  // scan that OBSERVES that ts can write, so clearing is available exactly when
+  // the copy SURVIVED (a later repair, or an operator sweep that re-arms one).
+  // When the copy is genuinely gone the intent stays counted for the lifetime of
+  // dispatch_audit: no automatic pass and no operator action writes a top-level
+  // target_ts (§10 H35). Read this as a COUNT, not a boolean — a latched intent
+  // would otherwise mask the next one.
   if ((current.unreconciledDeletionIntents ?? 0) > 0) {
     alarms.push("duplicate_deletion_unreconciled");
   }

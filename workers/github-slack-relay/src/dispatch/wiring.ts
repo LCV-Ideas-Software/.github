@@ -5,6 +5,7 @@ import type { RelayDestination } from "../domain";
 import {
   type DispatchDestination,
   type DispatchMode,
+  type DispatchOutboxRow,
   type DispatchState,
   type DispatchStatusCounters,
   type DispatchStore,
@@ -284,6 +285,9 @@ export interface DispatchCronResult {
   // Audit finding B4: rows whose examination threw and was contained, so the
   // pass could finish the remaining rows. Logged by runDispatchScheduled.
   resolverFailed: number;
+  // Review finding C (E8): stale-queued rows whose publish or shadow
+  // processing threw and was contained — the resolver step ran regardless.
+  staleFailed: number;
   alarms: string[];
 }
 
@@ -306,6 +310,48 @@ export class DispatchCronPassError extends Error {
   }
 }
 
+// R13 / §6.8 regime A / §9.A1 — the per-row unit of the cron's stale-queued
+// step, extracted so runDispatchCronPass can contain ONE row's failure
+// (review finding C) instead of losing the whole pass with it.
+async function processStaleQueuedRow(
+  row: DispatchOutboxRow,
+  store: DispatchStore,
+  deps: DispatchCronDeps,
+): Promise<void> {
+  if (row.shadow) {
+    // §9.A1: shadow rows never reach Slack; they are claimed and terminally
+    // recorded here, entirely off-queue.
+    await processDispatchMessage(
+      {
+        body: { deliveryId: row.deliveryId, mode: deps.mode },
+        attempts: 1,
+        ack: () => {},
+        retry: () => {},
+      },
+      {
+        store,
+        fetch: deps.fetch,
+        now: deps.now,
+        botToken: "",
+        channelFor: channelForDestination,
+      },
+    );
+    return;
+  }
+  // R13 in primary; §6.8 regime A in shadow — after a rollback flip the
+  // non-shadow backlog must still drain (panel V8/V10). The consumer applies
+  // the mode active at consume time, so a republished row is deferred (not
+  // sent) if the mode is not primary by then.
+  await deps.publish(row.destination, dispatchQueueJobBody(row.deliveryId));
+  // Audit finding B3: the republish changed nothing on the row, and
+  // staleQueuedRows selects on updated_ms alone, so the SAME row was
+  // republished on every pass — the amplifier that made duplicate DLQ
+  // arrivals routine. Stamping updated_ms restarts its stale window.
+  // Stamped AFTER a successful publish: a failed publish must leave the row
+  // immediately re-publishable.
+  await store.markQueuedRepublished(row.deliveryId, deps.now());
+}
+
 // §6.7 observe-only job + §6.3.1 resolver budget + R13 stale re-enqueue.
 // Called from the scheduled() entrypoint OUTSIDE runScheduledRecovery, so
 // the legacy protocol-seal early return can never starve it (panel V6).
@@ -323,12 +369,16 @@ export async function runDispatchCronPass(
       requeued: 0,
       resolverExamined: 0,
       resolverFailed: 0,
+      staleFailed: 0,
       alarms: [],
     };
   }
 
   let shadowProcessed = 0;
   let requeued = 0;
+  // Review finding C: stale rows whose publish/processing threw and was
+  // contained, so the resolver step still ran. Logged by runDispatchScheduled.
+  let staleFailed = 0;
   let resolverExamined = 0;
   let resolverFailed = 0;
   // F3: the failure of a write/egress step is captured, never allowed to skip
@@ -342,42 +392,21 @@ export async function runDispatchCronPass(
     if (deps.mode !== "off") {
       const stale = await store.staleQueuedRows(now, CRON_PROCESS_LIMIT);
       for (const row of stale) {
-        if (row.shadow) {
-          // §9.A1: shadow rows never reach Slack; they are claimed and
-          // terminally recorded here, entirely off-queue.
-          await processDispatchMessage(
-            {
-              body: { deliveryId: row.deliveryId, mode: deps.mode },
-              attempts: 1,
-              ack: () => {},
-              retry: () => {},
-            },
-            {
-              store,
-              fetch: deps.fetch,
-              now: deps.now,
-              botToken: "",
-              channelFor: channelForDestination,
-            },
-          );
-          shadowProcessed += 1;
-        } else {
-          // R13 in primary; §6.8 regime A in shadow — after a rollback flip
-          // the non-shadow backlog must still drain (panel V8/V10). The
-          // consumer applies the mode active at consume time, so a republished
-          // row is deferred (not sent) if the mode is not primary by then.
-          await deps.publish(
-            row.destination,
-            dispatchQueueJobBody(row.deliveryId),
-          );
-          // Audit finding B3: the republish changed nothing on the row, and
-          // staleQueuedRows selects on updated_ms alone, so the SAME row was
-          // republished on every pass — the amplifier that made duplicate DLQ
-          // arrivals routine. Stamping updated_ms restarts its stale window.
-          // Stamped AFTER a successful publish: a failed publish must leave
-          // the row immediately re-publishable.
-          await store.markQueuedRepublished(row.deliveryId, deps.now());
-          requeued += 1;
+        // Review finding C (E8): one stale row's failure must not exit the
+        // shared pass. A rejecting Queue publish used to escape this loop, the
+        // enclosing try and the whole pass, so lease normalization and
+        // runResolverPass never ran: a QUEUE-only outage also froze every
+        // ambiguous and verification-due row, whose recovery is D1 plus Slack
+        // history and does not touch the queue at all. Each row is contained
+        // here, exactly as runResolverPass already contains each examined row
+        // (audit finding B4). The row itself loses nothing: a failed publish
+        // leaves updated_ms unstamped, so R13 re-selects it on the next pass.
+        try {
+          await processStaleQueuedRow(row, store, deps);
+          if (row.shadow) shadowProcessed += 1;
+          else requeued += 1;
+        } catch {
+          staleFailed += 1;
         }
       }
     }
@@ -475,6 +504,7 @@ export async function runDispatchCronPass(
     requeued,
     resolverExamined,
     resolverFailed,
+    staleFailed,
     alarms,
   };
 }
@@ -504,6 +534,13 @@ function sumState(
 
 // §6.7: aggregate counters ONLY — no identifiers, keys or configuration on
 // the unauthenticated surface (panel F2).
+// Review finding F4: statusCounters computes `verificationAbandoned` and
+// `unreconciledDeletionIntents`, and the observer raises an alarm for each, but
+// this body dropped both. Until the F3 human notification channel exists (§10
+// H26) the runbook sends the operator to /status, so those two actionable
+// failures were invisible through the documented interim check. Both are
+// aggregate COUNTS — no delivery id, ts or channel — so §6.7's rule for this
+// unauthenticated surface is unchanged.
 export function dispatchStatusBody(
   counters: DispatchStatusCounters,
 ): Record<string, unknown> {
@@ -512,6 +549,8 @@ export function dispatchStatusBody(
       counters: counters.byStateAndDestination,
       oldest_non_terminal_age_ms: counters.oldestNonTerminalAgeMs,
       repaired_duplicates: counters.repairedDuplicates,
+      verification_abandoned: counters.verificationAbandoned,
+      unreconciled_deletion_intents: counters.unreconciledDeletionIntents,
     },
   };
 }
