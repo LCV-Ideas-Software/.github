@@ -16,6 +16,7 @@ import { processDispatchMessage } from "../src/dispatch/consumer";
 import {
   DISPATCH_CLIENT_TIMEOUT_MS,
   STALE_QUEUED_REQUEUE_AFTER_MS,
+  VERIFY_FIRST_SCAN_DELAY_MS,
   type DispatchDestination,
 } from "../src/dispatch/contract";
 import { D1DispatchStore } from "../src/dispatch/outbox";
@@ -914,6 +915,23 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
         DISPATCH_TEST_NOW,
         nextScanMs,
         1,
+        DISPATCH_TEST_NOW - 1_000,
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, "wiring-verify")).toMatchObject({
+      verify_scans_remaining: 2,
+      verify_after_ms: DISPATCH_TEST_NOW - 1_000,
+    });
+
+    // F1: the counter matches but the observed verify_after_ms does not —
+    // the shape a rearm leaves behind. No decrement either.
+    expect(
+      await store.completeVerificationScan(
+        "wiring-verify",
+        DISPATCH_TEST_NOW,
+        nextScanMs,
+        2,
+        DISPATCH_TEST_NOW - 999_999,
       ),
     ).toBe(false);
     expect(outboxRow(database, "wiring-verify")).toMatchObject({
@@ -928,6 +946,7 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
         DISPATCH_TEST_NOW,
         nextScanMs,
         2,
+        DISPATCH_TEST_NOW - 1_000,
       ),
     ).toBe(true);
     expect(outboxRow(database, "wiring-verify")).toMatchObject({
@@ -942,6 +961,7 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
         DISPATCH_TEST_NOW,
         nextScanMs,
         2,
+        DISPATCH_TEST_NOW - 1_000,
       ),
     ).toBe(false);
     expect(outboxRow(database, "wiring-verify")).toMatchObject({
@@ -1367,6 +1387,8 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
 describe("operator menu route (ADR §6.2/§6.3 I1)", () => {
   const OPERATOR_TIMESTAMP = String(Math.floor(DISPATCH_TEST_NOW / 1_000));
   const OPERATOR_EVIDENCE = "issue #192 operator menu fixture";
+  // F8: canonical proof supplied by the operator for `mark_delivered`.
+  const OPERATOR_PROOF_TS = "1786708800.000600";
 
   async function hmacHexadecimal(
     message: string,
@@ -1392,18 +1414,35 @@ describe("operator menu route (ADR §6.2/§6.3 I1)", () => {
   }
 
   // Mirrors the wire format pinned in src/index.ts: the signature travels
-  // inside the body, over the version-tagged canonical array.
+  // inside the body, over the version-tagged canonical array. Copilot
+  // finding F8: the canonical proof of `mark_delivered` is part of that
+  // canonical (empty for every other action), so an intercepted command can
+  // never have its recorded ts swapped.
   async function operatorRequest(
-    action: "resend" | "close_manual",
+    action: "resend" | "close_manual" | "sweep" | "mark_delivered",
     deliveryId: string,
-    options: { secret?: string; signature?: string } = {},
+    options: {
+      secret?: string;
+      signature?: string;
+      timestamp?: string;
+      slackMessageTs?: string;
+      slackChannelId?: string;
+    } = {},
   ): Promise<Request> {
+    const timestamp = options.timestamp ?? OPERATOR_TIMESTAMP;
+    const proof = action === "mark_delivered";
+    const messageTs =
+      options.slackMessageTs ?? (proof ? OPERATOR_PROOF_TS : "");
+    const channelId =
+      options.slackChannelId ?? (proof ? ALERTS_CHANNEL : "");
     const canonical = JSON.stringify([
       "dispatch_operator_action_v1",
       action,
       deliveryId,
       OPERATOR_EVIDENCE,
-      OPERATOR_TIMESTAMP,
+      timestamp,
+      messageTs,
+      channelId,
     ]);
     const signature =
       options.signature ??
@@ -1419,7 +1458,10 @@ describe("operator menu route (ADR §6.2/§6.3 I1)", () => {
         action,
         delivery_id: deliveryId,
         evidence: OPERATOR_EVIDENCE,
-        request_timestamp: OPERATOR_TIMESTAMP,
+        ...(proof
+          ? { slack_message_ts: messageTs, slack_channel_id: channelId }
+          : {}),
+        request_timestamp: timestamp,
         request_signature: signature,
       }),
     });
@@ -1578,5 +1620,323 @@ describe("operator menu route (ADR §6.2/§6.3 I1)", () => {
     expect(auditRows(database, deliveryId)).toMatchObject([
       { actor: "operator", from_state: "manual", to_state: "closed_manual" },
     ]);
+  });
+
+  // Copilot review 4943012170 — the menu was missing the ADR's R19 sweep and
+  // the §6.2 manual -> delivered transition, and every command was replayable
+  // inside the freshness window.
+  it("F5 sweep: a signed sweep re-arms verification on a delivered row and makes it resolver-due", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-sweep";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786708800.000700",
+      // The R19 shape: both automatic scans already spent.
+      verifyScansRemaining: 0,
+      verifyAfterMs: null,
+    });
+
+    const response = await handleFetch(
+      await operatorRequest("sweep", deliveryId),
+      makeEnv(queue, { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      state: "delivered",
+      verification_armed: true,
+    });
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      verify_scans_remaining: 1,
+      // Due NOW: arming the counter without stamping verify_after_ms would
+      // leave the row invisible to verificationRowsDue.
+      verify_after_ms: DISPATCH_TEST_NOW,
+    });
+    const due = await new D1DispatchStore(d1).verificationRowsDue(
+      DISPATCH_TEST_NOW,
+      10,
+    );
+    expect(due.map((row) => row.deliveryId)).toContain(deliveryId);
+    // No Slack egress, no queue publish — the next resolver pass repairs.
+    expect(queue.sent).toHaveLength(0);
+    const entries = auditRows(database, deliveryId);
+    expect(entries).toMatchObject([
+      { actor: "operator", from_state: "delivered", to_state: "delivered" },
+    ]);
+    expect(String(entries[0]?.["evidence_json"])).toContain(
+      '"operator_action":"sweep"',
+    );
+  });
+
+  // Panel finding (ADR §10 H11, corrected): the counter is CHECKed BETWEEN 0
+  // AND 2 by migration 0010, and an operator-resent delivered row holds
+  // exactly 2 — for ~15 min normally, and indefinitely while §6.3.3/R18
+  // inconclusive scans defer without decrementing. That is exactly when the
+  // operator reaches for the R19 sweep, and the unconditional increment made
+  // the route answer 503 persistence_unavailable for a permanent state
+  // precondition, with the audit row rolled back by the atomic batch.
+  it("F5 sweep at the schema maximum: a sweep on an operator-resent delivered row (2 scans) is 200 and makes it resolver-due, not 503", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-sweep-at-maximum";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786708800.000900",
+      // The operator-resend shape: both scans armed, first one not yet due.
+      verifyScansRemaining: 2,
+      verifyAfterMs: DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    });
+
+    const response = await handleFetch(
+      await operatorRequest("sweep", deliveryId),
+      makeEnv(queue, { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      state: "delivered",
+      verification_armed: true,
+    });
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      // Clamped at the schema maximum; the due time is the half that moved.
+      verify_scans_remaining: 2,
+      verify_after_ms: DISPATCH_TEST_NOW,
+    });
+    const due = await new D1DispatchStore(d1).verificationRowsDue(
+      DISPATCH_TEST_NOW,
+      10,
+    );
+    expect(due.map((row) => row.deliveryId)).toContain(deliveryId);
+    expect(queue.sent).toHaveLength(0);
+    expect(auditRows(database, deliveryId)).toMatchObject([
+      { actor: "operator", from_state: "delivered", to_state: "delivered" },
+    ]);
+  });
+
+  it("F5 sweep: a sweep on a non-delivered row is 409, and an unsigned sweep is 401", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-sweep-ambiguous";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "ambiguous",
+    });
+    const env = makeEnv(queue, { db: d1 });
+
+    const conflict = await handleFetch(
+      await operatorRequest("sweep", deliveryId),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "delivery_state_conflict" });
+
+    const unsigned = await handleFetch(
+      await operatorRequest("sweep", deliveryId, {
+        signature: "0".repeat(64),
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(unsigned.status).toBe(401);
+
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "ambiguous",
+      verify_scans_remaining: 0,
+      verify_after_ms: null,
+    });
+    expect(auditRows(database, deliveryId)).toHaveLength(0);
+  });
+
+  it("F6 one-shot: replaying the identical signed resend is 409 already_applied with no second transition or publish", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-replay";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+    const env = makeEnv(queue, { db: d1 });
+
+    const first = await handleFetch(
+      await operatorRequest("resend", deliveryId),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(first.status).toBe(200);
+
+    // The resend fails and the row returns to `manual` quickly — the state
+    // that made the command replayable before the fix.
+    database
+      .prepare(
+        "UPDATE dispatch_outbox SET state = 'manual' WHERE delivery_id = ?",
+      )
+      .run(deliveryId);
+
+    const replay = await handleFetch(
+      await operatorRequest("resend", deliveryId),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toEqual({ error: "already_applied" });
+    expect(outboxState(database, deliveryId)).toBe("manual");
+    expect(queue.sent).toHaveLength(1);
+    expect(auditRows(database, deliveryId)).toHaveLength(1);
+  });
+
+  it("F6 one-shot: a DIFFERENT signed command on the same row still executes", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-fresh-command";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+    const env = makeEnv(queue, { db: d1 });
+
+    expect(
+      (
+        await handleFetch(await operatorRequest("resend", deliveryId), env, {
+          now: () => DISPATCH_TEST_NOW,
+        })
+      ).status,
+    ).toBe(200);
+    database
+      .prepare(
+        "UPDATE dispatch_outbox SET state = 'manual' WHERE delivery_id = ?",
+      )
+      .run(deliveryId);
+
+    // New timestamp => new signature => a distinct command, still fresh.
+    const second = await handleFetch(
+      await operatorRequest("resend", deliveryId, {
+        timestamp: String(Math.floor(DISPATCH_TEST_NOW / 1_000) + 1),
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ ok: true, queued: true });
+    expect(outboxState(database, deliveryId)).toBe("queued");
+    expect(queue.sent).toHaveLength(2);
+    expect(auditRows(database, deliveryId)).toHaveLength(2);
+  });
+
+  it("F8 mark_delivered: a signed mark_delivered records the operator's canonical proof on a manual row", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-mark-delivered";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+
+    const response = await handleFetch(
+      await operatorRequest("mark_delivered", deliveryId),
+      makeEnv(queue, { db: d1 }),
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, state: "delivered" });
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      slack_message_ts: OPERATOR_PROOF_TS,
+      slack_channel_id: ALERTS_CHANNEL,
+      // Proof of an existing message is not a resend: nothing is armed.
+      verify_scans_remaining: 0,
+    });
+    // Never posts to Slack, never publishes.
+    expect(queue.sent).toHaveLength(0);
+    const entries = auditRows(database, deliveryId);
+    expect(entries).toMatchObject([
+      { actor: "operator", from_state: "manual", to_state: "delivered" },
+    ]);
+    expect(String(entries[0]?.["evidence_json"])).toContain(OPERATOR_PROOF_TS);
+  });
+
+  it("F8 mark_delivered: a malformed ts is 400, a non-manual row is 409 and an unsigned command is 401", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const manualId = "wiring-operator-mark-malformed";
+    const deliveredId = "wiring-operator-mark-conflict";
+    seedOutboxRow(database, {
+      deliveryId: manualId,
+      destination: "alerts",
+      state: "manual",
+    });
+    seedOutboxRow(database, {
+      deliveryId: deliveredId,
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786708800.000800",
+    });
+    const env = makeEnv(queue, { db: d1 });
+
+    // Correctly signed over a ts that fails the classifier's pattern.
+    const malformedTs = await handleFetch(
+      await operatorRequest("mark_delivered", manualId, {
+        slackMessageTs: "1786708800.00",
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(malformedTs.status).toBe(400);
+    expect(await malformedTs.json()).toEqual({ error: "invalid_request" });
+
+    const malformedChannel = await handleFetch(
+      await operatorRequest("mark_delivered", manualId, {
+        slackChannelId: "not-a-channel",
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(malformedChannel.status).toBe(400);
+
+    const unsigned = await handleFetch(
+      await operatorRequest("mark_delivered", manualId, {
+        signature: "0".repeat(64),
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(unsigned.status).toBe(401);
+
+    const conflict = await handleFetch(
+      await operatorRequest("mark_delivered", deliveredId),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "delivery_state_conflict" });
+
+    expect(outboxState(database, manualId)).toBe("manual");
+    expect(outboxRow(database, deliveredId)).toMatchObject({
+      slack_message_ts: "1786708800.000800",
+    });
+    expect(auditRows(database, manualId)).toHaveLength(0);
+    expect(auditRows(database, deliveredId)).toHaveLength(0);
+    expect(queue.sent).toHaveLength(0);
   });
 });

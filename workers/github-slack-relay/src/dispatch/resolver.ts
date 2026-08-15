@@ -3,6 +3,7 @@
 // (found_many), and post-resend verification scans over delivered rows.
 // Verdicts are EVIDENCE, never triggers: the resolver never resends (I1).
 import {
+  DISPATCH_CLIENT_TIMEOUT_MS,
   DISPATCH_METADATA_EVENT_TYPE,
   RESOLVER_ATTEMPT_WINDOW_MS,
   RESOLVER_COOLING_OFF_FLOOR_MS,
@@ -157,6 +158,12 @@ async function scanHistory(
       response = await deps.fetch(url.toString(), {
         method: "GET",
         headers: { Authorization: `Bearer ${deps.botToken}` },
+        // Copilot finding F2: without an abort signal a stalled Slack
+        // response holds the scheduled invocation until the platform kills
+        // it, and one resolver row starves the whole pass. Same 30 s hard
+        // client timeout the consumer applies (§6.1); the abort lands in the
+        // catch below as an INCONCLUSIVE scan — never proven-absent.
+        signal: AbortSignal.timeout(DISPATCH_CLIENT_TIMEOUT_MS),
       });
       bodyText = await response.text();
     } catch (error) {
@@ -196,6 +203,28 @@ async function scanHistory(
         retryAfterMs: null,
       };
     }
+    // Copilot finding F7 (SEVERE): an `ok:true` body is not yet a valid page.
+    // With no `messages` array collectMatches sees zero matches, and a
+    // missing or non-boolean `has_more` reads as false through `=== true`, so
+    // a malformed success body could combine with an empty cursor into
+    // EXHAUSTION and manufacture a proven-absent verdict — the one verdict
+    // that asserts the message was never posted. §6.3.1 rules an absent
+    // `response_metadata` an empty cursor but says nothing about `has_more`,
+    // so a missing or non-boolean `has_more` is INCONCLUSIVE, never
+    // exhaustion. Matches seen on earlier pages are discarded with the scan:
+    // retention is "never delete" (§9.A4), so a later scan re-finds them and
+    // the row stays `ambiguous` — never parked by absence on a page we could
+    // not read.
+    if (
+      !Array.isArray(body["messages"]) ||
+      typeof body["has_more"] !== "boolean"
+    ) {
+      return {
+        kind: "failed",
+        reason: "history_malformed_page",
+        retryAfterMs: null,
+      };
+    }
     collectMatches(body, row.deliveryId, matches);
     const nextCursor = nextCursorOf(body);
     const hasMore = body["has_more"] === true;
@@ -226,14 +255,23 @@ async function deferVerification(
   deps: ResolverDeps,
   now: number,
   reason: string,
+  retryAfterMs: number | null,
 ): Promise<void> {
   if (row.state !== "delivered" || row.verifyScansRemaining <= 0) return;
   const priorDeferrals =
     await deps.store.consecutiveVerificationDeferrals(row.deliveryId);
-  const delayMs = Math.min(
+  const backoffMs = Math.min(
     VERIFY_DEFERRAL_BACKOFF_BASE_MS * 2 ** priorDeferrals,
     VERIFY_DEFERRAL_BACKOFF_CAP_MS,
   );
+  // Copilot finding F3 / ADR R4 ("recorded Retry-After honored by the
+  // resolver's scan scheduling"): a verification scan rejected with 429 +
+  // Retry-After was deferred by the generic backoff and the header was
+  // discarded, so the next scan could hit Slack before the advertised wait.
+  // The deferral takes the LARGER of the two — the backoff stays bounded by
+  // its cap, the header is honored even past it. §6.3.3 invariant preserved:
+  // a deferral never decrements verify_scans_remaining.
+  const delayMs = Math.max(backoffMs, retryAfterMs ?? 0);
   const nextVerifyAfterMs = now + delayMs;
   await deps.store.deferVerificationScan(
     row.deliveryId,
@@ -243,6 +281,7 @@ async function deferVerification(
       verification_deferred: true,
       reason,
       consecutive_deferrals: priorDeferrals + 1,
+      retry_after_ms: retryAfterMs,
       next_verify_after_ms: nextVerifyAfterMs,
     }),
   );
@@ -268,11 +307,15 @@ async function completeScan(
         VERIFY_FIRST_SCAN_DELAY_MS +
         VERIFY_SECOND_SCAN_DELAY_MS
       : null;
+  // Copilot finding F1: the completion CAS carries the caller's OBSERVED
+  // verify_after_ms beside the counter, so a rearm that happened after this
+  // pass's snapshot cannot be consumed by it.
   await deps.store.completeVerificationScan(
     row.deliveryId,
     now,
     nextVerifyAfterMs,
     row.verifyScansRemaining,
+    row.verifyAfterMs,
   );
 }
 
@@ -298,6 +341,12 @@ async function deleteDuplicate(
         "Content-Type": "application/json; charset=utf-8",
       },
       body: JSON.stringify({ channel, ts: duplicateTs }),
+      // Copilot finding F2: the repair deletion gets the same 30 s hard
+      // client timeout as every other egress call (§6.1) — a stalled
+      // chat.delete must not hold the scheduled invocation. An abort lands in
+      // the catch below as "not deleted", so the copy stays pending and a
+      // later scan completes the repair (R19).
+      signal: AbortSignal.timeout(DISPATCH_CLIENT_TIMEOUT_MS),
     });
     const body = parseJsonObject(await response.text());
     deleted = response.status === 200 && body !== null && body["ok"] === true;
@@ -331,7 +380,8 @@ async function recordInconclusive(
     // §6.3.3: verification scans are INCONCLUSIVE-safe — no counter
     // decrement. The row is nevertheless rescheduled with bounded backoff,
     // or it would consume the verification budget on every cron forever.
-    await deferVerification(row, deps, now, reason);
+    // F3: a 429's Retry-After overrides that backoff when it is longer.
+    await deferVerification(row, deps, now, reason, retryAfterMs);
     return { kind: "inconclusive", reason };
   }
   const attempts = await deps.store.incrementResolverAttempts(
@@ -488,26 +538,32 @@ export async function resolveAmbiguousRow(
           // the §6.3 late-proof rule; delete nothing this pass — a later
           // scan repairs (R19).
           // Copilot suppressed comment (F6): resolver-initiated proof.
-          const proof = await deps.store.recordLateProof(
+          await deps.store.recordLateProof(
             row.deliveryId,
             now,
             canonicalTs,
             channel,
             "resolver",
           );
-          if (proof !== "audit_only") {
-            await deps.store.flagDuplicateRepairPending(
-              row.deliveryId,
-              now,
-              JSON.stringify({
-                duplicate_repair_pending: true,
-                // Copilot finding F9: a live cursor marks the scan partial.
-                ...(scan.exhausted ? {} : { partial_scan: true }),
-                canonical_ts: canonicalTs,
-                pending_ts: duplicateTs,
-              }),
-            );
-          }
+          // Copilot suppressed comment (F4): `audit_only` can also mean that
+          // another resolver delivered the row between the re-read above and
+          // recordLateProof. Gating the arming on the proof outcome left that
+          // race with multiple messages seen, no deletion and no verification
+          // — if the winning resolver saw only one message the duplicate
+          // would stay permanently undiscovered. Arm unconditionally: the
+          // store predicate (state = 'delivered' AND shadow = 0) makes it a
+          // no-op unless the row really is delivered.
+          await deps.store.flagDuplicateRepairPending(
+            row.deliveryId,
+            now,
+            JSON.stringify({
+              duplicate_repair_pending: true,
+              // Copilot finding F9: a live cursor marks the scan partial.
+              ...(scan.exhausted ? {} : { partial_scan: true }),
+              canonical_ts: canonicalTs,
+              pending_ts: duplicateTs,
+            }),
+          );
           return { kind: "found_many", canonicalTs, channel, duplicateTs };
         }
         const observedTs = fresh.slackMessageTs;
@@ -579,7 +635,13 @@ export async function resolveAmbiguousRow(
   if (row.state === "delivered") {
     // A verification scan that found nothing is inconclusive too: the
     // counter stays, the next scan is deferred with bounded backoff.
-    await deferVerification(row, deps, now, "verification_scan_no_match");
+    await deferVerification(
+      row,
+      deps,
+      now,
+      "verification_scan_no_match",
+      null,
+    );
     return { kind: "inconclusive", reason: "verification_scan_no_match" };
   }
   // §6.3.1/R12: PROVEN-ABSENT only when the cooling-off floor passed AND

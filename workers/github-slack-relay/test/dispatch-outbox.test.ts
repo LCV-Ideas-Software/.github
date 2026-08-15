@@ -11,6 +11,8 @@ import {
   DISPATCH_LEASE_MS,
   STALE_QUEUED_REQUEUE_AFTER_MS,
   VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+  VERIFY_FIRST_SCAN_DELAY_MS,
+  VERIFY_SECOND_SCAN_DELAY_MS,
 } from "../src/dispatch/contract";
 import type { DispatchOutboxRow } from "../src/dispatch/contract";
 import { D1DispatchStore } from "../src/dispatch/outbox";
@@ -1128,5 +1130,217 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
         )
         .get("alerts"),
     ).toMatchObject({ next_send_ms: DISPATCH_TEST_NOW + 12_200 });
+  });
+
+  // Panel finding (sweep vs. migration 0010 CHECK): `verify_scans_remaining`
+  // is constrained `BETWEEN 0 AND 2`, and an operator-resent delivered row
+  // sits at exactly 2 for the whole first-scan window — indefinitely while
+  // §6.3.3/R18 inconclusive scans keep deferring without decrementing. The
+  // sweep's unconditional `+ 1` therefore threw the CHECK from the one state
+  // the R19 last-resort sweep exists to rescue, rolling the audit row back
+  // with it and surfacing a permanent state precondition as a transient 503.
+  // The clamp restores the arming; the change-guaranteeing predicate keeps F1
+  // closed (ADR §10 H11).
+  const seedOperatorResentDelivered = async (
+    store: D1DispatchStore,
+    deliveryId: string,
+    deliveredMs: number,
+  ): Promise<void> => {
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: "{}",
+      now: DISPATCH_TEST_NOW,
+    });
+    await store.claim(deliveryId, DISPATCH_TEST_NOW);
+    await store.markDeadLetter(
+      deliveryId,
+      DISPATCH_TEST_NOW + 500,
+      "queue_retries_exhausted",
+    );
+    // The ONLY resend path (I1) — it arms verify_scans_remaining = 2.
+    await store.operatorResend(
+      deliveryId,
+      DISPATCH_TEST_NOW + 1_000,
+      '{"resend":"possible-duplicate accepted by operator"}',
+    );
+    await store.claim(deliveryId, deliveredMs);
+    // markDelivered preserves the counter and stamps the first scan.
+    await store.markDelivered(
+      deliveryId,
+      deliveredMs,
+      "1786665495.000900",
+      ALERTS_CHANNEL,
+      "consumer",
+      ["sending"],
+      '{"source":"chat.postMessage"}',
+    );
+  };
+
+  it("sweep at the schema maximum: an operator-resent delivered row at verify_scans_remaining = 2 is armed, not rejected by the 0010 CHECK", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "sweep-clamp-at-maximum";
+    const deliveredMs = DISPATCH_TEST_NOW + 2_000;
+    await seedOperatorResentDelivered(store, deliveryId, deliveredMs);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      verify_scans_remaining: 2,
+      verify_after_ms: deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS,
+    });
+    const auditsBefore = auditRows(database, deliveryId).length;
+
+    // The operator reaches for the R19 sweep while the row still holds both
+    // scans — the exact state the unconditional increment could not survive.
+    const sweepNow = deliveredMs + 60_000;
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        sweepNow,
+        JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+      ),
+    ).toBe(true);
+
+    // Clamped at the schema maximum, and due NOW: the row is resolver-visible.
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      verify_scans_remaining: 2,
+      verify_after_ms: sweepNow,
+    });
+    const due = await store.verificationRowsDue(sweepNow, 10);
+    expect(due.map((row) => row.deliveryId)).toContain(deliveryId);
+
+    // The batch is atomic: the audit row landed with the update.
+    const entries = auditRows(database, deliveryId);
+    expect(entries).toHaveLength(auditsBefore + 1);
+    expect(entries.at(-1)).toMatchObject({
+      actor: "operator",
+      from_state: "delivered",
+      to_state: "delivered",
+    });
+    expect(String(entries.at(-1)?.["evidence_json"])).toContain(
+      '"operator_action":"sweep"',
+    );
+  });
+
+  it("sweep below the maximum: a row at verify_scans_remaining = 1 increments to 2 and becomes due now", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "sweep-clamp-below-maximum";
+    const deliveredMs = DISPATCH_TEST_NOW + 2_000;
+    await seedOperatorResentDelivered(store, deliveryId, deliveredMs);
+
+    // Spend the first scan the honest way, leaving the row at 1.
+    const firstScanMs = deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS;
+    expect(
+      await store.completeVerificationScan(
+        deliveryId,
+        firstScanMs,
+        deliveredMs + VERIFY_SECOND_SCAN_DELAY_MS,
+        2,
+        firstScanMs,
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_scans_remaining: 1,
+      verify_after_ms: deliveredMs + VERIFY_SECOND_SCAN_DELAY_MS,
+    });
+    const auditsBefore = auditRows(database, deliveryId).length;
+
+    const sweepNow = firstScanMs + 60_000;
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        sweepNow,
+        JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      verify_scans_remaining: 2,
+      verify_after_ms: sweepNow,
+    });
+    expect(auditRows(database, deliveryId)).toHaveLength(auditsBefore + 1);
+  });
+
+  it("sweep no-op: a row already at 2 AND already due at exactly this instant changes nothing and writes no audit row", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "sweep-already-armed-and-due";
+    const deliveredMs = DISPATCH_TEST_NOW + 2_000;
+    await seedOperatorResentDelivered(store, deliveryId, deliveredMs);
+    const auditsBefore = auditRows(database, deliveryId).length;
+
+    // The single case the change-guaranteeing predicate rejects: the sweep
+    // would move neither half. It is a genuine no-op (the row is already
+    // armed and already due), so it answers false -> 409, never 503.
+    const sweepNow = deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS;
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        sweepNow,
+        JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      verify_scans_remaining: 2,
+      verify_after_ms: sweepNow,
+    });
+    // Atomic with the update: no audit row for a mutation that did not happen.
+    expect(auditRows(database, deliveryId)).toHaveLength(auditsBefore);
+  });
+
+  it("F1 preservation at the maximum: a stale completion holding (2, OLD due time) cannot consume the scan a clamped sweep just armed", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "sweep-clamp-f1-preserved";
+    const deliveredMs = DISPATCH_TEST_NOW + 2_000;
+    await seedOperatorResentDelivered(store, deliveryId, deliveredMs);
+    // The snapshot an in-flight verification pass is holding.
+    const staleVerifyAfterMs = deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS;
+
+    const sweepNow = staleVerifyAfterMs + 30_000;
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        sweepNow,
+        JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+      ),
+    ).toBe(true);
+    const auditsAfterSweep = auditRows(database, deliveryId).length;
+
+    // The counter half of the F1 CAS still matches (the clamp left it at 2),
+    // so the due-time half is the only thing standing between the stale pass
+    // and the operator's fresh scan — and the sweep moved it.
+    expect(
+      await store.completeVerificationScan(
+        deliveryId,
+        sweepNow + 1_000,
+        deliveredMs + VERIFY_SECOND_SCAN_DELAY_MS,
+        2,
+        staleVerifyAfterMs,
+      ),
+    ).toBe(false);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_scans_remaining: 2,
+      verify_after_ms: sweepNow,
+    });
+    expect(auditRows(database, deliveryId)).toHaveLength(auditsAfterSweep);
+
+    // Positive control: a pass holding the swept snapshot still completes.
+    expect(
+      await store.completeVerificationScan(
+        deliveryId,
+        sweepNow + 2_000,
+        deliveredMs + VERIFY_SECOND_SCAN_DELAY_MS,
+        2,
+        sweepNow,
+      ),
+    ).toBe(true);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      verify_scans_remaining: 1,
+    });
   });
 });

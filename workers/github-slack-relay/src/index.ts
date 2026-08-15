@@ -31,6 +31,10 @@ import {
   type QueueJob,
   type StoredDelivery,
 } from "./store";
+import {
+  CANONICAL_CHANNEL_PATTERN,
+  CANONICAL_TS_PATTERN,
+} from "./dispatch/classifier";
 import { processDispatchMessage } from "./dispatch/consumer";
 import { parseDispatchMode } from "./dispatch/mode";
 import { D1DispatchStore } from "./dispatch/outbox";
@@ -360,10 +364,18 @@ function parseSlackCheckpointRequest(
 // canonical array whose first element is a version tag, so this message can
 // never be confused with a progress receipt, a reconciliation report or a
 // checkpoint request signed by the same secret.
+// Copilot finding F8 (ADR §10 H13/H11): the menu also carries the §6.2
+// `manual -> delivered` transition with operator-supplied canonical proof and
+// the R19 repair-from-anywhere `sweep`.
 interface DispatchOperatorCommand {
-  action: "resend" | "close_manual";
+  action: "resend" | "close_manual" | "sweep" | "mark_delivered";
   delivery_id: string;
   evidence: string;
+  // F8: the canonical proof for `mark_delivered`, "" for every other action.
+  // Both fields are part of the SIGNED canonical below — an intercepted
+  // command can never have its recorded ts swapped.
+  slack_message_ts: string;
+  slack_channel_id: string;
   request_timestamp: string;
   request_signature: string;
 }
@@ -377,6 +389,8 @@ function canonicalDispatchOperatorCommand(
     command.delivery_id,
     command.evidence,
     command.request_timestamp,
+    command.slack_message_ts,
+    command.slack_channel_id,
   ]);
 }
 
@@ -384,24 +398,39 @@ function parseDispatchOperatorCommand(
   record: Record<string, unknown>,
   now: number,
 ): DispatchOperatorCommand | null {
+  const action = record.action;
   if (
-    !exactKeys(record, [
-      "action",
-      "delivery_id",
-      "evidence",
-      "request_timestamp",
-      "request_signature",
-    ])
+    action !== "resend" &&
+    action !== "close_manual" &&
+    action !== "sweep" &&
+    action !== "mark_delivered"
   ) {
     return null;
   }
-  const action = record.action;
+  // exactKeys is an exact key-set match, so the canonical-proof keys are
+  // REQUIRED by mark_delivered and REJECTED for every other action (F8).
+  const expectedKeys = [
+    "action",
+    "delivery_id",
+    "evidence",
+    "request_timestamp",
+    "request_signature",
+  ];
+  if (
+    !exactKeys(
+      record,
+      action === "mark_delivered"
+        ? [...expectedKeys, "slack_message_ts", "slack_channel_id"]
+        : expectedKeys,
+    )
+  ) {
+    return null;
+  }
   const deliveryId = record.delivery_id;
   const evidence = record.evidence;
   const requestTimestamp = record.request_timestamp;
   const requestSignature = record.request_signature;
   if (
-    (action !== "resend" && action !== "close_manual") ||
     !validDeliveryId(deliveryId) ||
     typeof evidence !== "string" ||
     evidence.length === 0 ||
@@ -413,13 +442,51 @@ function parseDispatchOperatorCommand(
   ) {
     return null;
   }
+  let slackMessageTs = "";
+  let slackChannelId = "";
+  if (action === "mark_delivered") {
+    // F8: the operator's canonical proof passes the SAME validation the
+    // classifier applies to a chat.postMessage body — the shapes migration
+    // 0010 CHECKs — reusing its patterns rather than a second copy of the
+    // literals. (The legacy SLACK_MESSAGE_TS_PATTERN above belongs to the
+    // legacy receipt protocol and is left untouched.)
+    const ts = record.slack_message_ts;
+    const channel = record.slack_channel_id;
+    if (
+      typeof ts !== "string" ||
+      !CANONICAL_TS_PATTERN.test(ts) ||
+      typeof channel !== "string" ||
+      !CANONICAL_CHANNEL_PATTERN.test(channel)
+    ) {
+      return null;
+    }
+    slackMessageTs = ts;
+    slackChannelId = channel;
+  }
   return {
     action,
     delivery_id: deliveryId,
     evidence,
+    slack_message_ts: slackMessageTs,
+    slack_channel_id: slackChannelId,
     request_timestamp: requestTimestamp,
     request_signature: requestSignature,
   };
+}
+
+// Copilot finding F6: the SHA-256 of the request signature is the one-shot
+// key — it is baked into the evidence of every operator transition, so the
+// audit journal answers "was this exact signed command already applied?".
+async function dispatchOperatorSignatureDigest(
+  requestSignature: string,
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(requestSignature),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 async function verifyDispatchOperatorCommand(
@@ -998,6 +1065,34 @@ async function handleDispatchOperatorRequest(
   }
 
   const dispatchStore = new D1DispatchStore(env.DB);
+  // Copilot finding F6: the freshness window bounds replay to five minutes
+  // but leaves this non-idempotent command repeatable — a caller that lost
+  // the response and retried the SAME signed request after a resend returned
+  // the row to `manual` would initiate a second resend. Each operator
+  // transition bakes the signature digest into its audit evidence, so the
+  // audit journal is the applied-command ledger and a replay is refused.
+  // TRADE-OFF: the command is one-shot for the LIFETIME OF dispatch_audit —
+  // the whole retention of that table — and no longer than that. A command
+  // whose CAS changed nothing (409) writes no audit row, because the audit
+  // INSERT shares the CAS predicate, so retrying it after the row returns to
+  // an eligible state is still allowed by design.
+  let signatureDigest: string;
+  try {
+    signatureDigest = await dispatchOperatorSignatureDigest(
+      command.request_signature,
+    );
+    if (
+      await dispatchStore.operatorCommandApplied(
+        command.delivery_id,
+        signatureDigest,
+      )
+    ) {
+      return jsonResponse({ error: "already_applied" }, 409);
+    }
+  } catch {
+    return jsonResponse({ error: "persistence_unavailable" }, 503);
+  }
+
   if (command.action === "close_manual") {
     let closed: boolean;
     try {
@@ -1007,6 +1102,7 @@ async function handleDispatchOperatorRequest(
         JSON.stringify({
           operator_action: "close_manual",
           evidence: command.evidence,
+          request_signature_sha256: signatureDigest,
         }),
       );
     } catch {
@@ -1014,6 +1110,66 @@ async function handleDispatchOperatorRequest(
     }
     return closed
       ? jsonResponse({ ok: true, state: "closed_manual" }, 200)
+      : jsonResponse({ error: "delivery_state_conflict" }, 409);
+  }
+
+  if (command.action === "sweep") {
+    // Copilot finding F5 (ADR §6.3.3/R19): a duplicate that materializes
+    // after the two automatic scans leaves the row `delivered` with
+    // verify_scans_remaining = 0, and the ADR's repair-from-anywhere sweep
+    // had no production entry point. The sweep re-arms verification (>= 1
+    // scan, due now) so the NEXT resolver pass re-runs the §6.3.3 match rule
+    // and repairs. It never posts to Slack and never leaves `delivered`.
+    let swept: boolean;
+    try {
+      swept = await dispatchStore.operatorSweepVerification(
+        command.delivery_id,
+        now,
+        JSON.stringify({
+          operator_action: "sweep",
+          verification_armed: true,
+          evidence: command.evidence,
+          request_signature_sha256: signatureDigest,
+        }),
+      );
+    } catch {
+      return jsonResponse({ error: "persistence_unavailable" }, 503);
+    }
+    return swept
+      ? jsonResponse(
+          { ok: true, state: "delivered", verification_armed: true },
+          200,
+        )
+      : jsonResponse({ error: "delivery_state_conflict" }, 409);
+  }
+
+  if (command.action === "mark_delivered") {
+    // Copilot finding F8 / ADR §6.2: "manual -> delivered (operator marks
+    // with ts evidence)". This records PROOF of a message that already
+    // exists, not a resend, so it arms no §6.3.3 verification and publishes
+    // nothing — the sweep above is the path for re-checking such a row.
+    let recorded: boolean;
+    try {
+      recorded = await dispatchStore.markDelivered(
+        command.delivery_id,
+        now,
+        command.slack_message_ts,
+        command.slack_channel_id,
+        "operator",
+        ["manual"],
+        JSON.stringify({
+          operator_action: "mark_delivered",
+          ts: command.slack_message_ts,
+          channel: command.slack_channel_id,
+          evidence: command.evidence,
+          request_signature_sha256: signatureDigest,
+        }),
+      );
+    } catch {
+      return jsonResponse({ error: "persistence_unavailable" }, 503);
+    }
+    return recorded
+      ? jsonResponse({ ok: true, state: "delivered" }, 200)
       : jsonResponse({ error: "delivery_state_conflict" }, 409);
   }
 
@@ -1028,6 +1184,7 @@ async function handleDispatchOperatorRequest(
         operator_action: "resend",
         possible_duplicate: true,
         evidence: command.evidence,
+        request_signature_sha256: signatureDigest,
       }),
     );
   } catch {

@@ -3,9 +3,10 @@
 // docs/adr/ADR-001-slack-dispatch-outbox.md §6.3.1-§6.3.3 and §6.10.
 // RED phase: these tests are the executable specification and fail until
 // src/dispatch/{outbox,resolver} land on the pinned module surface.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DISPATCH_CLIENT_TIMEOUT_MS,
   DISPATCH_METADATA_EVENT_TYPE,
   RESOLVER_ATTEMPT_WINDOW_MS,
   RESOLVER_COOLING_OFF_FLOOR_MS,
@@ -20,6 +21,7 @@ import {
 import type {
   DispatchDestination,
   DispatchOutboxRow,
+  DispatchStore,
 } from "../src/dispatch/contract";
 import { D1DispatchStore } from "../src/dispatch/outbox";
 import { resolveAmbiguousRow, runResolverPass } from "../src/dispatch/resolver";
@@ -1593,5 +1595,408 @@ describe("repair-from-anywhere (R19)", () => {
     expect(deletions).toHaveLength(1);
     expect(deletions[0]?.body).toMatchObject({ ts: TS_LATE });
     expect(await store.repairedDuplicatesTotal()).toBe(1);
+  });
+});
+
+// Copilot review 4943012170 — resolver-side findings of the current HEAD.
+describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", () => {
+  // Records the AbortSignal every call received without changing the
+  // scripted responses.
+  function withSignalCapture(
+    inner: typeof fetch,
+    sink: (AbortSignal | null | undefined)[],
+  ): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      sink.push(init?.signal);
+      return inner(input, init);
+    }) as typeof fetch;
+  }
+
+  // Runs `after` once, right after the named store method returns — the only
+  // way to place a concurrent writer INSIDE the window a finding describes.
+  function storeWithHookAfter(
+    store: DispatchStore,
+    method: keyof DispatchStore,
+    after: () => void,
+  ): DispatchStore {
+    let fired = false;
+    return new Proxy(store, {
+      get(target, property, _receiver) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (property !== method) return bound;
+        return async (...args: unknown[]): Promise<unknown> => {
+          const result = await bound(...args);
+          if (!fired) {
+            fired = true;
+            after();
+          }
+          return result;
+        };
+      },
+    }) as DispatchStore;
+  }
+
+  it("F1 (rearm race): a stale pass cannot complete its scan against a counter another pass rearmed", async () => {
+    const { store } = makeStore();
+    const deliveryId = "hardening-rearm-race";
+    const deliveredMs = DISPATCH_TEST_NOW - 3_600_000;
+    await deliverViaConsumer(store, deliveryId, deliveredMs, TS_EARLY);
+    // One scan armed and due: the shape left by a partial scan or a failed
+    // duplicate deletion (flagDuplicateRepairPending).
+    await store.flagDuplicateRepairPending(
+      deliveryId,
+      deliveredMs,
+      JSON.stringify({
+        duplicate_repair_pending: true,
+        partial_scan: true,
+        canonical_ts: TS_EARLY,
+        pending_ts: [],
+      }),
+    );
+    const staleSnapshot = await mustGet(store, deliveryId);
+    expect(staleSnapshot.verifyScansRemaining).toBe(1);
+    const scanNow = deliveredMs + VERIFY_FIRST_SCAN_DELAY_MS + 1_000;
+
+    // The OTHER pass rearms first (same counter value, verify_after_ms moved
+    // forward), then the stale pass completes its own scan.
+    await store.flagDuplicateRepairPending(
+      deliveryId,
+      scanNow,
+      JSON.stringify({
+        duplicate_repair_pending: true,
+        partial_scan: true,
+        canonical_ts: TS_EARLY,
+        pending_ts: [TS_LATE],
+      }),
+    );
+    const rearmed = await mustGet(store, deliveryId);
+    expect(rearmed.verifyScansRemaining).toBe(1);
+    expect(rearmed.verifyAfterMs).toBe(scanNow + VERIFY_FIRST_SCAN_DELAY_MS);
+
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })])
+        : undefined,
+    );
+    const verdict = await resolveAmbiguousRow(
+      staleSnapshot,
+      resolverDeps(store, fetchStub, { now: () => scanNow }),
+    );
+
+    expect(verdict.kind).toBe("found");
+    // The rearm survives: the scan is still armed and still due at the
+    // rearmed time — the stale completion consumed nothing.
+    const afterStale = await mustGet(store, deliveryId);
+    expect(afterStale.verifyScansRemaining).toBe(1);
+    expect(afterStale.verifyAfterMs).toBe(scanNow + VERIFY_FIRST_SCAN_DELAY_MS);
+
+    // Positive control: a pass holding the CURRENT snapshot still completes.
+    const freshNow = rearmed.verifyAfterMs! + 1_000;
+    await resolveAmbiguousRow(
+      await mustGet(store, deliveryId),
+      resolverDeps(store, fetchStub, { now: () => freshNow }),
+    );
+    const afterFresh = await mustGet(store, deliveryId);
+    expect(afterFresh.verifyScansRemaining).toBe(0);
+  });
+
+  it("F1 (rearm race): an operator sweep stamped at the stale pass's own due time is not consumed by it", async () => {
+    const { store } = makeStore();
+    const deliveryId = "hardening-sweep-same-due-time";
+    const deliveredMs = DISPATCH_TEST_NOW - 3_600_000;
+    await deliverViaConsumer(store, deliveryId, deliveredMs, TS_EARLY);
+    await store.flagDuplicateRepairPending(
+      deliveryId,
+      deliveredMs,
+      JSON.stringify({
+        duplicate_repair_pending: true,
+        canonical_ts: TS_EARLY,
+        pending_ts: [],
+      }),
+    );
+    const staleSnapshot = await mustGet(store, deliveryId);
+    // The pass reads the row exactly at its due time — the ONE value an
+    // operator sweep stamps too (verify_after_ms = now), so the sweep cannot
+    // rely on moving the due time forward to protect its scan.
+    const scanNow = staleSnapshot.verifyAfterMs ?? DISPATCH_TEST_NOW;
+
+    expect(
+      await store.operatorSweepVerification(
+        deliveryId,
+        scanNow,
+        JSON.stringify({ operator_action: "sweep", verification_armed: true }),
+      ),
+    ).toBe(true);
+    const swept = await mustGet(store, deliveryId);
+    expect(swept.verifyAfterMs).toBe(scanNow);
+    expect(swept.verifyScansRemaining).toBe(
+      staleSnapshot.verifyScansRemaining + 1,
+    );
+
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })])
+        : undefined,
+    );
+    await resolveAmbiguousRow(
+      staleSnapshot,
+      resolverDeps(store, fetchStub, { now: () => scanNow }),
+    );
+
+    // The operator's scan survives, still due, still uncounted.
+    const after = await mustGet(store, deliveryId);
+    expect(after.verifyScansRemaining).toBe(swept.verifyScansRemaining);
+    expect(after.verifyAfterMs).toBe(scanNow);
+  });
+
+  it("F2 (unbounded fetch): the history scan carries the 30 s abort signal and a timeout is inconclusive", async () => {
+    const { store } = makeStore();
+    const deliveryId = "hardening-history-abort";
+    const row = await seedAmbiguous(store, deliveryId);
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const abortingFetch = (async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      signals.push(init?.signal);
+      throw new DOMException("history stalled", "TimeoutError");
+    }) as typeof fetch;
+
+    try {
+      const verdict = await resolveAmbiguousRow(
+        row,
+        resolverDeps(store, abortingFetch),
+      );
+
+      expect(verdict).toEqual({
+        kind: "inconclusive",
+        reason: "history_fetch_failed_TimeoutError",
+      });
+      expect(signals).toHaveLength(1);
+      expect(signals[0]).toBeInstanceOf(AbortSignal);
+      expect(timeoutSpy).toHaveBeenCalledWith(DISPATCH_CLIENT_TIMEOUT_MS);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+    // Never proven-absent: the row stays ambiguous with the attempt counted.
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("ambiguous");
+    expect(updated.resolverAttempts).toBe(1);
+  });
+
+  it("F2 (unbounded fetch): the chat.delete repair call carries the same abort signal", async () => {
+    const { store } = makeStore();
+    const deliveryId = "hardening-delete-abort";
+    const row = await seedAmbiguous(store, deliveryId);
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const { fetch: fetchStub } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      return undefined;
+    });
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, withSignalCapture(fetchStub, signals)),
+    );
+
+    expect(verdict.kind).toBe("found_many");
+    expect(signals).toHaveLength(2);
+    for (const signal of signals) {
+      expect(signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it("F3 (Retry-After discarded): a verification 429 defers by the header when it exceeds the backoff", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "hardening-verify-retry-after";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    // Two hours: far past the 15 min first backoff step, so the header wins.
+    const retryAfterSeconds = 2 * 60 * 60;
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackRateLimited(retryAfterSeconds)
+        : undefined,
+    );
+
+    await runResolverPass(resolverDeps(store, fetchStub));
+
+    const row = await mustGet(store, deliveryId);
+    // §6.3.3: the deferral never decrements the counter.
+    expect(row.verifyScansRemaining).toBe(2);
+    expect(row.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + retryAfterSeconds * 1_000,
+    );
+    const marker = auditRows(database, deliveryId).find((entry) =>
+      String(entry["evidence_json"]).includes('"verification_deferred":true'),
+    );
+    expect(JSON.parse(String(marker?.["evidence_json"]))).toMatchObject({
+      reason: "history_http_429",
+      retry_after_ms: retryAfterSeconds * 1_000,
+    });
+  });
+
+  it("F3 (Retry-After discarded): a shorter Retry-After keeps the bounded backoff", async () => {
+    const { store } = makeStore();
+    const deliveryId = "hardening-verify-retry-after-small";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history") ? slackRateLimited(60) : undefined,
+    );
+
+    await runResolverPass(resolverDeps(store, fetchStub));
+
+    const row = await mustGet(store, deliveryId);
+    expect(row.verifyScansRemaining).toBe(2);
+    expect(row.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+    );
+  });
+
+  it("F4 (found_many vs recordLateProof): an audit_only race still arms duplicate repair", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "hardening-found-many-audit-only";
+    const row = await seedAmbiguous(store, deliveryId);
+    // (1) While the history call is in flight, an operator resend moves the
+    // row out of `ambiguous`, so the found_many CAS loses.
+    const { fetch: fetchStub } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        database
+          .prepare(
+            "UPDATE dispatch_outbox SET state = 'queued' WHERE delivery_id = ?",
+          )
+          .run(deliveryId);
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      return undefined;
+    });
+    // (2) Between the re-read (which sees `queued`) and recordLateProof,
+    // ANOTHER resolver delivers the row — so both late-proof CASes fail and
+    // the proof is audit_only.
+    const racingStore = storeWithHookAfter(store, "get", () => {
+      database
+        .prepare(
+          `UPDATE dispatch_outbox
+           SET state = 'delivered',
+               slack_message_ts = ?,
+               slack_channel_id = ?
+           WHERE delivery_id = ?`,
+        )
+        .run(TS_LATE, ALERTS_CHANNEL, deliveryId);
+    });
+
+    const verdict = await resolveAmbiguousRow(row, {
+      ...resolverDeps(store, fetchStub),
+      store: racingStore,
+    });
+
+    expect(verdict.kind).toBe("found_many");
+    // The winning resolver may have seen only ONE message: this pass is the
+    // only witness of the duplicate, so it must leave the repair armed.
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+    expect(updated.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    );
+    const pending = auditRows(database, deliveryId).find((entry) =>
+      String(entry["evidence_json"]).includes('"duplicate_repair_pending":true'),
+    );
+    expect(JSON.parse(String(pending?.["evidence_json"]))).toMatchObject({
+      duplicate_repair_pending: true,
+      canonical_ts: TS_EARLY,
+      pending_ts: [TS_LATE],
+    });
+    // Nothing was deleted this pass — a later scan completes the repair (R19).
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+  });
+
+  it("F7 (malformed page): ok:true without a messages array is inconclusive, never exhaustion", async () => {
+    const { store } = makeStore();
+    const deliveryId = "hardening-page-no-messages";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? {
+            status: 200,
+            body: { ok: true, has_more: false, response_metadata: {} },
+          }
+        : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict).toEqual({
+      kind: "inconclusive",
+      reason: "history_malformed_page",
+    });
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("ambiguous");
+    expect(updated.resolverAttempts).toBe(1);
+  });
+
+  it("F7 (malformed page): a non-boolean or missing has_more is inconclusive, never exhaustion", async () => {
+    const { store } = makeStore();
+    for (const [deliveryId, body] of [
+      [
+        "hardening-page-string-has-more",
+        { ok: true, messages: [], has_more: "false" },
+      ],
+      ["hardening-page-missing-has-more", { ok: true, messages: [] }],
+    ] as const) {
+      const row = await seedAmbiguous(store, deliveryId);
+      const { fetch: fetchStub } = scriptedFetch((url) =>
+        url.includes("conversations.history")
+          ? { status: 200, body }
+          : undefined,
+      );
+
+      const verdict = await resolveAmbiguousRow(
+        row,
+        resolverDeps(store, fetchStub),
+      );
+
+      expect(verdict).toEqual({
+        kind: "inconclusive",
+        reason: "history_malformed_page",
+      });
+      // The verdict that would have been manufactured is proven_absent: the
+      // row must NOT be parked in manual by an unreadable page.
+      expect((await mustGet(store, deliveryId)).state).toBe("ambiguous");
+    }
+  });
+
+  it("F7 (malformed page): a well-formed exhausted page still proves absence", async () => {
+    const { store } = makeStore();
+    const deliveryId = "hardening-page-well-formed";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history") ? slackHistoryPage([]) : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict.kind).toBe("proven_absent");
+    expect((await mustGet(store, deliveryId)).state).toBe("manual");
   });
 });

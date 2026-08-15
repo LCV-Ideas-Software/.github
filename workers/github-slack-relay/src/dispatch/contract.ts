@@ -226,14 +226,36 @@ export interface DispatchStore {
     deliveryId: string,
     sinceMs: number,
   ): Promise<number>;
-  armVerification(deliveryId: string, now: number): Promise<boolean>;
+  // ADR §6.3.3/R19 repair-from-anywhere: the operator sweep leaves a
+  // delivered row with at least one scan armed and due immediately, so the
+  // next resolver pass re-runs the §6.3.3 match rule. verify_after_ms is
+  // stamped here because verificationRowsDue selects on it — arming the
+  // counter alone would never make the row due. The counter is a CLAMPED
+  // increment (migration 0010 CHECKs it BETWEEN 0 AND 2, and an
+  // operator-resent row sits at 2), paired with a predicate that rejects the
+  // no-change case, so the sweep always moves the counter or the due time and
+  // an in-flight verification pass can never satisfy both halves of the F1
+  // completion CAS against the swept row. Returns false — 409, never 503 —
+  // for the one genuine no-op: already at 2 and already due at this instant.
+  operatorSweepVerification(
+    deliveryId: string,
+    now: number,
+    evidenceJson: string,
+  ): Promise<boolean>;
   // CAS on the caller's snapshot of verify_scans_remaining, so overlapping
-  // resolver passes cannot double-decrement (panel finding V13).
+  // resolver passes cannot double-decrement (panel finding V13). Copilot
+  // finding F1: the counter alone is not a monotonic guard — a rearm
+  // (flagDuplicateRepairPending) can restore the very value the stale caller
+  // observed, and its completion would then consume the rearmed scan. The
+  // caller's observed verify_after_ms joins the CAS: every rearm moves it
+  // strictly forward (a due row has verify_after_ms <= now < the rearmed
+  // value), so a stale completion can no longer match.
   completeVerificationScan(
     deliveryId: string,
     now: number,
     nextVerifyAfterMs: number | null,
     expectedRemaining: number,
+    expectedVerifyAfterMs: number | null,
   ): Promise<boolean>;
   // Copilot finding (resolver starvation): an inconclusive verification scan
   // reschedules the row instead of leaving verify_after_ms in the past. The
@@ -264,6 +286,17 @@ export interface DispatchStore {
   // Operator menu (I1: the only resend path; marked possible-duplicate).
   operatorResend(deliveryId: string, now: number, evidenceJson: string): Promise<boolean>;
   operatorCloseManual(deliveryId: string, now: number, evidenceJson: string): Promise<boolean>;
+  // Copilot finding F6 (operator command replay): the freshness window bounds
+  // replay to five minutes but does not make a non-idempotent command
+  // one-shot. Every operator transition bakes the SHA-256 of its request
+  // signature into its audit evidence; this read answers "has this exact
+  // signed command already been applied?". No schema column — the binding
+  // lives for the retention of dispatch_audit (see the route's trade-off
+  // note in src/index.ts).
+  operatorCommandApplied(
+    deliveryId: string,
+    requestSignatureSha256: string,
+  ): Promise<boolean>;
   // Cron: stale queued re-enqueue inputs (R13).
   staleQueuedRows(now: number, limit: number): Promise<DispatchOutboxRow[]>;
   // /status + observer (ADR §6.7) — read-only aggregates.

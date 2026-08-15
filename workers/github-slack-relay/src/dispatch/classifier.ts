@@ -18,8 +18,11 @@ export interface PostMessageResponseParts {
 // and C + uppercase alphanumerics, total length 9-32, for the channel id.
 // A malformed success body stays AMBIGUOUS (§6.2 fail-safe) so the resolver
 // recovers the canonical identifiers from conversations.history.
-const CANONICAL_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
-const CANONICAL_CHANNEL_PATTERN = /^C[A-Z0-9]{8,31}$/u;
+// Copilot finding F8: the operator menu's `mark_delivered` action records the
+// same canonical identifiers by hand, so it validates through these exact
+// patterns instead of a second copy of the literals (src/index.ts).
+export const CANONICAL_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
+export const CANONICAL_CHANNEL_PATTERN = /^C[A-Z0-9]{8,31}$/u;
 
 // ADR §6.2 [E-A12]: Retry-After seconds × 1000; null when absent or invalid.
 function retryAfterMsFrom(headers: {

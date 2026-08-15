@@ -650,21 +650,65 @@ export class D1DispatchStore implements DispatchStore {
     return Math.max(1, current - now);
   }
 
-  async armVerification(deliveryId: string, now: number): Promise<boolean> {
-    const audit = this.#inPlaceAudit(
-      deliveryId,
-      JSON.stringify({ verification_armed: true, scans: 2 }),
-      "operator",
-      now,
-    );
+  async operatorSweepVerification(
+    deliveryId: string,
+    now: number,
+    evidenceJson: string,
+  ): Promise<boolean> {
+    // Copilot finding F5 (ADR §6.3.3/R19 repair-from-anywhere): the operator
+    // sweep is the production entry point for a duplicate that materialized
+    // after both automatic scans (`delivered` with verify_scans_remaining =
+    // 0). It re-arms at least one scan AND stamps verify_after_ms = now,
+    // because verificationRowsDue selects on verify_after_ms — arming the
+    // counter alone would leave the row invisible to every resolver pass.
+    // Same delivered/non-shadow predicate as the other repair-from-delivered
+    // mutations: a shadow row never posted anything (§9.A1) and a
+    // non-delivered row belongs to the resolver, not to a sweep.
+    // Panel finding (ADR §10 H11, corrected): the counter is a CLAMPED
+    // increment, because migration 0010 CHECKs `verify_scans_remaining
+    // BETWEEN 0 AND 2` and an operator-resent delivered row sits at exactly 2
+    // — indefinitely, since a §6.3.3/R18 inconclusive scan does not decrement
+    // and F3 defers it. An unconditional `+ 1` threw the CHECK from precisely
+    // the state the R19 last-resort sweep exists to rescue, rolling back the
+    // audit row with it and reporting a permanent state precondition as a
+    // transient 503.
+    // The clamp alone would re-open F1: from 2 the counter would not move
+    // while verify_after_ms = now can equal the due time a verification pass
+    // already in flight observed, so BOTH halves of its completion CAS would
+    // match and it would consume the operator's fresh scan. The predicate
+    // therefore guarantees a CHANGE: below the maximum the counter
+    // increments, so a stale pass's expected counter cannot match; at the
+    // maximum the due time necessarily moves, because the one case where it
+    // would not is rejected — so a stale pass's expected due time cannot
+    // match. That rejected case (already at 2 AND already due at exactly this
+    // instant) is a genuine no-op: the row is already armed and due, and it
+    // answers 409, never 503. `IS NOT ?` — NULL-safe inequality in SQLite, so
+    // a row with no due time always changes.
+    const predicate =
+      " AND state = 'delivered' AND shadow = 0" +
+      " AND (verify_scans_remaining < 2 OR verify_after_ms IS NOT ?)";
+    // Inlined rather than via #inPlaceAudit, which has no bind slot for the
+    // predicate's parameter: the audit must carry the SAME predicate so the
+    // journal and the row stay atomic and consistent (§6.1).
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, state, ?, 'operator', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(asEvidenceJson(evidenceJson), now, deliveryId, now);
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
-         SET verify_scans_remaining = 2,
+         SET verify_scans_remaining = MIN(verify_scans_remaining + 1, 2),
+             verify_after_ms = ?,
              updated_ms = ?
-         WHERE delivery_id = ?`,
+         WHERE delivery_id = ?${predicate}`,
       )
-      .bind(now, deliveryId);
+      .bind(now, now, deliveryId, now);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -674,10 +718,21 @@ export class D1DispatchStore implements DispatchStore {
     now: number,
     nextVerifyAfterMs: number | null,
     expectedRemaining: number,
+    expectedVerifyAfterMs: number | null,
   ): Promise<boolean> {
     // CAS on the caller's snapshot so overlapping resolver passes cannot
     // double-decrement and burn both §6.3.3 scans (panel V13).
-    const predicate = " AND verify_scans_remaining = ?";
+    // Copilot finding F1: the counter alone is satisfiable by a REARM — an
+    // overlapping pass that detected a partial scan or a failed deletion
+    // calls flagDuplicateRepairPending, which restores
+    // verify_scans_remaining to the value the stale caller observed, and the
+    // stale completion then consumes the rearmed scan. verify_after_ms joins
+    // the CAS as the monotonic half: a rearm always pushes it strictly
+    // forward (a due row satisfies verify_after_ms <= now, the rearm sets
+    // now + 15 min), so no rearm can coincidentally satisfy this predicate.
+    // `IS ?` rather than `= ?` — NULL-safe equality in SQLite.
+    const predicate =
+      " AND verify_scans_remaining = ? AND verify_after_ms IS ?";
     const audit = this.#database
       .prepare(
         `INSERT INTO dispatch_audit (
@@ -695,6 +750,7 @@ export class D1DispatchStore implements DispatchStore {
         now,
         deliveryId,
         expectedRemaining,
+        expectedVerifyAfterMs,
       );
     const update = this.#database
       .prepare(
@@ -704,7 +760,13 @@ export class D1DispatchStore implements DispatchStore {
              updated_ms = ?
          WHERE delivery_id = ?${predicate}`,
       )
-      .bind(nextVerifyAfterMs, now, deliveryId, expectedRemaining);
+      .bind(
+        nextVerifyAfterMs,
+        now,
+        deliveryId,
+        expectedRemaining,
+        expectedVerifyAfterMs,
+      );
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -885,6 +947,30 @@ export class D1DispatchStore implements DispatchStore {
       .bind(now, deliveryId);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
+  }
+
+  async operatorCommandApplied(
+    deliveryId: string,
+    requestSignatureSha256: string,
+  ): Promise<boolean> {
+    // Copilot finding F6: the five-minute freshness window bounds replay but
+    // does not make a non-idempotent operator command one-shot. Every
+    // operator transition bakes the SHA-256 of its request signature into
+    // its audit evidence, so the audit journal IS the applied-command
+    // ledger — no schema column, and the CAS-guarded audit INSERT means a
+    // command that changed nothing (409) leaves no marker and stays
+    // retryable.
+    const count = await this.#database
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM dispatch_audit
+         WHERE delivery_id = ?
+           AND actor = 'operator'
+           AND json_extract(evidence_json, '$.request_signature_sha256') = ?`,
+      )
+      .bind(deliveryId, requestSignatureSha256)
+      .first<number>("n");
+    return (count ?? 0) > 0;
   }
 
   async staleQueuedRows(
