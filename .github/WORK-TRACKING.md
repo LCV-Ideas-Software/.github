@@ -35,8 +35,9 @@ tomada.
 Os dois quadros são **privados**. Estes links exigem uma conta com acesso à organização; para quem
 lê este arquivo publicamente eles retornam 404.
 
-A presença e o estado de cada item nos dois quadros devem ser conferidos explicitamente.
-Este repositório não declara inclusão, backfill ou mudança automática de status em Projects.
+A inclusão de novos itens é feita pelo workflow nativo **Auto-add to project** configurado em cada
+Project. A presença e o estado nos dois quadros ainda devem ser conferidos explicitamente; itens
+anteriores ao Auto-add ou fora de seus filtros são adicionados manualmente quando necessário.
 
 ### Discussions
 

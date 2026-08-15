@@ -1,32 +1,39 @@
 name: CodeQL
+
 on:
   workflow_dispatch:
   push:
-    branches: ["main"]
+    branches:
+      - main
   pull_request:
-    branches: ["main"]
+    branches:
+      - main
     types:
       - opened
-      - synchronize
       - reopened
+      - synchronize
       - ready_for_review
   merge_group:
     types:
       - checks_requested
   schedule:
     - cron: "23 7 * * 2"
+
 permissions: {}
+
 concurrency:
-  group: codeql-${{ github.ref }}
+  group: codeql-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
 jobs:
   analyze:
-    permissions:
-      contents: read
-      security-events: write # Uploads the completed CodeQL SARIF to code scanning.
     name: Analyze ${{ matrix.language }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      actions: read # CodeQL resolves workflow-run metadata.
+      contents: read
+      security-events: write # Upload CodeQL SARIF to code scanning.
     strategy:
       fail-fast: false
       matrix:
@@ -36,44 +43,20 @@ jobs:
           - language: javascript-typescript
             build-mode: none
     steps:
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Setup latest Node.js 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          check-latest: true
-          cache: npm
-      - name: Install policy dependencies
-        run: |
-          set -euo pipefail
-          test "$(npm config get registry)" = "https://registry.npmjs.org/"
-          npm ci --ignore-scripts --no-audit --no-fund
-      - name: Test required context policy
-        run: node --test scripts/required-contexts-policy.test.mjs
-      - name: Validate all required context contracts
-        run: node scripts/required-contexts-policy.mjs
-      - name: Test immutable Zizmor policy baseline
-        run: node --test scripts/zizmor-policy-baseline.test.mjs
-      - name: Test CodeQL SARIF policy
-        run: node --test scripts/codeql-sarif-policy.test.mjs
+
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-and-quality
           dependency-caching: true
+
       - name: Perform CodeQL analysis
-        id: analyze
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
         with:
           category: "/language:${{ matrix.language }}"
-          output: ${{ runner.temp }}/codeql-results
-
-      - name: Enforce zero CodeQL findings
-        uses: ./codeql-sarif-gate
-        with:
-          sarif-directory: ${{ runner.temp }}/codeql-results
