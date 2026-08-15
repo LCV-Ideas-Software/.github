@@ -884,6 +884,145 @@ describe("verdict CAS races and failed deletions (F3/F4/F5)", () => {
   });
 });
 
+describe("partial-scan finalization (F9)", () => {
+  it("F9: a partial scan with one match delivers AND arms verification with the partial marker; a later exhausted scan repairs canonical", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f9-partial-found";
+    const row = await seedAmbiguous(store, deliveryId);
+    // Copilot finding F9: a live cursor on every page — the page budget is
+    // spent with the scan explicitly PARTIAL, so unseen pages may hold an
+    // earlier canonical ts. The seen match is still delivery proof (§6.2).
+    let page = 0;
+    const { fetch: partialFetch, calls: partialCalls } = scriptedFetch(
+      (url) => {
+        if (!url.includes("conversations.history")) return undefined;
+        page += 1;
+        return slackHistoryPage(
+          [historyMessage({ ts: TS_LATE, deliveryId })],
+          { nextCursor: `live-${page}`, hasMore: true },
+        );
+      },
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, partialFetch),
+    );
+
+    expect(verdict).toEqual({
+      kind: "found",
+      ts: TS_LATE,
+      channel: ALERTS_CHANNEL,
+    });
+    expect(historyCallCount(partialCalls)).toBe(RESOLVER_PAGES_PER_ROW);
+    expect(deleteCalls(partialCalls)).toHaveLength(0);
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.slackMessageTs).toBe(TS_LATE);
+    // Verification armed with the partial-scan marker.
+    expect(updated.verifyScansRemaining).toBeGreaterThanOrEqual(1);
+    expect(updated.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    );
+    const marker = auditRows(database, deliveryId).find((entry) =>
+      String(entry["evidence_json"]).includes('"partial_scan":true'),
+    );
+    expect(marker).toBeDefined();
+    expect(String(marker?.["evidence_json"])).toContain(
+      '"duplicate_repair_pending":true',
+    );
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+
+    // A later EXHAUSTED scan reveals the true earliest: canonical is
+    // reconciled and the later copy deleted (R18/R19 machinery).
+    const later = DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS;
+    const { fetch: fullFetch, calls: fullCalls } = scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return slackDeleteOk();
+      return undefined;
+    });
+    const pass = await runResolverPass(
+      resolverDeps(store, fullFetch, { now: () => later }),
+    );
+    expect(pass.examined).toBe(1);
+    const final = await mustGet(store, deliveryId);
+    expect(final.state).toBe("delivered");
+    expect(final.slackMessageTs).toBe(TS_EARLY);
+    const repairs = deleteCalls(fullCalls);
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0]?.body).toMatchObject({ ts: TS_LATE });
+    expect(await store.repairedDuplicatesTotal()).toBe(1);
+    expect(
+      auditRows(database, deliveryId).some((entry) =>
+        String(entry["evidence_json"]).includes(
+          `"repaired_from":"${TS_LATE}"`,
+        ),
+      ),
+    ).toBe(true);
+    expect(final.verifyScansRemaining).toBe(0);
+  });
+
+  it("F9: an exhausted single-match scan does not arm verification (no behavior change)", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f9-exhausted-found";
+    const row = await seedAmbiguous(store, deliveryId);
+    const { fetch: fetchStub } = scriptedFetch((url) =>
+      url.includes("conversations.history")
+        ? slackHistoryPage([historyMessage({ ts: TS_EARLY, deliveryId })])
+        : undefined,
+    );
+
+    const verdict = await resolveAmbiguousRow(
+      row,
+      resolverDeps(store, fetchStub),
+    );
+
+    expect(verdict.kind).toBe("found");
+    const updated = await mustGet(store, deliveryId);
+    expect(updated.state).toBe("delivered");
+    expect(updated.verifyScansRemaining).toBe(0);
+    expect(updated.verifyAfterMs).toBeNull();
+    expect(
+      auditRows(database, deliveryId).some((entry) =>
+        String(entry["evidence_json"]).includes("duplicate_repair_pending"),
+      ),
+    ).toBe(false);
+  });
+
+  it("F9: a partial verification scan never consumes the §6.3.3 counter", async () => {
+    const { store } = makeStore();
+    const deliveryId = "f9-partial-verification";
+    const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    let page = 0;
+    const { fetch: fetchStub, calls } = scriptedFetch((url) => {
+      if (!url.includes("conversations.history")) return undefined;
+      page += 1;
+      return slackHistoryPage(
+        [historyMessage({ ts: TS_EARLY, deliveryId })],
+        { nextCursor: `live-${page}`, hasMore: true },
+      );
+    });
+
+    await runResolverPass(resolverDeps(store, fetchStub));
+
+    const row = await mustGet(store, deliveryId);
+    expect(row.state).toBe("delivered");
+    expect(row.slackMessageTs).toBe(TS_EARLY);
+    // Counter untouched; the next scan is rescheduled, not burned.
+    expect(row.verifyScansRemaining).toBe(2);
+    expect(row.verifyAfterMs).toBe(
+      DISPATCH_TEST_NOW + VERIFY_FIRST_SCAN_DELAY_MS,
+    );
+    expect(deleteCalls(calls)).toHaveLength(0);
+  });
+});
+
 describe("post-resend verification (R18)", () => {
   it("R18: delivery via operator resend arms two verification scans at +15 min", async () => {
     const { store } = makeStore();

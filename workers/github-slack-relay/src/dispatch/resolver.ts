@@ -363,7 +363,24 @@ export async function resolveAmbiguousRow(
             channel,
           );
         }
-      } else {
+      }
+      if (!scan.exhausted) {
+        // Copilot finding F9: a live-cursor scan is PARTIAL — the seen match
+        // is canonical delivery proof (§6.2), but canonical-earliest and
+        // duplicate completeness need exhaustion. Arm verification so a
+        // future full-window scan re-runs the match rule; a partial
+        // verification scan never consumes the §6.3.3 counter.
+        await deps.store.flagDuplicateRepairPending(
+          row.deliveryId,
+          now,
+          JSON.stringify({
+            duplicate_repair_pending: true,
+            partial_scan: true,
+            canonical_ts: canonicalTs,
+            pending_ts: [],
+          }),
+        );
+      } else if (row.state === "delivered") {
         await completeScan(row, deps, now);
       }
       return { kind: "found", ts: canonicalTs, channel };
@@ -405,6 +422,8 @@ export async function resolveAmbiguousRow(
               now,
               JSON.stringify({
                 duplicate_repair_pending: true,
+                // Copilot finding F9: a live cursor marks the scan partial.
+                ...(scan.exhausted ? {} : { partial_scan: true }),
                 canonical_ts: canonicalTs,
                 pending_ts: duplicateTs,
               }),
@@ -456,15 +475,19 @@ export async function resolveAmbiguousRow(
       );
       if (!deleted) pendingTs.push(ts);
     }
-    if (pendingTs.length > 0) {
+    if (pendingTs.length > 0 || !scan.exhausted) {
       // F5/R19: the delivered row keeps (or regains) verification
       // eligibility so a later scan completes the repair; the failed copies
-      // are NOT counted as repaired.
+      // are NOT counted as repaired. Copilot finding F9: a PARTIAL scan
+      // (live cursor) also arms — unseen pages may hold an earlier
+      // canonical or more duplicates — and never consumes the §6.3.3
+      // counter.
       await deps.store.flagDuplicateRepairPending(
         row.deliveryId,
         now,
         JSON.stringify({
           duplicate_repair_pending: true,
+          ...(scan.exhausted ? {} : { partial_scan: true }),
           canonical_ts: canonicalTs,
           pending_ts: pendingTs,
         }),
