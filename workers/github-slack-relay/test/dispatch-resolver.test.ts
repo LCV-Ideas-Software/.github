@@ -13,6 +13,7 @@ import {
   RESOLVER_LIFETIME_ATTEMPT_CEILING,
   RESOLVER_MAX_ATTEMPTS,
   RESOLVER_PAGES_PER_ROW,
+  RETRY_AFTER_CEILING_MS,
   VERIFY_DEFERRAL_BACKOFF_BASE_MS,
   VERIFY_DEFERRAL_BACKOFF_CAP_MS,
   VERIFY_FIRST_SCAN_DELAY_MS,
@@ -1931,6 +1932,8 @@ describe("repair-from-anywhere (R19)", () => {
       DISPATCH_TEST_NOW,
       TS_EARLY,
       JSON.stringify({ repaired_from: TS_LATE, canonical: TS_EARLY }),
+      // E1 enumeration / §10 H25: the caller's observed ts joins the CAS.
+      row.slackMessageTs,
     );
 
     expect(updatedOk).toBe(true);
@@ -2045,6 +2048,10 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
         canonical_ts: TS_EARLY,
         pending_ts: [],
       }),
+      // Review finding F1 / §10 H20: the re-arm CASes on the caller's observed
+      // due time and counter. A consumer delivery leaves both unset.
+      null,
+      0,
     );
     const staleSnapshot = await mustGet(store, deliveryId);
     expect(staleSnapshot.verifyScansRemaining).toBe(1);
@@ -2062,6 +2069,10 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
         canonical_ts: TS_EARLY,
         pending_ts: [TS_LATE],
       }),
+      // F1 / H20: the OTHER pass holds the current snapshot, so its re-arm
+      // applies — the guard refuses stale writers, never current ones.
+      staleSnapshot.verifyAfterMs,
+      staleSnapshot.verifyScansRemaining,
     );
     const rearmed = await mustGet(store, deliveryId);
     expect(rearmed.verifyScansRemaining).toBe(1);
@@ -2108,6 +2119,9 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
         canonical_ts: TS_EARLY,
         pending_ts: [],
       }),
+      // F1 / H20: a consumer delivery leaves no due time and no scans.
+      null,
+      0,
     );
     const staleSnapshot = await mustGet(store, deliveryId);
     // The pass reads the row exactly at its due time — the ONE value an
@@ -2255,6 +2269,50 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
     expect(row.verifyAfterMs).toBe(
       DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
     );
+  });
+
+  // Review finding N3 (ADR §10 H24): the resolver's own copy of the conversion
+  // carried the same pre-multiplication overflow. On a VERIFICATION row the
+  // damage is worse than on an ambiguous one: an unreachable verify_after_ms
+  // never comes due, so the row is never scanned again AND never reaches
+  // H14's no-progress ceiling — it can never raise `verification_abandoned`.
+  it("N3: an overflowing Retry-After on a verification 429 still schedules a reachable scan", async () => {
+    const cases: Array<[string, number, number]> = [
+      // Infinity in ms: absent header, so the bounded backoff governs.
+      [
+        "n3-verify-retry-overflow",
+        1e308,
+        DISPATCH_TEST_NOW + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+      ],
+      // Finite but absurd: clamped to the documented ceiling.
+      [
+        "n3-verify-retry-huge",
+        1e12,
+        DISPATCH_TEST_NOW + RETRY_AFTER_CEILING_MS,
+      ],
+    ];
+    for (const [deliveryId, retryAfterSeconds, expected] of cases) {
+      const { store } = makeStore();
+      const deliveredMs = DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS;
+      await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+      const { fetch: fetchStub } = scriptedFetch((url) =>
+        url.includes("conversations.history")
+          ? slackRateLimited(retryAfterSeconds)
+          : undefined,
+      );
+
+      await runResolverPass(resolverDeps(store, fetchStub));
+
+      const row = await mustGet(store, deliveryId);
+      // §6.3.3: a deferral never decrements the counter...
+      expect(row.verifyScansRemaining).toBe(2);
+      // ...and the row stays REACHABLE: finite, and inside the ceiling.
+      expect(row.verifyAfterMs).toBe(expected);
+      expect(Number.isFinite(row.verifyAfterMs ?? Number.NaN)).toBe(true);
+      expect(row.verifyAfterMs ?? Number.NaN).toBeLessThanOrEqual(
+        DISPATCH_TEST_NOW + RETRY_AFTER_CEILING_MS,
+      );
+    }
   });
 
   it("F4 (found_many vs recordLateProof): an audit_only race still arms duplicate repair", async () => {
@@ -2533,5 +2591,322 @@ describe("resolver hardening (rearm race, abort, Retry-After, malformed page)", 
     // entry never turns a scan inconclusive.
     expect(verdict.kind).toBe("proven_absent");
     expect((await mustGet(store, deliveryId)).state).toBe("manual");
+  });
+});
+
+// Review finding F1 (ADR §10 H20) — flagDuplicateRepairPending was the ONE
+// no-progress writer without a snapshot guard, while completeVerificationScan,
+// deferVerificationScan and abandonVerification all carry one. An operator
+// sweep (H11) landing after the pass's read stamps verify_after_ms = now to
+// force a due-now scan; the stale pass's re-arm overwrote it with its backoff
+// and postponed exactly the scan the sweep promised.
+describe("F1: the duplicate-repair re-arm carries the caller's snapshot", () => {
+  it("F1: an operator sweep landing after the pass's read is not postponed by the re-arm", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f1-sweep-vs-rearm";
+    const scanNow = DISPATCH_TEST_NOW;
+    // Delivered through the only resend path: two scans armed, the first due
+    // 60 s ago — so the sweep's `now` differs from the row's due time and the
+    // sweep is not H11's rejected no-op case.
+    const deliveredMs = scanNow - VERIFY_FIRST_SCAN_DELAY_MS - 60_000;
+    await deliverViaOperatorResend(store, deliveryId, deliveredMs, TS_EARLY);
+    const staleSnapshot = await mustGet(store, deliveryId);
+    expect(staleSnapshot.verifyScansRemaining).toBe(2);
+    expect(staleSnapshot.verifyAfterMs).toBe(scanNow - 60_000);
+
+    // The sweep lands INSIDE the scan — after this pass read the row, before
+    // it writes. A partial page (live cursor) sends the pass to the re-arm.
+    let sweptOnce = false;
+    const partialPage = slackHistoryPage(
+      [historyMessage({ ts: TS_EARLY, deliveryId })],
+      { nextCursor: "cursor-1", hasMore: true },
+    );
+    const sweepDuringScan = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes("conversations.history")) {
+        throw new Error(`unscripted_fetch:${url}`);
+      }
+      if (!sweptOnce) {
+        sweptOnce = true;
+        expect(
+          await store.operatorSweepVerification(
+            deliveryId,
+            scanNow,
+            JSON.stringify({
+              operator_action: "sweep",
+              verification_armed: true,
+            }),
+            null,
+          ),
+        ).toBe(true);
+      }
+      return new Response(JSON.stringify(partialPage.body), {
+        status: partialPage.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const verdict = await resolveAmbiguousRow(
+      staleSnapshot,
+      resolverDeps(store, sweepDuringScan, { now: () => scanNow }),
+    );
+
+    expect(verdict.kind).toBe("found");
+    expect(sweptOnce).toBe(true);
+    // The sweep's promise is a scan armed and due NOW; the stale re-arm must
+    // not push it to now + backoff.
+    const after = await mustGet(store, deliveryId);
+    expect(after.verifyAfterMs).toBe(scanNow);
+    expect(after.verifyScansRemaining).toBe(2);
+    // The re-arm's audit row shares the CAS predicate, so a refused re-arm
+    // leaves no pending marker behind either (§6.1).
+    expect(
+      auditRows(database, deliveryId).filter((entry) =>
+        String(entry["evidence_json"]).includes('"duplicate_repair_pending"'),
+      ),
+    ).toHaveLength(0);
+
+    // Positive control: the guard refuses STALE writers, not current ones — a
+    // pass holding the swept snapshot re-arms with the ordinary backoff.
+    const freshNow = scanNow + 1_000;
+    await resolveAmbiguousRow(
+      await mustGet(store, deliveryId),
+      resolverDeps(store, sweepDuringScan, { now: () => freshNow }),
+    );
+    const rearmed = await mustGet(store, deliveryId);
+    expect(rearmed.verifyAfterMs).toBe(
+      freshNow + VERIFY_DEFERRAL_BACKOFF_BASE_MS,
+    );
+    expect(
+      auditRows(database, deliveryId).filter((entry) =>
+        String(entry["evidence_json"]).includes('"duplicate_repair_pending"'),
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+// E1 enumeration (ADR §10 H25) — updateCanonicalTs was the second CAS whose
+// predicate did not encode the value its caller decided from. A pass whose
+// scan was PARTIAL could overwrite an EARLIER canonical ts recorded by a fuller
+// concurrent scan, regressing the row to a later copy — the inverse of
+// §6.3.2's "the EARLIEST ts is canonical".
+describe("H25: the canonical-ts repair carries the caller's observed ts", () => {
+  it("H25: a stale repair cannot overwrite an earlier canonical ts recorded meanwhile", async () => {
+    const { store } = makeStore();
+    const deliveryId = "h25-canonical-regression";
+    const TS_EARLIEST = "1786663000.000050";
+    const deliveredMs = DISPATCH_TEST_NOW - 3_600_000;
+    // The row records the LATE copy; this pass's scan saw TS_EARLY and will
+    // try to record it.
+    const staleSnapshot = await deliverViaConsumer(
+      store,
+      deliveryId,
+      deliveredMs,
+      TS_LATE,
+    );
+
+    // A fuller concurrent scan lands first with the TRUE earliest ts.
+    expect(
+      await store.updateCanonicalTs(
+        deliveryId,
+        DISPATCH_TEST_NOW,
+        TS_EARLIEST,
+        JSON.stringify({ canonical_ts: TS_EARLIEST }),
+        staleSnapshot.slackMessageTs,
+      ),
+    ).toBe(true);
+
+    // The stale pass then applies its own, LATER canonical against the ts it
+    // observed at pass start.
+    const stale = await store.updateCanonicalTs(
+      deliveryId,
+      DISPATCH_TEST_NOW + 1_000,
+      TS_EARLY,
+      JSON.stringify({ canonical_ts: TS_EARLY }),
+      staleSnapshot.slackMessageTs,
+    );
+
+    expect(stale).toBe(false);
+    // §6.3.2 holds: the EARLIEST ts stays recorded.
+    expect((await mustGet(store, deliveryId)).slackMessageTs).toBe(TS_EARLIEST);
+
+    // Positive control: a pass holding the CURRENT ts still repairs.
+    expect(
+      await store.updateCanonicalTs(
+        deliveryId,
+        DISPATCH_TEST_NOW + 2_000,
+        TS_EARLY,
+        JSON.stringify({ canonical_ts: TS_EARLY }),
+        TS_EARLIEST,
+      ),
+    ).toBe(true);
+    expect((await mustGet(store, deliveryId)).slackMessageTs).toBe(TS_EARLY);
+  });
+});
+
+// Review finding F2 (ADR §10 H21) — chat.delete is the dispatcher's one
+// IRREVERSIBLE egress: once it returns ok the ts is gone from Slack, so a
+// repair record that fails to land afterwards can never be rebuilt by a later
+// history scan (the evidence such a scan looks for is exactly what was
+// deleted). The deletion intent is therefore durable BEFORE the call and
+// reconciled to an outcome after it.
+describe("F2: every duplicate deletion is recorded before the call", () => {
+  // Fails appendAudit only for markers matching `match` — the interleaving a
+  // call-count proxy cannot express, since the intent and the completion both
+  // go through appendAudit.
+  function storeFailingAuditMatching(
+    store: DispatchStore,
+    match: string,
+  ): DispatchStore {
+    return new Proxy(store, {
+      get(target, property, _receiver) {
+        const value = Reflect.get(target, property, target) as unknown;
+        if (typeof value !== "function") return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (property !== "appendAudit") return bound;
+        return async (...args: unknown[]): Promise<unknown> => {
+          const entry = args[0] as { evidenceJson: string };
+          if (entry.evidenceJson.includes(match)) {
+            throw new Error("d1_transient_failure");
+          }
+          return bound(...args);
+        };
+      },
+    }) as DispatchStore;
+  }
+
+  async function deliveredWithVerification(
+    store: D1DispatchStore,
+    deliveryId: string,
+  ): Promise<DispatchOutboxRow> {
+    return deliverViaOperatorResend(
+      store,
+      deliveryId,
+      DISPATCH_TEST_NOW - VERIFY_FIRST_SCAN_DELAY_MS,
+      TS_EARLY,
+    );
+  }
+
+  function duplicateHistory(
+    deliveryId: string,
+    deleteResponse: FixtureResponse,
+  ): { fetch: typeof fetch; calls: RecordedSlackCall[] } {
+    return scriptedFetch((url) => {
+      if (url.includes("conversations.history")) {
+        return slackHistoryPage([
+          historyMessage({ ts: TS_EARLY, deliveryId }),
+          historyMessage({ ts: TS_LATE, deliveryId }),
+        ]);
+      }
+      if (url.includes("chat.delete")) return deleteResponse;
+      return undefined;
+    });
+  }
+
+  it("F2: a deletion whose repair record never lands stays counted and alarmed", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f2-completion-audit-lost";
+    const row = await deliveredWithVerification(store, deliveryId);
+    const { fetch: fetchStub, calls } = duplicateHistory(
+      deliveryId,
+      slackDeleteOk(),
+    );
+
+    const verdict = await resolveAmbiguousRow(row, {
+      ...resolverDeps(store, fetchStub),
+      store: storeFailingAuditMatching(store, '"repaired_duplicate"'),
+    });
+
+    expect(verdict.kind).toBe("found_many");
+    // The copy IS gone from Slack: no later scan can rediscover it.
+    expect(deleteCalls(calls).map((call) => call.body?.["ts"])).toEqual([
+      TS_LATE,
+    ]);
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+    // The intent recorded BEFORE the call is the surviving evidence.
+    const intents = auditRows(database, deliveryId).filter((entry) =>
+      String(entry["evidence_json"]).includes('"duplicate_deletion_intent"'),
+    );
+    expect(intents).toHaveLength(1);
+    expect(JSON.parse(String(intents[0]?.["evidence_json"]))).toMatchObject({
+      duplicate_deletion_intent: true,
+      canonical_ts: TS_EARLY,
+      target_ts: TS_LATE,
+    });
+    // Countable...
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+    expect(counters.unreconciledDeletionIntents).toBe(1);
+    // ...and alarmed (§6.7): the ADR requires every deletion to be BOTH.
+    expect(
+      observerAlarms(
+        {
+          deadLetter: 0,
+          manual: 0,
+          oldestAmbiguousAgeMs: null,
+          repairedDuplicates: counters.repairedDuplicates,
+          unreconciledDeletionIntents: counters.unreconciledDeletionIntents,
+        },
+        null,
+      ),
+    ).toContain("duplicate_deletion_unreconciled");
+  });
+
+  it("F2: a chat.delete that did not succeed reconciles its own intent — no alarm for a copy still in Slack", async () => {
+    const { database, store } = makeStore();
+    const deliveryId = "f2-delete-refused";
+    const row = await deliveredWithVerification(store, deliveryId);
+    const { fetch: fetchStub } = duplicateHistory(deliveryId, {
+      status: 200,
+      body: { ok: false, error: "cant_delete_message" },
+    });
+
+    await resolveAmbiguousRow(row, resolverDeps(store, fetchStub));
+
+    const entries = auditRows(database, deliveryId).map((entry) =>
+      String(entry["evidence_json"]),
+    );
+    expect(
+      entries.filter((json) => json.includes('"duplicate_deletion_intent"')),
+    ).toHaveLength(1);
+    expect(
+      entries.filter((json) =>
+        json.includes('"duplicate_deletion_not_applied"'),
+      ),
+    ).toHaveLength(1);
+    // The copy survived, so this is NOT an unrecorded deletion.
+    expect(
+      (await store.statusCounters(DISPATCH_TEST_NOW))
+        .unreconciledDeletionIntents,
+    ).toBe(0);
+    expect(await store.repairedDuplicatesTotal()).toBe(0);
+    // R19: the row keeps a future scan, so the repair is never lost.
+    const pending = await mustGet(store, deliveryId);
+    expect(pending.verifyScansRemaining).toBeGreaterThan(0);
+    expect(pending.verifyAfterMs).not.toBeNull();
+  });
+
+  it("F2: a completed repair reconciles its intent — the ordinary path raises no alarm", async () => {
+    const { store } = makeStore();
+    const deliveryId = "f2-repair-completes";
+    const row = await deliveredWithVerification(store, deliveryId);
+    const { fetch: fetchStub } = duplicateHistory(deliveryId, slackDeleteOk());
+
+    await resolveAmbiguousRow(row, resolverDeps(store, fetchStub));
+
+    expect(await store.repairedDuplicatesTotal()).toBe(1);
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+    expect(counters.unreconciledDeletionIntents).toBe(0);
+    expect(
+      observerAlarms(
+        {
+          deadLetter: 0,
+          manual: 0,
+          oldestAmbiguousAgeMs: null,
+          repairedDuplicates: counters.repairedDuplicates,
+          unreconciledDeletionIntents: counters.unreconciledDeletionIntents,
+        },
+        null,
+      ),
+    ).not.toContain("duplicate_deletion_unreconciled");
   });
 });

@@ -40,6 +40,15 @@ export function observerAlarms(
   if ((current.verificationAbandoned ?? 0) > 0) {
     alarms.push("verification_abandoned");
   }
+  // Review finding F2 / ADR §10 H21: a chat.delete whose repair record never
+  // landed. §6.3.2 requires every deletion to be audited AND alarmed, and the
+  // deleted ts is unrecoverable from Slack, so the pre-recorded intent is the
+  // only evidence left — it must reach the operator instead of sitting in the
+  // journal. Cleared by the outcome marker of the same target ts, including a
+  // later successful repair of a copy that survived.
+  if ((current.unreconciledDeletionIntents ?? 0) > 0) {
+    alarms.push("duplicate_deletion_unreconciled");
+  }
   if (
     (current.queued ?? 0) > 0 &&
     current.oldestNonTerminalAgeMs !== undefined &&

@@ -1159,6 +1159,18 @@ async function handleDispatchOperatorRequest(
     // with ts evidence)". This records PROOF of a message that already
     // exists, not a resend, so it arms no §6.3.3 verification and publishes
     // nothing — the sweep above is the path for re-checking such a row.
+    // Review finding N2 (ADR §10 H22): the parser validates the channel's
+    // SHAPE, and a well-formed id for ANY other channel — #github-activity's
+    // included — passed it. The row would then carry proof pointing at a
+    // channel the dispatcher does not own: `slack_message_ts` is only unique
+    // per channel, and every later reader (an H11 sweep, the §6.3.1 history
+    // scan, the §6.3.2 repair) resolves the channel from the row's
+    // DESTINATION, so it would search #github-alerts for a ts that lives
+    // elsewhere and conclude absence. §10 H2 leaves exactly one dispatcher
+    // channel, so the check is identity against the configured id, not shape.
+    if (command.slack_channel_id !== channelForDestination("alerts")) {
+      return jsonResponse({ error: "channel_not_dispatcher_owned" }, 400);
+    }
     let recorded: boolean;
     try {
       recorded = await dispatchStore.markDelivered(

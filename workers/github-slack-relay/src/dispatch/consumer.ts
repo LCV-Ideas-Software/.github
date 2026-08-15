@@ -214,7 +214,16 @@ export async function processDispatchMessage(
     message.ack();
     return;
   }
-  if (!row.shadow) {
+  if (!row.shadow && row.state === "queued") {
+    // Review finding F4 (ADR §10 H19): only a row OBSERVED `queued` may take
+    // the slot. The guard used to be `!row.shadow` alone, so a redelivered
+    // message for a `sending`, `ambiguous` or `manual` row — routine, the
+    // queue being at-least-once — reserved the shared per-destination slot and
+    // only then discovered the claim CAS was a no-op. Nothing was sent, yet
+    // the next REAL queued alert waited a full interval behind that phantom
+    // reservation. Observing `queued` here is not a claim: the claim CAS below
+    // is still what decides, so a row that leaves `queued` between this read
+    // and the claim is handled exactly as before (claim returns null, ack).
     // Copilot suppressed comment (F7) / ADR §4 item 4 (~1 msg/sec/channel):
     // pace every REAL send through the durable per-destination reservation
     // before the claim — exactly the order the legacy path uses

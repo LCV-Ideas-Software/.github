@@ -97,6 +97,12 @@ interface RawOutboxRowInput {
   state: string;
   slackChannelId?: string | null;
   slackMessageTs?: string | null;
+  // Review finding F3: the aggregate REDs need rows the dispatcher's own
+  // store methods cannot write — a schema-legal `activity` row, and the
+  // verification shape statusCounters reads for the abandoned alarm.
+  createdMs?: number;
+  verifyScansRemaining?: number;
+  verifyAfterMs?: number | null;
 }
 
 function insertRawOutboxRow(
@@ -107,8 +113,9 @@ function insertRawOutboxRow(
     .prepare(
       `INSERT INTO dispatch_outbox (
          delivery_id, destination, shadow, payload_json, state,
-         slack_channel_id, slack_message_ts, created_ms, updated_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         slack_channel_id, slack_message_ts, verify_scans_remaining,
+         verify_after_ms, created_ms, updated_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.deliveryId,
@@ -118,8 +125,10 @@ function insertRawOutboxRow(
       input.state,
       input.slackChannelId ?? null,
       input.slackMessageTs ?? null,
-      DISPATCH_TEST_NOW,
-      DISPATCH_TEST_NOW,
+      input.verifyScansRemaining ?? 0,
+      input.verifyAfterMs ?? null,
+      input.createdMs ?? DISPATCH_TEST_NOW,
+      input.createdMs ?? DISPATCH_TEST_NOW,
     );
 }
 
@@ -342,6 +351,144 @@ describe("migration 0011 historical dispositions (ADR §6.9 option (a), §9.A5)"
       .prepare("SELECT COUNT(*) AS n FROM dispatch_outbox")
       .get() as { n: number } | undefined;
     expect(outboxCount?.n).toBe(0);
+  });
+});
+
+// Review finding F3 (ADR §10 H18, correcting H3): migration 0010 still admits
+// `destination = 'activity'` — the schema RED above inserts exactly such a row
+// — while §10 H2 reduced the dispatcher to `alerts`. The H3 claim that the
+// residue is "inert" was false in the READ direction: statusCounters grouped
+// over EVERY destination in the table and indexed its alerts-only map with the
+// result, so one schema-valid row made `/status` answer 503 and aborted every
+// dispatch cron pass (runDispatchCronPass opens with that call).
+describe("F3: aggregates are scoped to dispatcher-owned destinations (ADR §10 H18)", () => {
+  it("F3: a schema-legal activity row leaves every /status aggregate intact", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const staleMs = DISPATCH_TEST_NOW - 31 * 60_000;
+    // One activity row per aggregate the dispatcher reads: the grouped
+    // per-state counters, the non-terminal age, the ambiguous age, and the
+    // abandoned-verification shape.
+    insertRawOutboxRow(database, {
+      deliveryId: "f3-activity-queued",
+      destination: "activity",
+      state: "queued",
+      createdMs: staleMs,
+    });
+    insertRawOutboxRow(database, {
+      deliveryId: "f3-activity-ambiguous",
+      destination: "activity",
+      state: "ambiguous",
+      createdMs: staleMs,
+    });
+    insertRawOutboxRow(database, {
+      deliveryId: "f3-activity-abandoned",
+      destination: "activity",
+      state: "delivered",
+      slackChannelId: ACTIVITY_CHANNEL,
+      slackMessageTs: "1786664000.000900",
+      verifyScansRemaining: 1,
+      verifyAfterMs: null,
+      createdMs: staleMs,
+    });
+
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+
+    // Before the fix this call THREW (undefined["queued"]), so /status was
+    // 503 and the cron pass aborted on a row the schema accepts.
+    expect(Object.keys(counters.byStateAndDestination)).toEqual(["alerts"]);
+    expect(counters.byStateAndDestination.alerts).toEqual({
+      queued: 0,
+      sending: 0,
+      ambiguous: 0,
+      manual: 0,
+      delivered: 0,
+      dead_letter: 0,
+      closed_manual: 0,
+    });
+    expect(counters.oldestNonTerminalAgeMs).toBeNull();
+    expect(counters.oldestAmbiguousAgeMs).toBeNull();
+    expect(counters.verificationAbandoned).toBe(0);
+
+    // Positive control: the same aggregates still see the dispatcher's own
+    // rows — the scope narrows the query, it does not blank it.
+    insertRawOutboxRow(database, {
+      deliveryId: "f3-alerts-ambiguous",
+      destination: "alerts",
+      state: "ambiguous",
+      createdMs: DISPATCH_TEST_NOW - 60_000,
+    });
+    insertRawOutboxRow(database, {
+      deliveryId: "f3-alerts-abandoned",
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786664000.000901",
+      verifyScansRemaining: 1,
+      verifyAfterMs: null,
+      createdMs: DISPATCH_TEST_NOW - 60_000,
+    });
+    const owned = await store.statusCounters(DISPATCH_TEST_NOW);
+    expect(owned.byStateAndDestination.alerts.ambiguous).toBe(1);
+    expect(owned.byStateAndDestination.alerts.delivered).toBe(1);
+    expect(owned.oldestNonTerminalAgeMs).toBe(60_000);
+    expect(owned.oldestAmbiguousAgeMs).toBe(60_000);
+    expect(owned.verificationAbandoned).toBe(1);
+  });
+});
+
+// Review finding F2 (ADR §10 H21): the two deletion-bookkeeping markers are
+// written BETWEEN a no-progress scan and its re-arm. H14's streak is the
+// TRAILING run of `no_progress` markers, so counting them as progress would
+// reset that run on every pass of a row whose chat.delete keeps failing — the
+// unbounded livelock H14 closed would come straight back, invisible again.
+describe("H21: the deletion markers are neutral for the H14 no-progress streak", () => {
+  it("H21: an intent and a not-applied marker do not reset the streak; a completed repair does", async () => {
+    const { d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "h21-streak-neutrality";
+    const marker = async (evidence: Record<string, unknown>): Promise<void> => {
+      await store.appendAudit({
+        deliveryId,
+        fromState: "delivered",
+        toState: "delivered",
+        evidenceJson: JSON.stringify(evidence),
+        actor: "resolver",
+        atMs: DISPATCH_TEST_NOW,
+      });
+    };
+
+    // Two no-progress re-arms, each followed by the deletion bookkeeping of a
+    // chat.delete that did not succeed.
+    for (const attempt of [1, 2]) {
+      await marker({
+        duplicate_repair_pending: true,
+        no_progress: true,
+        consecutive_no_progress: attempt,
+      });
+      await marker({
+        duplicate_deletion_intent: true,
+        canonical_ts: "1786664000.000100",
+        target_ts: "1786664900.000200",
+      });
+      await marker({
+        duplicate_deletion_not_applied: true,
+        canonical_ts: "1786664000.000100",
+        target_ts: "1786664900.000200",
+      });
+    }
+
+    // The streak survives the bookkeeping: H14's ceiling stays reachable.
+    expect(await store.consecutiveNoProgressScans(deliveryId)).toBe(2);
+
+    // A COMPLETED repair is real progress and still resets it (unchanged).
+    await marker({
+      repaired_duplicate: true,
+      canonical_ts: "1786664000.000100",
+      deleted_ts: "1786664900.000200",
+      target_ts: "1786664900.000200",
+    });
+    expect(await store.consecutiveNoProgressScans(deliveryId)).toBe(0);
   });
 });
 

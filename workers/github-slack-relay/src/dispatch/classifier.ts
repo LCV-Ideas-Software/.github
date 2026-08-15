@@ -2,7 +2,11 @@
 // responses (R10, R4). HTTP status is classified first; ok-body rules apply
 // ONLY to HTTP 200. The function never throws: every input lands in exactly
 // one of delivered / manual / ambiguous.
-import { MANUAL_ERROR_CODES, type PostMessageOutcome } from "./contract";
+import {
+  MANUAL_ERROR_CODES,
+  RETRY_AFTER_CEILING_MS,
+  type PostMessageOutcome,
+} from "./contract";
 
 export interface PostMessageResponseParts {
   httpStatus: number;
@@ -25,14 +29,28 @@ export const CANONICAL_TS_PATTERN = /^\d{10,13}\.\d{6}$/u;
 export const CANONICAL_CHANNEL_PATTERN = /^C[A-Z0-9]{8,31}$/u;
 
 // ADR §6.2 [E-A12]: Retry-After seconds × 1000; null when absent or invalid.
-function retryAfterMsFrom(headers: {
+// Review finding N3 (ADR §10 H24): the finiteness check ran on the PARSED
+// SECONDS, before the × 1000 conversion, so `Retry-After: 1e308` passed it and
+// became `Infinity`. Persisted, that is a delay no clock ever reaches:
+// `next_attempt_ms` (§6.2/R4) leaves the row permanently undue for the
+// resolver, and `verify_after_ms` (§6.3.3) does the same to a verification row
+// WITHOUT ever raising `verification_abandoned`, because H14's ceiling is only
+// reached by scans that actually run. The CONVERTED value is therefore what is
+// validated: a non-finite result is treated as an ABSENT header — the §6.2
+// fail-safe for a value that cannot be trusted, so the caller falls back to its
+// own bounded backoff — and a finite value beyond RETRY_AFTER_CEILING_MS is
+// clamped to it. Exported because the resolver's scan applies the SAME rule to
+// the same header (one shape, one source — as with CANONICAL_TS_PATTERN).
+export function retryAfterMsFrom(headers: {
   get(name: string): string | null;
 }): number | null {
   const raw = headers.get("Retry-After");
   if (raw === null) return null;
   const seconds = Number(raw.trim());
   if (!Number.isFinite(seconds) || seconds < 0) return null;
-  return Math.round(seconds * 1000);
+  const milliseconds = Math.round(seconds * 1000);
+  if (!Number.isFinite(milliseconds)) return null;
+  return Math.min(milliseconds, RETRY_AFTER_CEILING_MS);
 }
 
 function parseJsonObject(bodyText: string): Record<string, unknown> | null {

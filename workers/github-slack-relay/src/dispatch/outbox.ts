@@ -926,6 +926,13 @@ export class D1DispatchStore implements DispatchStore {
     // (partial scan, then history 429, then partial again…), the normal shape
     // on a busy channel, would never reach any ceiling and the livelock would
     // survive the fix.
+    // Review finding F2 (ADR §10 H21): the two deletion-bookkeeping markers are
+    // NEUTRAL — neither progress nor no-progress. They are written between the
+    // scan and its re-arm, so counting them as progress would reset the streak
+    // on every pass of a row whose chat.delete keeps failing and would restore
+    // exactly the unbounded livelock H14 closed. The COMPLETION marker
+    // (`repaired_duplicate`) is deliberately NOT neutral: a deleted copy is
+    // real progress and resets the streak, as it always did.
     const count = await this.#database
       .prepare(
         `SELECT COUNT(*) AS n
@@ -938,6 +945,14 @@ export class D1DispatchStore implements DispatchStore {
              WHERE delivery_id = ?
                AND COALESCE(
                  json_extract(evidence_json, '$.no_progress'), 0
+               ) != 1
+               AND COALESCE(
+                 json_extract(evidence_json, '$.duplicate_deletion_intent'), 0
+               ) != 1
+               AND COALESCE(
+                 json_extract(
+                   evidence_json, '$.duplicate_deletion_not_applied'
+                 ), 0
                ) != 1
            ), 0)`,
       )
@@ -1046,17 +1061,34 @@ export class D1DispatchStore implements DispatchStore {
     now: number,
     ts: string,
     evidenceJson: string,
+    expectedTs: string | null,
   ): Promise<boolean> {
     // §6.3.2/§6.3.3: repair FROM delivered — the earliest ts becomes the
     // recorded canonical ts; the row never leaves delivered.
-    const predicate = " AND state = 'delivered' AND shadow = 0";
-    const audit = this.#inPlaceAudit(
-      deliveryId,
-      asEvidenceJson(evidenceJson),
-      "resolver",
-      now,
-      predicate,
-    );
+    // E1 enumeration (ADR §10 H25): the caller decides from the ts it OBSERVED
+    // (`row.slackMessageTs`, or the re-read `fresh.slackMessageTs` after a lost
+    // found_many CAS) and the predicate did not encode it. A pass whose scan
+    // was PARTIAL could therefore overwrite an earlier canonical ts that a
+    // fuller concurrent scan had just recorded, regressing the row to a LATER
+    // copy and contradicting §6.3.2's "the EARLIEST ts is canonical" — while
+    // the deletion loop's "never delete the recorded ts" filter kept using the
+    // stale observed value. The observed ts joins the CAS: a concurrent
+    // repair's ts survives, and R19 keeps any residual repairable by a later
+    // scan. `IS ?` — NULL-safe equality in SQLite.
+    const predicate =
+      " AND state = 'delivered' AND shadow = 0 AND slack_message_ts IS ?";
+    // Inlined rather than via #inPlaceAudit, which has no bind slot for the
+    // snapshot parameter: the audit carries the SAME predicate as the UPDATE.
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, state, ?, 'resolver', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(asEvidenceJson(evidenceJson), now, deliveryId, expectedTs);
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
@@ -1064,7 +1096,7 @@ export class D1DispatchStore implements DispatchStore {
              updated_ms = ?
          WHERE delivery_id = ?${predicate}`,
       )
-      .bind(ts, now, deliveryId);
+      .bind(ts, now, deliveryId, expectedTs);
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -1074,6 +1106,8 @@ export class D1DispatchStore implements DispatchStore {
     now: number,
     nextVerifyAfterMs: number,
     evidenceJson: string,
+    expectedVerifyAfterMs: number | null,
+    expectedScansRemaining: number,
   ): Promise<boolean> {
     // Copilot finding F5 (ADR §6.3.2/R19): a detected duplicate whose
     // deletion failed must keep a future scan — verify_scans_remaining is
@@ -1083,14 +1117,40 @@ export class D1DispatchStore implements DispatchStore {
     // here, which is what made the non-exhausted scan re-arm itself every
     // 15 minutes for ever. The caller now supplies it from the shared
     // no-progress backoff and stops re-arming at the ceiling (H14).
-    const predicate = " AND state = 'delivered' AND shadow = 0";
-    const audit = this.#inPlaceAudit(
-      deliveryId,
-      asEvidenceJson(evidenceJson),
-      "resolver",
-      now,
-      predicate,
-    );
+    // Review finding F1 (ADR §10 H20): this re-arm was the ONE no-progress
+    // writer with no snapshot guard, while completeVerificationScan (F1),
+    // deferVerificationScan and abandonVerification (B7) all carry one. An
+    // operator sweep (H11) landing after the caller's observation stamps
+    // verify_after_ms = now to force a due-now scan; this UPDATE then pushed
+    // it to now + backoff and postponed exactly the scan the sweep promised.
+    // BOTH observed halves join the CAS, because H11's change-guaranteeing
+    // predicate moves the counter OR the due time and never neither: below the
+    // schema maximum the sweep increments the counter, at the maximum it
+    // necessarily moves the due time. Guarding on one half alone would
+    // therefore leave the other case open. `IS ?` — NULL-safe equality in
+    // SQLite, so a row with no due time is matched by a null expectation.
+    const predicate =
+      " AND state = 'delivered' AND shadow = 0" +
+      " AND verify_after_ms IS ? AND verify_scans_remaining = ?";
+    // Inlined rather than via #inPlaceAudit, which has no bind slot for the
+    // snapshot parameters: the audit carries the SAME predicate as the UPDATE
+    // so the journal and the row stay atomic and consistent (§6.1).
+    const audit = this.#database
+      .prepare(
+        `INSERT INTO dispatch_audit (
+           delivery_id, from_state, to_state, evidence_json, actor, at_ms
+         )
+         SELECT delivery_id, state, state, ?, 'resolver', ?
+         FROM dispatch_outbox
+         WHERE delivery_id = ?${predicate}`,
+      )
+      .bind(
+        asEvidenceJson(evidenceJson),
+        now,
+        deliveryId,
+        expectedVerifyAfterMs,
+        expectedScansRemaining,
+      );
     const update = this.#database
       .prepare(
         `UPDATE dispatch_outbox
@@ -1099,7 +1159,13 @@ export class D1DispatchStore implements DispatchStore {
              updated_ms = ?
          WHERE delivery_id = ?${predicate}`,
       )
-      .bind(nextVerifyAfterMs, now, deliveryId);
+      .bind(
+        nextVerifyAfterMs,
+        now,
+        deliveryId,
+        expectedVerifyAfterMs,
+        expectedScansRemaining,
+      );
     const results = await this.#database.batch([audit, update]);
     return changed(results[1]);
   }
@@ -1253,12 +1319,27 @@ export class D1DispatchStore implements DispatchStore {
       DispatchDestination,
       Record<DispatchState, number>
     > = { alerts: zero() };
+    // Review finding F3 (ADR §10 H18, correcting H3): migration 0010 CHECKs
+    // `destination IN ('alerts','activity')` and the schema REDs insert such a
+    // row, but §10 H2 reduced the dispatcher to `alerts`, so this map — and
+    // the DispatchDestination union it is keyed by — knows only that one. The
+    // grouped query returned every destination the TABLE holds, so a
+    // schema-valid `activity` row made the dereference below throw: `/status`
+    // answered 503 and, because runDispatchCronPass opens with this call,
+    // EVERY dispatch cron pass aborted. The aggregates are therefore scoped to
+    // the destinations the dispatcher owns, and the scope is bound from the
+    // counter map's OWN keys — the query can no longer return a destination
+    // the map lacks, which is exactly the invariant whose absence caused this.
+    const ownedDestinations = Object.keys(byStateAndDestination);
+    const ownedPredicate = `destination IN (${placeholders(ownedDestinations.length)})`;
     const grouped = await this.#database
       .prepare(
         `SELECT destination, state, COUNT(*) AS n
          FROM dispatch_outbox
+         WHERE ${ownedPredicate}
          GROUP BY destination, state`,
       )
+      .bind(...ownedDestinations)
       .all<{ destination: DispatchDestination; state: DispatchState; n: number }>();
     for (const entry of grouped.results) {
       byStateAndDestination[entry.destination][entry.state] = entry.n;
@@ -1269,8 +1350,10 @@ export class D1DispatchStore implements DispatchStore {
       .prepare(
         `SELECT MIN(created_ms) AS oldest_ms
          FROM dispatch_outbox
-         WHERE state IN ('queued', 'sending', 'ambiguous', 'manual')`,
+         WHERE state IN ('queued', 'sending', 'ambiguous', 'manual')
+           AND ${ownedPredicate}`,
       )
+      .bind(...ownedDestinations)
       .first<number | null>("oldest_ms");
     // Copilot finding F6 (ADR §6.7): ambiguous_stale alarms on the oldest
     // AMBIGUOUS row specifically, never on an old manual/queued row.
@@ -1278,8 +1361,10 @@ export class D1DispatchStore implements DispatchStore {
       .prepare(
         `SELECT MIN(created_ms) AS oldest_ms
          FROM dispatch_outbox
-         WHERE state = 'ambiguous'`,
+         WHERE state = 'ambiguous'
+           AND ${ownedPredicate}`,
       )
+      .bind(...ownedDestinations)
       .first<number | null>("oldest_ms");
     // Audit finding B1 / ADR §10 H14: rows that stopped re-arming their
     // verification — `delivered`, scans still remaining, no due time left.
@@ -1294,8 +1379,10 @@ export class D1DispatchStore implements DispatchStore {
          WHERE state = 'delivered'
            AND shadow = 0
            AND verify_scans_remaining > 0
-           AND verify_after_ms IS NULL`,
+           AND verify_after_ms IS NULL
+           AND ${ownedPredicate}`,
       )
+      .bind(...ownedDestinations)
       .first<number>("n");
     return {
       byStateAndDestination,
@@ -1304,6 +1391,9 @@ export class D1DispatchStore implements DispatchStore {
         oldestAmbiguous === null ? null : now - oldestAmbiguous,
       repairedDuplicates: await this.repairedDuplicatesTotal(),
       verificationAbandoned: abandoned ?? 0,
+      // Review finding F2 / ADR §10 H21: a deletion whose completion never
+      // landed is countable here and alarmed by the observer.
+      unreconciledDeletionIntents: await this.unreconciledDeletionIntents(),
     };
   }
 
@@ -1343,6 +1433,44 @@ export class D1DispatchStore implements DispatchStore {
         `SELECT COUNT(*) AS n
          FROM dispatch_audit
          WHERE json_extract(evidence_json, '$.repaired_duplicate') = 1`,
+      )
+      .first<number>("n");
+    return count ?? 0;
+  }
+
+  async unreconciledDeletionIntents(): Promise<number> {
+    // Review finding F2 (ADR §10 H21): §6.3.2 requires every deletion to be
+    // audited, and the repair marker was written AFTER chat.delete returned.
+    // A worker termination — or any D1 failure — in that window destroyed the
+    // evidence for ever: the copy is gone from Slack, so no later history scan
+    // can rediscover it, and the row's own state is unchanged. The resolver
+    // now records the INTENT before the call and reconciles it afterwards, so
+    // this counts intents left without an outcome for the SAME target ts.
+    // `target_ts` is the correlation key carried by all three markers (the
+    // intent, the `repaired_duplicate` completion, the `not_applied` marker of
+    // a chat.delete that did not succeed); `seq >` scopes the match to
+    // outcomes recorded after the intent, so a retried deletion of the same ts
+    // in a later pass reconciles the earlier intent too — a copy that survived
+    // and is repaired later is not an unreconciled deletion.
+    const count = await this.#database
+      .prepare(
+        `SELECT COUNT(*) AS n
+         FROM dispatch_audit AS intent
+         WHERE json_extract(intent.evidence_json, '$.duplicate_deletion_intent')
+             = 1
+           AND NOT EXISTS (
+             SELECT 1 FROM dispatch_audit AS outcome
+             WHERE outcome.delivery_id = intent.delivery_id
+               AND outcome.seq > intent.seq
+               AND json_extract(outcome.evidence_json, '$.target_ts')
+                 = json_extract(intent.evidence_json, '$.target_ts')
+               AND (
+                 json_extract(outcome.evidence_json, '$.repaired_duplicate') = 1
+                 OR json_extract(
+                      outcome.evidence_json, '$.duplicate_deletion_not_applied'
+                    ) = 1
+               )
+           )`,
       )
       .first<number>("n");
     return count ?? 0;

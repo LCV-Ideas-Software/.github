@@ -386,10 +386,27 @@ export async function runDispatchCronPass(
     // egress (conversations.history, chat.delete) and therefore never runs in
     // mode off (panel V2); ambiguous rows wait, alarmed, for re-enable.
     if (deps.mode !== "off") {
-      const ambiguousTotal =
-        sumState(counters, "ambiguous") + sumState(counters, "sending");
-      const verificationDue = await store.verificationRowsDue(now, 1);
-      if (ambiguousTotal > 0 || verificationDue.length > 0) {
+      // Review finding N1 (ADR §10 H23): §6.3.1 normalization is a D1-only
+      // transition — no Slack call, no token. It used to run INSIDE
+      // runResolverPass, i.e. after `readBotToken()`, so a Secrets Store
+      // outage skipped it entirely: an expired `sending` lease never became
+      // `ambiguous`, a crashed real send stayed invisible to the
+      // `ambiguous_stale` alarm computed below, and a shadow row — which needs
+      // no token at all (§9.A1) — never returned to `queued`. The one moment
+      // the token is unreadable is exactly when that visibility matters most.
+      // It therefore runs FIRST, and the resolver's own normalization stays
+      // where §6.3.1 puts it (a no-op by then, and the direct-call contract
+      // for runResolverPass is unchanged).
+      await store.normalizeExpiredLeases(now);
+      // The need for egress — and therefore for the token — is decided from
+      // the POST-normalization due set: rows that just became `ambiguous` are
+      // included, and a backlog that is not due yet (§6.2/R4 next_attempt_ms)
+      // costs no secret read at all.
+      const [ambiguousDue, verificationDue] = await Promise.all([
+        store.ambiguousRowsDue(now, 1),
+        store.verificationRowsDue(now, 1),
+      ]);
+      if (ambiguousDue.length > 0 || verificationDue.length > 0) {
         const botToken = await deps.readBotToken();
         const pass = await runResolverPass({
           store,
@@ -432,6 +449,10 @@ export async function runDispatchCronPass(
         // Audit finding B1 / ADR §10 H14: a delivered row that stopped
         // re-arming its verification is alarmed, never silent.
         verificationAbandoned: after.verificationAbandoned,
+        // Review finding F2 / ADR §10 H21: a duplicate deletion whose repair
+        // record never landed is alarmed — its evidence cannot be rebuilt by
+        // any later scan, so the pre-recorded intent is all the operator gets.
+        unreconciledDeletionIntents: after.unreconciledDeletionIntents,
       },
       { repairedDuplicates: previousRepaired },
     );

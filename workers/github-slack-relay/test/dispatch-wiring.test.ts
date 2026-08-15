@@ -61,6 +61,9 @@ import {
 const POST_URL = "https://slack.com/api/chat.postMessage";
 const HISTORY_URL = "https://slack.com/api/conversations.history";
 const ALERTS_CHANNEL = "C0BMUK793NV";
+// §10 H1: the channel the OFFICIAL "GitHub for Slack" app owns — a shape-valid
+// id the dispatcher must never accept as proof (review finding N2).
+const ACTIVITY_CHANNEL = "C0BMQMW3L4E";
 const ALERT_QUEUE_NAME = "github-slack-alerts";
 const ALERT_DLQ = "github-slack-alerts-dlq";
 // Older than the R13 stale-queued threshold, well younger than 30 min.
@@ -91,6 +94,9 @@ interface RawOutboxSeed {
   shadow?: number;
   lastSendStartMs?: number | null;
   leaseUntilMs?: number | null;
+  // Review finding N1: an ambiguous row deferred by a recorded Retry-After
+  // (§6.2/R4) is the shape that proves the resolver gate reads DUE rows.
+  nextAttemptMs?: number | null;
   verifyAfterMs?: number | null;
   verifyScansRemaining?: number;
   slackChannelId?: string | null;
@@ -104,10 +110,10 @@ function seedOutboxRow(database: DatabaseSync, input: RawOutboxSeed): void {
     .prepare(
       `INSERT INTO dispatch_outbox (
          delivery_id, destination, shadow, payload_json, state,
-         last_send_start_ms, lease_until_ms, verify_after_ms,
+         last_send_start_ms, lease_until_ms, next_attempt_ms, verify_after_ms,
          verify_scans_remaining, slack_channel_id, slack_message_ts,
          created_ms, updated_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.deliveryId,
@@ -117,6 +123,7 @@ function seedOutboxRow(database: DatabaseSync, input: RawOutboxSeed): void {
       input.state,
       input.lastSendStartMs ?? null,
       input.leaseUntilMs ?? null,
+      input.nextAttemptMs ?? null,
       input.verifyAfterMs ?? null,
       input.verifyScansRemaining ?? 0,
       input.slackChannelId ?? null,
@@ -2227,5 +2234,151 @@ describe("operator menu route (ADR §6.2/§6.3 I1)", () => {
     expect(auditRows(database, manualId)).toHaveLength(0);
     expect(auditRows(database, deliveredId)).toHaveLength(0);
     expect(queue.sent).toHaveLength(0);
+  });
+
+  // Review finding N2 (ADR §10 H22): the channel was validated by SHAPE only,
+  // so a well-formed id for any other channel — #github-activity's included —
+  // was accepted as proof for an alerts delivery. `slack_message_ts` is unique
+  // only per channel, and every later reader resolves the channel from the
+  // row's DESTINATION, so the row would carry proof no sweep could ever find.
+  it("N2 mark_delivered: a well-formed channel that is not the dispatcher's is 400 with zero state change", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const deliveryId = "wiring-operator-mark-foreign-channel";
+    seedOutboxRow(database, {
+      deliveryId,
+      destination: "alerts",
+      state: "manual",
+    });
+    const env = makeEnv(queue, { db: d1 });
+
+    // Correctly signed over #github-activity's real id: shape-valid, and the
+    // channel the dispatcher does not own (§10 H1/H2).
+    const foreign = await handleFetch(
+      await operatorRequest("mark_delivered", deliveryId, {
+        slackChannelId: ACTIVITY_CHANNEL,
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(foreign.status).toBe(400);
+    expect(await foreign.json()).toEqual({
+      error: "channel_not_dispatcher_owned",
+    });
+    expect(outboxState(database, deliveryId)).toBe("manual");
+    expect(auditRows(database, deliveryId)).toHaveLength(0);
+
+    // Positive control: the CONFIGURED channel is accepted, so the check is
+    // identity, not a blanket rejection.
+    const accepted = await handleFetch(
+      await operatorRequest("mark_delivered", deliveryId, {
+        slackChannelId: channelForDestination("alerts"),
+      }),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+    expect(accepted.status).toBe(200);
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "delivered",
+      slack_channel_id: ALERTS_CHANNEL,
+    });
+  });
+});
+
+// Review finding N1 (ADR §10 H23): §6.3.1 normalization is D1-only — it needs
+// no Slack token — but it ran inside runResolverPass, after the bot-token
+// read. A Secrets Store outage therefore skipped it: the crashed send stayed
+// `sending` and invisible to `ambiguous_stale`, and a shadow row that needs no
+// token at all never returned to `queued`.
+describe("N1: lease normalization never waits on a secret (ADR §10 H23)", () => {
+  it("N1: a Secrets Store outage still normalizes expired leases and keeps the crashed send visible", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const staleCreatedMs = DISPATCH_TEST_NOW - 31 * 60_000;
+    // A real send that crashed between claim and outcome (§6.5 row 10).
+    seedOutboxRow(database, {
+      deliveryId: "n1-crashed-real-send",
+      destination: "alerts",
+      state: "sending",
+      lastSendStartMs: staleCreatedMs,
+      leaseUntilMs: DISPATCH_TEST_NOW - 1_000,
+      createdMs: staleCreatedMs,
+    });
+    // §9.A1/H16: a shadow row performs no egress, so its normalization can
+    // never depend on a Slack credential.
+    seedOutboxRow(database, {
+      deliveryId: "n1-crashed-shadow-send",
+      destination: "alerts",
+      state: "sending",
+      shadow: 1,
+      lastSendStartMs: staleCreatedMs,
+      leaseUntilMs: DISPATCH_TEST_NOW - 1_000,
+      createdMs: staleCreatedMs,
+    });
+    const secretFailure = new Error("secrets_store_unavailable");
+    const readBotToken = vi.fn(async () => {
+      throw secretFailure;
+    });
+
+    const failure = await runDispatchCronPass({
+      database: d1,
+      mode: "primary" as const,
+      fetch: vi.fn<typeof fetch>(),
+      now: () => DISPATCH_TEST_NOW,
+      readBotToken,
+      publish: async () => {},
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    // Normalization ran BEFORE the failing read — the finding's damage.
+    expect(outboxRow(database, "n1-crashed-real-send")).toMatchObject({
+      state: "ambiguous",
+      last_error: "lease_expired",
+    });
+    expect(outboxRow(database, "n1-crashed-shadow-send")).toMatchObject({
+      state: "queued",
+      last_error: "lease_expired_shadow",
+    });
+    // The pass still fails (egress is genuinely unavailable) and still carries
+    // the original cause...
+    expect(failure).toBeInstanceOf(DispatchCronPassError);
+    const passError = failure as InstanceType<typeof DispatchCronPassError>;
+    expect(passError.cause).toBe(secretFailure);
+    // ...and the crashed send is now visible to the alarm computed after it,
+    // instead of hiding in `sending` until the outage ends.
+    expect(passError.alarms).toContain("ambiguous_stale");
+  });
+
+  it("N1: a backlog that is not due yet costs no secret read", async () => {
+    const { d1, database } = dispatchDatabase();
+    // §6.2/R4: a recorded Retry-After defers the row. It is `ambiguous` and
+    // stale, so the old counter-based gate read the token for it — but the
+    // resolver would have found nothing due to examine.
+    seedOutboxRow(database, {
+      deliveryId: "n1-deferred-ambiguous",
+      destination: "alerts",
+      state: "ambiguous",
+      nextAttemptMs: DISPATCH_TEST_NOW + 60_000,
+      createdMs: DISPATCH_TEST_NOW - 31 * 60_000,
+    });
+    const readBotToken = vi.fn(async () => "xoxb-unused");
+    const fetchSpy = vi.fn<typeof fetch>();
+
+    const result = await runDispatchCronPass({
+      database: d1,
+      mode: "primary" as const,
+      fetch: fetchSpy,
+      now: () => DISPATCH_TEST_NOW,
+      readBotToken,
+      publish: async () => {},
+    });
+
+    expect(readBotToken).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.resolverExamined).toBe(0);
+    // Still alarmed — the row is visible without any secret being read.
+    expect(result.alarms).toContain("ambiguous_stale");
   });
 });

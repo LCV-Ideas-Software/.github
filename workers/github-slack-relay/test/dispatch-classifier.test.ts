@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { classifyPostMessageOutcome } from "../src/dispatch/classifier";
 import {
   MANUAL_ERROR_CODES,
+  RETRY_AFTER_CEILING_MS,
   type PostMessageOutcome,
 } from "../src/dispatch/contract";
 import {
@@ -149,6 +150,45 @@ describe("dispatch outcome classifier (ADR §6.2 — R10, R4)", () => {
 
     const seven = classifyPostMessageOutcome(fixtureInput(slackRateLimited(7)));
     expect(seven).toMatchObject({ kind: "ambiguous", retryAfterMs: 7_000 });
+  });
+
+  // Review finding N3 (ADR §10 H24): the finiteness check ran on the parsed
+  // SECONDS, before the × 1000 conversion, so a header that overflows only
+  // after the conversion produced an INFINITE delay — a schedule no clock
+  // reaches, and a total classifier that is no longer fail-safe.
+  it("N3: a Retry-After that overflows the millisecond conversion never yields an infinite delay", () => {
+    // Finite as seconds, Infinity as milliseconds: treated as an ABSENT
+    // header, so the caller falls back to its own bounded backoff.
+    const overflowing = classifyPostMessageOutcome(
+      classifierInput(429, JSON.stringify({ ok: false, error: "ratelimited" }), {
+        "Retry-After": "1e308",
+      }),
+    );
+    expect(overflowing).toMatchObject({ kind: "ambiguous", retryAfterMs: null });
+
+    // Finite in both units but absurd: clamped to the legacy path's own
+    // ceiling (retryAfterSeconds, src/index.ts).
+    const huge = classifyPostMessageOutcome(
+      classifierInput(429, JSON.stringify({ ok: false, error: "ratelimited" }), {
+        "Retry-After": "1000000000000",
+      }),
+    );
+    expect(huge).toMatchObject({
+      kind: "ambiguous",
+      retryAfterMs: RETRY_AFTER_CEILING_MS,
+    });
+    expect(RETRY_AFTER_CEILING_MS).toBe(43_200_000);
+
+    // A value inside the ceiling is untouched.
+    const ordinary = classifyPostMessageOutcome(
+      classifierInput(429, JSON.stringify({ ok: false, error: "ratelimited" }), {
+        "Retry-After": "43200",
+      }),
+    );
+    expect(ordinary).toMatchObject({
+      kind: "ambiguous",
+      retryAfterMs: 43_200_000,
+    });
   });
 
   it("R4: HTTP 429 without a Retry-After header classifies as ambiguous with retryAfterMs null", () => {

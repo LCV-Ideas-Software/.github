@@ -25,7 +25,10 @@ import {
 // Copilot suppressed comment (F1): the resolver validates a matched history
 // entry's ts with the SAME canonical pattern the §6.2 classifier applies to a
 // chat.postMessage body — one shape, one source (migration 0010's CHECK).
-import { CANONICAL_TS_PATTERN } from "./classifier";
+// Review finding N3 (ADR §10 H24): the resolver's own copy of the Retry-After
+// conversion carried the same pre-multiplication overflow, so it reads the
+// header through the classifier's BOUNDED converter — same rule, one source.
+import { CANONICAL_TS_PATTERN, retryAfterMsFrom } from "./classifier";
 
 const HISTORY_URL = "https://slack.com/api/conversations.history";
 const DELETE_URL = "https://slack.com/api/chat.delete";
@@ -77,16 +80,6 @@ function parseJsonObject(bodyText: string): Record<string, unknown> | null {
     // Classified as a failed scan by the caller.
   }
   return null;
-}
-
-function retryAfterMsFrom(headers: {
-  get(name: string): string | null;
-}): number | null {
-  const raw = headers.get("Retry-After");
-  if (raw === null) return null;
-  const seconds = Number(raw.trim());
-  if (!Number.isFinite(seconds) || seconds < 0) return null;
-  return Math.round(seconds * 1000);
 }
 
 // §6.3.1 pagination: response_metadata.next_cursor; absent metadata counts
@@ -320,6 +313,42 @@ function noProgressDelayMs(
   return Math.max(backoffMs, retryAfterMs ?? 0);
 }
 
+// Review finding F1 (ADR §10 H20): the verification snapshot a no-progress
+// write is CASed against — the observation whose staleness would otherwise let
+// this pass overwrite a due time armed after it (an operator sweep, H11).
+interface VerificationObservation {
+  readonly verifyAfterMs: number | null;
+  readonly verifyScansRemaining: number;
+}
+
+function observedFrom(row: DispatchOutboxRow): VerificationObservation {
+  return {
+    verifyAfterMs: row.verifyAfterMs,
+    verifyScansRemaining: row.verifyScansRemaining,
+  };
+}
+
+// F1 / H20: which observation the re-arm CASes against depends on WHO last
+// wrote the due time. On the verification path the pass-start row IS the
+// observation, and it must stay the pass-start one: re-reading here would
+// adopt a sweep that landed during the scan and then overwrite it, which is
+// precisely the defect. On the ambiguous path this pass's OWN markDelivered /
+// recordLateProof legitimately stamped verify_after_ms (§6.3.3), so the
+// pass-start value is stale by construction, not by race, and the observation
+// is re-read after that write. Residual, recorded rather than hidden: a sweep
+// landing between that write and this re-read is still overwritten — closing it
+// would require markDelivered to return the stamped due time. The loss is
+// bounded to the sweep's due-now scan; R19 keeps the duplicate repairable by
+// any later scan, and the re-armed scan this call writes is itself one.
+async function observationForArm(
+  row: DispatchOutboxRow,
+  deps: ResolverDeps,
+): Promise<VerificationObservation | null> {
+  if (row.state === "delivered") return observedFrom(row);
+  const fresh = await deps.store.get(row.deliveryId);
+  return fresh === null ? null : observedFrom(fresh);
+}
+
 // B1 / H14: the exit. The row stays `delivered` with its counter intact, its
 // due time is cleared (so no pass selects it again), the marker is
 // distinguishable from every re-arm, and statusCounters turns the resulting
@@ -330,16 +359,19 @@ async function abandonVerification(
   deps: ResolverDeps,
   now: number,
   reason: string,
+  observed: VerificationObservation,
 ): Promise<void> {
   await deps.store.abandonVerification(
     row.deliveryId,
     now,
-    row.verifyAfterMs,
+    // B7 / F1: the snapshot the caller decided on — the same one its sibling
+    // re-arm is CASed against, so both paths refuse a post-snapshot sweep.
+    observed.verifyAfterMs,
     JSON.stringify({
       verification_abandoned: true,
       reason,
       consecutive_no_progress: VERIFY_NO_PROGRESS_CEILING,
-      verify_scans_remaining: row.verifyScansRemaining,
+      verify_scans_remaining: observed.verifyScansRemaining,
     }),
   );
 }
@@ -356,7 +388,9 @@ async function deferVerification(
     row.deliveryId,
   );
   if (priorNoProgress >= VERIFY_NO_PROGRESS_CEILING) {
-    await abandonVerification(row, deps, now, reason);
+    // The row is `delivered` here (guarded above), so the pass-start snapshot
+    // is the observation — no other writer of this pass touched the row.
+    await abandonVerification(row, deps, now, reason, observedFrom(row));
     return;
   }
   const nextVerifyAfterMs =
@@ -391,11 +425,21 @@ async function armDuplicateRepair(
   now: number,
   marker: Record<string, unknown>,
 ): Promise<void> {
+  // F1 / H20: the observation this write is CASed against (see
+  // observationForArm). A row that no longer exists has nothing to re-arm.
+  const observed = await observationForArm(row, deps);
+  if (observed === null) return;
   const priorNoProgress = await deps.store.consecutiveNoProgressScans(
     row.deliveryId,
   );
   if (priorNoProgress >= VERIFY_NO_PROGRESS_CEILING) {
-    await abandonVerification(row, deps, now, "duplicate_repair_no_progress");
+    await abandonVerification(
+      row,
+      deps,
+      now,
+      "duplicate_repair_no_progress",
+      observed,
+    );
     return;
   }
   const nextVerifyAfterMs = now + noProgressDelayMs(priorNoProgress, null);
@@ -409,6 +453,10 @@ async function armDuplicateRepair(
       consecutive_no_progress: priorNoProgress + 1,
       next_verify_after_ms: nextVerifyAfterMs,
     }),
+    // F1 / H20: the observed due time AND counter join the CAS, so a sweep
+    // that landed after this observation is never postponed by this re-arm.
+    observed.verifyAfterMs,
+    observed.verifyScansRemaining,
   );
 }
 
@@ -457,6 +505,32 @@ async function deleteDuplicate(
   duplicateTs: string,
   channel: string,
 ): Promise<boolean> {
+  // Review finding F2 (ADR §10 H21): the deletion INTENT is durable BEFORE the
+  // side effect. chat.delete is the one irreversible egress the dispatcher
+  // performs: once it returns ok the ts is gone from Slack, so a failure to
+  // record the repair afterwards cannot be recovered by any later history scan
+  // — the evidence the scan would look for is exactly what was deleted. The
+  // pre-recorded intent survives that window, so the deletion stays countable
+  // (unreconciledDeletionIntents) and alarmed instead of silently lost.
+  // A failure HERE is fail-safe in the other direction: nothing is deleted,
+  // the copy stays in Slack, and R19 repairs it on a later scan.
+  try {
+    await deps.store.appendAudit({
+      deliveryId: row.deliveryId,
+      fromState: "delivered",
+      toState: "delivered",
+      evidenceJson: JSON.stringify({
+        duplicate_deletion_intent: true,
+        canonical_ts: canonicalTs,
+        // The correlation key shared by all three deletion markers (§10 H21).
+        target_ts: duplicateTs,
+      }),
+      actor: "resolver",
+      atMs: now,
+    });
+  } catch {
+    return false;
+  }
   let deleted = false;
   try {
     const response = await deps.fetch(DELETE_URL, {
@@ -478,7 +552,32 @@ async function deleteDuplicate(
   } catch {
     deleted = false;
   }
-  if (!deleted) return false;
+  if (!deleted) {
+    // §10 H21: the intent is reconciled by its NEGATIVE outcome — the copy is
+    // still in Slack, so this is not an unrecorded deletion and must not raise
+    // the alarm. If this append fails too, the intent stays dangling and the
+    // alarm fires on a deletion that never happened: the fail-safe direction
+    // (visible, and cleared by the next scan's successful repair, whose
+    // completion marker carries the same target ts).
+    try {
+      await deps.store.appendAudit({
+        deliveryId: row.deliveryId,
+        fromState: "delivered",
+        toState: "delivered",
+        evidenceJson: JSON.stringify({
+          duplicate_deletion_not_applied: true,
+          canonical_ts: canonicalTs,
+          target_ts: duplicateTs,
+        }),
+        actor: "resolver",
+        atMs: now,
+      });
+    } catch {
+      // Deliberately swallowed: the deletion did not happen, so the caller's
+      // outcome ("not repaired", copy joins pendingTs) is already correct.
+    }
+    return false;
+  }
   // Audit finding B4: this append is a bare prepare/bind/run and rejects on a
   // transient D1 error. Unguarded, that rejection escaped the deletion loop,
   // resolveAmbiguousRow and runResolverPass — one failed audit aborted the
@@ -499,11 +598,19 @@ async function deleteDuplicate(
         repaired_duplicate: true,
         canonical_ts: canonicalTs,
         deleted_ts: duplicateTs,
+        // §10 H21: `deleted_ts` stays the repair evidence field (unchanged);
+        // `target_ts` is the correlation key that reconciles the intent above.
+        target_ts: duplicateTs,
       }),
       actor: "resolver",
       atMs: now,
     });
   } catch {
+    // §10 H21: the copy IS deleted and this repair record did not land — the
+    // one interleaving whose evidence a later scan can never rebuild. The
+    // pre-recorded intent stays unreconciled, so the deletion is counted and
+    // alarmed rather than lost. The caller's outcome is unchanged (B4): "not
+    // repaired", so the copy keeps a future scan armed.
     return false;
   }
   return true;
@@ -712,6 +819,8 @@ export async function resolveAmbiguousRow(
               canonical_ts: canonicalTs,
               repaired_from: observedTs,
             }),
+            // H25: the ts this decision was taken against — the re-read value.
+            observedTs,
           );
           deletableTs = duplicateTs.filter((ts) => ts !== observedTs);
         }
@@ -725,6 +834,8 @@ export async function resolveAmbiguousRow(
           canonical_ts: canonicalTs,
           repaired_from: row.slackMessageTs,
         }),
+        // H25: the pass-start ts this decision was taken against.
+        row.slackMessageTs,
       );
     }
     // Copilot finding F5: track every copy that was NOT confirmed deleted

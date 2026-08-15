@@ -146,6 +146,12 @@ export const STALE_QUEUED_REQUEUE_AFTER_MS = 5 * 60 * 1_000;
 // path's constant verbatim (MINIMUM_SLACK_INTERVAL_MS, src/index.ts).
 export const DISPATCH_MINIMUM_SEND_INTERVAL_MS = 6_100;
 
+// Review finding N3 (ADR §10 H24): the largest Retry-After the dispatcher will
+// ever honor. It is the LEGACY path's own bound, verbatim — `retryAfterSeconds`
+// (src/index.ts) clamps with `Math.min(43_200, …)` seconds — rather than a new
+// invention, so both paths schedule inside the same envelope.
+export const RETRY_AFTER_CEILING_MS = 43_200 * 1_000;
+
 // ADR §6.1 — metadata event type used for the resolver's match rule.
 export const DISPATCH_METADATA_EVENT_TYPE = "github_relay_delivery";
 
@@ -314,22 +320,33 @@ export interface DispatchStore {
     expectedVerifyAfterMs: number | null,
     evidenceJson: string,
   ): Promise<boolean>;
+  // E1 enumeration (ADR §10 H25): the caller's OBSERVED ts joins the CAS, so a
+  // partial scan cannot overwrite an earlier canonical ts recorded by a fuller
+  // concurrent scan (§6.3.2 "the EARLIEST ts is canonical").
   updateCanonicalTs(
     deliveryId: string,
     now: number,
     ts: string,
     evidenceJson: string,
+    expectedTs: string | null,
   ): Promise<boolean>;
   // Copilot finding F5 (ADR §6.3.2/R19): a detected duplicate whose deletion
   // failed, or a partial scan, re-arms verification (at least one scan) and
   // records the pending marker — one batch + audit. Audit finding B1: the due
   // time is the CALLER's, taken from the shared no-progress backoff, instead
   // of a flat +15 min that never terminated.
+  // Review finding F1 (ADR §10 H20): the caller's OBSERVED due time AND
+  // counter join the CAS — the guard completeVerificationScan and
+  // deferVerificationScan already had, which this re-arm alone lacked. Both
+  // halves are needed because H11's sweep moves the counter OR the due time
+  // (never neither), so either half alone leaves the other case open.
   flagDuplicateRepairPending(
     deliveryId: string,
     now: number,
     nextVerifyAfterMs: number,
     evidenceJson: string,
+    expectedVerifyAfterMs: number | null,
+    expectedScansRemaining: number,
   ): Promise<boolean>;
   // Operator menu (I1: the only resend path; marked possible-duplicate).
   // Copilot suppressed comment (F4): every operator mutation takes the SHA-256
@@ -375,6 +392,13 @@ export interface DispatchStore {
   appendAudit(entry: Omit<DispatchAuditEntry, "seq">): Promise<void>;
   auditEntries(deliveryId: string): Promise<DispatchAuditEntry[]>;
   repairedDuplicatesTotal(): Promise<number>;
+  // Review finding F2 (ADR §10 H21): count of duplicate-deletion INTENTS with
+  // no later outcome marker for the same target ts — a chat.delete that was
+  // (or may have been) applied while its completion never reached the journal.
+  // The deleted ts is gone from Slack, so no later history scan can rediscover
+  // it; the intent is the only evidence that a deletion happened, and this
+  // count is what makes it alarmable (§6.7) instead of silently lost.
+  unreconciledDeletionIntents(): Promise<number>;
   // ADR §6.7 "repaired_duplicates increased since the last observation":
   // read-only count of repair markers at or before a cutoff, so the
   // observe-only cron derives "previous" without any write path (R5).
@@ -396,6 +420,10 @@ export interface DispatchStatusCounters {
   // re-arming (scans remaining, no due time). Row-derived, not marker-derived,
   // so an operator sweep clears the alarm.
   verificationAbandoned: number;
+  // Review finding F2 / ADR §10 H21: deletion intents never reconciled to an
+  // outcome — the only trace left when a chat.delete succeeded and its repair
+  // record did not land.
+  unreconciledDeletionIntents: number;
 }
 
 // ADR §6.7 — observe-only alarm predicate inputs. `queued` and
@@ -411,4 +439,8 @@ export interface ObserverSnapshot {
   // Audit finding B1 / ADR §10 H14: a row that gave up on verification must be
   // VISIBLE instead of silent. Optional so pre-existing callers stay valid.
   verificationAbandoned?: number;
+  // Review finding F2 / ADR §10 H21: a deletion whose repair record never
+  // landed must be VISIBLE — the ADR requires every deletion to be audited AND
+  // alarmed. Optional so pre-existing callers stay valid.
+  unreconciledDeletionIntents?: number;
 }

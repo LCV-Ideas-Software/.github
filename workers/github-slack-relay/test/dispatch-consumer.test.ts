@@ -16,7 +16,10 @@ import type {
   DispatchStore,
   ObserverSnapshot,
 } from "../src/dispatch/contract";
-import { DISPATCH_METADATA_EVENT_TYPE } from "../src/dispatch/contract";
+import {
+  DISPATCH_METADATA_EVENT_TYPE,
+  RETRY_AFTER_CEILING_MS,
+} from "../src/dispatch/contract";
 import { fenceDecision, parseDispatchMode } from "../src/dispatch/mode";
 import { observerAlarms } from "../src/dispatch/observer";
 import { D1DispatchStore } from "../src/dispatch/outbox";
@@ -331,6 +334,47 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     expect(recorded.retryOptions).toHaveLength(0);
   });
 
+  // Review finding N3 (ADR §10 H24): a Retry-After that is finite as seconds
+  // but infinite as milliseconds used to be persisted verbatim, leaving
+  // next_attempt_ms unreachable — the row would never be due for the resolver
+  // again, on a path (§6.2/R4) whose whole purpose is to make it due later.
+  it("N3: an overflowing Retry-After persists a reachable schedule, never an infinite one", async () => {
+    // One database per case: the §4 item 4 pacing reservation is shared per
+    // destination, so two sends at the same instant would not both go out.
+    const rateLimitedRow = async (
+      deliveryId: string,
+      retryAfterSeconds: number,
+    ): Promise<Record<string, unknown> | undefined> => {
+      const { database, d1 } = dispatchDatabase();
+      const store = new D1DispatchStore(d1);
+      await seedQueuedRow(store, deliveryId, "alerts");
+      await processDispatchMessage(
+        recordedMessage(deliveryId, "primary").message,
+        consumerDeps(store, postMessageFetch(slackRateLimited(retryAfterSeconds)).fetch),
+      );
+      return outboxRow(database, deliveryId);
+    };
+
+    // 1e308 s is finite; × 1000 it is Infinity — treated as an absent header,
+    // so the row is due immediately (exactly the no-header behaviour).
+    expect(await rateLimitedRow("n3-retry-after-overflow", 1e308)).toMatchObject(
+      { state: "ambiguous", next_attempt_ms: null },
+    );
+
+    // Finite in both units but absurd: clamped to the documented ceiling, so
+    // the persisted schedule is finite AND within the bound.
+    const clamped = await rateLimitedRow("n3-retry-after-huge", 1e12);
+    expect(clamped).toMatchObject({
+      state: "ambiguous",
+      next_attempt_ms: DISPATCH_TEST_NOW + RETRY_AFTER_CEILING_MS,
+    });
+    const nextAttemptMs = Number(clamped?.["next_attempt_ms"]);
+    expect(Number.isFinite(nextAttemptMs)).toBe(true);
+    expect(nextAttemptMs).toBeLessThanOrEqual(
+      DISPATCH_TEST_NOW + RETRY_AFTER_CEILING_MS,
+    );
+  });
+
   it("R12 (consumer precondition): chat.postMessage carries an AbortSignal for the 30 s hard timeout", async () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);
@@ -514,6 +558,84 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     expect(
       database.prepare("SELECT COUNT(*) AS n FROM dispatch_rate_limit").get(),
     ).toMatchObject({ n: 0 });
+  });
+
+  // Review finding F4 (ADR §10 H19): the reservation was taken for every
+  // non-terminal row, so a redelivered message for a row the resolver or the
+  // menu already owns burned the shared per-destination slot and only then
+  // discovered the claim CAS was a no-op — nothing sent, yet the next REAL
+  // queued alert waited a full interval behind that phantom reservation.
+  it("F4: a redelivered message for a sending/ambiguous/manual row reserves no slot — the next queued alert is not delayed", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const rows: Array<[string, "sending" | "ambiguous" | "manual"]> = [
+      ["f4-redelivered-sending", "sending"],
+      ["f4-redelivered-ambiguous", "ambiguous"],
+      ["f4-redelivered-manual", "manual"],
+    ];
+    for (const [deliveryId, state] of rows) {
+      await seedQueuedRow(store, deliveryId, "alerts");
+      expect(await store.claim(deliveryId, DISPATCH_TEST_NOW)).not.toBeNull();
+      if (state === "ambiguous") {
+        expect(
+          await store.markAmbiguous(
+            deliveryId,
+            DISPATCH_TEST_NOW,
+            "http_500",
+            null,
+            "consumer",
+            ["sending"],
+          ),
+        ).toBe(true);
+      } else if (state === "manual") {
+        expect(
+          await store.markManual(
+            deliveryId,
+            DISPATCH_TEST_NOW,
+            "channel_not_found",
+            "consumer",
+            ["sending"],
+          ),
+        ).toBe(true);
+      }
+    }
+    // ANY fetch would throw unscripted_fetch: a redelivery for these rows
+    // must perform no egress at all.
+    const scripted = scriptedFetch((url) =>
+      url === POST_URL ? slackPostOk(POST_TS, ALERTS_CHANNEL) : undefined,
+    );
+    const deps = consumerDeps(store, scripted.fetch);
+
+    for (const [deliveryId, state] of rows) {
+      const recorded = recordedMessage(deliveryId, "primary");
+      await processDispatchMessage(recorded.message, deps);
+      // The finding's damage, asserted per row: not one of these redeliveries
+      // may hold the shared per-destination slot.
+      expect(
+        database.prepare("SELECT COUNT(*) AS n FROM dispatch_rate_limit").get(),
+      ).toMatchObject({ n: 0 });
+      // §6.1/§6.5 case 11: the claim CAS matched 0 rows — ack, unchanged row.
+      expect(recorded.ackCount()).toBe(1);
+      expect(recorded.retryOptions).toHaveLength(0);
+      expect(outboxRow(database, deliveryId)).toMatchObject({ state });
+    }
+    expect(scripted.calls).toHaveLength(0);
+
+    // Positive control: a genuinely `queued` row still paces (the guard
+    // narrows the reservation, it does not remove it) and posts immediately.
+    const queuedId = "f4-queued-still-paced";
+    await seedQueuedRow(store, queuedId, "alerts");
+    const queued = recordedMessage(queuedId, "primary");
+    await processDispatchMessage(queued.message, deps);
+    expect(queued.ackCount()).toBe(1);
+    expect(queued.retryOptions).toHaveLength(0);
+    expect(scripted.calls).toHaveLength(1);
+    expect(outboxRow(database, queuedId)).toMatchObject({ state: "delivered" });
+    expect(
+      database
+        .prepare("SELECT next_send_ms FROM dispatch_rate_limit WHERE destination = 'alerts'")
+        .get(),
+    ).toMatchObject({ next_send_ms: DISPATCH_TEST_NOW + 6_100 });
   });
 });
 
