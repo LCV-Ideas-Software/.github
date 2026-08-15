@@ -10,20 +10,27 @@ field, `workers/github-slack-relay/package.json` at `0.1.0`, is `private: true` 
 published to any registry — the Worker is deployed from this repository's source by
 `wrangler deploy`, and that field does not gate, tag or name any deployment.
 
-Two **components** hosted here are released under numbers, and their history is their tags, not this
-file: the reusable Zizmor workflow (`zizmor/v2.3.1` at the time of writing) and the CodeQL SARIF gate
-action (`codeql-sarif-gate/v1.0.0`). **External** consumers pin them by commit SHA, so for those a
-change takes effect only once a new tag is cut and the pin is bumped. Inside this repository the
-consumption is local and immediate: `.github/workflows/codeql.yml:60` invokes the gate as
-`uses: ./codeql-sarif-gate`, and the Zizmor workflow runs from the branch under test. Entries are therefore grouped by date rather than
-by semantic version. Each entry names the record that carries its evidence: the pull request, for a
-versioned change, so the full diff, its reviews and its checks stay reachable; or the execution issue
-for a change marked _(out-of-band)_, which by definition has no diff.
+The repository does not publish packages, GitHub Releases, or version tags. Its former reusable
+Zizmor workflow and CodeQL SARIF gate were retired in favor of their official upstream Actions.
+Entries are grouped by date rather than semantic version. Each entry names the pull request or
+execution issue that carries its evidence.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) as far as it applies to
 an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC−03:00), the
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
+
+## 15/08/2026 — Official security automation
+
+### Changed
+
+- Incorporated the CodeQL 4.37.7 update from Dependabot PR #197 and replaced the repository-owned
+  workflow contract, SARIF gate, Zizmor baseline/runtime wrapper, Scorecard policy, Actions pin
+  auditor, and OSV advisory watcher with direct, SHA-pinned official Actions.
+- Kept CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard active with least-privilege job
+  permissions and native Code Scanning uploads.
+- Moved the organization site's Cloudflare Pages deployment to the official Wrangler Action.
+- Retired the reusable security components; this repository no longer produces Releases or tags.
 
 ## 14/08/2026 — Zizmor baseline do astrologo-app
 

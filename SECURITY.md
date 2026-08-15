@@ -2,7 +2,7 @@
 
 ## Supported status
 
-The current default branch and currently maintained releases and deployments are supported. Older releases receive security updates only when operationally practical.
+The current default branch and currently maintained deployments are supported. This institutional repository does not publish versioned releases.
 
 ## Reporting a vulnerability
 
@@ -15,7 +15,7 @@ Use GitHub's [private vulnerability reporting form](https://github.com/LCV-Ideas
 Please include:
 
 - affected repository, component, route, package, workflow, or public surface;
-- affected version, release tag, commit SHA, or deployment URL when known;
+- affected commit SHA or deployment URL when known;
 - impact and exploitability;
 - reproduction steps or a safe proof of concept, if available;
 - whether any credential, personal data, payment data, private editorial material, or operational secret may be involved.

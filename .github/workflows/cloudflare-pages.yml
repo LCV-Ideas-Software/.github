@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: 24
           check-latest: true
-          cache: npm
+          package-manager-cache: false
       - name: Install dependencies
         run: |
           test "$(npm config get registry)" = "https://registry.npmjs.org/"
@@ -46,9 +46,12 @@ jobs:
       - name: Check public page formatting
         run: npm run format:public:check
       - name: Deploy site to Cloudflare Pages
-        run: |
-          ./node_modules/.bin/wrangler pages deploy site --project-name=org-site --branch=main --commit-dirty=true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: npm
+          workingDirectory: "."
+          wranglerVersion: "4.120.1"
+          command: pages deploy site --project-name=org-site --branch=main --commit-dirty=true
     timeout-minutes: 30
