@@ -12,10 +12,29 @@ O ADR-001 corta em fases (§6.8): F1 → F2 → F3 → F4. **Hoje o repositório
 F1, com `DISPATCH_MODE=off` no `wrangler.jsonc`.** A fase muda o significado de
 quase tudo que vem abaixo, então cada seção separa os dois regimes:
 
-- **Antes do corte do F3 (hoje):** quem entrega os alertas é o **caminho legado**
-  — tabela `deliveries`, job de fila sem marcador, envio pelo Slack Workflow. O
-  dispatcher está inerte: em modo `off` o ingress nem chega a criar linha em
-  `dispatch_outbox`.
+- **Antes do corte do F3 (hoje):** o desenho é que quem entrega os alertas seja o
+  **caminho legado** — tabela `deliveries`, job de fila sem marcador, envio pelo
+  Slack Workflow —, com o dispatcher inerte, sem sequer criar linha em
+  `dispatch_outbox` no modo `off`.
+
+  > ⚠️ **Desde 14/08/2026, 16:38, esse caminho não entrega mais nada.** O app do
+  > Slack que hospedava o gatilho do Workflow foi apagado, e o egresso legado
+  > morreu com ele: toda tentativa devolve `slack_trigger_http_500_ambiguous` e a
+  > linha é estacionada em `manual_review`. Em 15/08/2026 as duas filas
+  > (`github-slack-alerts` e `github-slack-activity`) foram **pausadas** e os
+  > workflows `Slack GitHub Integration` e `GitHub Slack Webhook Redelivery`
+  > desabilitados, por decisão do operador, para só voltarem com a implementação
+  > nova. **A atividade** passou a ser entregue pela app oficial "GitHub for
+  > Slack" no `#github-activity`. **Os alertas não têm caminho vivo** — a app
+  > oficial não assina alerta de segurança nenhum (Dependabot, code scanning,
+  > secret scanning, advisories) nem filtra workflow por conclusão, que é
+  > exatamente a classe parada. Registro completo na issue #192.
+  >
+  > Consequência operacional para quem lê este runbook hoje: os passos 1 e 2
+  > continuam valendo para **descobrir** o que aconteceu com um alerta, e a
+  > resposta atual para todos eles é a mesma — aceito, persistido em
+  > `deliveries`, não entregue. Não há ação de operador que o entregue antes do
+  > corte para o dispatcher.
 - **Depois do corte do F3** (`DISPATCH_MODE=primary` e consumidores legados
   desligados): quem entrega é o dispatcher, e só então as tabelas, os estados e
   os alarmes descritos aqui pertencem ao caminho vivo.
@@ -30,7 +49,7 @@ O que cada um faz **depende da fase**:
 
 | Modo | Antes do corte do F3 (hoje) | Depois do corte do F3 |
 |---|---|---|
-| `off` | **Os alertas continuam sendo entregues**, pelo caminho legado. O dispatcher não faz nada e não cria linha em `dispatch_outbox`. **Não é parada de emergência** — veja a seção 4. | Depende de F3 ou F4, e a diferença importa. **Entre o F3 e o F4:** o insert no outbox é condicionado a `primary` (`src/index.ts:1446`), então em `off` o evento cai no insert legado e publica um job de fila **sem marcador** — não nasce linha em `dispatch_outbox`, nada se acumula em `queued` e `queued_backlog_stale` não enxerga esses eventos. Não é a degradação do ADR; veja a seção 4. **Depois do F4** (regime B, §6.8/R20, quando o caminho legado não existe mais): nada é enviado ao Slack, o ingress persiste cada GUID em `dispatch_outbox`, as linhas se acumulam em `queued` e o alarme `queued_backlog_stale` aparece. Estado de repouso e degradação de emergência. |
+| `off` | **Os alertas continuam sendo entregues**, pelo caminho legado. O dispatcher não faz nada e não cria linha em `dispatch_outbox`. **Não é parada de emergência** — veja a seção 4. | Depende de F3 ou F4, e a diferença importa. **Entre o F3 e o F4:** o insert no outbox é condicionado a `primary` (`src/index.ts:1470`), então em `off` o evento cai no insert legado e publica um job de fila **sem marcador** — não nasce linha em `dispatch_outbox`, nada se acumula em `queued` e `queued_backlog_stale` não enxerga esses eventos. Não é a degradação do ADR; veja a seção 4. **Depois do F4** (regime B, §6.8/R20, quando o caminho legado não existe mais): nada é enviado ao Slack, o ingress persiste cada GUID em `dispatch_outbox`, as linhas se acumulam em `queued` e o alarme `queued_backlog_stale` aparece. Estado de repouso e degradação de emergência. |
 | `shadow` | Os alertas continuam sendo entregues pelo caminho legado. Além disso cada alerta ganha uma linha espelho (`shadow=1`) que percorre a mecânica inteira **sem nenhuma chamada ao Slack** (§9.A1) e termina registrada como `delivered` sem `ts`. Serve para comparar volume com o caminho legado. | Estágio do F2; não se usa depois do corte. |
 | `primary` | O dispatcher passa a aceitar e entregar os alertas, e o caminho legado deixa de recebê-los. Só deve ser ligado no passo (1) do F3, depois do preflight de pertencimento do bot. | Modo normal de operação. |
 
@@ -93,7 +112,7 @@ isto é, para o caminho do dispatcher. O significado de cada estado:
 | Estado | Significa | O que fazer |
 |---|---|---|
 | `queued` | Aceita, ainda não enviada | Se o modo é `off`, é esperado. Se é `primary` e a idade passa de 30 min, o alarme `queued_backlog_stale` já disparou: veja o passo 4. |
-| `sending` | Envio em andamento, com lease de 90 s | Aguarde. Lease expirado vira `ambiguous` sozinho — **só com o modo diferente de `off`**: a normalização de lease e o resolver são gateados por `mode !== "off"` (`src/dispatch/wiring.ts:417`). Em `off` a linha permanece em `sending` até o modo voltar. |
+| `sending` | Envio em andamento, com lease de 90 s | Aguarde. Lease expirado vira `ambiguous` sozinho — **só com o modo diferente de `off`**: a normalização de lease e o resolver são gateados por `mode !== "off"` (`src/dispatch/wiring.ts:436`). Em `off` a linha permanece em `sending` até o modo voltar. |
 | `ambiguous` | Não se sabe se o Slack recebeu | O resolver procura a mensagem no histórico e decide. **Não reenvie por conta própria** — é exatamente o caso em que reenviar cria duplicata. |
 | `delivered` | Entregue, com `ts` como prova canônica | Nada a fazer. |
 | `manual` | Precisa de decisão humana | Veja o passo 5. |
@@ -218,7 +237,7 @@ existem, a idade da mais antiga não-terminal, `repaired_duplicates`,
 nunca identificadores (para investigar um GUID, veja o passo 2).
 
 **Esta seção cobre só o `dispatch_outbox`.** Todo alarme e todo campo do `/status`
-são calculados sobre essa tabela (`src/dispatch/wiring.ts:544`), e o passe encerra
+são calculados sobre essa tabela (`src/dispatch/wiring.ts:574`), e o passe encerra
 sem alarme nenhum quando ela está vazia (`src/dispatch/wiring.ts:365`). Na fase de
 hoje — F1, modo `off`, nenhuma linha criada no outbox (seção 1) — isso significa:
 passe sempre encerrado sem trabalho, `/status` todo zerado e nenhum alarme possível.
@@ -226,16 +245,16 @@ O caminho que realmente entrega hoje, `deliveries` mais o consumidor legado, **n
 tem alarme nem campo no `/status`**: a verificação dele é o painel de webhooks do
 passo 1 e a consulta ao D1 do passo 2. Pelo mesmo motivo, todo reparo disparado por
 `sweep` só é executado por um passe com o modo diferente de `off`
-(`src/dispatch/wiring.ts:417`).
+(`src/dispatch/wiring.ts:436`).
 
 | Alarme | Significa | Primeira ação |
 |---|---|---|
 | `manual_present` | Alguma linha espera decisão humana | Passo 5 |
 | `dead_letter_present` | Um envio caiu em voo entre a reivindicação e o resultado, e a fila esgotou. **Não é mais o sinal de indisponibilidade do Slack** (§10 H9/H15) | Passo 5, ação `resend` |
-| `ambiguous_stale` | Uma linha ambígua passa de 30 min sem resolução | Veja se o Slack ou o `conversations.history` está degradado; o resolver reagenda sozinho com recuo progressivo |
-| `queued_backlog_stale` | Existe linha em `queued` **e** a linha não-terminal mais antiga — de qualquer estado — passa de 30 min (`src/dispatch/observer.ts:52`). A idade é aproximada de propósito, e sempre para o lado seguro: uma linha `ambiguous` ou `manual` velha ao lado de uma `queued` recente também dispara. **É este o alarme de indisponibilidade prolongada do Slack** (§10 H9): como todo caminho de espera do consumidor deixa a linha em `queued`, uma queda do Slack aparece aqui, não em `dead_letter_present` | Em `off` **depois do F4**, é o estado esperado da degradação (seção 1). Em `primary`, veja o passo 4 |
+| `ambiguous_stale` | **É este o alarme de indisponibilidade prolongada do Slack** (§10 H43, corrigindo H9). Toda falha DEPOIS da reivindicação — erro de rede/TLS/DNS, o timeout de 30 s, 5xx, 3xx/4xx inesperado, 429, corpo de 200 malformado ou irreconhecível — passa a linha de `sending` para `ambiguous` e dá `ack` na mensagem; como não existe reenvio automático, as linhas se acumulam ali. A idade é contada desde a **última tentativa de envio**, não desde a criação da linha (§10 H40): 30 min sem resolução a partir daí | Veja se o Slack ou o `conversations.history` está degradado; o resolver reagenda sozinho com recuo progressivo |
+| `queued_backlog_stale` | Existe linha em `queued` **e** a linha não-terminal mais antiga — de qualquer estado — passa de 30 min (`src/dispatch/observer.ts:58`). A idade é aproximada de propósito, e sempre para o lado seguro: uma linha `ambiguous` ou `manual` velha ao lado de uma `queued` recente também dispara. Cobre os adiamentos ANTERIORES à reivindicação, não a queda do Slack (§10 H43): modo `off` (depois do F4), falha de leitura do `SLACK_DISPATCH_BOT_TOKEN`, espera de ritmo (pacing) e as linhas `queued` estagnadas do R13 | Em `off` **depois do F4**, é o estado esperado da degradação (seção 1). Em `primary`, veja o passo 4 — e confira o binding do token e o `DISPATCH_MODE` antes da página de status do Slack |
 | `repaired_duplicates_increased` | O sistema apagou uma cópia duplicada | Informativo; a auditoria registra os dois `ts` |
-| `duplicate_deletion_unreconciled` | Pediu-se ao Slack a deleção de uma cópia duplicada e **não se sabe** o que aconteceu: a resposta não chegou (timeout, rede, corpo ilegível, 5xx) ou o registro do reparo não gravou. Uma recusa explícita do Slack (`ok:false` em HTTP 200) NÃO cai aqui — ela se reconcilia sozinha, porque a cópia continua no canal | Confira no canal. Se a cópia **continua lá**, um `sweep` (passo 5) rearma o reparo e a varredura seguinte reconcilia a intenção. Se a cópia **sumiu**, o alarme não tem como ser apagado: o contador só fecha com um marcador de mesmo `target_ts`, que é escrito apenas dentro do reparo de duplicata (`src/dispatch/outbox.ts:1461`) e portanto depende de uma varredura enxergar aquele `ts` — que não está mais no canal. Nenhuma das quatro ações do menu escreve esse marcador (`src/index.ts:372`). O alarme fica aceso pela vida do `dispatch_audit` e a partir daí mascara uma segunda ocorrência: leia `unreconciled_deletion_intents` no `/status` como contador, não como booleano |
+| `duplicate_deletion_unreconciled` | Pediu-se ao Slack a deleção de uma cópia duplicada e **não se sabe** o que aconteceu: a resposta não chegou (timeout, rede, corpo ilegível, 5xx) ou o registro do reparo não gravou. Uma recusa explícita do Slack (`ok:false` em HTTP 200) NÃO cai aqui — ela se reconcilia sozinha, porque a cópia continua no canal | Confira no canal. Se a cópia **continua lá**, um `sweep` (passo 5) rearma o reparo e a varredura seguinte reconcilia a intenção. Se a cópia **sumiu**, o alarme não tem como ser apagado: o contador só fecha com um marcador de mesmo `target_ts`, que é escrito apenas dentro do reparo de duplicata (`src/dispatch/outbox.ts:1498`) e portanto depende de uma varredura enxergar aquele `ts` — que não está mais no canal. Nenhuma das quatro ações do menu escreve esse marcador (`src/index.ts:372`). O alarme fica aceso pela vida do `dispatch_audit` e a partir daí mascara uma segunda ocorrência: leia `unreconciled_deletion_intents` no `/status` como contador, não como booleano |
 | `verification_abandoned` | A verificação parou de reagendar após muitas varreduras sem progresso | Use `sweep` para reiniciar; se repetir, o canal tem volume alto demais para a janela de varredura |
 
 ## 4. Emergência: parar os envios agora
@@ -258,8 +277,12 @@ Uma fila pausada **continua recebendo** mensagens (documentação da Cloudflare,
 `deliveries` — este segundo ponto é propriedade do nosso código, verificada:
 todo envio de alerta do caminho legado passa pelo consumidor da fila, e o cron
 legado apenas re-enfileira, nunca envia direto. Atenção ao único limite que não
-é nosso: mensagens paradas expiram pela **retenção da fila** (padrão 4 dias);
-uma pausa mais longa que isso descarta o que estiver represado. Ao retomar
+é nosso: mensagens paradas expiram pela **retenção da fila**, e o valor é por
+fila, lido da API em 15/08/2026 — `github-slack-alerts` está em **86 400 s (24 h)**
+e `github-slack-activity` em 345 600 s (4 dias, o padrão). Uma pausa mais longa
+que isso descarta o que estiver represado **na fila**; o registro durável é a
+linha em `deliveries`, e a mensagem de fila é só um ponteiro para o GUID, então
+o que se perde é a entrega automática ao retomar, não o evento. Ao retomar
 
 ```sh
 npx wrangler@latest queues resume-delivery github-slack-alerts
@@ -272,7 +295,7 @@ fila pausada apenas segura.
 
 **Entre o corte do F3 e o F4**, `DISPATCH_MODE=off` ainda **não** é a degradação de
 emergência do ADR, e tratá-lo como tal perde eventos de vista. O insert em
-`dispatch_outbox` é condicionado a `primary` (`src/index.ts:1446`): em `off` o
+`dispatch_outbox` é condicionado a `primary` (`src/index.ts:1470`): em `off` o
 ingress cai no insert legado e publica um job de fila **sem marcador**. Não nasce
 linha no outbox, então nada se acumula em `queued` e `queued_backlog_stale` — que
 lê só `dispatch_outbox` — não enxerga esses eventos; e como os consumidores legados

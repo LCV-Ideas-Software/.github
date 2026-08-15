@@ -219,6 +219,33 @@ export class D1DispatchStore implements DispatchStore {
     return row !== null;
   }
 
+  // Review finding F-C (ADR §10 H42): /healthz probed the LEGACY schema only,
+  // so a deploy whose dispatch migration never applied reported ready while
+  // every dispatch path threw. Read-only, aggregate-free, and deliberately not
+  // on the DispatchStore interface: this is a deployment probe, not part of
+  // the dispatcher's state machine. Both dispatcher-owned tables are touched
+  // because 0010 creates both and a partial apply is the shape being caught.
+  // Returns a BOOLEAN rather than propagating, so the `ready &&` term at the
+  // call site genuinely carries the signal instead of being a constant — the
+  // same shape as the legacy `healthcheck` it sits beside. /healthz answers one
+  // generic 503 for every cause (§6.7), so nothing is lost by not
+  // discriminating here.
+  async dispatchSchemaReady(): Promise<boolean> {
+    try {
+      await this.#database
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM dispatch_outbox WHERE 0) AS outbox,
+             (SELECT COUNT(*) FROM dispatch_audit WHERE 0) AS audit,
+             (SELECT COUNT(*) FROM dispatch_rate_limit WHERE 0) AS pacing`,
+        )
+        .first<number>("outbox");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async get(deliveryId: string): Promise<DispatchOutboxRow | null> {
     const row = await this.#database
       .prepare("SELECT * FROM dispatch_outbox WHERE delivery_id = ?")
@@ -1319,9 +1346,18 @@ export class D1DispatchStore implements DispatchStore {
       DispatchDestination,
       Record<DispatchState, number>
     > = { alerts: zero() };
-    // Review finding F3 (ADR §10 H18, correcting H3): migration 0010 CHECKs
-    // `destination IN ('alerts','activity')` and the schema REDs insert such a
-    // row, but §10 H2 reduced the dispatcher to `alerts`, so this map — and
+    // Review finding F3 (ADR §10 H18, correcting H3) — and RETAINED under H39
+    // on different grounds. H39 narrowed migration 0010 to
+    // `CHECK (destination = 'alerts')`, so no foreign-destination row can
+    // exist any more and this predicate can no longer change a result set.
+    // It stays because the dereference below is an unchecked dynamic index
+    // into a map declared `{ alerts: … }`, and the predicate — bound from that
+    // map's OWN keys — is the only guard on it the TypeScript compiler can
+    // see; removing it would re-parent that safety onto a CHECK in a .sql file
+    // the compiler cannot read. The history it was written for:
+    // migration 0010 CHECKed
+    // `destination IN ('alerts','activity')` and the schema REDs inserted such
+    // a row, but §10 H2 reduced the dispatcher to `alerts`, so this map — and
     // the DispatchDestination union it is keyed by — knows only that one. The
     // grouped query returned every destination the TABLE holds, so a
     // schema-valid `activity` row made the dereference below throw: `/status`
@@ -1357,9 +1393,28 @@ export class D1DispatchStore implements DispatchStore {
       .first<number | null>("oldest_ms");
     // Copilot finding F6 (ADR §6.7): ambiguous_stale alarms on the oldest
     // AMBIGUOUS row specifically, never on an old manual/queued row.
+    // Review finding F-A (ADR §10 H40): and it measures TIME IN STATE, not row
+    // age. `created_ms` is the INGRESS instant, so a row that waited hours in
+    // `queued` — mode off, pacing, a token outage — or an operator-resent row
+    // days old raised the alarm the instant it first went ambiguous, i.e.
+    // exactly while the system was recovering normally. No column records the
+    // ambiguous transition (`dispatch_audit` does, but the resolver appends a
+    // second ambiguous->ambiguous entry per Retry-After, so the episode start
+    // is a per-row query, not one MIN). The anchor is therefore the claim
+    // instant of the last send attempt: `claim()` is the ONLY writer of
+    // `last_send_start_ms` and the only writer of `state = 'sending'`, and
+    // every path into `ambiguous` comes from `sending` (or from `ambiguous`,
+    // which preserves it), so the COALESCE is defensive only. It still
+    // over-reports, but boundedly — by at most the 30 s client timeout on the
+    // consumer path, or one 90 s lease plus one `*/5` cron period on the
+    // normalization path, against a 30 min threshold. `updated_ms` was
+    // considered and REJECTED as fail-dangerous: `incrementResolverAttempts`
+    // bumps it while the row stays ambiguous, and H10 computes the contended
+    // per-row cadence as 15 min, so the measured age would sit below the
+    // threshold during precisely the outage the alarm exists for.
     const oldestAmbiguous = await this.#database
       .prepare(
-        `SELECT MIN(created_ms) AS oldest_ms
+        `SELECT MIN(COALESCE(last_send_start_ms, created_ms)) AS oldest_ms
          FROM dispatch_outbox
          WHERE state = 'ambiguous'
            AND ${ownedPredicate}`,

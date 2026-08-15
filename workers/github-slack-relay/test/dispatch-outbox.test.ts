@@ -17,6 +17,10 @@ import {
 import type { DispatchOutboxRow } from "../src/dispatch/contract";
 import { D1DispatchStore } from "../src/dispatch/outbox";
 import {
+  channelForDestination,
+  DISPATCH_CHANNELS,
+} from "../src/dispatch/wiring";
+import {
   auditRows,
   closeDispatchDatabases,
   DISPATCH_TEST_NOW,
@@ -103,6 +107,10 @@ interface RawOutboxRowInput {
   createdMs?: number;
   verifyScansRemaining?: number;
   verifyAfterMs?: number | null;
+  // Review finding F-A (ADR §10 H40): the ambiguous-age anchor is the claim
+  // instant of the last send attempt, which no store method can set
+  // independently of `created_ms`.
+  lastSendStartMs?: number | null;
 }
 
 function insertRawOutboxRow(
@@ -114,8 +122,8 @@ function insertRawOutboxRow(
       `INSERT INTO dispatch_outbox (
          delivery_id, destination, shadow, payload_json, state,
          slack_channel_id, slack_message_ts, verify_scans_remaining,
-         verify_after_ms, created_ms, updated_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         verify_after_ms, last_send_start_ms, created_ms, updated_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.deliveryId,
@@ -127,6 +135,7 @@ function insertRawOutboxRow(
       input.slackMessageTs ?? null,
       input.verifyScansRemaining ?? 0,
       input.verifyAfterMs ?? null,
+      input.lastSendStartMs ?? null,
       input.createdMs ?? DISPATCH_TEST_NOW,
       input.createdMs ?? DISPATCH_TEST_NOW,
     );
@@ -152,7 +161,7 @@ function insertRawAuditRow(database: DatabaseSync, actor: string): void {
 afterEach(closeDispatchDatabases);
 
 describe("migration 0010 dispatch schema (ADR §6.4)", () => {
-  it("0010: dispatch_outbox rejects a destination outside alerts/activity", () => {
+  it("0010: dispatch_outbox rejects a destination outside alerts", () => {
     const { database } = dispatchDatabase();
     expect(() =>
       insertRawOutboxRow(database, {
@@ -161,6 +170,74 @@ describe("migration 0010 dispatch schema (ADR §6.4)", () => {
         state: "queued",
       }),
     ).toThrow(/CHECK constraint failed/);
+  });
+
+  // Review finding F5 (ADR §10 H39): ONE test for the whole class, not one per
+  // unscoped query. Every dispatcher path — the resolver due sets, the
+  // verification due set, the stale-queued republish, lease normalization and
+  // the /status aggregates — reads FROM dispatch_outbox, so if the table
+  // cannot HOLD a destination the runtime channel map has no entry for, no
+  // such row can enter any of those paths. The property is therefore stated
+  // once, over the two tables that carry a destination, and it is anchored on
+  // the runtime map itself rather than on a literal: widening
+  // DISPATCH_CHANNELS without widening the CHECK, or the reverse, fails here.
+  it("F5: the schema admits exactly the destinations the runtime channel map serves", () => {
+    const { database } = dispatchDatabase();
+    const served = Object.keys(DISPATCH_CHANNELS);
+    expect(served).toEqual(["alerts"]);
+
+    // The SCHEMA side of the pair, derived from the migration text rather than
+    // from a candidate list — a candidate list can only reject values this
+    // test happened to guess, so widening the CHECK to some destination it
+    // never names would slip through. Every destination-carrying table in 0010
+    // must admit exactly the set the runtime map serves.
+    const sql = migrationSource("0010_dispatch_outbox.sql");
+    const admittedPerTable = [
+      ...sql.matchAll(/CHECK \(\s*destination (?:=|IN) ([^)]*)\)/g),
+    ].map((match) =>
+      [...(match[1] ?? "").matchAll(/'([^']+)'/g)].map(
+        (literal) => literal[1],
+      ),
+    );
+    // dispatch_outbox and dispatch_rate_limit — both, or the sweep is partial.
+    expect(admittedPerTable).toHaveLength(2);
+    for (const admitted of admittedPerTable) {
+      expect(admitted).toEqual(served);
+    }
+
+    for (const destination of served) {
+      expect(() =>
+        insertRawOutboxRow(database, {
+          deliveryId: `f5-served-${destination}`,
+          destination,
+          state: "queued",
+        }),
+      ).not.toThrow();
+      // Total over the admitted set: an admitted row always has a channel.
+      expect(
+        channelForDestination(destination as "alerts"),
+      ).toMatch(/^C[A-Z0-9]{8,}$/);
+    }
+
+    // "activity" is the residue this class is about (§10 H2 reduced the
+    // dispatcher to one destination); "canary" is the never-legal control.
+    for (const destination of ["activity", "canary"]) {
+      expect(served).not.toContain(destination);
+      expect(() =>
+        insertRawOutboxRow(database, {
+          deliveryId: `f5-unserved-${destination}`,
+          destination,
+          state: "queued",
+        }),
+      ).toThrow(/CHECK constraint failed/);
+      expect(() =>
+        database
+          .prepare(
+            "INSERT INTO dispatch_rate_limit (destination, next_send_ms) VALUES (?, ?)",
+          )
+          .run(destination, DISPATCH_TEST_NOW),
+      ).toThrow(/CHECK constraint failed/);
+    }
   });
 
   it("0010: dispatch_outbox rejects a state outside the §6.2 machine (retry_scheduled does not exist)", () => {
@@ -272,7 +349,12 @@ describe("migration 0010 dispatch schema (ADR §6.4)", () => {
     }
   });
 
-  it("0010: UNIQUE(destination, slack_message_ts) blocks a second delivered row per destination but allows the same ts across destinations", () => {
+  // ADR §10 H39: the cross-destination half of this RED — "allows the same ts
+  // across destinations" — is WITHDRAWN as inexpressible, not as unimportant.
+  // It needed a second legal destination, and the H39 narrowing leaves none.
+  // The property §6.4 actually states ("one real message per (destination,
+  // ts)") is the surviving half, and it still fires.
+  it("0010: UNIQUE(destination, slack_message_ts) blocks a second delivered row per destination", () => {
     const { database } = dispatchDatabase();
     const ts = "1786665495.000010";
     insertRawOutboxRow(database, {
@@ -291,18 +373,6 @@ describe("migration 0010 dispatch schema (ADR §6.4)", () => {
         slackMessageTs: ts,
       }),
     ).toThrow(/UNIQUE constraint failed/);
-    expect(() =>
-      insertRawOutboxRow(database, {
-        deliveryId: "red-0010-unique-other-destination",
-        destination: "activity",
-        state: "delivered",
-        slackChannelId: ACTIVITY_CHANNEL,
-        slackMessageTs: ts,
-      }),
-    ).not.toThrow();
-    expect(
-      outboxRow(database, "red-0010-unique-other-destination"),
-    ).toMatchObject({ destination: "activity", slack_message_ts: ts });
   });
 
   it("0010: dispatch_audit rejects an unknown actor", () => {
@@ -354,64 +424,19 @@ describe("migration 0011 historical dispositions (ADR §6.9 option (a), §9.A5)"
   });
 });
 
-// Review finding F3 (ADR §10 H18, correcting H3): migration 0010 still admits
-// `destination = 'activity'` — the schema RED above inserts exactly such a row
-// — while §10 H2 reduced the dispatcher to `alerts`. The H3 claim that the
-// residue is "inert" was false in the READ direction: statusCounters grouped
-// over EVERY destination in the table and indexed its alerts-only map with the
-// result, so one schema-valid row made `/status` answer 503 and aborted every
-// dispatch cron pass (runDispatchCronPass opens with that call).
-describe("F3: aggregates are scoped to dispatcher-owned destinations (ADR §10 H18)", () => {
-  it("F3: a schema-legal activity row leaves every /status aggregate intact", async () => {
+// ADR §10 H39: the F3 block that lived here — "a schema-legal activity row
+// leaves every /status aggregate intact" — is DELETED, because its three
+// fixture rows are no longer constructible: migration 0010 now CHECKs
+// `destination = 'alerts'`, so the class it pinned is closed at the schema
+// (the F5 test above pins that, once, for every dispatcher path). H18's
+// read-scoping fix itself STAYS in statusCounters — see H39 for why it is now
+// a compiler-visible guard on a dynamic map index rather than a row filter.
+// The block's positive control survives here, as a plain aggregate test: the
+// scoping narrows the query, it does not blank it.
+describe("statusCounters over the dispatcher's own rows (ADR §6.7)", () => {
+  it("the aggregates see every owned row", async () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);
-    const staleMs = DISPATCH_TEST_NOW - 31 * 60_000;
-    // One activity row per aggregate the dispatcher reads: the grouped
-    // per-state counters, the non-terminal age, the ambiguous age, and the
-    // abandoned-verification shape.
-    insertRawOutboxRow(database, {
-      deliveryId: "f3-activity-queued",
-      destination: "activity",
-      state: "queued",
-      createdMs: staleMs,
-    });
-    insertRawOutboxRow(database, {
-      deliveryId: "f3-activity-ambiguous",
-      destination: "activity",
-      state: "ambiguous",
-      createdMs: staleMs,
-    });
-    insertRawOutboxRow(database, {
-      deliveryId: "f3-activity-abandoned",
-      destination: "activity",
-      state: "delivered",
-      slackChannelId: ACTIVITY_CHANNEL,
-      slackMessageTs: "1786664000.000900",
-      verifyScansRemaining: 1,
-      verifyAfterMs: null,
-      createdMs: staleMs,
-    });
-
-    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
-
-    // Before the fix this call THREW (undefined["queued"]), so /status was
-    // 503 and the cron pass aborted on a row the schema accepts.
-    expect(Object.keys(counters.byStateAndDestination)).toEqual(["alerts"]);
-    expect(counters.byStateAndDestination.alerts).toEqual({
-      queued: 0,
-      sending: 0,
-      ambiguous: 0,
-      manual: 0,
-      delivered: 0,
-      dead_letter: 0,
-      closed_manual: 0,
-    });
-    expect(counters.oldestNonTerminalAgeMs).toBeNull();
-    expect(counters.oldestAmbiguousAgeMs).toBeNull();
-    expect(counters.verificationAbandoned).toBe(0);
-
-    // Positive control: the same aggregates still see the dispatcher's own
-    // rows — the scope narrows the query, it does not blank it.
     insertRawOutboxRow(database, {
       deliveryId: "f3-alerts-ambiguous",
       destination: "alerts",
@@ -428,12 +453,73 @@ describe("F3: aggregates are scoped to dispatcher-owned destinations (ADR §10 H
       verifyAfterMs: null,
       createdMs: DISPATCH_TEST_NOW - 60_000,
     });
+
     const owned = await store.statusCounters(DISPATCH_TEST_NOW);
+
+    expect(Object.keys(owned.byStateAndDestination)).toEqual(["alerts"]);
     expect(owned.byStateAndDestination.alerts.ambiguous).toBe(1);
     expect(owned.byStateAndDestination.alerts.delivered).toBe(1);
     expect(owned.oldestNonTerminalAgeMs).toBe(60_000);
     expect(owned.oldestAmbiguousAgeMs).toBe(60_000);
     expect(owned.verificationAbandoned).toBe(1);
+  });
+});
+
+// Review finding F-A (ADR §10 H40): `ambiguous_stale` measures TIME IN STATE,
+// not row age. The aggregate took MIN(created_ms) — the ingress instant — so a
+// row that waited a long time in `queued` (mode off, pacing, a token outage) or
+// an operator-resent row days old raised the alarm the moment it first went
+// ambiguous, i.e. exactly while the system was recovering normally. No column
+// records the ambiguous transition, so the anchor is the claim instant of the
+// last send attempt (`last_send_start_ms`), which is <= that transition by at
+// most the client timeout or one lease plus a cron period.
+describe("F-A: the ambiguous age is measured from the send attempt (ADR §10 H40)", () => {
+  it("F-A: an old row that just became ambiguous does not raise ambiguous_stale", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    insertRawOutboxRow(database, {
+      deliveryId: "fa-old-row-fresh-failure",
+      destination: "alerts",
+      state: "ambiguous",
+      createdMs: DISPATCH_TEST_NOW - 2 * 60 * 60_000,
+      lastSendStartMs: DISPATCH_TEST_NOW - 60_000,
+    });
+
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+
+    expect(counters.oldestAmbiguousAgeMs).toBe(60_000);
+  });
+
+  it("F-A: a row whose send attempt is 31 min old still raises ambiguous_stale", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    insertRawOutboxRow(database, {
+      deliveryId: "fa-stale-failure",
+      destination: "alerts",
+      state: "ambiguous",
+      createdMs: DISPATCH_TEST_NOW - 2 * 60 * 60_000,
+      lastSendStartMs: DISPATCH_TEST_NOW - 31 * 60_000,
+    });
+
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+
+    expect(counters.oldestAmbiguousAgeMs).toBe(31 * 60_000);
+  });
+
+  it("F-A: a row with no send attempt recorded falls back to created_ms", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    insertRawOutboxRow(database, {
+      deliveryId: "fa-no-attempt-recorded",
+      destination: "alerts",
+      state: "ambiguous",
+      createdMs: DISPATCH_TEST_NOW - 45 * 60_000,
+      lastSendStartMs: null,
+    });
+
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+
+    expect(counters.oldestAmbiguousAgeMs).toBe(45 * 60_000);
   });
 });
 

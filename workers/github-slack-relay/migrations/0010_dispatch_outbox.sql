@@ -8,7 +8,15 @@ CREATE TABLE dispatch_outbox (
     length(delivery_id) BETWEEN 1 AND 128
     AND delivery_id NOT GLOB '*[^A-Za-z0-9-]*'
   ),
-  destination TEXT NOT NULL CHECK (destination IN ('alerts', 'activity')),
+  -- ADR §10 H39 (superseding H18's "migration 0010 is NOT edited for this"):
+  -- the dispatcher owns ONE destination (§10 H2), and DISPATCH_CHANNELS knows
+  -- only that one, so a schema-legal 'activity' row was a row every dispatcher
+  -- query could return and no runtime path could serve. The CHECK is narrowed
+  -- to the runtime's own set instead of scoping six queries around a row that
+  -- should not exist. 0010 has never been applied (H3; re-verified live —
+  -- d1_migrations on github-slack-alerts-db holds 0001..0009 only), so it is
+  -- edited in place.
+  destination TEXT NOT NULL CHECK (destination = 'alerts'),
   shadow INTEGER NOT NULL DEFAULT 0 CHECK (shadow IN (0, 1)),
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
   state TEXT NOT NULL CHECK (
@@ -73,7 +81,11 @@ CREATE TABLE dispatch_outbox (
 );
 
 -- ADR §6.4: one real message per (destination, ts); NULL ts rows (shadow,
--- non-delivered) are exempt by SQLite UNIQUE NULL semantics.
+-- non-delivered) are exempt by SQLite UNIQUE NULL semantics. With the H39
+-- narrowing the pair carries one legal destination, so the index does the work
+-- of UNIQUE(slack_message_ts) — which is exactly the property §6.4 names. The
+-- column pair is kept: narrowing it is an unrequested change, and the pair is
+-- what a restored second destination would need.
 CREATE UNIQUE INDEX idx_dispatch_outbox_destination_ts
   ON dispatch_outbox (destination, slack_message_ts);
 
@@ -116,9 +128,11 @@ CREATE INDEX idx_dispatch_audit_delivery
 -- frozen (§6.8, R8). One row per destination; the consumer's upsert
 -- self-heals a missing row, so no seed data is required. next_send_ms is in
 -- milliseconds, like every other column of this migration (§6.4).
+-- §10 H39: narrowed with dispatch_outbox for consistency of the pair. This
+-- table was NOT part of the live class — every read and the upsert bind
+-- `destination = ?` (src/dispatch/outbox.ts), so there is no unscoped query
+-- here to poison. The residue was inert in both directions.
 CREATE TABLE dispatch_rate_limit (
-  destination TEXT PRIMARY KEY NOT NULL CHECK (
-    destination IN ('alerts', 'activity')
-  ),
+  destination TEXT PRIMARY KEY NOT NULL CHECK (destination = 'alerts'),
   next_send_ms INTEGER NOT NULL CHECK (next_send_ms >= 0)
 );

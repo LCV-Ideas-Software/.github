@@ -1021,11 +1021,20 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
       destination: "alerts",
       state: "sending",
       leaseUntilMs: DISPATCH_TEST_NOW - 1_000,
-      lastSendStartMs: DISPATCH_TEST_NOW - 200_000,
+      // Review finding F-A (ADR §10 H40): this fixture used to say "created 1 h
+      // ago, send attempt 200 s ago" and still expected `ambiguous_stale`,
+      // because the alarm measured ROW AGE. Under the corrected anchor that
+      // row is a fresh failure and is correctly NOT stale, so the send attempt
+      // — not the ingress — is what the fixture now puts past the threshold.
+      lastSendStartMs: DISPATCH_TEST_NOW - 31 * 60_000,
       createdMs: DISPATCH_TEST_NOW - 3_600_000,
     });
 
-    const pass = await runDispatchCronPass({
+    // Review finding F-B amended this case's SHAPE, not its property: the
+    // containment is unchanged, but the retained row error now fails the pass
+    // after the alarms exist, so the independent work is observed through the
+    // rows and the error instead of through a resolved result.
+    const failure = await runDispatchCronPass({
       database: d1,
       mode: "primary",
       fetch: vi.fn<typeof fetch>(),
@@ -1034,11 +1043,15 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
       publish: async () => {
         throw new Error("queue_unavailable");
       },
-    });
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
 
     // The publish failure is contained and REPORTED, not swallowed...
-    expect(pass.staleFailed).toBe(1);
-    expect(pass.requeued).toBe(0);
+    expect(failure).toBeInstanceOf(DispatchCronPassError);
+    const passError = failure as InstanceType<typeof DispatchCronPassError>;
+    expect((passError.cause as Error).message).toBe("queue_unavailable");
     // ...the stale row keeps its stale window, so R13 re-selects it...
     expect(outboxRow(database, "wiring-c-stale-publish-fails")).toMatchObject({
       state: "queued",
@@ -1049,7 +1062,110 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     expect(outboxRow(database, "wiring-c-expired-lease")).toMatchObject({
       state: "ambiguous",
     });
-    expect(pass.alarms).toContain("ambiguous_stale");
+    expect(passError.alarms).toContain("ambiguous_stale");
+  });
+
+  // Review finding F-B (ADR §10 H41): the containment above kept BOTH halves
+  // of finding C — the loop finishes and the resolver runs — but discarded the
+  // error, so the pass RESOLVED and `runDispatchScheduled` logged a successful
+  // `dispatch_cron_pass` while a row had in fact failed. The stated contract of
+  // that pass is that a failure reports as `dispatch_cron_pass_failed`. The
+  // first row error is therefore RETAINED and rethrown through the SAME
+  // passFailure/passFailed path the F3 fix already uses, i.e. after the
+  // observe-only alarms exist.
+  it("F-B: a stale-row failure keeps the pass going AND fails the pass", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const store = new D1DispatchStore(d1);
+    const staleNow = DISPATCH_TEST_NOW - STALE_QUEUED_AGE_MS;
+    // (1) the row whose republish rejects...
+    await store.insert({
+      deliveryId: "wiring-fb-publish-fails",
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"stale-a"}',
+      now: staleNow,
+    });
+    // (2) ...a SECOND stale row, which must still be republished...
+    await store.insert({
+      deliveryId: "wiring-fb-publish-succeeds",
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"stale-b"}',
+      now: staleNow + 1,
+    });
+    // (3) ...and an independent expired lease, whose recovery is D1-only.
+    seedOutboxRow(database, {
+      deliveryId: "wiring-fb-expired-lease",
+      destination: "alerts",
+      state: "sending",
+      leaseUntilMs: DISPATCH_TEST_NOW - 1_000,
+      lastSendStartMs: DISPATCH_TEST_NOW - 31 * 60_000,
+      createdMs: DISPATCH_TEST_NOW - 3_600_000,
+    });
+
+    const publishFailure = new Error("queue_unavailable");
+    const failure = await runDispatchCronPass({
+      database: d1,
+      mode: "primary",
+      fetch: vi.fn<typeof fetch>(),
+      now: () => DISPATCH_TEST_NOW,
+      readBotToken: vi.fn(async () => "xoxb-unused"),
+      publish: async (_destination, body) => {
+        if (body.deliveryId === "wiring-fb-publish-fails") throw publishFailure;
+      },
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    // The pass FAILS — the row error is the cause, carried untouched.
+    expect(failure).toBeInstanceOf(DispatchCronPassError);
+    const passError = failure as InstanceType<typeof DispatchCronPassError>;
+    expect(passError.cause).toBe(publishFailure);
+    // ...and the alarms were still computed before it was rethrown.
+    expect(passError.alarms).toContain("ambiguous_stale");
+    // The loop CONTINUED: the second stale row was republished and stamped.
+    expect(outboxRow(database, "wiring-fb-publish-succeeds")).toMatchObject({
+      state: "queued",
+      updated_ms: DISPATCH_TEST_NOW,
+    });
+    // The failed row keeps its stale window, so R13 re-selects it.
+    expect(outboxRow(database, "wiring-fb-publish-fails")).toMatchObject({
+      state: "queued",
+      updated_ms: staleNow,
+    });
+    // The resolver step still ran.
+    expect(outboxRow(database, "wiring-fb-expired-lease")).toMatchObject({
+      state: "ambiguous",
+    });
+
+    // End to end: the scheduled entrypoint reports a FAILED pass, never a
+    // successful one.
+    const infoLog = vi.spyOn(console, "info").mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    let infoLines: string[];
+    let errorLines: string[];
+    const failingQueue = new FakeQueue();
+    failingQueue.fail = true;
+    try {
+      await runDispatchScheduled(
+        makeEnv(failingQueue, { db: d1, dispatchMode: "primary" }),
+        { now: () => DISPATCH_TEST_NOW },
+      );
+      infoLines = infoLog.mock.calls.map((call) => String(call[0]));
+      errorLines = errorLog.mock.calls.map((call) => String(call[0]));
+    } finally {
+      infoLog.mockRestore();
+      errorLog.mockRestore();
+    }
+    expect(
+      infoLines.filter((line) => line.includes('"dispatch_cron_pass"')),
+    ).toHaveLength(0);
+    expect(
+      errorLines.filter((line) =>
+        line.includes('"dispatch_cron_pass_failed"'),
+      ),
+    ).toHaveLength(1);
   });
 
   it("V6 runDispatchScheduled processes the outbox even when the legacy protocol seal defers recovery", async () => {

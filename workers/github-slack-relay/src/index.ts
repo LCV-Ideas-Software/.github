@@ -1260,6 +1260,22 @@ export async function handleFetch(
     ) {
       return jsonResponse({ status: "unavailable" }, 503);
     }
+    // Review finding F-C (ADR §10 H42): this probe validated the LEGACY
+    // webhook/signing secrets and the LEGACY schema only, which was complete
+    // while the outbox was inert and stopped being complete the moment the
+    // dispatcher became a primary-mode dependency. A missing Secrets Store
+    // binding, or a deploy whose migration 0010 never applied, left health at
+    // 200 while every dispatch retried or every ingress failed. The two
+    // dispatch probes are added INSIDE the same Promise.all and the same
+    // `ready &&` conjunction as the legacy ones — same generic 503, same body,
+    // no new route and no new configuration.
+    // The token axis is mode-gated on `mode !== "off"`, which is the code's
+    // OWN egress gate: processMarkedDispatchMessage and runDispatchScheduled
+    // both read SLACK_DISPATCH_BOT_TOKEN under exactly that condition, so in
+    // `shadow` an unreadable token already retries every marked message even
+    // though §9.A1 performs no egress. The schema axis is unconditional: the
+    // table is read by /status and by the cron in every mode.
+    const dispatchMode = parseDispatchMode(env.DISPATCH_MODE);
     try {
       const [
         healthy,
@@ -1268,6 +1284,8 @@ export async function handleFetch(
         activityUrl,
         relaySigning,
         legacyUnverified,
+        dispatchSchemaReady,
+        dispatchBotToken,
       ] = await Promise.all([
         dependencies.store.healthcheck(now, deployedRevision),
         readSecret(env.GITHUB_WEBHOOK_SECRET),
@@ -1275,13 +1293,19 @@ export async function handleFetch(
         readSecret(env.SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL),
         relaySigningConfiguration(env),
         dependencies.store.hasLegacyUnverifiedDebt(),
+        new D1DispatchStore(env.DB).dispatchSchemaReady(),
+        dispatchMode === "off"
+          ? Promise.resolve(null)
+          : readSecret(env.SLACK_DISPATCH_BOT_TOKEN),
       ]);
       const ready =
         healthy &&
         hasSafeSecretLength(githubSecret) &&
         relaySigning !== null &&
         slackWorkflowUrl(alertsUrl) !== null &&
-        slackWorkflowUrl(activityUrl) !== null;
+        slackWorkflowUrl(activityUrl) !== null &&
+        dispatchSchemaReady &&
+        (dispatchBotToken === null || hasSafeSecretLength(dispatchBotToken));
       return jsonResponse(
         ready
           ? { status: "ready", legacy_unverified: legacyUnverified }

@@ -12,6 +12,19 @@ import {
 
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
 
+// A D1 whose dispatcher tables do not exist — what a deploy that never applied
+// migration 0010 actually answers (review finding F-C).
+function brokenDispatchSchemaD1(): D1Database {
+  return {
+    prepare(): D1PreparedStatement {
+      throw new Error("D1_ERROR: no such table: dispatch_outbox");
+    },
+    async batch(): Promise<D1Result<unknown>[]> {
+      throw new Error("D1_ERROR: no such table: dispatch_outbox");
+    },
+  } as unknown as D1Database;
+}
+
 describe("GitHub webhook ingress", () => {
   it("verifies HMAC before parsing and accepts a relevant workflow failure", async () => {
     const queue = new FakeQueue();
@@ -306,6 +319,63 @@ describe("GitHub webhook ingress", () => {
       expect(await response.json()).toEqual({ status: "unavailable" });
     },
   );
+
+  // Review finding F-C (ADR §10 H42): /healthz validated the LEGACY webhook
+  // secrets and the LEGACY schema only. Once the outbox became the primary
+  // path, a missing dispatch migration or an unreadable
+  // SLACK_DISPATCH_BOT_TOKEN left health at 200 while every dispatch retried
+  // or every ingress failed. The probe is mode-aware, in the same Promise.all
+  // and the same `ready &&` conjunction as the legacy probes.
+  it("F-C: reports unavailable when the dispatch schema is missing, in every mode", async () => {
+    for (const dispatchMode of ["off", "shadow", "primary"]) {
+      const response = await handleFetch(
+        new Request("https://relay.example/healthz"),
+        makeEnv(new FakeQueue(), {
+          db: brokenDispatchSchemaD1(),
+          dispatchMode,
+        }),
+        { store: new MemoryDeliveryStore() },
+      );
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ status: "unavailable" });
+    }
+  });
+
+  it("F-C: reports unavailable when the dispatch bot token is unusable and egress is enabled", async () => {
+    for (const dispatchMode of ["shadow", "primary"]) {
+      const env = makeEnv(new FakeQueue(), { dispatchMode });
+      (env as unknown as Record<string, unknown>)["SLACK_DISPATCH_BOT_TOKEN"] =
+        null;
+
+      const response = await handleFetch(
+        new Request("https://relay.example/healthz"),
+        env,
+        { store: new MemoryDeliveryStore() },
+      );
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ status: "unavailable" });
+    }
+  });
+
+  it("F-C: an unusable dispatch bot token does not fail health while egress is off", async () => {
+    const env = makeEnv(new FakeQueue(), { dispatchMode: "off" });
+    (env as unknown as Record<string, unknown>)["SLACK_DISPATCH_BOT_TOKEN"] =
+      null;
+
+    const response = await handleFetch(
+      new Request("https://relay.example/healthz"),
+      env,
+      { store: new MemoryDeliveryStore() },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      status: "ready",
+      legacy_unverified: false,
+    });
+  });
 
   it("returns the same generic 503 for an unusable schema", async () => {
     const queue = new FakeQueue();

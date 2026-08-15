@@ -385,6 +385,11 @@ export async function runDispatchCronPass(
   // the observe-only snapshot below; it is rethrown after the alarms exist.
   let passFailure: unknown;
   let passFailed = false;
+  // Review finding F-B: the FIRST stale-row failure, retained while the loop
+  // finishes and the resolver runs, then routed into passFailure below so the
+  // pass reports `dispatch_cron_pass_failed` instead of a successful pass.
+  let staleFailure: unknown;
+  let staleFailedFirstSeen = false;
 
   try {
     // R20: in mode off nothing is processed or published — rows accumulate in
@@ -401,12 +406,26 @@ export async function runDispatchCronPass(
         // here, exactly as runResolverPass already contains each examined row
         // (audit finding B4). The row itself loses nothing: a failed publish
         // leaves updated_ms unstamped, so R13 re-selects it on the next pass.
+        // Review finding F-B: containing the row must not make the PASS look
+        // healthy. The bare `catch` discarded the error, so a pass in which
+        // every stale row failed still returned normally and
+        // runDispatchScheduled logged `dispatch_cron_pass` — a successful
+        // record of a failed pass, against this function's own stated
+        // contract. The first error is RETAINED here (later rows are counted
+        // in staleFailed; keeping the first preserves the original cause) and
+        // rethrown after the alarms exist, through the same passFailure path
+        // the F3 fix already uses. Containment is unchanged: the loop still
+        // finishes and the resolver step below still runs.
         try {
           await processStaleQueuedRow(row, store, deps);
           if (row.shadow) shadowProcessed += 1;
           else requeued += 1;
-        } catch {
+        } catch (rowError) {
           staleFailed += 1;
+          if (!staleFailedFirstSeen) {
+            staleFailure = rowError;
+            staleFailedFirstSeen = true;
+          }
         }
       }
     }
@@ -454,6 +473,17 @@ export async function runDispatchCronPass(
     // snapshot, so the alarms disappeared exactly while egress was unhealthy.
     // The failure is held here and rethrown below, with the alarms attached.
     passFailure = error;
+    passFailed = true;
+  }
+
+  // Review finding F-B: a contained stale-row failure fails the pass too, but
+  // only once the independent work above has been done. Precedence is stated:
+  // a failure that reached the outer catch — the resolver, the token read,
+  // lease normalization — WINS, because it aborted the pass rather than one
+  // row of it; the retained row error is the cause only when nothing else
+  // failed.
+  if (!passFailed && staleFailedFirstSeen) {
+    passFailure = staleFailure;
     passFailed = true;
   }
 
