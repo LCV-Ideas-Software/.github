@@ -791,7 +791,7 @@ export class D1DispatchStore implements DispatchStore {
     const byStateAndDestination: Record<
       DispatchDestination,
       Record<DispatchState, number>
-    > = { alerts: zero(), activity: zero() };
+    > = { alerts: zero() };
     const grouped = await this.#database
       .prepare(
         `SELECT destination, state, COUNT(*) AS n

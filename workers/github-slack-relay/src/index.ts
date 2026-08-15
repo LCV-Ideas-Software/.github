@@ -1056,14 +1056,21 @@ export async function handleFetch(
   const dispatchMode = parseDispatchMode(env.DISPATCH_MODE);
   const dispatchStore = new D1DispatchStore(env.DB);
 
+  // ADR-001 §10 (operator decision 14/08/2026, issue #192 comment
+  // 5299997975): the dispatcher owns ONLY #github-alerts — the official
+  // "GitHub for Slack" app owns #github-activity. A delivery normalized to
+  // "activity" therefore keeps flowing through the untouched legacy path in
+  // EVERY mode, primary included.
+  const dispatched = normalized.destination === "alerts" ? "alerts" : null;
+
   // ADR-001 §6.8 primary mode: the outbox is the accepting path; the legacy
   // table is read forever by the presence fence.
-  if (dispatchMode === "primary") {
+  if (dispatchMode === "primary" && dispatched !== null) {
     let accepted: Awaited<ReturnType<typeof acceptPrimary>>;
     try {
       accepted = await acceptPrimary(dispatchStore, {
         deliveryId,
-        destination: normalized.destination,
+        destination: dispatched,
         payloadJson: JSON.stringify(normalized.payload),
         now,
       });
@@ -1088,8 +1095,9 @@ export async function handleFetch(
     return jsonResponse({ accepted: true, queued: true }, 202);
   }
 
-  // ADR-001 §6.8 modes off/shadow: the legacy path accepts, fenced by the
-  // outbox (shadow rows excluded inside the helper).
+  // ADR-001 §6.8 modes off/shadow — and, per §10, any "activity" delivery in
+  // primary mode: the legacy path accepts, fenced by the outbox (shadow rows
+  // excluded inside the helper).
   try {
     if (await legacyAcceptBlockedByOutbox(dispatchStore, deliveryId)) {
       return jsonResponse({ accepted: true, duplicate: true }, 202);
@@ -1100,14 +1108,16 @@ export async function handleFetch(
 
   let inserted: boolean;
   try {
-    if (dispatchMode === "shadow") {
+    if (dispatchMode === "shadow" && dispatched !== null) {
       // ADR-001 §6.8 F2: legacy row and shadow outbox row commit atomically.
+      // §10: an "activity" delivery gets NO shadow row — it falls through to
+      // the plain legacy insert below.
       const paired = await insertShadowPaired(env.DB, {
         deliveryId,
         eventType: event,
         action: normalized.payload.action,
         repository: normalized.payload.repository,
-        destination: normalized.destination,
+        destination: dispatched,
         payloadJson: JSON.stringify(normalized.payload),
         now,
       });

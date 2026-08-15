@@ -354,7 +354,7 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);
     const deliveryId = "red-r7-shadow-no-egress";
-    await seedQueuedRow(store, deliveryId, "activity", true);
+    await seedQueuedRow(store, deliveryId, "alerts", true);
     // ANY fetch would throw unscripted_fetch — §9.A1 restates R7 as
     // "shadow never calls the Slack API".
     const scripted = scriptedFetch(() => undefined);
@@ -395,8 +395,12 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
     );
 
     // §6.8 regime B: egress pauses, nothing is stranded — the row stays
-    // `queued` unchanged and the message is deferred (retry with a delay,
-    // never acked) so re-enabling the mode re-enters the normal pipeline.
+    // `queued` unchanged and the message is ACKED, never retried
+    // (cross-review round 4, codex): a retry consumes the queue's finite
+    // retry budget, so a long mode-off window would dead-letter a healthy
+    // queued row via a DLQ delivery landing after re-enable — an operator
+    // step R20 forbids. The cron's stale-queued republish re-enters the row
+    // into the normal pipeline automatically instead.
     expect(scripted.calls).toHaveLength(0);
     expect(outboxRow(database, deliveryId)).toMatchObject({
       state: "queued",
@@ -405,10 +409,8 @@ describe("ADR-001 dispatch consumer (queue path)", () => {
       lease_until_ms: null,
       updated_ms: DISPATCH_TEST_NOW,
     });
-    expect(recorded.ackCount()).toBe(0);
-    expect(recorded.retryOptions).toHaveLength(1);
-    const options = recorded.retryOptions[0];
-    expect(options?.delaySeconds ?? 0).toBeGreaterThan(0);
+    expect(recorded.ackCount()).toBe(1);
+    expect(recorded.retryOptions).toHaveLength(0);
   });
 });
 

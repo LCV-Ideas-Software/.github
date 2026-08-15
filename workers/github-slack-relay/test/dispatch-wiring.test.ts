@@ -56,7 +56,7 @@ import {
 const POST_URL = "https://slack.com/api/chat.postMessage";
 const HISTORY_URL = "https://slack.com/api/conversations.history";
 const ALERTS_CHANNEL = "C0BMUK793NV";
-const ACTIVITY_CHANNEL = "C0BMQMW3L4E";
+const ALERT_QUEUE_NAME = "github-slack-alerts";
 const ALERT_DLQ = "github-slack-alerts-dlq";
 // Older than the R13 stale-queued threshold, well younger than 30 min.
 const STALE_QUEUED_AGE_MS = STALE_QUEUED_REQUEUE_AFTER_MS + 60_000;
@@ -119,6 +119,38 @@ function seedOutboxRow(database: DatabaseSync, input: RawOutboxSeed): void {
       input.createdMs ?? DISPATCH_TEST_NOW,
       input.updatedMs ?? input.createdMs ?? DISPATCH_TEST_NOW,
     );
+}
+
+// §10 fixture: an `issues`/`opened` event normalizes to destination
+// "activity" (src/domain.ts) — the path the dispatcher no longer owns.
+function issuesPayload(): Record<string, unknown> {
+  return {
+    action: "opened",
+    organization: { login: "LCV-Ideas-Software" },
+    repository: {
+      archived: false,
+      default_branch: "main",
+      full_name: "LCV-Ideas-Software/cross-review",
+      owner: { login: "LCV-Ideas-Software" },
+    },
+    sender: { login: "octocat" },
+    issue: {
+      created_at: "2026-08-03T11:58:00Z",
+      html_url: "https://github.com/LCV-Ideas-Software/cross-review/issues/1",
+      number: 1,
+      title: "fixture issue",
+      updated_at: "2026-08-03T12:00:00Z",
+    },
+  };
+}
+
+function legacyRow(
+  database: DatabaseSync,
+  deliveryId: string,
+): { status: string; destination: string } | undefined {
+  return database
+    .prepare("SELECT status, destination FROM deliveries WHERE delivery_id = ?")
+    .get(deliveryId) as { status: string; destination: string } | undefined;
 }
 
 function outboxState(database: DatabaseSync, deliveryId: string): string {
@@ -299,7 +331,8 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
       string,
       Record<string, number>
     >;
-    expect(Object.keys(counters).sort()).toEqual(["activity", "alerts"]);
+    // §10: a single destination — the dispatcher no longer owns activity.
+    expect(Object.keys(counters).sort()).toEqual(["alerts"]);
     expect(counters["alerts"]).toMatchObject({ queued: 1, sending: 0 });
     expect(dispatch["oldest_non_terminal_age_ms"]).toBe(1_000);
     expect(dispatch["repaired_duplicates"]).toBe(0);
@@ -667,7 +700,7 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     const staleNow = DISPATCH_TEST_NOW - STALE_QUEUED_AGE_MS;
     await store.insert({
       deliveryId: "wiring-cron-shadow",
-      destination: "activity",
+      destination: "alerts",
       shadow: true,
       payloadJson: '{"text":"stale shadow"}',
       now: staleNow,
@@ -832,7 +865,7 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     const { database, d1 } = dispatchDatabase();
     seedOutboxRow(database, {
       deliveryId: "wiring-shadow-lease",
-      destination: "activity",
+      destination: "alerts",
       state: "sending",
       shadow: 1,
       leaseUntilMs: DISPATCH_TEST_NOW - 1_000,
@@ -972,7 +1005,7 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     const deliveryId = "wiring-timeout-pin";
     await store.insert({
       deliveryId,
-      destination: "activity",
+      destination: "alerts",
       shadow: false,
       payloadJson: '{"text":"timeout"}',
       now: DISPATCH_TEST_NOW,
@@ -981,7 +1014,7 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     try {
       const { fetch: postFetch } = scriptedFetch((url) =>
         url === POST_URL
-          ? slackPostOk("1786708800.000300", ACTIVITY_CHANNEL)
+          ? slackPostOk("1786708800.000300", ALERTS_CHANNEL)
           : undefined,
       );
       const { message, ack } = consumerMessage(deliveryId);
@@ -994,5 +1027,184 @@ describe("dispatch wiring (ADR-001 integration layer)", () => {
     } finally {
       timeoutSpy.mockRestore();
     }
+  });
+
+  it("§10 primary mode leaves an activity delivery on the legacy path — no outbox row, unmarked job", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const alertsQueue = new FakeQueue();
+    const activityQueue = new FakeQueue();
+    const env = makeEnv(alertsQueue, {
+      db: d1,
+      dispatchMode: "primary",
+      activityQueue,
+    });
+    const deliveryId = "00000000-0000-4000-9000-000000000401";
+
+    const response = await handleFetch(
+      await signedRequest("issues", deliveryId, issuesPayload()),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ accepted: true, queued: true });
+    // The dispatcher never saw this delivery: no outbox row, no audit row.
+    expect(outboxRow(database, deliveryId)).toBeUndefined();
+    expect(auditRows(database, deliveryId)).toHaveLength(0);
+    // The legacy table is the accepting path, carrying the activity row.
+    expect(legacyRow(database, deliveryId)).toEqual({
+      status: "queued",
+      destination: "activity",
+    });
+    // UNMARKED legacy body on the activity queue; the alerts queue untouched.
+    expect(activityQueue.sent).toEqual([{ deliveryId }]);
+    expect(alertsQueue.sent).toHaveLength(0);
+  });
+
+  it("§10 shadow mode pairs no shadow row for an activity delivery — legacy row only", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const alertsQueue = new FakeQueue();
+    const activityQueue = new FakeQueue();
+    const env = makeEnv(alertsQueue, {
+      db: d1,
+      dispatchMode: "shadow",
+      activityQueue,
+    });
+    const deliveryId = "00000000-0000-4000-9000-000000000402";
+
+    const response = await handleFetch(
+      await signedRequest("issues", deliveryId, issuesPayload()),
+      env,
+      { now: () => DISPATCH_TEST_NOW },
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ accepted: true, queued: true });
+    expect(legacyRow(database, deliveryId)).toEqual({
+      status: "queued",
+      destination: "activity",
+    });
+    // §10: F2 pairing applies to alerts only — the outbox stays empty.
+    expect(outboxRow(database, deliveryId)).toBeUndefined();
+    expect(auditRows(database, deliveryId)).toHaveLength(0);
+    const outboxCount = database
+      .prepare("SELECT COUNT(*) AS n FROM dispatch_outbox")
+      .get() as { n: number };
+    expect(outboxCount.n).toBe(0);
+    expect(activityQueue.sent).toEqual([{ deliveryId }]);
+    expect(alertsQueue.sent).toHaveLength(0);
+  });
+
+  it("§10 statusCounters and the observer aggregate over the single destination", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const staleMs = DISPATCH_TEST_NOW - 31 * 60_000;
+    seedOutboxRow(database, {
+      deliveryId: "wiring-single-queued",
+      destination: "alerts",
+      state: "queued",
+      createdMs: staleMs,
+    });
+    seedOutboxRow(database, {
+      deliveryId: "wiring-single-ambiguous",
+      destination: "alerts",
+      state: "ambiguous",
+      createdMs: staleMs,
+    });
+    seedOutboxRow(database, {
+      deliveryId: "wiring-single-manual",
+      destination: "alerts",
+      state: "manual",
+      createdMs: DISPATCH_TEST_NOW - 1_000,
+    });
+    seedOutboxRow(database, {
+      deliveryId: "wiring-single-delivered",
+      destination: "alerts",
+      state: "delivered",
+      slackChannelId: ALERTS_CHANNEL,
+      slackMessageTs: "1786708800.000400",
+      createdMs: DISPATCH_TEST_NOW - 1_000,
+    });
+
+    const store = new D1DispatchStore(d1);
+    const counters = await store.statusCounters(DISPATCH_TEST_NOW);
+    expect(Object.keys(counters.byStateAndDestination)).toEqual(["alerts"]);
+    expect(counters.byStateAndDestination.alerts).toEqual({
+      queued: 1,
+      sending: 0,
+      ambiguous: 1,
+      manual: 1,
+      delivered: 1,
+      dead_letter: 0,
+      closed_manual: 0,
+    });
+    expect(counters.oldestAmbiguousAgeMs).toBe(31 * 60_000);
+    expect(counters.oldestNonTerminalAgeMs).toBe(31 * 60_000);
+
+    // The cron's aggregate helpers iterate the single destination: the pass
+    // still sees every row and the observer still raises every alarm.
+    const fetchSpy = vi.fn<typeof fetch>();
+    const pass = await runDispatchCronPass({
+      database: d1,
+      mode: "off",
+      fetch: fetchSpy,
+      now: () => DISPATCH_TEST_NOW,
+      readBotToken: async () => "xoxb-unused",
+      publish: async () => {},
+    });
+    expect(pass.skipped).toBe(false);
+    expect([...pass.alarms].sort()).toEqual([
+      "ambiguous_stale",
+      "manual_present",
+      "queued_backlog_stale",
+    ]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("R20 a mode-off arrival is ACKED and the cron re-enters the row after the flip, never dead-lettering it", async () => {
+    const { database, d1 } = dispatchDatabase();
+    const queue = new FakeQueue();
+    const store = new D1DispatchStore(d1);
+    const deliveryId = "wiring-mode-off-reentry";
+    const staleNow = DISPATCH_TEST_NOW - STALE_QUEUED_AGE_MS;
+    await store.insert({
+      deliveryId,
+      destination: "alerts",
+      shadow: false,
+      payloadJson: '{"text":"mode off"}',
+      now: staleNow,
+    });
+
+    // Cross-review round 4 (codex): mode off ACKS instead of retrying, so no
+    // retry budget is consumed and no DLQ trip can dead-letter this healthy
+    // queued row after a later re-enable.
+    const arrival = markedBatch(ALERT_QUEUE_NAME, deliveryId);
+    const fetchSpy = vi.fn<typeof fetch>();
+    await handleQueue(
+      arrival.batch,
+      makeEnv(queue, { db: d1, dispatchMode: "off" }),
+      { now: () => DISPATCH_TEST_NOW, fetch: fetchSpy },
+    );
+    expect(arrival.ack).toHaveBeenCalledTimes(1);
+    expect(arrival.retry).not.toHaveBeenCalled();
+    expect(outboxRow(database, deliveryId)).toMatchObject({
+      state: "queued",
+      updated_ms: staleNow,
+    });
+    expect(queue.sent).toHaveLength(0);
+
+    // Config-only re-enable: the cron republishes the marked job with no
+    // operator step (§6.8/R20 automatic re-entry).
+    await runDispatchScheduled(
+      makeEnv(queue, { db: d1, dispatchMode: "primary" }),
+      { now: () => DISPATCH_TEST_NOW, fetch: fetchSpy },
+    );
+    expect(queue.sent).toEqual([{ deliveryId, path: "dispatch" }]);
+    expect(outboxState(database, deliveryId)).toBe("queued");
+    expect(
+      auditRows(database, deliveryId).every(
+        (row) => row.to_state !== "dead_letter",
+      ),
+    ).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

@@ -477,31 +477,34 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
     expect(String(last?.["evidence_json"] ?? "")).toContain(lateTs);
   });
 
-  it("R6: transitions on one destination never touch the other", async () => {
+  // §10 narrows R6: with a single destination, "one destination never touches
+  // the other" is vacuous, so the RED is restated as row independence inside
+  // `alerts` — the property the transitions actually have to carry.
+  it("R6 (§10): transitions on one row never touch another row", async () => {
     const { database, d1 } = dispatchDatabase();
     const store = new D1DispatchStore(d1);
-    const alertsId = "red-r6-alerts";
-    const activityId = "red-r6-activity";
+    const movedId = "red-r6-moved";
+    const untouchedId = "red-r6-untouched";
 
     await store.insert({
-      deliveryId: alertsId,
+      deliveryId: movedId,
       destination: "alerts",
       shadow: false,
       payloadJson: "{}",
       now: DISPATCH_TEST_NOW,
     });
     await store.insert({
-      deliveryId: activityId,
-      destination: "activity",
+      deliveryId: untouchedId,
+      destination: "alerts",
       shadow: false,
       payloadJson: "{}",
       now: DISPATCH_TEST_NOW,
     });
 
-    expect(await store.claim(alertsId, DISPATCH_TEST_NOW)).not.toBeNull();
+    expect(await store.claim(movedId, DISPATCH_TEST_NOW)).not.toBeNull();
     expect(
       await store.markDelivered(
-        alertsId,
+        movedId,
         DISPATCH_TEST_NOW + 1_000,
         "1786665495.000130",
         ALERTS_CHANNEL,
@@ -513,18 +516,17 @@ describe("D1DispatchStore (ADR §6.1-§6.4)", () => {
 
     const counters = await store.statusCounters(DISPATCH_TEST_NOW + 2_000);
     expect(counters.byStateAndDestination.alerts.delivered).toBe(1);
-    expect(counters.byStateAndDestination.alerts.queued).toBe(0);
-    expect(counters.byStateAndDestination.activity.queued).toBe(1);
-    expect(counters.byStateAndDestination.activity.delivered).toBe(0);
+    expect(counters.byStateAndDestination.alerts.queued).toBe(1);
+    expect(counters.byStateAndDestination.alerts.sending).toBe(0);
 
-    // The activity row is untouched byte-for-byte relevant fields and grew
-    // no audit history beyond its own insert.
-    expect(outboxRow(database, activityId)).toMatchObject({
+    // The other row is untouched in every relevant field and grew no audit
+    // history beyond its own insert.
+    expect(outboxRow(database, untouchedId)).toMatchObject({
       state: "queued",
       updated_ms: DISPATCH_TEST_NOW,
       slack_message_ts: null,
     });
-    expect(auditRows(database, activityId)).toHaveLength(1);
+    expect(auditRows(database, untouchedId)).toHaveLength(1);
   });
 
   it("R13: only stale queued rows are cron re-enqueue inputs", async () => {

@@ -13,9 +13,6 @@ import {
 import { parseDispatchMode } from "./mode";
 
 const POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage";
-// §6.8 regime B: mode off defers the message so re-enabling re-enters the
-// normal pipeline; the delay keeps the queue from spinning.
-const MODE_OFF_RETRY_DELAY_SECONDS = 60;
 
 const TERMINAL_STATES: ReadonlySet<string> = new Set([
   "delivered",
@@ -199,9 +196,16 @@ export async function processDispatchMessage(
     return;
   }
   if (parsed.mode === "off") {
-    // §6.8 regime B / R20: egress pauses, the row is untouched, the message
-    // is deferred — nothing is stranded.
-    message.retry({ delaySeconds: MODE_OFF_RETRY_DELAY_SECONDS });
+    // §6.8 regime B / R20: egress pauses, the row is untouched, nothing is
+    // stranded. The message is ACKED, not retried (cross-review round 4,
+    // codex): retrying consumes the queue's finite retry budget, so a long
+    // mode-off window pushes the message to the DLQ, and a DLQ delivery that
+    // lands AFTER the operator re-enables would dead-letter a healthy queued
+    // row — an operator menu step, which R20 forbids. Acking leaves the row
+    // `queued` and untouched (alarmed via queued_backlog_stale); the cron's
+    // stale-queued republish, itself gated on mode !== "off", re-enters it
+    // into the normal pipeline automatically on re-enable.
+    message.ack();
     return;
   }
   const row = await deps.store.get(parsed.deliveryId);

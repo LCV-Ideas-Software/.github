@@ -1,9 +1,11 @@
 // ADR-001 §6.1/§6.7/§6.8 — glue between index.ts and the dispatch modules.
 // Everything here is inert while DISPATCH_MODE is "off" and dispatch_outbox
 // is empty (F1 ships in that state); mode flips are config-only deploys.
+import type { RelayDestination } from "../domain";
 import {
   type DispatchDestination,
   type DispatchMode,
+  type DispatchState,
   type DispatchStatusCounters,
   type DispatchStore,
 } from "./contract";
@@ -13,14 +15,19 @@ import { observerAlarms } from "./observer";
 import { D1DispatchStore } from "./outbox";
 import { runResolverPass } from "./resolver";
 
-// §9.A1/§9.A2 (operator decision, issue #192 comment 5297040618): the only
-// destinations are the two existing private channels.
+// §9.A1/§9.A2 + §10 (operator decisions, issue #192 comments 5297040618 and
+// 5299997975): the dispatcher's only destination is the existing private
+// channel #github-alerts; #github-activity belongs to the official
+// "GitHub for Slack" app.
 export const DISPATCH_CHANNELS: Readonly<
   Record<DispatchDestination, string>
 > = Object.freeze({
   alerts: "C0BMUK793NV",
-  activity: "C0BMQMW3L4E",
 });
+
+// §10: the aggregate helpers below iterate this list instead of naming each
+// destination, so restoring a second destination stays a one-line change.
+const DISPATCH_DESTINATIONS: readonly DispatchDestination[] = ["alerts"];
 
 // R9/§9.A4: workspace retention verified "never delete" (operator screenshot;
 // probes green). Proven-absent verdicts are unreachable if this is ever
@@ -207,6 +214,10 @@ export async function insertShadowPaired(
 // narrows that window). Same deliberate byte-copy rationale as
 // insertShadowPaired above; ON CONFLICT DO NOTHING semantics preserved
 // (false => duplicate => 202).
+// §10: this writes the LEGACY deliveries row, which still carries both
+// destinations (an "activity" delivery takes this path in every mode), so the
+// field is typed RelayDestination — unlike insertShadowPaired, whose outbox
+// row is dispatcher-owned and therefore alerts-only.
 export async function insertLegacyFenced(
   database: D1Database,
   input: {
@@ -214,7 +225,7 @@ export async function insertLegacyFenced(
     eventType: string;
     action: string;
     repository: string;
-    destination: DispatchDestination;
+    destination: RelayDestination;
     payloadJson: string;
     now: number;
   },
@@ -340,10 +351,7 @@ export async function runDispatchCronPass(
   // mode off (panel V2); ambiguous rows wait, alarmed, for re-enable.
   if (deps.mode !== "off") {
     const ambiguousTotal =
-      counters.byStateAndDestination.alerts.ambiguous +
-      counters.byStateAndDestination.activity.ambiguous +
-      counters.byStateAndDestination.alerts.sending +
-      counters.byStateAndDestination.activity.sending;
+      sumState(counters, "ambiguous") + sumState(counters, "sending");
     const verificationDue = await store.verificationRowsDue(now, 1);
     if (ambiguousTotal > 0 || verificationDue.length > 0) {
       const botToken = await deps.readBotToken();
@@ -373,9 +381,7 @@ export async function runDispatchCronPass(
       // non-terminal age (R20 backlog approximation).
       oldestAmbiguousAgeMs: after.oldestAmbiguousAgeMs,
       repairedDuplicates: after.repairedDuplicates,
-      queued:
-        after.byStateAndDestination.alerts.queued +
-        after.byStateAndDestination.activity.queued,
+      queued: sumState(after, "queued"),
       oldestNonTerminalAgeMs: after.oldestNonTerminalAgeMs,
     },
     { repairedDuplicates: previousRepaired },
@@ -386,7 +392,7 @@ export async function runDispatchCronPass(
 
 function countAllRows(counters: DispatchStatusCounters): number {
   let total = 0;
-  for (const destination of ["alerts", "activity"] as const) {
+  for (const destination of DISPATCH_DESTINATIONS) {
     for (const count of Object.values(
       counters.byStateAndDestination[destination],
     )) {
@@ -398,12 +404,13 @@ function countAllRows(counters: DispatchStatusCounters): number {
 
 function sumState(
   counters: DispatchStatusCounters,
-  state: "dead_letter" | "manual",
+  state: DispatchState,
 ): number {
-  return (
-    counters.byStateAndDestination.alerts[state] +
-    counters.byStateAndDestination.activity[state]
-  );
+  let total = 0;
+  for (const destination of DISPATCH_DESTINATIONS) {
+    total += counters.byStateAndDestination[destination][state];
+  }
+  return total;
 }
 
 // §6.7: aggregate counters ONLY — no identifiers, keys or configuration on

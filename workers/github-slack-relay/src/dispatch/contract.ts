@@ -5,7 +5,10 @@
 
 export type DispatchMode = "off" | "shadow" | "primary";
 
-export type DispatchDestination = "alerts" | "activity";
+// §10 hybrid amendment (operator decision 14/08/2026, issue #192 comment
+// 5299997975): the official "GitHub for Slack" app owns #github-activity, so
+// the dispatcher carries the single destination "alerts".
+export type DispatchDestination = "alerts";
 
 // ADR §6.2/§6.4 — `retry_scheduled` deliberately does not exist (I1).
 export type DispatchState =
