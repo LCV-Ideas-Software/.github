@@ -117,7 +117,13 @@ O vigia passa a ter **uma** condição: a idade da linha `pendente` mais velha. 
 ### O que a deleção custa, dito sem maquiagem
 
 1. **Uma linha impossível é retentada para sempre.** Custo real: uma chamada por linha por intervalo de recuo. No volume medido — 9 alertas por hora — é desprezível. Custo verdadeiro: o alarme fica aceso até o humano agir, que é o que um alarme deve fazer.
-2. **A amplificação de duplicata perde seu teto explícito.** Na prática ela continua limitada: um envio que deu certo com resposta perdida gera uma cópia, e a tentativa seguinte vê `ok:true` e encerra. Amplificação sem fim exigiria perder **toda** resposta, e nesse regime as cópias também não chegam ao canal.
+2. **A amplificação de duplicata perde seu teto explícito.** ~~Na prática ela continua limitada: um envio que deu certo com resposta perdida gera uma cópia, e a tentativa seguinte vê `ok:true` e encerra. Amplificação sem fim exigiria perder **toda** resposta, e nesse regime as cópias também não chegam ao canal.~~
+
+   **Retratado em 16/08, achado do Codex na rodada 3, e ele está certo.** A frase riscada confunde *resposta perdida* com *mensagem não entregue*. Se o Slack processa o POST e a resposta se perde **depois** disso, a mensagem aparece no canal e o Worker nunca vê `ok:true`. Repetido, isso produz cópias visíveis sem fim. Não é hipótese remota: é exatamente o caso ambíguo, e eu o descartei com uma afirmação que não tinha como provar.
+
+   **O que de fato limita, e não é um contador.** O recuo. Com recuo que cresce e satura num teto de 24 h — o máximo que a plataforma aceita, *"Messages can be delayed by up to 24 hours"* —, o número de cópias cresce como o logaritmo do tempo, não como o tempo: dezenas ao longo de uma semana, não milhares. E a linha permanece `pendente` o tempo todo, então o vigia alarma pela idade **antes** de a contagem importar. O limite é o recuo mais o vigia, e nenhum dos dois é peça nova.
+
+   **Por que não repor o teto:** um teto transforma a linha em terminal, e terminal perde o alerta — que é a única coisa que a promessa proíbe. Entre duplicar com alarme aceso e perder em silêncio, a promessa já escolheu.
 3. **Decisões 7 e 8 do operador mudam de sentido**, e §8 do ADR encolhe para duas linhas. Isso é emenda a desenho ratificado, não edição de plano.
 
 ### E o efeito colateral que reorganiza a raiz 1
@@ -173,6 +179,22 @@ Segundo movimento, no §7: ele mistura "o que a plataforma faz" com "o que a nos
 Tarefa 4 incompleta, `adaptSqliteToD1` ainda no bloco de código, e o critério trocado de `MAX_SEND_ATTEMPTS`: o terceiro **dissolve** com a deleção (não há teto). Os dois primeiros não se consertam por emenda porque o plano será reescrito de qualquer modo — a deleção remove tarefas inteiras, e a raiz 1 acrescenta uma na frente de todas.
 
 A lição global, essa sim: **a primeira metade do plano foi escrita como código e a segunda como esboço, sem que nada no documento dissesse qual era qual.** Foi por isso que os dois revisores gastaram fôlego apontando defeitos em esboços. Um plano com metade em rascunho não deve ir a revisão sem que a fronteira esteja escrita.
+
+## Rodada 3 — quatro achados novos, contra esta própria análise
+
+O Codex revisou o documento que você está lendo e achou quatro defeitos nele. Os quatro procedem. Três atacam a deleção aprovada, e é bom que ataquem: uma deleção que não sobrevive a ataque não deveria entrar.
+
+**3.1 — Teto para o envio ambíguo (P1).** Tratado acima, no custo 2, com a retratação no lugar onde o erro foi cometido. Resolução: o limite é o recuo saturado em 24 h mais o alarme por idade, não um contador — e repor o contador reintroduziria a perda que a promessa proíbe.
+
+**3.2 — Caminho de reparo para linha intrinsecamente inválida (P1).** O Codex cita contra mim o meu próprio arquivo: `migrations/0010_alert_delivery.sql:25-28` afirma que reenviar a mesma linha *"nunca funciona, nem depois de o operador corrigir a causa"*. Se isso fosse verdade, "nunca desistir" deixaria essa linha pendente e inentregável para sempre.
+
+**Verifiquei, e o errado é o meu comentário.** A linha guarda o payload **normalizado**, não a mensagem renderizada: em `src/index.ts:1318-1324` o corpo enviado é montado **no instante do envio**, a partir de `delivery.payload`. Logo, corrigir o renderizador e implantar faz a tentativa seguinte funcionar sobre a mesma linha. O comentário da migração descreve a coluna de estacionamento — que esta emenda apaga — e sai junto com ela. Sem ele, "nunca desistir" tem caminho de reparo: **consertar o código é o reparo**, e nenhuma superfície de comando é necessária.
+
+**3.3 — Aceitação do gatilho não é entrega (P1).** Este é o mais fino dos quatro. Quando o endpoint de **workflow** do Slack devolve `{ok:true}`, ele aceitou o **gatilho**; o workflow a jusante ainda pode falhar antes de postar. É por isso que o código de hoje grava `accepted_by_trigger` (`src/index.ts:1387`) em vez de "enviado". Se eu tratasse `ok:true` como entrega naquele transporte, perderia alertas em silêncio.
+
+**A decisão de transporte que o operador tomou hoje é o que neutraliza isto** — e só ela. Em `chat.postMessage` a resposta de sucesso traz a mensagem postada (`ok`, `channel`, `ts`, `message`), então `ok:true` **é** entrega. Fica escrito no ADR como dependência explícita: a equivalência "`ok:true` = enviado" vale para `chat.postMessage` e **é falsa** para o gatilho de workflow. Trocar o transporte no futuro sem trocar o classificador perde alertas.
+
+**3.4 — Exclusão de workflow precisa da identidade do repositório (P2).** A decisão 1 exclui o vigia e o deploy do relay casando por `workflow_run.path`. Outro repositório com um workflow no mesmo caminho teria a falha dele suprimida em silêncio. O predicado passa a exigir **repositório + caminho**, e o teste vai junto.
 
 ## O que isto significa para a sequência
 
