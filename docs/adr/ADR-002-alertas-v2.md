@@ -45,6 +45,8 @@ O app aplicou por conta própria um filtro em `workflows`: apenas execuções di
 
 Essa segunda metade não é concessão: é o que torna a retentativa um recurso de recuperação **total**. Com ela, toda incerteza se resolve reenviando, e o sistema nunca precisa responder "chegou ou não chegou?" — que é a pergunta que gerou as 60 emendas do ADR-001, a varredura do histórico do Slack, a deleção irreversível de mensagem e o menu assinado de operador que existia para desfazer o que a máquina não devia fazer sozinha.
 
+**A forma verificável da promessa** *(qualificação exigida por codex e deepseek na quarta rodada de revisão, e eles tinham razão: prometida sem fronteira sobre um banco finito, ela era infalseável)*: **todo alerta aceito pelo ingress ou tem uma linha no banco — e será retentado para sempre — ou falhou na gravação com resposta de erro ao GitHub, que registra a entrega como falha no painel de webhooks da organização, onde o reenvio manual existe.** Não existe terceiro caminho: **nenhum modo de perda é silencioso**. A primeira metade é garantida por construção (dois estados, nada terminal, retenção só alcança `enviado`); a segunda é o comportamento de qualquer INSERT que falhe, inclusive por exaustão de capacidade — cuja distância do regime real está medida em §4, e cujo caminho inteiro acontece com o alarme de idade aceso.
+
 ## 3. Escopo
 
 **Entra:** alerta do Dependabot, de code scanning, de secret scanning (incluindo os sub-eventos), aviso de segurança publicado, mudança de configuração de segurança, e execução de workflow cuja conclusão seja `action_required`, `cancelled`, `failure`, `stale`, `startup_failure` ou `timed_out`.
@@ -117,6 +119,14 @@ Três defeitos morrem juntos com essa resolução: a amplificação no ritmo do 
 **O crescimento sem limite que isso admite, com a conta feita e não estimada.** Se uma condição sistêmica mantiver **toda** linha pendente para sempre, elas se acumulam. Medido no banco em 16/08 sobre a tabela existente: 13 381 linhas, payload médio de **578 bytes**, máximo de 827. O volume de alertas está na ordem de 9 por hora (§7), ou cerca de 78 800 linhas por ano; a 1 KB por linha, com folga sobre a média medida, são **≈ 79 MB por ano**. O teto documentado é *"Maximum database size | 10 GB (Workers Paid)"*, e *"Maximum number of rows per table | Unlimited (excluding per-database storage limits)"*.
 
 Ou seja: o crescimento é **ilimitado em princípio** — três peers cobraram que isso fosse dito — e, no volume medido, levaria mais de um século para encostar no teto, no cenário patológico em que nada nunca entrega. O limite não é o disco; é a paciência do operador diante de um alarme aceso. Aceito e declarado, com os números acima, e não com a palavra "desprezível".
+
+**E o caso da rajada, levantado pelo deepseek na quarta rodada: pode uma rajada exaurir o banco e bloquear inserções novas — perdendo alertas na entrada?** A análise, em três passos, sem peça nova:
+
+1. **Acumular exige não-entregar.** Linha que entrega vira `enviado` e a retenção a apaga; só o que não entrega se acumula. E a primeira linha que não entrega faz o alarme de idade disparar **em menos de uma hora** — então todo o trajeto até o teto acontece com o alarme aceso.
+2. **A escala entre o alarme e o teto é de seis ordens de grandeza.** O teto exige ~10⁷ linhas de 1 KB; o alarme dispara com **uma**. Uma rajada que vencesse essa corrida contra o operador precisaria de milhões de eventos vindos de 12 repositórios cujo volume medido é 9/hora — não é um cenário; é outro sistema.
+3. **Mesmo no extremo, a perda não é silenciosa.** Se um INSERT falhar, o ingress responde erro ao GitHub, e a entrega fica registrada como falha no painel de webhooks da organização — onde o reenvio manual existe. É perda de automação com registro externo e recuperação manual, não apagamento sem rastro.
+
+Fica como **limite declarado com a forma da falha descrita**, não como resolvido: nenhum mecanismo interno protege contra um operador que ignora um alarme por anos, e construir proteção para isso foi exatamente o erro que gerou as 60 emendas do ADR-001.
 
 **Status** — contagem por estado e a idade da linha pendente mais antiga, protegido por segredo compartilhado.
 
