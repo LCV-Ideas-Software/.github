@@ -51,6 +51,15 @@
       "secret_name": "github-slack-activity-workflow-url",
     },
     {
+      // ADR-002 §5, decisão 11: o transporte é chat.postMessage. O app é o
+      // "LCV Ideas Software GitHub Alerts" (bot U0BR6NL2B9N), já membro do
+      // canal privado, escopos concedidos chat:write,groups:history,groups:read
+      // — verificado por auth.test em 16/08/2026.
+      "binding": "SLACK_BOT_TOKEN",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-alerts-bot-token",
+    },
+    {
       "binding": "SLACK_RELAY_SIGNING_SECRET",
       "store_id": "df90c0935ba1460899c3c2c457548a90",
       "secret_name": "github-slack-relay-signing-secret",
