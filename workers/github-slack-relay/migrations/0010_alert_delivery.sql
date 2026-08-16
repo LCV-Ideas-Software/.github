@@ -1,4 +1,4 @@
--- ADR-002 §4 — entrega de alertas, três estados.
+-- ADR-002 §4 (emendado em 16/08) — entrega de alertas, DOIS estados.
 --
 -- Tabela NOVA em vez de reaproveitar `deliveries` (decisão 6 do operador):
 -- aquela tabela tem um CHECK com os dez estados do sistema anterior, e
@@ -16,17 +16,21 @@ CREATE TABLE alert_delivery (
     length(delivery_id) BETWEEN 1 AND 128
     AND delivery_id NOT GLOB '*[^A-Za-z0-9-]*'
   ),
+  -- O payload NORMALIZADO, não a mensagem renderizada. A montagem acontece
+  -- no instante do envio, e é isso que dá caminho de reparo sem superfície
+  -- de comando: corrigir o renderizador e implantar faz a tentativa
+  -- seguinte funcionar sobre esta mesma linha (ADR-002 §4).
   payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
-  state TEXT NOT NULL CHECK (state IN ('pending', 'sent', 'failed')),
-  -- Monotônico. O cron NUNCA o reinicia: ADR-002 §6, instância B — se a
-  -- recuperação apagasse o rastro das tentativas, uma linha que gira para
-  -- sempre ficaria indistinguível de uma recém-chegada.
+  -- Dois estados, e o domínio fechado é a restrição que os prende.
+  -- Não existe 'failed': a decisão 12 apagou o terminal. Uma entrega
+  -- recusada continua 'pending' e será tentada de novo, sempre. A única
+  -- saída além de 'sent' é o apagamento por retenção, que só alcança linha
+  -- já entregue — apagar 'pending' seria perder o alerta.
+  state TEXT NOT NULL CHECK (state IN ('pending', 'sent')),
+  -- Monotônico, e serve para diagnóstico, não para decidir: nada compara
+  -- este número com um teto, porque teto não existe mais (ADR-002 §5,
+  -- decisão 7, revogada pela 12).
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  -- Estacionada: a falha é intrínseca à LINHA (mensagem longa demais,
-  -- payload irrenderizável), então reenviar a mesma linha nunca funciona,
-  -- nem depois de o operador corrigir a causa. É CONTAGEM, não condição de
-  -- alarme — o vigia alarma no delta (ADR-002 §6, instância C′).
-  parked INTEGER NOT NULL DEFAULT 0 CHECK (parked IN (0, 1)),
   slack_message_ts TEXT,
   last_error TEXT,
   -- Âncora da idade que o vigia lê. NENHUM caminho de recuperação escreve
