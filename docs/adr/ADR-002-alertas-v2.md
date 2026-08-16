@@ -126,11 +126,14 @@ Cada item desta lista é uma decisão, não um esquecimento. Juntos, são a orig
 
 ## 10. O que não sei, e não vou afirmar
 
-- O comportamento de espera entre tentativas da fila da Cloudflare não está documentado na página de configuração.
 - O que acontece com a mensagem se a retenção expirar enquanto ela ainda está sendo retentada não está documentado.
 - A frequência com que o GitHub descarta execuções agendadas não é publicada.
 
-Os três vão para medição antes de virarem número na implementação.
+Os dois vão para medição antes de virarem número na implementação.
+
+**Um item saiu desta lista por ter sido encontrado documentado.** Eu havia listado "o comportamento de espera entre tentativas da fila" como desconhecido, depois de ler a página de configuração. Estava na página de [batching, retries e delays](https://developers.cloudflare.com/queues/configuration/batching-retries/), que eu não tinha consultado — e a resposta muda o desenho: **a plataforma não impõe recuo próprio**. Quem escolhe é o consumidor, via `delaySeconds` em `retry()` ou `retryAll()`, com teto de *"up to 24 hours"*; cada mensagem carrega *"an `attempts` property that tracks the number of delivery attempts made"*; e o esgotamento é explícito — *"Messages that reach the configured maximum retries will be deleted from the queue, or if a dead-letter queue (DLQ) is configured, written to the DLQ instead."* Essa última citação é a prova mais forte de §7: sem o cron, "nunca perder" é falso, porque a mensagem é apagada.
+
+Registro do erro, porque ele é do tipo que esta série paga caro: eu declarei desconhecido depois de ler **uma** página, quando o que eu sabia era que aquela página não dizia. Não saber onde está não é o mesmo que não estar documentado.
 
 **Três números ainda não escolhidos**, e este documento não finge que estão: o limiar de idade que faz o cron reenfileirar, o teto de tentativas da decisão 7, e o prazo de retenção da decisão 10. As decisões fixaram o **critério** de cada um — medição para o teto, e para a retenção a consequência escrita ao lado —, não o valor. Eles entram no plano de implementação com a medição que os justifica.
 
