@@ -127,7 +127,7 @@ Ou seja: o crescimento é **ilimitado em princípio** — três peers cobraram q
 
 ## 6. A classe que este desenho precisa resistir
 
-**O observador acoplado ao observado: o comportamento do próprio sistema corrompe o próprio sinal.** Oito instâncias, enumeradas antes de qualquer código.
+**O observador acoplado ao observado: o comportamento do próprio sistema corrompe o próprio sinal.** **Dez** instâncias, enumeradas antes de qualquer código: A, B, C, C′, D, E, F, F′, G e H. *(O documento dizia "oito" e enumerava dez — as duas linhas com apóstrofo, C′ e F′, nasceram de revisões posteriores e ninguém recontou. Corrigido em 16/08; subcontar a superfície de revisão é o tipo de erro que faz a revisão parecer completa quando não está.)*
 
 **A — o vigia fabrica o que vigia.** Falha do vigia é `workflow_run` com conclusão de problema, que o ingress roteia para o canal de alertas. Um vigia vermelho produz um alerta novo e não entregável a cada tique. Registrado no ADR-001 §10 como defeito D12 do sistema aposentado. *Resolvido pela decisão 1.*
 

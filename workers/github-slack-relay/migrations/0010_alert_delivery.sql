@@ -27,16 +27,24 @@ CREATE TABLE alert_delivery (
   -- saída além de 'sent' é o apagamento por retenção, que só alcança linha
   -- já entregue — apagar 'pending' seria perder o alerta.
   state TEXT NOT NULL CHECK (state IN ('pending', 'sent')),
-  -- Monotônico, e serve para diagnóstico, não para decidir: nada compara
-  -- este número com um teto, porque teto não existe mais (ADR-002 §5,
-  -- decisão 7, revogada pela 12).
-  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  -- Monotônico. Nada o compara com um teto, porque teto não existe (ADR-002
+  -- §5, decisão 7, revogada pela 12) — mas ele NÃO é só diagnóstico: entra
+  -- no cálculo do recuo que decide quando o cron reagenda (§4).
+  -- typeof() é obrigatório: `INTEGER` no SQLite é afinidade, não tipo, e
+  -- sem ele o CHECK aceita 0.5 e aceita texto. Valor malformado aqui move
+  -- a próxima tentativa, não suja um relatório.
+  attempts INTEGER NOT NULL DEFAULT 0
+    CHECK (typeof(attempts) = 'integer' AND attempts >= 0),
   slack_message_ts TEXT,
   last_error TEXT,
   -- Âncora da idade que o vigia lê. NENHUM caminho de recuperação escreve
-  -- esta coluna. É o invariante da instância B, e o teste do store o prova
-  -- por mutação: trocar updated_ms por created_ms num UPDATE faz falhar.
+  -- esta coluna: é o invariante da instância B. O teste que o prova por
+  -- mutação pertence ao store, que ainda NÃO existe nesta branch — até ele
+  -- existir, esta linha é intenção declarada, não restrição observada.
   created_ms INTEGER NOT NULL,
+  -- Escrito a cada tentativa. É deste campo, somado ao recuo, que o cron
+  -- calcula o tempo devido — e é justamente por isso que o vigia NÃO pode
+  -- lê-lo (ADR-001 H40: ancorar a idade aqui manteria o alarme mudo).
   updated_ms INTEGER NOT NULL
 );
 

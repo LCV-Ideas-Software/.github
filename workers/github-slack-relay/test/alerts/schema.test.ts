@@ -97,16 +97,50 @@ describe("migração 0010: alert_delivery", () => {
     }
   });
 
-  it("attempts tem domínio fechado", () => {
+  it("attempts tem domínio fechado: nem negativo, nem fracionário, nem texto", () => {
+    // `INTEGER` no SQLite é AFINIDADE, não tipo: sem typeof(), o CHECK
+    // `attempts >= 0` aceita 0.5 e aceita texto numérico. E agora attempts
+    // não é mais só diagnóstico — ele entra no cálculo do recuo que decide
+    // quando o cron reagenda (ADR-002 §4), então valor malformado adia ou
+    // adianta a próxima tentativa em vez de apenas sujar um relatório.
     const { database } = makeAlertDb();
+    for (const bad of [-1, 0.5, "x"]) {
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO alert_delivery
+               (delivery_id, payload_json, state, attempts, created_ms, updated_ms)
+             VALUES (?, '{}', 'pending', ?, 1, 1)`,
+          )
+          .run(`id-att-${String(bad)}`, bad),
+      ).toThrow(/CHECK constraint failed/);
+    }
     expect(() =>
       database
         .prepare(
           `INSERT INTO alert_delivery
              (delivery_id, payload_json, state, attempts, created_ms, updated_ms)
-           VALUES ('id-neg', '{}', 'pending', -1, 1, 1)`,
+           VALUES ('id-att-ok', '{}', 'pending', 7, 1, 1)`,
         )
         .run(),
-    ).toThrow(/CHECK constraint failed/);
+    ).not.toThrow();
+
+    // O texto numérico "3" É aceito, e isso não é furo: a afinidade INTEGER
+    // converte sem perda ANTES do CHECK, então o que fica guardado é o
+    // inteiro 3. Verificado, não suposto — foi assim que este teste me
+    // corrigiu quando eu o escrevi esperando rejeição.
+    database
+      .prepare(
+        `INSERT INTO alert_delivery
+           (delivery_id, payload_json, state, attempts, created_ms, updated_ms)
+         VALUES ('id-att-txt', '{}', 'pending', '3', 1, 1)`,
+      )
+      .run();
+    const row = database
+      .prepare(
+        "SELECT attempts, typeof(attempts) AS t FROM alert_delivery WHERE delivery_id = 'id-att-txt'",
+      )
+      .get() as { attempts: number; t: string };
+    expect(row).toEqual({ attempts: 3, t: "integer" });
   });
 });

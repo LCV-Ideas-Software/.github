@@ -121,16 +121,22 @@ O vigia passa a ter **uma** condição: a idade da linha `pendente` mais velha. 
 
    **Retratado em 16/08, achado do Codex na rodada 3, e ele está certo.** A frase riscada confunde *resposta perdida* com *mensagem não entregue*. Se o Slack processa o POST e a resposta se perde **depois** disso, a mensagem aparece no canal e o Worker nunca vê `ok:true`. Repetido, isso produz cópias visíveis sem fim. Não é hipótese remota: é exatamente o caso ambíguo, e eu o descartei com uma afirmação que não tinha como provar.
 
-   **O que de fato limita, e não é um contador.** O recuo. Com recuo que cresce e satura num teto de 24 h — o máximo que a plataforma aceita, *"Messages can be delayed by up to 24 hours"* —, o número de cópias cresce como o logaritmo do tempo, não como o tempo: dezenas ao longo de uma semana, não milhares. E a linha permanece `pendente` o tempo todo, então o vigia alarma pela idade **antes** de a contagem importar. O limite é o recuo mais o vigia, e nenhum dos dois é peça nova.
+   ~~**O que de fato limita, e não é um contador.** O recuo. Com recuo que cresce e satura num teto de 24 h, o número de cópias cresce como o logaritmo do tempo, não como o tempo: dezenas ao longo de uma semana, não milhares.~~
+
+   **Segunda retratação sobre o mesmo parágrafo, em 16/08.** A frase riscada acima está errada por duas razões, apontadas independentemente pelo Copilot (seis vezes), pelo codex, pelo deepseek e pelo grok. Primeira: o recuo é logarítmico **apenas antes de saturar**; depois de fixo em 24 h, cada dia permite mais uma tentativa, e o crescimento é **linear**. Segunda, e pior: o cron da versão anterior publicava uma mensagem **nova a cada passe** para a mesma linha, criando fluxos de retentativa paralelos — de modo que o agregado nem sequer estava limitado a um fluxo diário. Eu tinha corrigido a falácia original e escrito outra no lugar.
+
+   **O que ficou:** o recuo passa a ser aplicado por um **agendador único** (ADR-002 §4 emendado, a fila deixa de retentar), e o limite resultante é de **taxa**, não de total: cerca de uma cópia por dia em regime. A duplicação total é **ilimitada no tempo**, e isso está escrito na decisão 12 sem eufemismo.
 
    **Por que não repor o teto:** um teto transforma a linha em terminal, e terminal perde o alerta — que é a única coisa que a promessa proíbe. Entre duplicar com alarme aceso e perder em silêncio, a promessa já escolheu.
 3. **Decisões 7 e 8 do operador mudam de sentido**, e §8 do ADR encolhe para duas linhas. Isso é emenda a desenho ratificado, não edição de plano.
 
 ### E o efeito colateral que reorganiza a raiz 1
 
-Se o classificador é apenas *"`ok:true` é enviado; qualquer outra coisa tenta de novo"*, ele funciona **igual nos dois transportes**: `src/index.ts:1376`, que roda hoje em produção contra o webhook de workflow, já testa exatamente `confirmation?.ok !== true`.
+~~Se o classificador é apenas *"`ok:true` é enviado; qualquer outra coisa tenta de novo"*, ele funciona **igual nos dois transportes**: `src/index.ts:1376`, que roda hoje em produção contra o webhook de workflow, já testa exatamente `confirmation?.ok !== true`. Ou seja: os 14 códigos de erro eram a única coisa que amarrava o desenho ao `chat.postMessage`. Sem eles, **o transporte deixa de bloquear o código**.~~
 
-Ou seja: os 14 códigos de erro eram a única coisa que amarrava o desenho ao `chat.postMessage`. Sem eles, **o transporte deixa de bloquear o código** — decide apenas se existe `ts` para guardar, e nenhum caminho do desenho lê `ts` (§9 aposentou `chat.delete` e a varredura de verificação, que seriam seus dois leitores).
+**RETRATADO no mesmo lugar, e o §3.3 abaixo é quem derruba.** O `{ok:true}` do gatilho de workflow significa apenas que o **gatilho foi aceito** — o workflow a jusante ainda pode falhar antes de postar. Tratar os dois transportes como equivalentes marcaria a linha como enviada num ponto em que a mensagem pode nunca aparecer, e perderia o alerta em silêncio. É por isso que o código de hoje grava `accepted_by_trigger` (`src/index.ts:1387`) em vez de "enviado".
+
+O parágrafo fica riscado, e não apagado, porque ele foi um **argumento de venda** da deleção: eu disse ao operador que o transporte deixaria de bloquear o código. Isso era falso, e o que salvou a conclusão foi a decisão dele de adotar `chat.postMessage` — não o meu raciocínio.
 
 ---
 
