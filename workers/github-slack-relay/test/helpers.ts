@@ -1595,6 +1595,7 @@ export function makeEnv(
     activityQueue?: FakeQueue;
     relaySigningSecret?: string;
     relaySigningSecretNext?: string;
+    botToken?: string;
     workerRevision?: string;
   } = {},
 ): Env {
@@ -1610,6 +1611,10 @@ export function makeEnv(
     SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL: (options.activitySlackUrl ??
       options.slackUrl ??
       TEST_SLACK_URL) as unknown as SecretsStoreSecret,
+    // ADR-002 §5, decisão 11. Valor de fixture, nunca um token real
+    // (o formato xoxb-… existe só para o teste reconhecer a forma).
+    SLACK_BOT_TOKEN: (options.botToken ??
+      "xoxb-token-de-teste") as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET: (options.relaySigningSecret ??
       TEST_RELAY_SIGNING_SECRET) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET_NEXT: (options.relaySigningSecretNext ??
