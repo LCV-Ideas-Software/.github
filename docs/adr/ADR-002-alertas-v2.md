@@ -67,7 +67,13 @@ Essa decisão (§5, decisão 12) é o que apaga, de uma vez: o estado `falhou`, 
 
 **Cron** — reenfileira **toda** linha `pendente` mais velha que um limiar, incondicionalmente e de forma idempotente, sem conhecer o estado da fila. Uma consulta, um predicado. A fila é otimização de latência; **o cron é a única garantia de vivacidade** — ver §7.
 
+**Recuo** — requisito de desenho, não presente de plataforma. Toda reenfileirada, da fila e do cron, fixa `delaySeconds` crescente com o número de tentativas, saturando em 24 h. A plataforma não impõe recuo próprio, e o `retry_delay: 2` de `wrangler.jsonc:83` não é esta política.
+
 **Retenção** — apaga linhas `enviado` mais velhas que o prazo. **Nunca apaga `pendente`**, porque apagar pendente é perder o alerta. Com dois estados, o apagamento é a única transição terminal do sistema, e por isso ele se justifica contra a promessa, não contra o espaço em disco.
+
+**O crescimento sem limite que isso admite, com a conta feita e não estimada.** Se uma condição sistêmica mantiver **toda** linha pendente para sempre, elas se acumulam. Medido no banco em 16/08 sobre a tabela existente: 13 381 linhas, payload médio de **578 bytes**, máximo de 827. O volume de alertas está na ordem de 9 por hora (§7), ou cerca de 78 800 linhas por ano; a 1 KB por linha, com folga sobre a média medida, são **≈ 79 MB por ano**. O teto documentado é *"Maximum database size | 10 GB (Workers Paid)"*, e *"Maximum number of rows per table | Unlimited (excluding per-database storage limits)"*.
+
+Ou seja: o crescimento é **ilimitado em princípio** — três peers cobraram que isso fosse dito — e, no volume medido, levaria mais de um século para encostar no teto, no cenário patológico em que nada nunca entrega. O limite não é o disco; é a paciência do operador diante de um alarme aceso. Aceito e declarado, com os números acima, e não com a palavra "desprezível".
 
 **Status** — contagem por estado e a idade da linha pendente mais antiga, protegido por segredo compartilhado.
 
@@ -94,7 +100,15 @@ Essa decisão (§5, decisão 12) é o que apaga, de uma vez: o estado `falhou`, 
 
 12. *(Acrescentada em 16/08.)* **O sistema nunca desiste de um alerta.** Toda entrega recusada continua `pendente` e é retentada com recuo crescente, indefinidamente. É a decisão que apaga as oito peças listadas em §4.
 
-    **O custo, dito inteiro, porque ele foi contestado e a contestação procedia:** se o Slack processa o POST e a resposta se perde **depois** disso, a mensagem aparece no canal e o sistema nunca vê `ok:true` — cada retentativa produz uma cópia visível. O que limita não é um contador: é o recuo, que cresce e satura no teto documentado da plataforma (*"Messages can be delayed by up to 24 hours"*), fazendo as cópias crescerem com o logaritmo do tempo; e é o vigia, que alarma pela idade da linha muito antes de a contagem importar. Repor um teto tornaria a linha terminal, e terminal **perde** o alerta — a única coisa que a promessa proíbe. Entre duplicar com o alarme aceso e perder em silêncio, a promessa já escolheu.
+    **O custo, dito inteiro — e esta é a segunda versão deste parágrafo, porque a primeira foi derrubada por três peers independentes.** Se o Slack processa o POST e a resposta se perde **depois** disso, a mensagem aparece no canal e o sistema nunca vê `ok:true`; cada retentativa produz uma cópia visível.
+
+    ~~O que limita não é um contador: é o recuo, que cresce e satura no teto documentado da plataforma, fazendo as cópias crescerem com o logaritmo do tempo.~~ **Falso, e por duas razões que codex, deepseek e grok apontaram convergindo.** Primeira: *"Messages can be delayed by up to 24 hours"* é um **máximo permitido**, não um regulador — nas palavras do grok, *"a max, not a governor"*. A plataforma não impõe recuo nenhum; quem escolhe é o consumidor, via `delaySeconds`. Segunda: depois de saturar em 24 h o crescimento é **linear**, uma cópia por dia, não logarítmico. Eu errei a própria aritmética que usei para me tranquilizar.
+
+    **O que fica escrito, sem maquiagem: a duplicação total é ILIMITADA no tempo.** O que é limitado é a **taxa** — no máximo uma cópia por dia em regime — e essa limitação **não vem de graça**: é requisito de desenho. Toda reenfileirada, da fila e do cron, precisa fixar `delaySeconds` crescente com o número de tentativas, saturando em 24 h. O `retry_delay: 2` de `wrangler.jsonc:83` **não é essa política** e não deve ser confundido com ela.
+
+    **Quem encerra o caso é uma pessoa, e isso também fica escrito.** O vigia alarma pela idade em minutos; o operador age. Se ele nunca agir, as cópias se acumulam a uma por dia — barulho crescente com o alarme aceso, nunca silêncio com o alerta perdido. E a ferramenta que ele tem para encerrar uma linha permanentemente ambígua não é um comando que este sistema precise construir: é o **acesso direto ao D1**, que já existe e já foi usado para medir os números desta seção. Foi por não reconhecer isso que o ADR-001 construiu um menu de operador assinado.
+
+    Repor um teto tornaria a linha terminal, e terminal **perde** o alerta — a única coisa que a promessa proíbe. Entre duplicar com o alarme aceso e perder em silêncio, a promessa já escolheu.
 
 ## 6. A classe que este desenho precisa resistir
 
@@ -152,6 +166,10 @@ Essa decisão (§5, decisão 12) é o que apaga, de uma vez: o estado `falhou`, 
 
 1. **`ok:true` marca `enviado`.**
 2. **Qualquer outra coisa deixa a linha `pendente`, para a próxima tentativa.**
+
+**A linha 1 deixou de ser inferência minha e passou a ter contrato autoritativo**, porque o codex recusou a versão anterior exatamente por isso — *"Substituir a inferência sobre `chat.postMessage` por contrato autoritativo de sucesso"*. Da documentação da Web API do Slack, verbatim: *"All Web API responses contain a JSON object, which will always contain a top-level boolean property `ok` that indicates success or failure."* e *"For failure results, the `error` property will contain a short machine-readable error code."* Há ainda o caso intermediário, também verbatim: *"In the case of problematic calls that could still be completed successfully, `ok` will be `true` and the `warning` property will contain a short machine-readable warning code."* — ou seja, `ok:true` com `warning` continua sendo sucesso, e o desenho o trata como tal.
+
+**O que NÃO entra, e o grok pediu explicitamente que ficasse escrito:** não se exige `ts`. O campo autoritativo é `ok`; `ts` é recibo. Exigi-lo recusaria um envio que ocorreu, produzindo cópia e alarme sem impedir nada que a promessa proíba.
 
 Não há mais lista de códigos permanentes, nem lista de transitórios, nem "tudo o mais". A tabela de 14 códigos existia para decidir *quem vira terminal*, e nada mais é terminal. Uma classificação que não altera nenhum caminho de execução é descrição, não código — e sai.
 
@@ -212,11 +230,17 @@ Seção nova, de 16/08. O plano de implementação tinha **nove tarefas de códi
 | 2 | Binding do token no Worker | **falta** | o binding aparece em `wrangler.jsonc` e no `Env` de `worker-configuration.d.ts` |
 | 3 | Segredo compartilhado do `/status`, **dos dois lados** | **falta** | binding no Worker **e** segredo no repositório, para o vigia autenticar |
 | 4 | Fila de descarte removida (decisão 8) | **falta** — presente em `wrangler.jsonc:78` e `:86-91` | ausência das ocorrências nos **cinco** arquivos abaixo |
-| 5 | Assinatura do webhook da organização com os nove eventos | **falta** — cinco ausentes; e **eu não consigo nem ler o estado atual** | `HOOK_EVENTS` em `scripts/github-slack-hook-audit.mjs:6-12` e a igualdade exata exigida em `:184-196` |
+| 5 | Assinatura do webhook da organização com os nove eventos | **existe** (dois hooks na org, um para este Worker, última entrega bem-sucedida); faltam os cinco eventos novos | **não é verificável por `gh api`** — ver o bloco abaixo; verifica-se na tela da organização |
 | 6 | Endereço de notificação da conta que edita o cron do vigia | **não verificável por mim** | ajuste da conta no GitHub; a API me devolveu 404 por falta do escopo `user` — **é ação do operador** |
 | 7 | Bot presente no canal privado | **feito** — `U0BR6NL2B9N` no `#github-alerts` desde 14/08 16:51 | `auth.test` e a leitura do canal |
 
-**O item 5 tem um bloqueio de permissão, verificado em 16/08 e não presumido.** `GET /orgs/LCV-Ideas-Software/hooks` devolveu, literal: `{"message":"Not Found","status":"404"}`, com a orientação da própria CLI: *"This API operation needs the "admin:org_hook" scope."* Ou seja, **eu não consigo nem ler** a assinatura atual, muito menos alterá-la. O item passa de "eu faço" para **ação do operador** — conceder o escopo ou reconfigurar ele mesmo. Enquanto isso não acontece, qualquer afirmação minha sobre quais eventos a organização assina hoje seria invenção, e por isso não existe nenhuma neste documento.
+**O item 5 não é verificável pela API, e a história de como eu descobri isso vale mais que o fato.** Primeiro `GET /orgs/LCV-Ideas-Software/hooks` devolveu `{"message":"Not Found","status":"404"}` — falta do escopo `admin:org_hook`. Concedido o escopo, a mesma chamada passou a devolver **HTTP 200 com corpo `[]`**, com `X-Accepted-Oauth-Scopes: admin:org_hook` satisfeito e o token pertencendo ao **único owner** da organização (`role=admin state=active`).
+
+**E eu li `[]` como "não existe webhook nenhum". Estava errado.** O operador mostrou a tela: existem **dois** hooks na organização, um deles apontando para este Worker, com entrega mais recente bem-sucedida. Não há webhooks no nível Enterprise.
+
+A explicação está documentada, verbatim ([webhooks de organização](https://docs.github.com/en/rest/orgs/webhooks)): *"OAuth apps cannot list, view, or edit webhooks that they did not create and users cannot list, view, or edit webhooks that were created by OAuth apps."*
+
+**Três consequências.** A primeira, de método: **lista vazia não é prova de ausência** — é uma resposta que eu não interroguei, e a regra 1 vale para o que a API devolve tanto quanto para o que a documentação diz. A segunda, prática: a verificação deste item **não pode ser `gh api`**; tem de ser a tela da organização, ou um token da mesma identidade que criou o hook. A terceira, para o script: `scripts/github-slack-hook-audit.mjs` audita por `/orgs/{org}/hooks` (linha 297) e exige igualdade exata de conjunto (`:184-196`) — se o token que ele usa em Actions for cego pela mesma regra, a auditoria enxerga zero hooks e o resultado dela não significa o que parece. **Isso não foi verificado e não vou afirmar o que acontece; entra como item de medição antes de a Tarefa dos nove eventos existir.**
 
 **O item 4 é maior do que "editar uma chave", e isso foi varrido antes de eu tocar em qualquer linha.** A fila de descarte aparece em **cinco** arquivos, e um deles é teste: `workers/github-slack-relay/wrangler.jsonc` (configuração), `src/index.ts` (o consumidor `processDeadLetterMessage` e o despacho por nome de fila), `test/queue.test.ts` (testes que exercitam esse caminho), `README.md` e `docs/GITHUB_SLACK_INTEGRATION.md` (documentação). Por isso a remoção é **tarefa própria, com teste falhando antes**, e não edição de configuração — apagar a chave e deixar o consumidor vivo produziria exatamente o silêncio que esta série já pagou caro para aprender a evitar.
 
