@@ -65,9 +65,24 @@ Essa decisão (§5, decisão 12) é o que apaga, de uma vez: o estado `falhou`, 
 
 **Consumidor** — monta a mensagem **no instante do envio**, a partir do payload normalizado que a linha guarda, posta com `chat.postMessage` e grava o desfecho. Que a montagem seja no envio, e não na entrada, é o que dá caminho de reparo sem superfície de comando: corrigir o renderizador e implantar faz a tentativa seguinte funcionar **sobre a mesma linha**. É assim que o código de hoje já se comporta — `src/index.ts:1318-1324` monta o corpo a partir de `delivery.payload` no momento do POST.
 
-**Cron** — reenfileira **toda** linha `pendente` mais velha que um limiar, incondicionalmente e de forma idempotente, sem conhecer o estado da fila. Uma consulta, um predicado. A fila é otimização de latência; **o cron é a única garantia de vivacidade** — ver §7.
+**Cron — o único agendador.** *(Reescrito em 16/08; a versão anterior desta seção estava errada e a correção veio da revisão automática, não de mim.)*
 
-**Recuo** — requisito de desenho, não presente de plataforma. Toda reenfileirada, da fila e do cron, fixa `delaySeconds` crescente com o número de tentativas, saturando em 24 h. A plataforma não impõe recuo próprio, e o `retry_delay: 2` de `wrangler.jsonc:83` não é esta política.
+A versão anterior dizia que o cron reenfileira toda linha pendente mais velha que um limiar *"incondicionalmente e de forma idempotente"*. **Não é idempotente.** Como `created_ms` nunca muda, a linha continua elegível em todo passe, e cada passe publica uma **mensagem nova**, com ciclo de retentativas próprio. Publicações repetidas na fila não são deduplicadas. Com dois agendadores — a fila retentando por dentro e o cron criando fluxos novos por fora —, as tentativas crescem no ritmo do **cron**, a cada cinco minutos, e não no ritmo do recuo. A promessa de "taxa limitada" da decisão 12 seria falsa por construção.
+
+**Resolução, e ela apaga uma peça em vez de acrescentar:** a fila deixa de retentar. O consumidor **sempre confirma** a mensagem (`ack`), inclusive quando o envio falha; antes de confirmar, ele registra a tentativa na linha (`attempts + 1`, `updated_ms = agora`, `last_error`). Quem reagenda é só o cron, e ele seleciona por tempo devido:
+
+```sql
+WHERE state = 'pending' AND updated_ms + recuo(attempts) <= agora
+ORDER BY updated_ms + recuo(attempts) ASC
+```
+
+com `recuo(attempts)` saturando em 24 h. **Nenhuma coluna nova**: `attempts` e `updated_ms` já existem, e usar `updated_ms` para agendar é legítimo porque quem lê idade é o vigia, e o vigia lê `created_ms` — que continua intocado. É exatamente a distinção que o H40 do ADR-001 exigia.
+
+Três defeitos morrem juntos com essa resolução: a amplificação no ritmo do cron; a inanição que a revisão apontou em seguida — *"se pelo menos `limit` linhas forem irrecuperáveis, todos os alertas posteriores ficam fora de cada passe para sempre"* —, porque a ordenação passa a ser por tempo devido e a linha travada sai da cabeça da fila; e a dependência do `max_retries` e da fila de descarte, que nunca mais disparam, já que toda mensagem é confirmada.
+
+**O que isso custa, declarado:** o cron passa a ser o **único** caminho de recuperação. Se o gatilho agendado da Cloudflare não disparar, nada reagenda. Quem detecta isso é o vigia, que alarma pela idade da linha pendente mais velha — é precisamente o buraco que ele existe para cobrir.
+
+**Recuo** — requisito de desenho, não presente de plataforma: a plataforma não impõe recuo próprio. O `retry_delay: 2` de `wrangler.jsonc:83` **não** é esta política e deixa de ter efeito quando a fila para de retentar.
 
 **Retenção** — apaga linhas `enviado` mais velhas que o prazo. **Nunca apaga `pendente`**, porque apagar pendente é perder o alerta. Com dois estados, o apagamento é a única transição terminal do sistema, e por isso ele se justifica contra a promessa, não contra o espaço em disco.
 
