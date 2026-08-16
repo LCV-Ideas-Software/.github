@@ -211,10 +211,12 @@ Seção nova, de 16/08. O plano de implementação tinha **nove tarefas de códi
 | 1 | Token de bot no Secrets Store | **feito** — `github-slack-alerts-bot-token`, id `e73fc103b19545d8a4466671fb52e113`, escopo `workers` | `GET /accounts/{acc}/secrets_store/stores/df90c093…/secrets` |
 | 2 | Binding do token no Worker | **falta** | o binding aparece em `wrangler.jsonc` e no `Env` de `worker-configuration.d.ts` |
 | 3 | Segredo compartilhado do `/status`, **dos dois lados** | **falta** | binding no Worker **e** segredo no repositório, para o vigia autenticar |
-| 4 | Fila de descarte removida (decisão 8) | **falta** — presente em `wrangler.jsonc:78` e `:86-91` | ausência das duas ocorrências no arquivo |
+| 4 | Fila de descarte removida (decisão 8) | **falta** — presente em `wrangler.jsonc:78` e `:86-91` | ausência das ocorrências nos **cinco** arquivos abaixo |
 | 5 | Assinatura do webhook da organização com os nove eventos | **falta** — cinco ausentes | `HOOK_EVENTS` em `scripts/github-slack-hook-audit.mjs:6-12` e a igualdade exata exigida em `:184-196` |
 | 6 | Endereço de notificação da conta que edita o cron do vigia | **não verificável por mim** | ajuste da conta no GitHub; a API me devolveu 404 por falta do escopo `user` — **é ação do operador** |
 | 7 | Bot presente no canal privado | **feito** — `U0BR6NL2B9N` no `#github-alerts` desde 14/08 16:51 | `auth.test` e a leitura do canal |
+
+**O item 4 é maior do que "editar uma chave", e isso foi varrido antes de eu tocar em qualquer linha.** A fila de descarte aparece em **cinco** arquivos, e um deles é teste: `workers/github-slack-relay/wrangler.jsonc` (configuração), `src/index.ts` (o consumidor `processDeadLetterMessage` e o despacho por nome de fila), `test/queue.test.ts` (testes que exercitam esse caminho), `README.md` e `docs/GITHUB_SLACK_INTEGRATION.md` (documentação). Por isso a remoção é **tarefa própria, com teste falhando antes**, e não edição de configuração — apagar a chave e deixar o consumidor vivo produziria exatamente o silêncio que esta série já pagou caro para aprender a evitar.
 
 **O item 5 tem uma armadilha que o item sozinho não mostra:** um evento precisa atravessar **três portões** para chegar ao canal — a assinatura do webhook da organização, a allowlist do Worker e o normalizador (`src/domain.ts:1064-1104`, que hoje só conhece três eventos). O plano mexia apenas no segundo. Por isso o portão da implementação não é "os cinco eventos foram adicionados", e sim **um teste dirigido por tabela que atravessa os três portões para cada um dos nove eventos**. Sem ele, o décimo evento repete o erro.
 
