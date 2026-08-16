@@ -126,6 +126,54 @@ Se o classificador é apenas *"`ok:true` é enviado; qualquer outra coisa tenta 
 
 Ou seja: os 14 códigos de erro eram a única coisa que amarrava o desenho ao `chat.postMessage`. Sem eles, **o transporte deixa de bloquear o código** — decide apenas se existe `ts` para guardar, e nenhum caminho do desenho lê `ts` (§9 aposentou `chat.delete` e a varredura de verificação, que seriam seus dois leitores).
 
+---
+
+## Reanálise: cada achado contra o plano global
+
+O que segue não é a lista de remendos. Para cada achado, a coluna que importa é a última: o que a leitura global manda fazer, que quase nunca é o que o achado pede.
+
+## Raiz 1 — três achados, e nenhum é lacuna de tarefa
+
+Token do Slack, segredo do `/status` e remoção da fila de descarte são tratados pelos bots como três itens a acrescentar. Não são. São a mesma ausência: **o plano tem nove tarefas de código e zero tarefas de implantação.** Não existe nele nenhum lugar onde se responda "o que precisa existir fora do repositório para isto rodar".
+
+Remendo local: três bindings. Leitura global: **uma tarefa nova, e ela é a primeira, não a última** — o inventário do que existe fora do repositório, com verificação de cada item antes de o código que depende dele entrar. Sem isso, cada um destes será redescoberto no deploy, um por vez, que é como esta série vem gastando semanas.
+
+Itens do inventário, todos já verificados como ausentes ou errados hoje: token do bot (`worker-configuration.d.ts:8-12`), segredo do `/status` (idem), fila de descarte a remover (`wrangler.jsonc:78`, `:86-91`), assinatura do webhook da organização (raiz 2), endereço de notificação da conta dona do cron (raiz 4).
+
+## Raiz 2 — três achados, e a lição não é "adicionar cinco casos"
+
+O §3 promete nove eventos. Para um evento chegar ao canal ele precisa passar por **três portões**: a assinatura do webhook da organização, a allowlist do Worker, e o normalizador. O plano só mexia no segundo.
+
+Remendo local: adicionar cinco `case`, corrigir a lista congelada, trocar "oito" por "nove" no teste. Leitura global: **um teste de alcance, dirigido por tabela sobre os nove eventos, que atravessa os três portões** — e a reconfiguração do webhook da organização entra na tarefa de implantação da raiz 1. Um décimo evento acrescentado no futuro repete o erro dos três portões se o teste não existir.
+
+Anotado no instante em que notei, sem número que o sustente: `secret_scanning_scan` dispara a cada varredura concluída. Não medi o volume, e não vou afirmar que é alto — mas é o único evento do escopo cuja frequência não tem relação com haver algo errado, e um canal de alertas afogado é um canal que ninguém lê.
+
+## Raiz 3 — dois achados dissolvem, um muda de natureza
+
+Reenfileirar `falhou` externo e o marco do delta **desaparecem** com a deleção proposta acima.
+
+A limpeza por retenção **não** desaparece — e, com a deleção, ela deixa de ser faxina e vira a única transição terminal do sistema. Se nada mais é terminal, apagar a linha é o único jeito de o sistema parar. Isso reposiciona o número: `ROW_RETENTION_MS` deixa de se justificar por espaço em disco e passa a se justificar contra a promessa.
+
+E a resposta muda: **apagar só linhas `enviado`.** Uma linha pendente nunca é apagada, porque apagá-la é perder o alerta — exatamente o que a promessa proíbe. Uma consulta, um predicado, nenhuma decisão nova.
+
+## Raiz 4 — o conserto não é na decisão 2, é no livro-razão do §6
+
+Você decidiu aceitar o mecanismo documentado. O texto da decisão 2 é corrigido, mas o conserto que importa está em outro lugar: o §6 marca a instância G como *"Resolvido pela decisão 2"*, e ela não está resolvida.
+
+Leitura global: **G sai da coluna dos resolvidos e entra na dos limites declarados**, ao lado de D e F/F′. E aí aparece o fato que nenhum achado isolado mostra: o §6 passa a ter **três** instâncias declaradamente não fechadas. As garantias do vigia são mais fracas do que a leitura do §6 sugeria, e isso precisa estar escrito onde se decide confiar nele.
+
+## Raiz 5 — o conserto não são as três frases
+
+Corrigir as três citações é meia hora. O que impede a repetição é a cláusula operacional na regra 1: **uma citação só entra se eu conseguir apontar a string exata dentro do corpo buscado**; se não consigo, entra como inferência declarada. Eu cumpri a regra como estava escrita — citei — e o que citei foi o resumo do buscador. A regra era passável por fora e falsa por dentro.
+
+Segundo movimento, no §7: ele mistura "o que a plataforma faz" com "o que a nossa configuração faz". A citação da fila de descarte é verdadeira e a conclusão não vale hoje. O §7 passa a declarar a configuração que assume, e a marcar o que ainda não é verdade.
+
+## Achados internos ao plano — nenhum deles se corrige por remendo
+
+Tarefa 4 incompleta, `adaptSqliteToD1` ainda no bloco de código, e o critério trocado de `MAX_SEND_ATTEMPTS`: o terceiro **dissolve** com a deleção (não há teto). Os dois primeiros não se consertam por emenda porque o plano será reescrito de qualquer modo — a deleção remove tarefas inteiras, e a raiz 1 acrescenta uma na frente de todas.
+
+A lição global, essa sim: **a primeira metade do plano foi escrita como código e a segunda como esboço, sem que nada no documento dissesse qual era qual.** Foi por isso que os dois revisores gastaram fôlego apontando defeitos em esboços. Um plano com metade em rascunho não deve ir a revisão sem que a fronteira esteja escrita.
+
 ## O que isto significa para a sequência
 
 As Tarefas 3, 5 e 7 estão **bloqueadas** pela raiz 1 — ou deixam de estar, se a deleção acima for aprovada. Tudo o mais é meu para consertar sem esperar: as três citações, a cláusula operacional da regra 1, a aplicabilidade de §7, a decisão 2 do §5 e a instância G do §6, o reenfileiramento de `falhou` externo, a limpeza por retenção, o marco do delta, as duas superfícies da raiz 2, e os três achados internos do plano.
