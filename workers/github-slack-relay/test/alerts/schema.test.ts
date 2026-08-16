@@ -104,7 +104,18 @@ describe("migração 0010: alert_delivery", () => {
     // quando o cron reagenda (ADR-002 §4), então valor malformado adia ou
     // adianta a próxima tentativa em vez de apenas sujar um relatório.
     const { database } = makeAlertDb();
-    for (const bad of [-1, 0.5, "x"]) {
+    // Os ids são fixos e válidos DE PROPÓSITO. A versão anterior deste teste
+    // montava o id a partir do valor (`id-att-0.5`), e o ponto é proibido
+    // pelo CHECK do delivery_id — então o caso 0.5 passava por rejeição da
+    // coluna ERRADA, e teria passado igual se attempts aceitasse fração.
+    // Achado do Copilot; um teste que passa pelo motivo errado é pior que
+    // teste ausente, porque compra confiança sem entregar restrição.
+    const casos: ReadonlyArray<readonly [string, unknown]> = [
+      ["id-att-neg", -1],
+      ["id-att-frac", 0.5],
+      ["id-att-txt-x", "x"],
+    ];
+    for (const [id, bad] of casos) {
       expect(() =>
         database
           .prepare(
@@ -112,7 +123,7 @@ describe("migração 0010: alert_delivery", () => {
                (delivery_id, payload_json, state, attempts, created_ms, updated_ms)
              VALUES (?, '{}', 'pending', ?, 1, 1)`,
           )
-          .run(`id-att-${String(bad)}`, bad),
+          .run(id, bad as never),
       ).toThrow(/CHECK constraint failed/);
     }
     expect(() =>

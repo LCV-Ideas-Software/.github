@@ -1596,6 +1596,7 @@ export function makeEnv(
     relaySigningSecret?: string;
     relaySigningSecretNext?: string;
     botToken?: string;
+    statusSecret?: string;
     workerRevision?: string;
   } = {},
 ): Env {
@@ -1615,6 +1616,9 @@ export function makeEnv(
     // (o formato xoxb-… existe só para o teste reconhecer a forma).
     SLACK_BOT_TOKEN: (options.botToken ??
       "xoxb-token-de-teste") as unknown as SecretsStoreSecret,
+    // ADR-002 §5, decisão 9. Fixture, nunca o segredo real.
+    ALERTS_STATUS_SECRET: (options.statusSecret ??
+      "segredo-status-de-teste") as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET: (options.relaySigningSecret ??
       TEST_RELAY_SIGNING_SECRET) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET_NEXT: (options.relaySigningSecretNext ??

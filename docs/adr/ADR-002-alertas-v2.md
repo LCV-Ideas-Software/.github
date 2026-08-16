@@ -69,14 +69,42 @@ Essa decisão (§5, decisão 12) é o que apaga, de uma vez: o estado `falhou`, 
 
 A versão anterior dizia que o cron reenfileira toda linha pendente mais velha que um limiar *"incondicionalmente e de forma idempotente"*. **Não é idempotente.** Como `created_ms` nunca muda, a linha continua elegível em todo passe, e cada passe publica uma **mensagem nova**, com ciclo de retentativas próprio. Publicações repetidas na fila não são deduplicadas. Com dois agendadores — a fila retentando por dentro e o cron criando fluxos novos por fora —, as tentativas crescem no ritmo do **cron**, a cada cinco minutos, e não no ritmo do recuo. A promessa de "taxa limitada" da decisão 12 seria falsa por construção.
 
-**Resolução, e ela apaga uma peça em vez de acrescentar:** a fila deixa de retentar. O consumidor **sempre confirma** a mensagem (`ack`), inclusive quando o envio falha; antes de confirmar, ele registra a tentativa na linha (`attempts + 1`, `updated_ms = agora`, `last_error`). Quem reagenda é só o cron, e ele seleciona por tempo devido:
+**Primeira resolução, e ela também estava errada** *(escrita e derrubada em 16/08, no intervalo de uma hora)*: a fila deixa de retentar, o consumidor registra a tentativa antes de confirmar, e o cron seleciona por `updated_ms + recuo(attempts) <= agora`. **Codex, deepseek e grok convergiram contra ela, e o Copilot já a tinha apontado:** se `updated_ms` só é escrito **no consumo**, a linha continua devida enquanto a mensagem está em voo ou atrasada na fila — e o cron a republica **em todo passe de cinco minutos**. Nas palavras do grok: *"That is the same non-idempotent stacking §4 just retracted."* Eu carimbei no lugar errado.
+
+**Resolução final: o carimbo é no ENFILEIRAMENTO, não no consumo.** O cron, para cada linha devida, executa **uma instrução condicional** e só publica se ela afetar a linha:
 
 ```sql
-WHERE state = 'pending' AND updated_ms + recuo(attempts) <= agora
-ORDER BY updated_ms + recuo(attempts) ASC
+UPDATE alert_delivery
+   SET attempts = attempts + 1, updated_ms = :agora
+ WHERE delivery_id = :id
+   AND state = 'pending'
+   AND updated_ms + recuo(attempts) <= :agora
 ```
 
-com `recuo(attempts)` saturando em 24 h. **Nenhuma coluna nova**: `attempts` e `updated_ms` já existem, e usar `updated_ms` para agendar é legítimo porque quem lê idade é o vigia, e o vigia lê `created_ms` — que continua intocado. É exatamente a distinção que o H40 do ADR-001 exigia.
+Se `changes = 1`, publica; se `0`, outro passe já pegou a linha e este não faz nada. A linha deixa de ser devida **no instante do enfileiramento**, e não quando o consumidor roda.
+
+**E `delaySeconds` some inteiro.** Se o cron já espera o tempo devido para publicar, atrasar a mensagem *dentro* da fila é o segundo relógio que criava a janela onde as cópias se empilhavam — o deepseek pediu exatamente essa reconciliação. Sem ele, a mensagem publicada é consumida em segundos, e o único relógio do sistema é o predicado de tempo devido.
+
+**Nenhuma coluna nova**: `attempts` e `updated_ms` já existem. `attempts` passa a contar tentativas **agendadas**, e `updated_ms` marca o último agendamento — quem lê idade é o vigia, e o vigia lê `created_ms`, intocado. É a distinção que o H40 do ADR-001 exigia.
+
+**A curva, escrita por inteiro porque o grok cobrou o valor de `recuo(0)`:**
+
+| `attempts` | `recuo` | quando a linha volta a ser devida |
+|---|---|---|
+| 0 | 0 | no próximo passe do cron (≤ 5 min) |
+| 1 | 5 min | ~5 min depois do 1º agendamento |
+| 2 | 15 min | |
+| 3 | 45 min | |
+| 4 | 2 h 15 | |
+| 5 | 6 h 45 | |
+| 6 | 20 h 15 | |
+| ≥ 7 | **24 h** | saturado; uma tentativa por dia, para sempre |
+
+`recuo(n) = min(24 h, 5 min × 3ⁿ⁻¹)`, e o piso é o próprio período do cron: nenhuma retentativa acontece antes de cinco minutos, qualquer que seja a fórmula. A saturação chega na sétima tentativa, cerca de **30 horas** depois da primeira.
+
+**As 24 h são política da aplicação, não restrição de plataforma** — e a distinção importa porque a versão anterior as justificava pelo teto de `delaySeconds`, que este desenho **não usa**: o tempo devido é calculado no D1 e a publicação é imediata. O critério verdadeiro é o da decisão 12: em regime, no máximo uma cópia por dia de um envio permanentemente ambíguo. Um teto menor acelera duplicatas; um maior atrasa a retentativa de causa externa já consertada.
+
+**O ingress publica só quando INSERE**, nunca para uma linha pendente que já existe — exigência do grok, e ela fecha a última porta pela qual uma publicação escapava do carimbo. A inserção é idempotente pelo GUID (chave primária), então uma redelivery do GitHub não vira segunda publicação.
 
 Três defeitos morrem juntos com essa resolução: a amplificação no ritmo do cron; a inanição que a revisão apontou em seguida — *"se pelo menos `limit` linhas forem irrecuperáveis, todos os alertas posteriores ficam fora de cada passe para sempre"* —, porque a ordenação passa a ser por tempo devido e a linha travada sai da cabeça da fila; e a dependência do `max_retries` e da fila de descarte, que nunca mais disparam, já que toda mensagem é confirmada.
 
@@ -119,7 +147,7 @@ Ou seja: o crescimento é **ilimitado em princípio** — três peers cobraram q
 
     ~~O que limita não é um contador: é o recuo, que cresce e satura no teto documentado da plataforma, fazendo as cópias crescerem com o logaritmo do tempo.~~ **Falso, e por duas razões que codex, deepseek e grok apontaram convergindo.** Primeira: *"Messages can be delayed by up to 24 hours"* é um **máximo permitido**, não um regulador — nas palavras do grok, *"a max, not a governor"*. A plataforma não impõe recuo nenhum; quem escolhe é o consumidor, via `delaySeconds`. Segunda: depois de saturar em 24 h o crescimento é **linear**, uma cópia por dia, não logarítmico. Eu errei a própria aritmética que usei para me tranquilizar.
 
-    **O que fica escrito, sem maquiagem: a duplicação total é ILIMITADA no tempo.** O que é limitado é a **taxa** — no máximo uma cópia por dia em regime — e essa limitação **não vem de graça**: é requisito de desenho. Toda reenfileirada, da fila e do cron, precisa fixar `delaySeconds` crescente com o número de tentativas, saturando em 24 h. O `retry_delay: 2` de `wrangler.jsonc:83` **não é essa política** e não deve ser confundido com ela.
+    **O que fica escrito, sem maquiagem: a duplicação total é ILIMITADA no tempo.** O que é limitado é a **taxa** — no máximo uma cópia por dia depois que o recuo satura — e essa limitação **não vem de graça**: ela depende inteiramente do carimbo de enfileiramento descrito em §4. ~~Toda reenfileirada precisa fixar `delaySeconds` crescente.~~ *(Corrigido em 16/08, na mesma rodada: `delaySeconds` foi **removido do desenho**. Atrasar a mensagem dentro da fila era um segundo relógio, e era na janela entre publicar e consumir que as cópias se empilhavam.)* O `retry_delay: 2` de `wrangler.jsonc:83` nunca foi essa política e deixa de ter efeito, porque nada mais retenta pela fila.
 
     **Quem encerra o caso é uma pessoa, e isso também fica escrito.** O vigia alarma pela idade em minutos; o operador age. Se ele nunca agir, as cópias se acumulam a uma por dia — barulho crescente com o alarme aceso, nunca silêncio com o alerta perdido. E a ferramenta que ele tem para encerrar uma linha permanentemente ambígua não é um comando que este sistema precise construir: é o **acesso direto ao D1**, que já existe e já foi usado para medir os números desta seção. Foi por não reconhecer isso que o ADR-001 construiu um menu de operador assinado.
 
@@ -198,6 +226,13 @@ Não há mais lista de códigos permanentes, nem lista de transitórios, nem "tu
 
 Varredura do histórico do Slack, resolver, detecção de duplicata, reparo de duplicata, `chat.delete`, varredura de verificação, prova canônica a defender, menu de operador, requisição assinada, estado ambíguo, reivindicação, lease, CAS de estado, tabela durável de ritmo.
 
+**Um item desta lista VOLTOU, e voltar exige justificativa contra a promessa (regra 7).** A lista aposenta *"CAS de estado"*, e o carimbo de enfileiramento de §4 é uma atualização condicional — um CAS. Volta assim, e com este preço declarado:
+
+- **O que voltou:** exatamente uma instrução `UPDATE ... WHERE state = 'pending' AND <devida>`, cujo `changes` decide se publica. Nenhuma coluna nova, nenhum estado novo, nenhuma transação de duas escritas.
+- **O que NÃO voltou:** o CAS que esta lista aposentou era o árbitro entre escritores concorrentes de uma máquina de dez estados — o que gerava estado ambíguo, reivindicação e lease. Nada disso volta.
+- **Por que a promessa exige:** sem o carimbo, a linha continua devida enquanto a mensagem está em voo, o cron a republica a cada cinco minutos, e a taxa prometida na decisão 12 é falsa por construção — o canal afoga. Três peers e o revisor do GitHub derrubaram o desenho sem ele.
+- **O teste que o prende, antes do código:** uma linha devida submetida a dois passes consecutivos do cron produz **exatamente um** enfileiramento. Sem essa prova, o carimbo é descrição e não restrição.
+
 **Acrescentados em 16/08 pela decisão 12** — peças que este documento chegou a especificar e que agora saem: o estado `falhou`, a coluna de estacionamento, a distinção entre causa externa e causa intrínseca, a tabela de códigos permanentes, a tabela de códigos transitórios, o teto de tentativas, a medição que o justificaria, a segunda consulta e o segundo caminho do cron, e o marco durável do delta do vigia. Também sai a validação de formato do `ts` (§7): guarda que recusaria um envio ocorrido.
 
 Cada item desta lista é uma decisão, não um esquecimento. Juntos, são a origem da maior parte das 60 emendas do ADR-001.
@@ -239,15 +274,20 @@ Seção nova, de 16/08. O plano de implementação tinha **nove tarefas de códi
 
 **Regra que acompanha a seção:** nenhuma tarefa cujo código dependa de um item abaixo entra antes de o item estar verificado pelo comando ao lado. Verificação é comando, não afirmação.
 
+A coluna de estado distingue **fonte** (o repositório contém a mudança) de **deploy** (produção a executa) — a revisão apontou, com razão, que marcar "falta" o que a branch já contém faz o portão reportar como bloqueado o trabalho já feito. Nada desta branch está em produção até o deploy do worker.
+
 | # | Item | Estado em 16/08 | Como se verifica |
 |---|---|---|---|
 | 1 | Token de bot no Secrets Store | **feito** — `github-slack-alerts-bot-token`, id `e73fc103b19545d8a4466671fb52e113`, escopo `workers` | `GET /accounts/{acc}/secrets_store/stores/df90c093…/secrets` |
-| 2 | Binding do token no Worker | **falta** | o binding aparece em `wrangler.jsonc` e no `Env` de `worker-configuration.d.ts` |
-| 3 | Segredo compartilhado do `/status`, **dos dois lados** | **falta** | binding no Worker **e** segredo no repositório, para o vigia autenticar |
-| 4 | Fila de descarte removida (decisão 8) | **falta** — presente em `wrangler.jsonc:78` e `:86-91` | ausência das ocorrências nos **cinco** arquivos abaixo |
+| 2 | Binding do token no Worker | **fonte: feito** (`SLACK_BOT_TOKEN` em `wrangler.jsonc` e no `Env` gerado); deploy pende | o binding aparece em `worker-configuration.d.ts` |
+| 3 | Segredo compartilhado do `/status`, dos dois lados | **feito** — Secrets Store `github-slack-alerts-status-secret` (id `815c2dc254f24c3d9849d68629dc578a`) + segredo `ALERTS_STATUS_SECRET` no repositório + binding na fonte; deploy pende | `gh secret list` e o `Env` gerado |
+| 4 | Fila de descarte removida (decisão 8) | **falta** — presente em `wrangler.jsonc` e consumida em `src/index.ts` | ausência das ocorrências nos **cinco** arquivos abaixo |
 | 5 | Assinatura do webhook da organização com os nove eventos | **existe** (dois hooks na org, um para este Worker, última entrega bem-sucedida); faltam os cinco eventos novos | **não é verificável por `gh api`** — ver o bloco abaixo; verifica-se na tela da organização |
 | 6 | Endereço de notificação da conta que edita o cron do vigia | **não verificável por mim** | ajuste da conta no GitHub; a API me devolveu 404 por falta do escopo `user` — **é ação do operador** |
 | 7 | Bot presente no canal privado | **feito** — `U0BR6NL2B9N` no `#github-alerts` desde 14/08 16:51 | `auth.test` e a leitura do canal |
+| 8 | **Reduzir o app a `chat:write`** e reinstalar/rotacionar o token | **pende — ação do operador** | o header `x-oauth-scopes` do `auth.test` deixa de listar `groups:history,groups:read` |
+
+**O item 8 é achado da revisão automática, e procede como princípio de menor privilégio:** o token de hoje carrega `groups:history` e `groups:read`, mas este desenho **só posta** — a varredura de histórico está deliberadamente aposentada em §9, então nenhum caminho lê canal. Um Worker comprometido com o token atual leria o histórico do canal privado; com `chat:write` puro, não. A redução é na página **OAuth & Permissions** do app (remover os dois escopos de Bot Token Scopes, reinstalar, e o token novo substitui o do Secrets Store — a rotação que já estava recomendada por o token ter passado pelo chat).
 
 **O item 5 não é verificável pela API, e a história de como eu descobri isso vale mais que o fato.** Primeiro `GET /orgs/LCV-Ideas-Software/hooks` devolveu `{"message":"Not Found","status":"404"}` — falta do escopo `admin:org_hook`. Concedido o escopo, a mesma chamada passou a devolver **HTTP 200 com corpo `[]`**, com `X-Accepted-Oauth-Scopes: admin:org_hook` satisfeito e o token pertencendo ao **único owner** da organização (`role=admin state=active`).
 

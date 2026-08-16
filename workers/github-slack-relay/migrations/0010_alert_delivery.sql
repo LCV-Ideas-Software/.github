@@ -48,5 +48,17 @@ CREATE TABLE alert_delivery (
   updated_ms INTEGER NOT NULL
 );
 
--- O cron seleciona linhas pendentes por idade de ingresso, em ordem.
+-- Dois índices, dois leitores diferentes, e a distinção é o desenho:
+--
+-- 1) O VIGIA lê a idade da linha pendente mais velha, ancorada em created_ms,
+--    que nenhum caminho de recuperação escreve (instância B).
 CREATE INDEX idx_alert_delivery_pending ON alert_delivery (state, created_ms);
+--
+-- 2) O CRON seleciona por tempo devido, que é updated_ms + recuo(attempts).
+--    O índice é por updated_ms e não pela expressão inteira: como recuo é
+--    limitado a 24 h, `updated_ms <= agora` é condição NECESSÁRIA para a
+--    linha ser devida, então o índice estreita a varredura e o predicado
+--    exato decide no conjunto já estreitado. Índice sobre expressão exigiria
+--    congelar a curva do recuo no esquema, e curva é decisão de §4, não de
+--    migração.
+CREATE INDEX idx_alert_delivery_due ON alert_delivery (state, updated_ms);

@@ -54,17 +54,21 @@ Substitui a antiga `RETRY_BASE_DELAY_SECONDS`, que existia para caber dentro de 
 
 **Quem aplica:** o cron, e só ele. Com a emenda do agendador único (ADR-002 §4), a fila deixa de retentar — o consumidor sempre confirma a mensagem depois de registrar a tentativa. O `retry_delay: 2` de `wrangler.jsonc:83` deixa de ter efeito.
 
-**A forma:** o cron seleciona linhas em que `updated_ms + recuo(attempts) <= agora`, com `recuo` crescendo por tentativa e **saturando em 24 h**. O teto de 24 h não é escolha de gosto: é o máximo que a plataforma aceita — *"Messages can be delayed by up to 24 hours."*
+**A forma:** o cron seleciona linhas em que `updated_ms + recuo(attempts) <= agora`, com `recuo` crescendo por tentativa e **saturando em 24 h**.
+
+~~O teto de 24 h não é escolha de gosto: é o máximo que a plataforma aceita.~~ **Corrigido em 16/08:** essa justificativa morreu quando `delaySeconds` saiu do desenho. O cron calcula o tempo devido **no D1** e publica na hora — nenhuma mensagem fica atrasada dentro da fila, então o teto de atraso da plataforma não restringe nada aqui. **As 24 h são escolha de política da aplicação**, e o critério é o da decisão 12: em regime, no máximo uma cópia por dia de um envio permanentemente ambíguo. Um teto menor acelera duplicatas; um maior atrasa a retentativa de uma causa externa já consertada. Ambos são defensáveis; 24 h é o registrado.
 
 **A conta que importa, e que eu já errei uma vez:** o recuo é logarítmico apenas **antes** de saturar. Depois de saturado, cada dia permite mais uma tentativa, então as cópias de um envio ambíguo crescem **linearmente**, cerca de uma por dia. Isso é limite de **taxa**, nunca de **total**.
 
 **Piso efetivo:** como o cron roda a cada 5 minutos (`wrangler.jsonc:111`), nenhuma retentativa acontece antes disso, qualquer que seja o valor do recuo.
 
-## `CRON_STALE_AFTER_MS = 600_000` (10 minutos)
+## ~~`CRON_STALE_AFTER_MS = 600_000` (10 minutos)~~ — MORTO junto com o segundo agendador
 
-**Restrição inferior:** tem de ser maior que a janela de insistência da fila (155 s), senão o cron republica uma linha que a fila ainda está tentando — duas entregas simultâneas da mesma linha, e portanto duplicata garantida em vez de possível. 600 s dá margem de quase 4×.
+~~**Restrição inferior:** tem de ser maior que a janela de insistência da fila (155 s), senão o cron republica uma linha que a fila ainda está tentando.~~ ~~**Restrição superior:** o cron roda a cada 5 minutos... O pior caso de invisibilidade é **10 + 5 = 15 minutos**.~~
 
-**Restrição superior:** o cron roda a cada 5 minutos, então uma linha que cruza o limiar é recuperada em até 5 minutos. O pior caso de invisibilidade é **10 + 5 = 15 minutos**, que é o número que o limiar de alarme do vigia tem de respeitar — o vigia não pode alarmar antes disso, ou alarmaria sobre recuperação normal em curso.
+**Corrigido em 16/08, terceiro achado da mesma família:** as duas restrições derivavam da janela de retentativa da fila — e a fila **não retenta mais** (ADR-002 §4: o consumidor sempre confirma; o cron é o único agendador). Um limiar de "linha parada" separado deixa de existir: a elegibilidade é o próprio predicado de tempo devido, `updated_ms + recuo(attempts) <= agora`, e a constante morre com o desenho que a exigia.
+
+**O que substitui a conta de 15 minutos, derivado da curva e não da fila:** uma linha recém-falhada tem `recuo(0) = 0` e é reagendada **no passe seguinte do cron, em até 5 minutos**. Nas primeiras três tentativas (5 + 15 min de recuo), uma falha transitória se resolve em cerca de **20 minutos**. O limiar de alarme do vigia tem de ser maior que isso para não alarmar sobre recuperação normal em curso — o valor exato entra na reescrita do plano, junto com o teste do vigia, porque é lá que ele ganha um observador.
 
 ## `ROW_RETENTION_MS = 30 dias`
 
@@ -80,9 +84,10 @@ Substitui a antiga `RETRY_BASE_DELAY_SECONDS`, que existia para caber dentro de 
 |---|---|---|
 | ~~`MAX_SEND_ATTEMPTS`~~ | **revogado** | decisão 12: não há teto |
 | ~~`RETRY_BASE_DELAY_SECONDS`~~ | **substituído** | virou `RECUO`, saturando em 24 h |
-| `CRON_STALE_AFTER_MS` | `600_000` | limiar de idade para a primeira reenfileirada |
+| ~~`CRON_STALE_AFTER_MS`~~ | **morto** | o predicado de tempo devido substitui o limiar; não há segundo agendador |
+| `RECUO(n)` | `min(24 h, 5 min × 3ⁿ⁻¹)`, `recuo(0) = 0` | política da aplicação: ≤ 1 cópia/dia em regime |
 | `ROW_RETENTION_MS` | `2_592_000_000` | 30 dias; é a janela de deduplicação, e só alcança linha `enviado` |
 
-**Derivado, para o vigia:** o pior caso de invisibilidade de um alerta em operação normal continua sendo **15 minutos** — 10 do limiar mais 5 do intervalo do cron. Qualquer limiar de alarme do vigia tem de ser maior que isso.
+**Derivado, para o vigia:** ~~o pior caso de invisibilidade continua sendo 15 minutos~~ — conta morta, derivava da fila. Pela curva: falha transitória se resolve em ~**20 minutos** (três tentativas). O limiar de alarme tem de ser maior que isso; o valor exato entra na reescrita do plano, onde o vigia ganha teste.
 
 **O que este documento ainda deve, e não finge que não deve:** a curva concreta de `recuo(attempts)` — os valores por tentativa até saturar em 24 h — entra na reescrita do plano, junto com o teste que a prende. Publicar aqui um número que nenhum teste observa seria repetir exatamente o defeito que a emenda H38 do ADR-001 cometeu.

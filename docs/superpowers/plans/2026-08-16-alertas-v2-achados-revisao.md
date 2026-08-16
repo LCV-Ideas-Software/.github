@@ -202,6 +202,23 @@ O Codex revisou o documento que você está lendo e achou quatro defeitos nele. 
 
 **3.4 — Exclusão de workflow precisa da identidade do repositório (P2).** A decisão 1 exclui o vigia e o deploy do relay casando por `workflow_run.path`. Outro repositório com um workflow no mesmo caminho teria a falha dele suprimida em silêncio. O predicado passa a exigir **repositório + caminho**, e o teste vai junto.
 
+## A releitura integral do PR, e a classe que os 119 revelam juntos
+
+Por ordem do operador, o PR foi relido **por inteiro**: 19 corpos de revisão, 48 threads, 16 comentários — extração completa em disco, deduplicada: **119 achados suprimidos distintos**. A leitura em conjunto mostra o que nenhuma amostra mostrava.
+
+**Dos 119, mais de 80 são o MESMO fenômeno repetido: texto que sobrevive à decisão que o matou.** O desenho passou por quatro gerações num único dia — três estados → dois estados → agendador duplo → agendador único — e **cada geração deixou prosa viva para trás**: o plano mandando executar três estados; os números publicando um teto revogado; a análise de custo com a aritmética já retratada; o §7 derivando limiares de uma fila que não retenta mais. Os revisores redescobriram cada fantasma a cada passe, e cada redescoberta parecia um achado novo.
+
+**Nomeando a classe (regra 3): documento-fantasma — prosa cuja premissa morreu e que continua no imperativo.** A varredura correta quando uma decisão muda não é corrigir a linha apontada: é perguntar *"que outros textos derivam da premissa que acabou de morrer?"* e riscá-los **no mesmo commit da decisão**. Foi por não fazer isso que três documentos companheiros contradisseram o ADR por horas, e que o plano chegou a instruir um agente a reconstruir o desenho abandonado.
+
+**Os genuinamente novos da última leva (23:36), verificados um a um:**
+
+- **24 h é política, não plataforma** — a justificativa pelo teto de `delaySeconds` morreu quando `delaySeconds` saiu do desenho. Corrigido no ADR e nos números.
+- **`CRON_STALE_AFTER_MS` morreu** — derivava da janela de 155 s de uma fila que não retenta. O predicado de tempo devido o substitui; a conta dos 15 minutos do vigia foi rederivada da curva (~20 min para falha transitória).
+- **O comentário do índice reintroduzia o agendador por idade de ingresso** — corrigido: dois índices, dois leitores, com a distinção escrita.
+- **O teste de `attempts` passava pelo motivo errado** — o id `id-att-0.5` era rejeitado pelo CHECK do `delivery_id` (ponto proibido), não pelo de `attempts`. Ids fixos e válidos agora; provado por mutação com a falha capturada.
+- **O token carrega escopo que o desenho não usa** — `groups:history`/`groups:read` são leitura de canal privado; o desenho só posta. Redução a `chat:write` + rotação viram item 8 do §12, ação do operador.
+- **O inventário dizia "falta" para o que a fonte já tem** — a tabela do §12 passou a distinguir fonte × deploy.
+
 ## O que isto significa para a sequência
 
 As Tarefas 3, 5 e 7 estão **bloqueadas** pela raiz 1 — ou deixam de estar, se a deleção acima for aprovada. Tudo o mais é meu para consertar sem esperar: as três citações, a cláusula operacional da regra 1, a aplicabilidade de §7, a decisão 2 do §5 e a instância G do §6, o reenfileiramento de `falhou` externo, a limpeza por retenção, o marco do delta, as duas superfícies da raiz 2, e os três achados internos do plano.
