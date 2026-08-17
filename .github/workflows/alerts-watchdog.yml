@@ -95,7 +95,11 @@ jobs:
           # sucesso). Corpo que não parseia, ou idade que não é número nem
           # null, conta como falha de transporte — entra na política das
           # duas consecutivas.
-          if ! age=$(printf '%s' "$body" | jq -er '.oldest_pending_age_ms | if . == null then "null" else tostring end' 2>/dev/null); then
+          # has() é obrigatório (achado da revisão): sem ele, um corpo {}
+          # avaliava o campo AUSENTE como null e resetava o marcador — a
+          # ausência do campo tem de cair no ramo de corpo ilegível, não
+          # passar por "nenhuma pendente".
+          if ! age=$(printf '%s' "$body" | jq -er 'if has("oldest_pending_age_ms") then (.oldest_pending_age_ms | if . == null then "null" else tostring end) else empty end' 2>/dev/null); then
             printf 'falha' > .watchdog-marker
             if [ "$anterior" = "falha" ]; then
               echo "::error::Segunda resposta consecutiva ilegível do /alerts/status. Decisão 3 do ADR-002: conta como problema."

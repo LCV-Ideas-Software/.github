@@ -25,25 +25,30 @@ operations checklist.
 
 ## Event routing
 
-The destination is derived from the event type and lifecycle action. A webhook
-payload cannot supply a Slack channel, destination or trigger URL.
+**ADR-002 (16/08/2026): um destino só — `alerts` — e OITO eventos.** Os
+eventos de atividade saíram da allowlist de propósito: o app oficial
+"GitHub for Slack" os cobre no `#github-activity`, e este Worker entrega
+exclusivamente o que o oficial não sabe entregar. Um evento fora da lista
+morre no ingress com `event_not_supported` (202), sem linha e sem
+publicação. A webhook payload cannot supply a Slack channel, destination or
+trigger URL.
 
-| Destination | Accepted event families                                                                                                                                                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `alerts`    | Problematic completed `workflow_run`; `deployment_status` with state `error` or `failure`; relevant `dependabot_alert`, `code_scanning_alert`, and `secret_scanning_alert` lifecycle actions.                                                       |
-| `activity`  | Default-branch `push`; `deployment_status` with state `success` or `inactive`; relevant `pull_request`, `pull_request_review`, `pull_request_review_comment`, `issues`, `issue_comment`, `release`, `discussion`, and `discussion_comment` actions. |
+| Evento aceito | Condição |
+| --- | --- |
+| `workflow_run` | conclusão em `action_required`, `cancelled`, `failure`, `stale`, `startup_failure`, `timed_out`; exclui, por **repositório+caminho**, o vigia e o deploy do relay |
+| `dependabot_alert` | ações de ciclo de vida relevantes |
+| `code_scanning_alert` | ações de ciclo de vida relevantes |
+| `secret_scanning_alert` | ações de ciclo de vida relevantes |
+| `repository_advisory` | `published`, `reported` |
+| `security_and_analysis` | presença do registro `changes` (o evento não tem `action`) |
+| `secret_scanning_alert_location` | `created` |
+| `secret_scanning_scan` | `completed` |
 
-Problematic workflow conclusions are `action_required`, `cancelled`, `failure`,
-`stale`, `startup_failure`, and `timed_out`. Successful workflows, transient
-deployment states, non-default-branch pushes, unsupported actions, archived
-repositories, and repositories outside `LCV-Ideas-Software` are not queued.
-For deployments, every state other than `error`, `failure`, `success`, or
-`inactive` is ignored.
-Resolution events for security alerts remain visible as informational records;
-reopening events are incidents.
-
-Discussion and discussion-comment events are intentional first-class activity
-events. They must be selected when the organization webhook is created.
+`security_advisory` (o feed global) **não** entra: a disponibilidade
+documentada é `app` — webhook de organização não o recebe. Repositórios
+arquivados ou fora de `LCV-Ideas-Software` não são aceitos. Os
+normalizadores dos eventos de atividade permanecem no código como legado
+declarado, inalcançáveis pela allowlist.
 
 ## Inbound security
 
