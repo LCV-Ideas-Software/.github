@@ -1,0 +1,102 @@
+# O vigia do ADR-002 §4: lê o /alerts/status e FALHA DE PROPÓSITO quando há
+# coisa parada — o e-mail que o GitHub manda ao falhar é o aviso (decisão 2:
+# o destinatário é a conta que editou este cron por último; contato@lcv.dev
+# confirmado pelo operador em 16/08/2026).
+#
+# Restrições que são consequência, não preferência (ADR §6-D): o job NÃO tem
+# `if:`, NÃO tem `environment:` e NÃO depende de `vars.*` — job pulado
+# conclui como SUCESSO e não gera e-mail.
+#
+# Uma condição só: a idade da pendente mais velha (limiar 3_600_000 ms,
+# mantido em sincronia com WATCHDOG_MAX_PENDING_AGE_MS de
+# workers/github-slack-relay/src/alerts/contract.ts — sincronia declarada,
+# conferida no portão da Tarefa 8). E a decisão 3: DUAS verificações
+# consecutivas sem resposta contam como problema. O estado entre execuções
+# vive no cache do Actions COM CONTEÚDO ("ok"/"falha"), porque cache é
+# imutável por chave: um marcador por existência ressuscitaria uma falha
+# antiga depois de um sucesso e fabricaria "segunda consecutiva".
+name: Alerts Watchdog
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alerts-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Restore previous transport marker
+        uses: actions/cache/restore@v4
+        with:
+          path: .watchdog-marker
+          key: alerts-watchdog-marker-${{ github.run_id }}
+          restore-keys: |
+            alerts-watchdog-marker-
+
+      - name: Check alerts status
+        env:
+          STATUS_SECRET: ${{ secrets.ALERTS_STATUS_SECRET }}
+          MAX_PENDING_AGE_MS: "3600000"
+        run: |
+          set -u
+          anterior="ok"
+          if [ -f .watchdog-marker ]; then
+            anterior=$(cat .watchdog-marker)
+          fi
+
+          body=""
+          http_code=0
+          # Transporte: uma tentativa por execução; a política de "duas
+          # consecutivas" (decisão 3) vive no marcador, não em retries.
+          if response=$(curl --silent --show-error --max-time 30 \
+              --write-out $'\n%{http_code}' \
+              --header "x-alerts-status-secret: ${STATUS_SECRET}" \
+              "https://github-slack-alerts.lcv.workers.dev/alerts/status"); then
+            http_code=$(printf '%s' "$response" | tail -n 1)
+            body=$(printf '%s' "$response" | sed '$d')
+          fi
+
+          if [ "$http_code" != "200" ]; then
+            printf 'falha' > .watchdog-marker
+            if [ "$anterior" = "falha" ]; then
+              echo "::error::Segunda verificação consecutiva sem resposta do Worker (HTTP ${http_code}). Decisão 3 do ADR-002: conta como problema."
+              exit 1
+            fi
+            echo "Primeira falha de transporte (HTTP ${http_code}); a segunda consecutiva falha o job."
+            exit 0
+          fi
+
+          printf 'ok' > .watchdog-marker
+          echo "status: ${body}"
+
+          age=$(printf '%s' "$body" | jq -r '.oldest_pending_age_ms')
+          pending=$(printf '%s' "$body" | jq -r '.pending')
+          if [ "$age" = "null" ]; then
+            echo "Nenhuma linha pendente (${pending} pendentes)."
+            exit 0
+          fi
+          if [ "$age" -gt "$MAX_PENDING_AGE_MS" ]; then
+            echo "::error::Alerta parado há ${age} ms (limiar ${MAX_PENDING_AGE_MS} ms), ${pending} pendente(s). O canal #github-alerts pode estar sem entrega — ADR-002 §4."
+            exit 1
+          fi
+          echo "Pendente mais velha com ${age} ms (< ${MAX_PENDING_AGE_MS} ms); recuperação normal em curso."
+
+      - name: Save transport marker
+        # Roda inclusive quando o passo anterior FALHOU: a falha de idade
+        # também grava "ok" no transporte? Não — o marcador é escrito pelo
+        # próprio passo de verificação antes de qualquer exit; aqui só se
+        # persiste o arquivo que ele deixou.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .watchdog-marker
+          key: alerts-watchdog-marker-${{ github.run_id }}
