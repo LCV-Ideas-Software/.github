@@ -39,7 +39,14 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
     );
     expect(response.status).toBe(202);
     const row = await alertStore.get(deliveryId);
-    expect(row).toMatchObject({ state: "pending", createdMs: NOW, nextDueMs: 0 });
+    // O ingress CARIMBA antes de publicar (publica só quem carimba): a
+    // primeira tentativa é agendada, e o cron só volta após recuo(1).
+    expect(row).toMatchObject({
+      state: "pending",
+      createdMs: NOW,
+      attempts: 1,
+      nextDueMs: NOW + 5 * 60_000,
+    });
     expect(queue.sent).toEqual([
       { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
     ]);
@@ -68,7 +75,7 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
     expect(queue.sent).toHaveLength(1); // publica SÓ quando insere
   });
 
-  it("fila indisponível: o alerta ainda é ACEITO — a linha existe e o cron a pega", async () => {
+  it("fila indisponível: aceito com queued:false — o corpo diz a verdade, e o cron recupera após o recuo", async () => {
     const queue = new FakeQueue();
     queue.fail = true;
     const alertStore = new AlertStore(makeAlertDb().d1);
@@ -79,7 +86,23 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
       { alertStore, now: () => NOW },
     );
     expect(response.status).toBe(202); // aceito: a promessa ancora no INSERT
+    expect(await response.json()).toEqual({
+      accepted: true,
+      queued: false,
+      recovery: "cron",
+    });
     expect((await alertStore.get(deliveryId))?.state).toBe("pending");
+
+    // O carimbo do ingresso afastou o cron por recuo(1); vencido o recuo,
+    // o cron recupera.
+    queue.fail = false;
+    const { runAlertCron } = await import("../../src/alerts/cron");
+    const r = await runAlertCron({
+      store: alertStore,
+      queue: { send: async (m) => queue.send(m as QueueJob) },
+      now: () => NOW + 5 * 60_000 + 1,
+    });
+    expect(r.published).toBe(1);
   });
 });
 

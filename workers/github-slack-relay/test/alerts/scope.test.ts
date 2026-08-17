@@ -150,6 +150,55 @@ describe("escopo — os portões locais (ADR-002 §3, §12)", () => {
     ).toBe(false);
   });
 
+  it("sanitização é aplicada UMA vez — 'R&D' não vira 'R&amp;amp;D' (a classe, nos três normalizadores novos)", () => {
+    const advisory = normalizeGitHubEvent(
+      "repository_advisory",
+      {
+        sender: { login: "octocat" },
+        action: "published",
+        repository_advisory: { summary: "R&D <lab>", severity: "high" },
+      },
+      "d-san-1",
+      "LCV-Ideas-Software/astrologo-app",
+    );
+    expect(advisory.kind).toBe("accepted");
+    if (advisory.kind === "accepted") {
+      expect(advisory.payload.title).not.toContain("&amp;amp;");
+      expect(advisory.payload.details).not.toContain("&amp;amp;");
+    }
+
+    const location = normalizeGitHubEvent(
+      "secret_scanning_alert_location",
+      {
+        sender: { login: "octocat" },
+        action: "created",
+        alert: {},
+        location: { type: "a&b" },
+      },
+      "d-san-2",
+      "LCV-Ideas-Software/astrologo-app",
+    );
+    expect(location.kind).toBe("accepted");
+    if (location.kind === "accepted") {
+      expect(location.payload.title).not.toContain("&amp;amp;");
+    }
+
+    const scan = normalizeGitHubEvent(
+      "secret_scanning_scan",
+      {
+        sender: { login: "octocat" },
+        action: "completed",
+        type: "x&y",
+      },
+      "d-san-3",
+      "LCV-Ideas-Software/astrologo-app",
+    );
+    expect(scan.kind).toBe("accepted");
+    if (scan.kind === "accepted") {
+      expect(scan.payload.title).not.toContain("&amp;amp;");
+    }
+  });
+
   it("a falha do PRÓPRIO vigia não vira linha (instância A do §6)", () => {
     const payload = fixturePara("workflow_run");
     (payload as { workflow_run: { path: string } }).workflow_run.path =

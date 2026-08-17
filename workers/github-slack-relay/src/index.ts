@@ -31,6 +31,7 @@ import {
   type QueueJob,
   type StoredDelivery,
 } from "./store";
+import { recuoMs } from "./alerts/contract";
 import { processAlertMessage } from "./alerts/consumer";
 import { runAlertCron } from "./alerts/cron";
 import { statusBody, verifyStatusSecret } from "./alerts/status";
@@ -1078,16 +1079,34 @@ export async function handleFetch(
     return jsonResponse({ accepted: true, duplicate: true }, 202);
   }
 
+  // PUBLICA SÓ QUEM CARIMBA — inclusive o ingress (achado da revisão: a
+  // publicação sem carimbo deixava a linha devida com attempts=0, e uma
+  // primeira tentativa falhada era reagendada pelo cron em segundos,
+  // furando o recuo(1) da curva). O carimbo aqui conta a primeira
+  // tentativa AGENDADA e afasta o cron por recuo(1).
+  await dependencies.alertStore.stampDue(
+    deliveryId,
+    now,
+    now + recuoMs(1),
+  );
+
+  let queued = true;
   try {
     await env.ALERT_QUEUE.send({ v: 2, delivery_id: deliveryId });
   } catch {
     // A fila é otimização de latência; o cron é a vivacidade (ADR-002 §4).
-    // A linha nasceu com next_due_ms = 0: devida no próximo passe. O
-    // alerta está ACEITO — responder erro aqui faria o GitHub registrar
-    // falha de uma entrega que já é nossa.
+    // O alerta está ACEITO — responder erro faria o GitHub registrar falha
+    // de uma entrega que já é nossa. Mas o corpo diz a verdade (achado da
+    // revisão: queued:true durante a queda da fila mentia ao diagnóstico).
+    queued = false;
   }
 
-  return jsonResponse({ accepted: true, queued: true }, 202);
+  return jsonResponse(
+    queued
+      ? { accepted: true, queued: true }
+      : { accepted: true, queued: false, recovery: "cron" },
+    202,
+  );
 }
 
 function slackWorkflowUrl(value: string): string | null {

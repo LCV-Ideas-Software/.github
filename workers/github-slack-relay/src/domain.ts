@@ -1099,7 +1099,10 @@ function normalizeRepositoryAdvisory(
     repository,
     payload,
   );
-  const summary = sanitizeText(nestedString(advisory, "summary"), 1_000);
+  // Cru até a composição; sanitiza UMA vez (achado da revisão: sanitizar o
+  // summary e depois o título composto duplicava entidades — "R&D" virava
+  // "R&amp;amp;D" na mensagem).
+  const rawSummary = nestedString(advisory, "summary").slice(0, 1_000);
   return {
     kind: "accepted",
     destination: "alerts",
@@ -1109,11 +1112,11 @@ function normalizeRepositoryAdvisory(
       ...fields,
       branch: "",
       title: sanitizeText(
-        `Repository advisory ${action}${summary === "" ? "" : `: ${summary}`}`,
+        `Repository advisory ${action}${rawSummary === "" ? "" : `: ${rawSummary}`}`,
         MAX_LENGTHS.title,
       ),
       details: sanitizeText(
-        summary || `Repository advisory lifecycle changed to ${action}.`,
+        rawSummary || `Repository advisory lifecycle changed to ${action}.`,
         MAX_LENGTHS.details,
       ),
       url: githubUrl(nestedString(advisory, "html_url"), repository),
@@ -1190,10 +1193,11 @@ function normalizeSecretScanningLocation(
     return { kind: "ignored", reason: "secret_location_alert_missing" };
   }
   const location = nestedRecord(payload, "location");
-  const locationType = sanitizeText(
-    location === undefined ? "" : nestedString(location, "type"),
-    100,
-  );
+  // Cru até a composição — sanitiza uma vez, no título (mesma classe do
+  // achado do repository_advisory).
+  const locationType = (
+    location === undefined ? "" : nestedString(location, "type")
+  ).slice(0, 100);
   const fields = commonFields(
     "secret_scanning_alert_location",
     action,
@@ -1240,7 +1244,8 @@ function normalizeSecretScanningScan(
   if (allowed === undefined || !allowed.has(action)) {
     return { kind: "ignored", reason: "secret_scan_lifecycle_not_relevant" };
   }
-  const scanType = sanitizeText(nestedString(payload, "type"), 100);
+  // Cru até a composição — sanitiza uma vez, no título (mesma classe).
+  const scanType = nestedString(payload, "type").slice(0, 100);
   const fields = commonFields(
     "secret_scanning_scan",
     action,

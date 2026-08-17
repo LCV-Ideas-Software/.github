@@ -193,10 +193,12 @@ describe("GitHub webhook ingress", () => {
     expect((await alertStore.get(deliveryId))?.state).toBe("pending");
 
     queue.fail = false;
+    // O ingress carimbou a primeira tentativa (recuo(1) = 5 min); o cron
+    // só a reagenda depois de o recuo vencer.
     const result = await runAlertCron({
       store: alertStore,
       queue: { send: (m) => queue.send(m as QueueJob) },
-      now: () => NOW + 5_001,
+      now: () => NOW + 5 * 60_000 + 1,
     });
     expect(result.published).toBe(1);
     expect(queue.sent).toEqual([

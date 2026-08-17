@@ -22,6 +22,21 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
     expect((await store.get("guid-2"))?.attempts).toBe(1);
   });
 
+  it("CAS SOBREPOSTO: dois stampDue concorrentes sobre a mesma linha devida — exatamente um vence", async () => {
+    // Passes concorrentes do cron (dois isolates, dois ticks) disputando a
+    // mesma linha. O D1 serializa escritas; o WHERE do CAS decide quem
+    // venceu. Promise.all dispara os dois sem ordem garantida; a soma dos
+    // resultados TEM de ser exatamente 1, e attempts termina em 1.
+    const store = new AlertStore(makeAlertDb().d1);
+    await store.insert("guid-corrida", "{}", 1_000);
+    const [a, b] = await Promise.all([
+      store.stampDue("guid-corrida", 10_000, 310_000),
+      store.stampDue("guid-corrida", 10_001, 310_001),
+    ]);
+    expect(Number(a) + Number(b)).toBe(1);
+    expect((await store.get("guid-corrida"))?.attempts).toBe(1);
+  });
+
   it("linha 'sent' nunca é carimbada: o consumidor venceu a corrida", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-3", "{}", 1_000);
