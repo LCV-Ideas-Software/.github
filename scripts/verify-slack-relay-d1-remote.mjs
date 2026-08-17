@@ -210,6 +210,7 @@ export async function cloudflareRequest(
     // The response body is part of the same bounded operation. A server can
     // deliver headers and then stall JSON consumption until the signal aborts.
     payload = await response.json();
+    deadlineBoundedTimeout(deadlineMs);
   } catch (error) {
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
       throw new RemoteMaintenanceDeadlineError();

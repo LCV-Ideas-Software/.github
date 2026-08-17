@@ -165,6 +165,31 @@ test("a response body that fails after the deadline is classified as deferred ma
   );
 });
 
+test("a response body that resolves after the absolute deadline is still rejected", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { success: true, result: [] };
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      cloudflareRequest(
+        FAKE_CONFIGURATION,
+        "/accounts/fake/d1/database",
+        {},
+        Date.now() + 10,
+      ),
+    /maintenance deadline/u,
+  );
+});
+
 test("the proof stops work before cleanup and retains a live cleanup budget", () => {
   const now = 1_000_000;
   const proofDeadlineMs = now + 20 * 60_000;
