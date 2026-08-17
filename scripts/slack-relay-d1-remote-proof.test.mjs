@@ -13,6 +13,7 @@ import {
   DATABASE_ID_PATTERN,
   DATABASE_NAME_PREFIX,
   deadlineBoundedTimeout,
+  deleteConfirmationBackoffMs,
   deleteDatabaseWithConfirmation,
   DISPOSABLE_DATABASE_NAME_PATTERN,
   EXPECTED_FINAL_SCHEMA,
@@ -165,6 +166,17 @@ test("remote requests are capped by the remaining deadline", () => {
   assert.equal(deadlineBoundedTimeout(now + 1_234, now, API_TIMEOUT_MS), 1_234);
   assert.throws(
     () => deadlineBoundedTimeout(now, now, API_TIMEOUT_MS),
+    /deadline/u,
+  );
+});
+
+test("DELETE confirmation backoff is deadline-bounded and absent after the final attempt", () => {
+  const nowMs = 1_000_000;
+  assert.equal(deleteConfirmationBackoffMs(0, nowMs + 100, nowMs), 100);
+  assert.equal(deleteConfirmationBackoffMs(1, nowMs + 1_000, nowMs), 500);
+  assert.equal(deleteConfirmationBackoffMs(3, nowMs - 1, nowMs), 0);
+  assert.throws(
+    () => deleteConfirmationBackoffMs(2, nowMs, nowMs),
     /deadline/u,
   );
 });

@@ -123,6 +123,21 @@ export function deadlineBoundedTimeout(
   return Math.min(maximumTimeoutMs, remainingMs);
 }
 
+export function deleteConfirmationBackoffMs(
+  attempt,
+  deadlineMs,
+  nowMs = Date.now(),
+) {
+  invariant(
+    Number.isSafeInteger(attempt) &&
+      attempt >= 0 &&
+      attempt < DELETE_CONFIRMATION_ATTEMPTS,
+    "The D1 delete-confirmation attempt is invalid.",
+  );
+  if (attempt + 1 === DELETE_CONFIRMATION_ATTEMPTS) return 0;
+  return deadlineBoundedTimeout(deadlineMs, nowMs, 250 * 2 ** attempt);
+}
+
 export function verifyRemoteProofDeadline(environment, nowMs = Date.now()) {
   const raw = environment.REMOTE_PROOF_DEADLINE_MS;
   invariant(
@@ -628,7 +643,8 @@ export async function deleteDatabaseWithConfirmation(
     if (!databases.some((database) => database.uuid === databaseId)) {
       return;
     }
-    await delay(250 * 2 ** attempt);
+    const backoffMs = deleteConfirmationBackoffMs(attempt, deadlineMs);
+    if (backoffMs > 0) await delay(backoffMs);
   }
   throw new Error(
     `A disposable database is still listed after ${DELETE_CONFIRMATION_ATTEMPTS} delete attempts (ID withheld from the log; see the Cloudflare dashboard).`,
