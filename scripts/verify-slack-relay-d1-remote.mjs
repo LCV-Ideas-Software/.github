@@ -187,9 +187,15 @@ function readConfiguration(environment) {
   return { accountId, apiToken };
 }
 
-async function cloudflareRequest(configuration, path, init = {}, deadlineMs) {
+export async function cloudflareRequest(
+  configuration,
+  path,
+  init = {},
+  deadlineMs,
+) {
   const timeoutMs = deadlineBoundedTimeout(deadlineMs);
   let response;
+  let payload;
   try {
     response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
       ...init,
@@ -201,13 +207,15 @@ async function cloudflareRequest(configuration, path, init = {}, deadlineMs) {
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
     });
+    // The response body is part of the same bounded operation. A server can
+    // deliver headers and then stall JSON consumption until the signal aborts.
+    payload = await response.json();
   } catch (error) {
     if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
       throw new RemoteMaintenanceDeadlineError();
     }
     throw error;
   }
-  const payload = await response.json();
   // Diagnóstico sem conteúdo remoto: só o caminho local, o status HTTP e os
   // CÓDIGOS numéricos de erro (Number() não carrega taint de string).
   const numericErrorCodes = Array.isArray(payload?.errors)
@@ -312,8 +320,13 @@ export function inventoryPageIsLast(
     !shortPage || totalCount === undefined || collectedCount === totalCount,
     "A short D1 inventory page contradicts total_count; refusing a partial inventory.",
   );
-  // Sem total_count, uma página apenas curta não prova que o servidor não
-  // devolveu um lote parcial. Só uma página VAZIA encerra o inventário.
+  // Sem total_count, uma página curta e não vazia pode ser um lote parcial;
+  // pedir a página seguinte avançaria pelo per_page solicitado e poderia
+  // saltar entradas. Somente páginas cheias continuam e uma vazia encerra.
+  invariant(
+    totalCount !== undefined || !shortPage || pageLength === 0,
+    "A non-empty short D1 inventory page without total_count cannot prove a contiguous inventory.",
+  );
   return totalCount === undefined
     ? pageLength === 0
     : collectedCount === totalCount;
@@ -691,6 +704,60 @@ export function assertFinalSchema(rows) {
   );
 }
 
+function sqlWithoutComments(sql) {
+  let result = "";
+  let quote;
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+    if (quote !== undefined) {
+      result += character;
+      const closingCharacter = quote === "[" ? "]" : quote;
+      if (character === closingCharacter) {
+        if (quote !== "[" && next === closingCharacter) {
+          result += next;
+          index += 1;
+        } else {
+          quote = undefined;
+        }
+      }
+      continue;
+    }
+    if (
+      character === "'" ||
+      character === '"' ||
+      character === "`" ||
+      character === "["
+    ) {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === "-" && next === "-") {
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n" && sql[index] !== "\r") {
+        index += 1;
+      }
+      result += "\n";
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      index += 2;
+      while (
+        index < sql.length &&
+        !(sql[index] === "*" && sql[index + 1] === "/")
+      ) {
+        index += 1;
+      }
+      index += 1;
+      result += " ";
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
 export function assertAlertDeliveryStateConstraint(rows) {
   invariant(
     rows.length === 1 && typeof rows[0]?.sql === "string",
@@ -698,9 +765,16 @@ export function assertAlertDeliveryStateConstraint(rows) {
   );
   invariant(
     /\bstate\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*state\s+IN\s*\(\s*'pending'\s*,\s*'sent'\s*\)\s*\)/iu.test(
-      rows[0].sql,
+      sqlWithoutComments(rows[0].sql),
     ),
     "The migrated alert_delivery table does not enforce the exact pending/sent state constraint.",
+  );
+}
+
+export function assertInvalidAlertDeliveryStateWasRejected(rows) {
+  invariant(
+    rows.length === 1 && rows[0]?.state === "pending",
+    "The migrated alert_delivery table accepted a state outside pending/sent.",
   );
 }
 
@@ -731,6 +805,22 @@ async function proveAlertDeliveryRoundtrip(
       rows[0].next_due_ms === 0,
     `alert_delivery roundtrip mismatch: rows=${String(rows.length)} pending=${String(rows[0]?.state === "pending")} attempts0=${String(rows[0]?.attempts === 0)} due0=${String(rows[0]?.next_due_ms === 0)}.`,
   );
+  // Prova comportamental do CHECK sem converter falha SQL/rede em sucesso:
+  // OR IGNORE mantém o caminho remoto bem-sucedido, mas uma tabela sem a
+  // restrição aceitaria o estado fora do contrato e seria detectada abaixo.
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE OR IGNORE alert_delivery SET state = 'parked' WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  const rejectedStateRows = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT state FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  assertInvalidAlertDeliveryStateWasRejected(rejectedStateRows);
   const definitionRows = await d1Query(
     configuration,
     databaseId,

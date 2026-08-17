@@ -6,6 +6,8 @@ import {
   API_TIMEOUT_MS,
   assertAlertDeliveryStateConstraint,
   assertFinalSchema,
+  assertInvalidAlertDeliveryStateWasRejected,
+  cloudflareRequest,
   createDisposableDatabase,
   DATABASE_NAME_PREFIX,
   deadlineBoundedTimeout,
@@ -138,6 +140,31 @@ test("remote requests are capped by the remaining deadline", () => {
   );
 });
 
+test("a response body that fails after the deadline is classified as deferred maintenance", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      throw new DOMException("The operation was aborted", "AbortError");
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      cloudflareRequest(
+        FAKE_CONFIGURATION,
+        "/accounts/fake/d1/database",
+        {},
+        Date.now() + 10,
+      ),
+    /maintenance deadline/u,
+  );
+});
+
 test("the proof stops work before cleanup and retains a live cleanup budget", () => {
   const now = 1_000_000;
   const proofDeadlineMs = now + 20 * 60_000;
@@ -246,6 +273,22 @@ test("the alert_delivery definition requires the exact pending/sent CHECK", () =
         sql: "CREATE TABLE alert_delivery (state TEXT NOT NULL CHECK (state IN ('pending', 'sent', 'parked')))",
       },
     ],
+    [
+      {
+        sql: `CREATE TABLE alert_delivery (
+          state TEXT NOT NULL
+          /* CHECK (state IN ('pending', 'sent')) */
+        )`,
+      },
+    ],
+    [
+      {
+        sql: `CREATE TABLE alert_delivery (
+          state TEXT NOT NULL
+          -- CHECK (state IN ('pending', 'sent'))
+        )`,
+      },
+    ],
   ]) {
     assert.throws(
       () => assertAlertDeliveryStateConstraint(rows),
@@ -254,9 +297,24 @@ test("the alert_delivery definition requires the exact pending/sent CHECK", () =
   }
 });
 
+test("the alert_delivery behavioral proof rejects an out-of-contract state", () => {
+  assert.doesNotThrow(() =>
+    assertInvalidAlertDeliveryStateWasRejected([{ state: "pending" }]),
+  );
+  for (const rows of [[], [{ state: "parked" }], [{ state: "sent" }]]) {
+    assert.throws(
+      () => assertInvalidAlertDeliveryStateWasRejected(rows),
+      /accepted a state outside pending\/sent/u,
+    );
+  }
+});
+
 test("inventoryPageIsLast reads the pagination signals correctly", () => {
   assert.equal(inventoryPageIsLast({}, 0, 0), true);
-  assert.equal(inventoryPageIsLast({}, INVENTORY_PAGE_SIZE - 1, 999), false);
+  assert.throws(
+    () => inventoryPageIsLast({}, INVENTORY_PAGE_SIZE - 1, 999),
+    /non-empty short D1 inventory page/u,
+  );
   assert.equal(
     inventoryPageIsLast(
       { total_count: INVENTORY_PAGE_SIZE },
@@ -281,7 +339,10 @@ test("inventoryPageIsLast reads the pagination signals correctly", () => {
     inventoryPageIsLast(undefined, INVENTORY_PAGE_SIZE, INVENTORY_PAGE_SIZE),
     false,
   );
-  assert.equal(inventoryPageIsLast(undefined, 1, 1), false);
+  assert.throws(
+    () => inventoryPageIsLast(undefined, 1, 1),
+    /non-empty short D1 inventory page/u,
+  );
   assert.throws(
     () => inventoryPageIsLast({ total_count: 1_001 }, 1, 1),
     /short D1 inventory page/u,
@@ -351,14 +412,30 @@ test("the D1 inventory traverses every page before concluding", async () => {
 
 test("without total_count the D1 inventory requires an empty terminal page", async () => {
   let page = 0;
+  const firstPage = Array.from({ length: INVENTORY_PAGE_SIZE }, (_, index) =>
+    fakeDatabase(index),
+  );
   const databases = await listDatabases(FAKE_CONFIGURATION, async () => {
     page += 1;
     return page === 1
-      ? { result: [fakeDatabase(0)], result_info: {} }
+      ? { result: firstPage, result_info: {} }
       : { result: [], result_info: {} };
   });
   assert.equal(page, 2);
-  assert.deepEqual(databases, [fakeDatabase(0)]);
+  assert.deepEqual(databases, firstPage);
+});
+
+test("without total_count a non-empty short page fails before requesting a page that could skip entries", async () => {
+  let page = 0;
+  await assert.rejects(
+    () =>
+      listDatabases(FAKE_CONFIGURATION, async () => {
+        page += 1;
+        return { result: [fakeDatabase(0)], result_info: {} };
+      }),
+    /non-empty short D1 inventory page/u,
+  );
+  assert.equal(page, 1);
 });
 
 test("the D1 inventory rejects contradictory optional pagination metadata", async () => {
