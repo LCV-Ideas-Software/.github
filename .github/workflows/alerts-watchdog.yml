@@ -31,11 +31,18 @@ concurrency:
 
 jobs:
   watch:
+    name: Watch alerts delivery
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Environment DEDICADO e SEM regras de proteção: escopo do segredo
+    # (exigência do zizmor/política do repo), nunca portão. A restrição do
+    # ADR §6-D proíbe o que possa PULAR o job — environment desprotegido não
+    # pula nem espera; se alguém um dia lhe acrescentar regras de proteção,
+    # o vigia trava e o §6-D volta a valer contra a mudança.
+    environment: alerts-watchdog
     steps:
       - name: Restore previous transport marker
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .watchdog-marker
           key: alerts-watchdog-marker-${{ github.run_id }}
@@ -96,7 +103,7 @@ jobs:
         # próprio passo de verificação antes de qualquer exit; aqui só se
         # persiste o arquivo que ele deixou.
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .watchdog-marker
           key: alerts-watchdog-marker-${{ github.run_id }}

@@ -741,7 +741,9 @@ it("com segredo: { pending, sent, oldest_pending_age_ms }", ...);
 
 **Arquivos:** criar `.github/workflows/alerts-watchdog.yml`.
 
-Restrições que são consequência, não preferência: o job **não** tem `if:`, `environment:` nem `vars.*` — job pulado conclui sucesso e não gera e-mail (fato documentado, já citado no ADR §6-D).
+Restrições que são consequência, não preferência: o job **não** tem `if:` nem `vars.*` — job pulado conclui sucesso e não gera e-mail (fato documentado, já citado no ADR §6-D). *(Emendado em 17/08: a proibição de `environment:` foi refinada pela revisão — o que o §6-D proíbe é o que possa PULAR ou SEGURAR o job. Um environment **dedicado e sem regras de proteção** não pula nem espera, e é exigido pela política do repo para escopo de segredo (zizmor). O vigia usa `environment: alerts-watchdog`, desprotegido; se alguém um dia lhe acrescentar proteção, o vigia trava e o §6-D volta a valer contra a mudança — o aviso está no próprio YAML.)*
+
+O transporte é limitado dos dois lados, exigência da revisão: `curl --max-time 30` (verbatim do manual: *"Maximum time allowed for transfer"*) e `timeout-minutes: 5` no job — uma resposta pendurada vira falha de transporte detectável, nunca um run em progresso que impede a "segunda consecutiva" da decisão 3.
 
 - [ ] **Passo 1: o workflow** — agendado `*/15 * * * *`; um passo que faz `curl` do `/alerts/status` com `ALERTS_STATUS_SECRET` (segredo do repositório, já provisionado); **duas verificações consecutivas sem resposta contam como problema** (decisão 3): a primeira falha de transporte grava um marcador em cache de workflow e sai verde; a segunda consecutiva falha o job. Falha também quando `oldest_pending_age_ms > 3_600_000` (o `WATCHDOG_MAX_PENDING_AGE_MS` de T1 — manter os dois em sincronia é responsabilidade declarada deste passo).
 - [ ] **Passo 2: exclusão do próprio caminho** — conferir que `isExcludedWorkflowRun` (T5) lista `.github/workflows/alerts-watchdog.yml` no repo do relay: fecha a instância A do §6.
