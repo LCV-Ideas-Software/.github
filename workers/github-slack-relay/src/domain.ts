@@ -1,21 +1,38 @@
 export const TARGET_ORGANIZATION = "LCV-Ideas-Software";
 
+// ADR-002 §3 (emendado 16/08): OITO eventos — só o que o app oficial não
+// entrega. Os eventos de atividade saíram da allowlist (o oficial os
+// cobre); os normalizadores deles permanecem abaixo como código morto
+// declarado, com retirada fora do escopo desta mudança. security_advisory
+// não entra: disponibilidade "app" — webhook de organização não o recebe.
 export const SUPPORTED_RELAY_EVENTS: ReadonlySet<string> = new Set([
   "workflow_run",
   "dependabot_alert",
   "code_scanning_alert",
   "secret_scanning_alert",
-  "deployment_status",
-  "push",
-  "pull_request",
-  "pull_request_review",
-  "pull_request_review_comment",
-  "issues",
-  "issue_comment",
-  "release",
-  "discussion",
-  "discussion_comment",
+  "repository_advisory",
+  "security_and_analysis",
+  "secret_scanning_alert_location",
+  "secret_scanning_scan",
 ]);
+
+// ADR-002 §5, decisão 1 (emendada): a exclusão exige repositório E caminho
+// — caminho sozinho suprimiria o workflow homônimo de outro repositório.
+const RELAY_REPOSITORY = "LCV-Ideas-Software/.github";
+const EXCLUDED_WORKFLOW_PATHS: ReadonlySet<string> = new Set([
+  ".github/workflows/alerts-watchdog.yml",
+  ".github/workflows/github-slack-integration.yml",
+]);
+
+export function isExcludedWorkflowRun(
+  repositoryFullName: string,
+  workflowPath: string,
+): boolean {
+  return (
+    repositoryFullName === RELAY_REPOSITORY &&
+    EXCLUDED_WORKFLOW_PATHS.has(workflowPath)
+  );
+}
 
 const PROBLEMATIC_WORKFLOW_CONCLUSIONS = new Set([
   "action_required",
@@ -51,6 +68,11 @@ const SECURITY_ACTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
     "resolved",
     "validated",
   ]),
+  // ADR-002 §5, decisão 5: todos os eventos de segurança extras entram,
+  // inclusive os sub-eventos de secret scanning.
+  repository_advisory: new Set(["published", "reported"]),
+  secret_scanning_alert_location: new Set(["created"]),
+  secret_scanning_scan: new Set(["completed"]),
 };
 
 const ACTIVITY_ACTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -286,6 +308,13 @@ function normalizeWorkflowRun(
   const conclusion = nestedString(run, "conclusion").toLowerCase();
   if (!PROBLEMATIC_WORKFLOW_CONCLUSIONS.has(conclusion)) {
     return { kind: "ignored", reason: "workflow_not_problematic" };
+  }
+
+  // ADR-002 §6, instância A: a falha do próprio vigia (ou do deploy do
+  // relay) viraria alerta não entregável a cada tique. Repositório E
+  // caminho, nunca só caminho.
+  if (isExcludedWorkflowRun(repository, nestedString(run, "path"))) {
+    return { kind: "ignored", reason: "workflow_excluded_self" };
   }
 
   const workflow =
@@ -1047,6 +1076,204 @@ function normalizeDiscussionComment(
   });
 }
 
+// ADR-002 §3: aviso de segurança publicado NOS NOSSOS repositórios.
+// (O security_advisory global tem disponibilidade "app" e está fora.)
+function normalizeRepositoryAdvisory(
+  action: string,
+  deliveryId: string,
+  repository: string,
+  payload: JsonRecord,
+): NormalizeResult {
+  const allowed = SECURITY_ACTIONS.repository_advisory;
+  if (allowed === undefined || !allowed.has(action)) {
+    return { kind: "ignored", reason: "advisory_lifecycle_not_relevant" };
+  }
+  const advisory = nestedRecord(payload, "repository_advisory");
+  if (advisory === undefined) {
+    return { kind: "ignored", reason: "repository_advisory_missing" };
+  }
+  const fields = commonFields(
+    "repository_advisory",
+    action,
+    deliveryId,
+    repository,
+    payload,
+  );
+  const summary = sanitizeText(nestedString(advisory, "summary"), 1_000);
+  return {
+    kind: "accepted",
+    destination: "alerts",
+    payload: {
+      source: "GitHub Security Advisory",
+      severity: normalizedSeverity(nestedString(advisory, "severity"), "high"),
+      ...fields,
+      branch: "",
+      title: sanitizeText(
+        `Repository advisory ${action}${summary === "" ? "" : `: ${summary}`}`,
+        MAX_LENGTHS.title,
+      ),
+      details: sanitizeText(
+        summary || `Repository advisory lifecycle changed to ${action}.`,
+        MAX_LENGTHS.details,
+      ),
+      url: githubUrl(nestedString(advisory, "html_url"), repository),
+      occurred_at: validOccurredAt(
+        nestedString(advisory, "published_at") ||
+          nestedString(advisory, "updated_at"),
+      ),
+      destination: "alerts",
+      relay_attempt: "",
+      relay_timestamp: "",
+      relay_signature: "",
+    },
+  };
+}
+
+// ADR-002 §3: mudança de configuração de segurança. O evento NÃO carrega
+// campo `action` — o portão é a presença do registro `changes`.
+function normalizeSecurityAndAnalysis(
+  deliveryId: string,
+  repository: string,
+  payload: JsonRecord,
+): NormalizeResult {
+  const changes = nestedRecord(payload, "changes");
+  if (changes === undefined) {
+    return { kind: "ignored", reason: "security_and_analysis_changes_missing" };
+  }
+  const fields = commonFields(
+    "security_and_analysis",
+    "changed",
+    deliveryId,
+    repository,
+    payload,
+  );
+  return {
+    kind: "accepted",
+    destination: "alerts",
+    payload: {
+      source: "GitHub Security Settings",
+      severity: "high",
+      ...fields,
+      branch: "",
+      title: sanitizeText(
+        `Security configuration changed: ${repository}`,
+        MAX_LENGTHS.title,
+      ),
+      details: sanitizeText(
+        "The security and analysis settings of the repository changed.",
+        MAX_LENGTHS.details,
+      ),
+      url: githubUrl("", repository),
+      occurred_at: validOccurredAt(""),
+      destination: "alerts",
+      relay_attempt: "",
+      relay_timestamp: "",
+      relay_signature: "",
+    },
+  };
+}
+
+// Sub-evento de secret scanning: nova localização de um segredo já
+// detectado (decisão 5: os sub-eventos entram).
+function normalizeSecretScanningLocation(
+  action: string,
+  deliveryId: string,
+  repository: string,
+  payload: JsonRecord,
+): NormalizeResult {
+  const allowed = SECURITY_ACTIONS.secret_scanning_alert_location;
+  if (allowed === undefined || !allowed.has(action)) {
+    return { kind: "ignored", reason: "secret_location_lifecycle_not_relevant" };
+  }
+  const alert = nestedRecord(payload, "alert");
+  if (alert === undefined) {
+    return { kind: "ignored", reason: "secret_location_alert_missing" };
+  }
+  const location = nestedRecord(payload, "location");
+  const locationType = sanitizeText(
+    location === undefined ? "" : nestedString(location, "type"),
+    100,
+  );
+  const fields = commonFields(
+    "secret_scanning_alert_location",
+    action,
+    deliveryId,
+    repository,
+    payload,
+  );
+  return {
+    kind: "accepted",
+    destination: "alerts",
+    payload: {
+      source: "GitHub Secret Scanning",
+      severity: "high",
+      ...fields,
+      branch: "",
+      title: sanitizeText(
+        `Secret detected in new location${locationType === "" ? "" : ` (${locationType})`}`,
+        MAX_LENGTHS.title,
+      ),
+      details: sanitizeText(
+        "An existing secret scanning alert gained a new location.",
+        MAX_LENGTHS.details,
+      ),
+      url: githubUrl(nestedString(alert, "html_url"), repository),
+      occurred_at: validOccurredAt(""),
+      destination: "alerts",
+      relay_attempt: "",
+      relay_timestamp: "",
+      relay_signature: "",
+    },
+  };
+}
+
+// Sub-evento de secret scanning: varredura concluída. ADR-002 §12 anota que
+// a frequência deste evento não tem relação com haver algo errado — medir
+// depois de ligado; se afogar o canal, a decisão volta ao operador.
+function normalizeSecretScanningScan(
+  action: string,
+  deliveryId: string,
+  repository: string,
+  payload: JsonRecord,
+): NormalizeResult {
+  const allowed = SECURITY_ACTIONS.secret_scanning_scan;
+  if (allowed === undefined || !allowed.has(action)) {
+    return { kind: "ignored", reason: "secret_scan_lifecycle_not_relevant" };
+  }
+  const scanType = sanitizeText(nestedString(payload, "type"), 100);
+  const fields = commonFields(
+    "secret_scanning_scan",
+    action,
+    deliveryId,
+    repository,
+    payload,
+  );
+  return {
+    kind: "accepted",
+    destination: "alerts",
+    payload: {
+      source: "GitHub Secret Scanning",
+      severity: "info",
+      ...fields,
+      branch: "",
+      title: sanitizeText(
+        `Secret scanning scan ${action}${scanType === "" ? "" : ` (${scanType})`}`,
+        MAX_LENGTHS.title,
+      ),
+      details: sanitizeText(
+        `A secret scanning scan ${action} for the repository.`,
+        MAX_LENGTHS.details,
+      ),
+      url: githubUrl("", repository),
+      occurred_at: validOccurredAt(nestedString(payload, "completed_at")),
+      destination: "alerts",
+      relay_attempt: "",
+      relay_timestamp: "",
+      relay_signature: "",
+    },
+  };
+}
+
 export function normalizeGitHubEvent(
   event: string,
   payload: JsonRecord,
@@ -1067,6 +1294,19 @@ export function normalizeGitHubEvent(
       return normalizeCodeScanning(action, deliveryId, repository, payload);
     case "secret_scanning_alert":
       return normalizeSecretScanning(action, deliveryId, repository, payload);
+    case "repository_advisory":
+      return normalizeRepositoryAdvisory(action, deliveryId, repository, payload);
+    case "security_and_analysis":
+      return normalizeSecurityAndAnalysis(deliveryId, repository, payload);
+    case "secret_scanning_alert_location":
+      return normalizeSecretScanningLocation(
+        action,
+        deliveryId,
+        repository,
+        payload,
+      );
+    case "secret_scanning_scan":
+      return normalizeSecretScanningScan(action, deliveryId, repository, payload);
     case "push":
       return normalizePush(deliveryId, repository, payload, defaultBranch);
     case "pull_request":
