@@ -3,6 +3,8 @@ import { URL as NodeUrl } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { WATCHDOG_MAX_PENDING_AGE_MS } from "../../src/alerts/contract";
+
 // ADR-002 §5, decisão 8 (emendada): a fila de descarte dos alertas é um
 // SEGUNDO mecanismo de entrega, e sai. E o max_retries do consumidor vai ao
 // mínimo: com o consumidor que sempre confirma, retentativa de plataforma
@@ -45,5 +47,23 @@ describe("configuração das filas (ADR-002 §5, decisão 8)", () => {
     expect(
       consumers.some((c) => c.queue === "github-slack-alerts-dlq"),
     ).toBe(false);
+  });
+});
+
+describe("sincronia com o vigia (ADR-002 §4)", () => {
+  it("o limiar do vigia no workflow é o MESMO do contrato — a sincronia declarada vira presa", () => {
+    // Achado da revisão: 3_600_000 estava duplicado no yml sem nada que
+    // ligasse os dois valores — uma mudança de política num lado
+    // dessincronizaria Worker e vigia em silêncio.
+    const yml = readFileSync(
+      new NodeUrl(
+        "../../../../.github/workflows/alerts-watchdog.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const declarados = [...yml.matchAll(/MAX_PENDING_AGE_MS: "(\d+)"/gu)];
+    expect(declarados).toHaveLength(1);
+    expect(Number(declarados[0]?.[1])).toBe(WATCHDOG_MAX_PENDING_AGE_MS);
   });
 });

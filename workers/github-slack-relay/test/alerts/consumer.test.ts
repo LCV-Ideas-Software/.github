@@ -26,6 +26,41 @@ function deps(store: AlertStore, f: typeof fetch) {
 }
 
 describe("consumidor (ADR-002 §8: ok:true = enviado; resto fica pendente)", () => {
+  it("o POST é o contrato da entrega: endpoint, Bearer, canal, texto e content-type", async () => {
+    // Achado da revisão: respostas enlatadas sem inspecionar a REQUISIÇÃO
+    // deixariam endpoint, token, canal ou corpo regredirem em silêncio.
+    const store = await comLinha(
+      '{"title":"Título do contrato","delivery_id":"d-1"}',
+    );
+    const capturadas: Array<{ url: string; init: RequestInit }> = [];
+    const capturando: typeof fetch = (async (
+      url: string,
+      init: RequestInit,
+    ) => {
+      capturadas.push({ url, init });
+      return new Response('{"ok":true}');
+    }) as unknown as typeof fetch;
+
+    await processAlertMessage(
+      { v: 2, delivery_id: "d-1" },
+      deps(store, capturando),
+    );
+
+    expect(capturadas).toHaveLength(1);
+    const [req] = capturadas;
+    expect(req?.url).toBe("https://slack.com/api/chat.postMessage");
+    expect(req?.init.method).toBe("POST");
+    const headers = req?.init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer xoxb-token-de-teste");
+    expect(headers["Content-Type"]).toBe("application/json; charset=utf-8");
+    const corpo = JSON.parse(String(req?.init.body)) as {
+      channel: string;
+      text: string;
+    };
+    expect(corpo.channel).toBe("C0BMUK793NV"); // ALERTS_CHANNEL_ID
+    expect(corpo.text).toContain("Título do contrato");
+  });
+
   it("ok:true marca sent e guarda ts", async () => {
     const store = await comLinha();
     await processAlertMessage(

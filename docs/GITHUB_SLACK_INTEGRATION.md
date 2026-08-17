@@ -728,7 +728,11 @@ queryable, the `relay_state` singleton has valid Queue
 and Slack-activity checkpoints, no delivery is in `manual_review` or
 `dead_letter`, and no current `accepted_by_slack`, `accepted_by_trigger`, or
 `send_started` row has exceeded its 20-minute reconciliation deadline. The
-current HMAC value and both Slack trigger values must validate. A ready reply
+current HMAC value and both Slack trigger values must validate. The v2 alerts
+path is part of the same readiness class: `SLACK_BOT_TOKEN` and
+`ALERTS_STATUS_SECRET` must be readable and non-empty, and the
+`alert_delivery` table must answer the same single-statement snapshot the
+`/alerts/status` route serves. A ready reply
 adds only `legacy_unverified: true|false`: the historical quarantine stays
 visible but does not fail readiness, and no count or identifier is exposed.
 The known lost ID remains `manual_review` and therefore keeps HTTP 503 until

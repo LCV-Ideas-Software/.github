@@ -7,7 +7,7 @@ import {
   type SlackWorkflowPayload,
 } from "../src/domain";
 import { AlertStore } from "../src/alerts/store";
-import type { QueueJob } from "../src/store";
+
 import { closeAlertDatabases, makeAlertDb } from "./alerts/helpers";
 import {
   FakeQueue,
@@ -98,7 +98,7 @@ describe("property-based GitHub webhook security", () => {
           if (result.accepted === true && result.queued === true) {
             expect(await alertStore.get(deliveryId)).not.toBeNull();
             expect(queue.sent).toEqual([
-              { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+              { v: 2, delivery_id: deliveryId },
             ]);
           } else {
             expect(await alertStore.get(deliveryId)).toBeNull();
@@ -158,7 +158,7 @@ describe("property-based GitHub webhook security", () => {
 
           expect(response.status).toBe(202);
           expect(queue.sent).toEqual([
-            { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+            { v: 2, delivery_id: deliveryId },
           ]);
           const stored = await alertStore.get(deliveryId);
           expect(stored).not.toBeNull();

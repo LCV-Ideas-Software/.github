@@ -47,9 +47,9 @@ CREATE TABLE alert_delivery (
   slack_message_ts TEXT,
   last_error TEXT,
   -- Âncora da idade que o vigia lê. NENHUM caminho de recuperação escreve
-  -- esta coluna: é o invariante da instância B. O teste que o prova por
-  -- mutação pertence ao store, que ainda NÃO existe nesta branch — até ele
-  -- existir, esta linha é intenção declarada, não restrição observada.
+  -- esta coluna: é o invariante da instância B, provado por mutação em
+  -- test/alerts/store.test.ts ("recordFailure NÃO toca agendamento nem
+  -- created_ms") — restrição observada, não só intenção declarada.
   -- typeof() nas duas colunas de tempo pela mesma razão do attempts — e com
   -- dano maior se faltasse: o vigia computa idade de created_ms, e a
   -- retenção apaga `sent` por created_ms. Valor malformado corromperia

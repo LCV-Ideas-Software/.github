@@ -10,17 +10,20 @@ Produto da Tarefa 1 do plano. Nenhum valor aqui é gosto: cada um tem ou uma cit
 
 ## Restrições que os números têm de respeitar
 
-Lidas da configuração desta branch, não de memória — `workers/github-slack-relay/wrangler.jsonc`:
+Lidas da configuração como estava ANTES da mudança — este documento mediu a
+linha de base sobre a qual a decisão 8 (emendada) operou; os valores vigentes
+pós-decisão vêm logo abaixo:
 
 *(A coluna de linha foi removida em 16/08: os bindings adicionados no mesmo PR deslocaram o arquivo e as cinco referências numéricas apodreceram — achado da revisão. Âncora por chave, que sobrevive a edição.)*
 
-| Ajuste (no `wrangler.jsonc`, consumidor de `github-slack-alerts`) | Valor |
-|---|---|
-| `max_retries` | `5` |
-| `retry_delay` | `2` (segundos) |
-| `max_batch_size` | `1` |
-| `max_concurrency` | `1` |
-| `triggers.crons` do Worker | `*/5 * * * *` |
+| Ajuste (no `wrangler.jsonc`, consumidor de `github-slack-alerts`) | Linha de base PRÉ-mudança | Vigente (decisão 8 emendada) |
+|---|---|---|
+| `max_retries` | `5` | `0` |
+| `retry_delay` | `2` (segundos) | *(removido)* |
+| `max_batch_size` | `1` | `1` |
+| `max_concurrency` | `1` | `1` |
+| `dead_letter_queue` | `github-slack-alerts-dlq` | *(removida; DLQ sem consumidor)* |
+| `triggers.crons` do Worker | `*/5 * * * *` | `*/5 * * * *` |
 
 Da [documentação de batching, retries e delays](https://developers.cloudflare.com/queues/configuration/batching-retries/), verbatim:
 

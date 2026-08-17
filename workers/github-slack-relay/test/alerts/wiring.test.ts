@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { handleFetch, handleQueue } from "../../src/index";
+import {
+  handleFetch,
+  handleQueue,
+  type RelayQueueMessage,
+} from "../../src/index";
 import { AlertStore } from "../../src/alerts/store";
-import type { QueueJob } from "../../src/store";
+import type { AlertQueueMessage } from "../../src/alerts/contract";
 import { FakeQueue, makeEnv, signedRequest } from "../helpers";
 import { closeAlertDatabases, makeAlertDb } from "./helpers";
 
@@ -48,7 +52,7 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
       nextDueMs: NOW + 5 * 60_000,
     });
     expect(queue.sent).toEqual([
-      { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+      { v: 2, delivery_id: deliveryId },
     ]);
     // O payload guardado é o NORMALIZADO — a mensagem monta no envio.
     const payload = JSON.parse(row?.payloadJson ?? "{}") as Record<string, unknown>;
@@ -99,7 +103,7 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
     const { runAlertCron } = await import("../../src/alerts/cron");
     const r = await runAlertCron({
       store: alertStore,
-      queue: { send: async (m) => queue.send(m as QueueJob) },
+      queue: { send: async (m) => queue.send(m as AlertQueueMessage) },
       now: () => NOW + 5 * 60_000 + 1,
     });
     expect(r.published).toBe(1);
@@ -116,7 +120,9 @@ describe("corrida ingress×cron no carimbo (ADR-002 §4)", () => {
     const { d1 } = makeAlertDb();
     const base = new AlertStore(d1);
     const { runAlertCron } = await import("../../src/alerts/cron");
-    const cronQueue = { send: async (m: unknown) => queue.send(m as QueueJob) };
+    const cronQueue = {
+      send: async (m: unknown) => queue.send(m as AlertQueueMessage),
+    };
 
     // Subclasse com barreira: depois do INSERT do ingress e ANTES do seu
     // carimbo, o "outro isolate" roda um passe do cron sobre o MESMO banco.
@@ -152,7 +158,7 @@ describe("corrida ingress×cron no carimbo (ADR-002 §4)", () => {
     // UMA publicação no total — a do cron. Duas seria a corrida que a
     // revisão apontou.
     expect(queue.sent).toEqual([
-      { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+      { v: 2, delivery_id: deliveryId },
     ]);
     expect((await base.get(deliveryId))?.attempts).toBe(1);
   });
@@ -177,10 +183,10 @@ describe("roteamento v:2 na fila (ADR-002 §4)", () => {
   function batchDe(
     queueName: string,
     body: unknown,
-  ): { batch: MessageBatch<QueueJob>; acks: number[] } {
+  ): { batch: MessageBatch<RelayQueueMessage>; acks: number[] } {
     const acks: number[] = [];
     const message = {
-      body: body as QueueJob,
+      body: body as RelayQueueMessage,
       ack: () => acks.push(1),
       retry: () => acks.push(-1),
       attempts: 1,
@@ -191,7 +197,7 @@ describe("roteamento v:2 na fila (ADR-002 §4)", () => {
       batch: {
         queue: queueName,
         messages: [message],
-      } as unknown as MessageBatch<QueueJob>,
+      } as unknown as MessageBatch<RelayQueueMessage>,
       acks,
     };
   }

@@ -31,7 +31,7 @@ import {
   type QueueJob,
   type StoredDelivery,
 } from "./store";
-import { recuoMs } from "./alerts/contract";
+import { type AlertQueueMessage, recuoMs } from "./alerts/contract";
 import { processAlertMessage } from "./alerts/consumer";
 import { runAlertCron } from "./alerts/cron";
 import { statusBody, verifyStatusSecret } from "./alerts/status";
@@ -902,6 +902,14 @@ export async function handleFetch(
       return jsonResponse({ status: "unavailable" }, 503);
     }
     try {
+      // A CLASSE da prontidão é "tudo de que uma rota do Worker precisa
+      // para servir" — e o caminho v2 (ADR-002) acrescentou dois segredos
+      // e uma tabela. Achado da revisão: /healthz dizia `ready` com o
+      // SLACK_BOT_TOKEN ilegível (toda mensagem v2 parada em pending) e
+      // com o ALERTS_STATUS_SECRET ausente (vigia sem rota). A sonda do
+      // alert_delivery é o statusSnapshot: uma consulta, o mesmo retrato
+      // que o /alerts/status serve. readSecret lança para binding ausente
+      // ou vazio; string vazia de fixture cai no checque de comprimento.
       const [
         healthy,
         githubSecret,
@@ -909,6 +917,8 @@ export async function handleFetch(
         activityUrl,
         relaySigning,
         legacyUnverified,
+        botToken,
+        statusSecret,
       ] = await Promise.all([
         dependencies.store.healthcheck(now, deployedRevision),
         readSecret(env.GITHUB_WEBHOOK_SECRET),
@@ -916,13 +926,18 @@ export async function handleFetch(
         readSecret(env.SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL),
         relaySigningConfiguration(env),
         dependencies.store.hasLegacyUnverifiedDebt(),
+        readSecret(env.SLACK_BOT_TOKEN),
+        readSecret(env.ALERTS_STATUS_SECRET),
+        dependencies.alertStore.statusSnapshot(),
       ]);
       const ready =
         healthy &&
         hasSafeSecretLength(githubSecret) &&
         relaySigning !== null &&
         slackWorkflowUrl(alertsUrl) !== null &&
-        slackWorkflowUrl(activityUrl) !== null;
+        slackWorkflowUrl(activityUrl) !== null &&
+        botToken.length > 0 &&
+        statusSecret.length > 0;
       return jsonResponse(
         ready
           ? { status: "ready", legacy_unverified: legacyUnverified }
@@ -1540,8 +1555,14 @@ export async function processDeadLetterMessage(
   message.ack();
 }
 
+// O contrato REAL da fila é a união dos dois protocolos: o QueueJob legado
+// e a mensagem v2 do ADR-002. Achado da revisão: o handler declarado como
+// MessageBatch<QueueJob> excluía o formato v2 que ele mesmo processa, e os
+// casts `as unknown as QueueJob` nos testes eram o sintoma.
+export type RelayQueueMessage = QueueJob | AlertQueueMessage;
+
 export async function handleQueue(
-  batch: MessageBatch<QueueJob>,
+  batch: MessageBatch<RelayQueueMessage>,
   env: Env,
   overrides?: RuntimeOverrides,
 ): Promise<void> {
@@ -1562,14 +1583,17 @@ export async function handleQueue(
         message.ack();
         continue;
       }
-      await processDeadLetterMessage(message, env, overrides);
+      // body.v !== 2 é a discriminação do protocolo: daqui para baixo a
+      // mensagem é do formato legado (o TS não estreita Message<A|B> pelo
+      // corpo, então o estreitamento é declarado uma vez, junto do guarda).
+      await processDeadLetterMessage(message as Message<QueueJob>, env, overrides);
     } else if (body?.v === 2) {
       await processAlertV2Message(message.body, env, overrides);
     } else if (
       batch.queue === ALERT_QUEUE_NAME ||
       batch.queue === ACTIVITY_QUEUE_NAME
     ) {
-      await processPrimaryMessage(message, env, overrides);
+      await processPrimaryMessage(message as Message<QueueJob>, env, overrides);
     } else {
       throw new Error("unexpected_queue");
     }
@@ -1709,4 +1733,4 @@ export default {
     }
     await runScheduledRecovery(env);
   },
-} satisfies ExportedHandler<Env, QueueJob>;
+} satisfies ExportedHandler<Env, RelayQueueMessage>;

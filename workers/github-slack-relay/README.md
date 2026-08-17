@@ -375,7 +375,10 @@ checkpoints, no row is in `manual_review` or `dead_letter`, and no
 current `accepted_by_slack`, `accepted_by_trigger`, or `send_started` row has
 exceeded its reconciliation deadline. The configured current and distinct
 `NEXT` HMAC bindings, active signer selection, and both Slack
-trigger bindings must validate. The ready reply contains only the boolean
+trigger bindings must validate. The v2 alerts path belongs to the same
+readiness class: `SLACK_BOT_TOKEN` and `ALERTS_STATUS_SECRET` must be readable
+and non-empty, and the `alert_delivery` table must answer the single-statement
+snapshot served by `/alerts/status`. The ready reply contains only the boolean
 `legacy_unverified`, making quarantined historical debt visible without making
 it a readiness failure or exposing a count or identifier. A failed check or
 exception returns the same HTTP 503 `unavailable`.

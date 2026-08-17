@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleFetch } from "../src/index";
 import { runAlertCron } from "../src/alerts/cron";
 import { AlertStore } from "../src/alerts/store";
-import type { QueueJob } from "../src/store";
+import type { AlertQueueMessage } from "../src/alerts/contract";
 import { closeAlertDatabases, makeAlertDb } from "./alerts/helpers";
 import {
   FakeQueue,
@@ -38,7 +38,7 @@ describe("GitHub webhook ingress", () => {
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ accepted: true, queued: true });
     expect(queue.sent).toEqual([
-      { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+      { v: 2, delivery_id: deliveryId },
     ]);
     expect((await alertStore.get(deliveryId))?.state).toBe("pending");
   });
@@ -197,12 +197,12 @@ describe("GitHub webhook ingress", () => {
     // só a reagenda depois de o recuo vencer.
     const result = await runAlertCron({
       store: alertStore,
-      queue: { send: (m) => queue.send(m as QueueJob) },
+      queue: { send: (m) => queue.send(m as AlertQueueMessage) },
       now: () => NOW + 5 * 60_000 + 1,
     });
     expect(result.published).toBe(1);
     expect(queue.sent).toEqual([
-      { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+      { v: 2, delivery_id: deliveryId },
     ]);
   });
 
@@ -253,7 +253,7 @@ describe("GitHub webhook ingress", () => {
     const response = await handleFetch(
       new Request("https://relay.example/healthz"),
       makeEnv(queue),
-      { store, fetch: fetchMock },
+      { store, fetch: fetchMock, alertStore: new AlertStore(makeAlertDb().d1) },
     );
 
     expect(response.status).toBe(200);
@@ -274,7 +274,7 @@ describe("GitHub webhook ingress", () => {
     const response = await handleFetch(
       new Request("https://relay.example/healthz"),
       makeEnv(queue),
-      { store },
+      { store, alertStore: new AlertStore(makeAlertDb().d1) },
     );
 
     expect(response.status).toBe(200);
@@ -298,6 +298,14 @@ describe("GitHub webhook ingress", () => {
     ["SLACK_RELAY_SIGNING_SECRET", "short"],
     ["SLACK_RELAY_SIGNING_SECRET_NEXT", "short"],
     ["SLACK_RELAY_SIGNING_SECRET_NEXT", TEST_RELAY_SIGNING_SECRET],
+    // ADR-002: o caminho v2 entrou na prontidão — a CLASSE é "toda
+    // credencial que uma rota do Worker exige", e a mudança acrescentou
+    // duas (achado da revisão: /healthz dizia ready com o token ilegível
+    // e cada mensagem v2 parada em pending).
+    ["SLACK_BOT_TOKEN", null],
+    ["SLACK_BOT_TOKEN", ""],
+    ["ALERTS_STATUS_SECRET", null],
+    ["ALERTS_STATUS_SECRET", ""],
   ])(
     "returns the same generic 503 for invalid binding %s",
     async (binding, value) => {
@@ -308,13 +316,34 @@ describe("GitHub webhook ingress", () => {
       const response = await handleFetch(
         new Request("https://relay.example/healthz"),
         env,
-        { store: new MemoryDeliveryStore() },
+        {
+          store: new MemoryDeliveryStore(),
+          alertStore: new AlertStore(makeAlertDb().d1),
+        },
       );
 
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ status: "unavailable" });
     },
   );
+
+  it("returns the same generic 503 when alert_delivery is unavailable — o caminho v2 entra na prontidão", async () => {
+    // A mesma classe do healthcheck legado: o esquema que a rota precisa
+    // tem de existir. O sondador é o statusSnapshot (uma consulta).
+    const queue = new FakeQueue();
+    const alertStore = {
+      statusSnapshot: () => Promise.reject(new Error("no_such_table")),
+    } as unknown as AlertStore;
+
+    const response = await handleFetch(
+      new Request("https://relay.example/healthz"),
+      makeEnv(queue),
+      { store: new MemoryDeliveryStore(), alertStore },
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ status: "unavailable" });
+  });
 
   it("returns the same generic 503 for an unusable schema", async () => {
     const queue = new FakeQueue();
@@ -324,7 +353,7 @@ describe("GitHub webhook ingress", () => {
     const response = await handleFetch(
       new Request("https://relay.example/healthz"),
       makeEnv(queue),
-      { store },
+      { store, alertStore: new AlertStore(makeAlertDb().d1) },
     );
 
     expect(response.status).toBe(503);
@@ -339,7 +368,7 @@ describe("GitHub webhook ingress", () => {
     const response = await handleFetch(
       new Request("https://relay.example/healthz"),
       makeEnv(queue),
-      { store },
+      { store, alertStore: new AlertStore(makeAlertDb().d1) },
     );
 
     expect(response.status).toBe(503);

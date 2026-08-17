@@ -33,9 +33,9 @@
 | `src/alerts/consumer.ts` | processa `{v:2, delivery_id}`: posta e grava desfecho |
 | `src/alerts/cron.ts` | carimbo CAS + publicação + retenção |
 | `src/alerts/status.ts` | corpo do `/status`; comparação de segredo em tempo constante |
-| `src/domain.ts` (modificar) | allowlist de 9 eventos + normalizadores dos 5 novos + exclusão repo+caminho |
+| `src/domain.ts` (modificar) | allowlist de 8 eventos + normalizadores dos 4 novos + exclusão repo+caminho *(era 9/5 até a emenda do §3: `security_advisory` saiu por ser inalcançável — "Availability: app")* |
 | `src/index.ts` (modificar) | fiação: ingress, roteamento v2 na fila, cron, rota `/status` |
-| `scripts/github-slack-hook-audit.mjs` (modificar) | `HOOK_EVENTS` com os 9 eventos |
+| `scripts/github-slack-hook-audit.mjs` (modificar) | `HOOK_EVENTS` com os 8 eventos |
 | `.github/workflows/alerts-watchdog.yml` | o vigia |
 
 Cada arquivo de `src/alerts/` tem teste irmão em `test/alerts/`.
@@ -753,7 +753,7 @@ O transporte é limitado dos dois lados, exigência da revisão: `curl --max-tim
 
 ### Tarefa 8: configuração gated, portões e revisão
 
-**Pré-requisitos do §12 que são AÇÃO DO OPERADOR antes desta tarefa:** rotação do token para `chat:write` puro (item 8) — só então o binding `SLACK_BOT_TOKEN` re-entra no `wrangler.jsonc` (o bloco está comentado no próprio arquivo); assinatura dos nove eventos no webhook da organização (item 5, verificação pela tela).
+**Pré-requisitos do §12 que são AÇÃO DO OPERADOR antes desta tarefa:** rotação do token para `chat:write` puro (item 8) — só então o binding `SLACK_BOT_TOKEN` re-entra no `wrangler.jsonc` (o bloco está comentado no próprio arquivo); assinatura dos oito eventos no webhook da organização (item 5, verificação pela tela — oito, não nove: `security_advisory` saiu do escopo na emenda do §3 por ser inalcançável via webhook de organização).
 
 - [ ] **Passo 1: varredura da fila de descarte — cinco arquivos**, com teste RED antes (a lista veio de varredura, não de memória): `wrangler.jsonc` (as duas ocorrências), `src/index.ts` (`processDeadLetterMessage` e o despacho), `test/queue.test.ts`, `README.md`, `docs/GITHUB_SLACK_INTEGRATION.md`. `max_retries` do consumidor de alertas vai ao **mínimo que a plataforma aceitar** — verificação empírica aqui (o mínimo não é documentado), começando por `0` e registrando a resposta do `wrangler deploy --dry-run`.
 - [ ] **Passo 2: regenerar tipos com o wrangler PINADO e rodar `npm run types:check`** — nunca `@latest`.

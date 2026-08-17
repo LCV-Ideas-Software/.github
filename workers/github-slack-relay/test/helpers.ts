@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 
 import type { SlackWorkflowPayload } from "../src/domain";
+import type { RelayQueueMessage } from "../src/index";
 import {
   planSlackReconciliation,
   SlackReconciliationPlanConflictError,
@@ -1574,10 +1575,13 @@ export class MemoryDeliveryStore implements DeliveryStore {
 }
 
 export class FakeQueue {
-  readonly sent: QueueJob[] = [];
+  // O contrato real da fila é a união dos dois protocolos (ver
+  // RelayQueueMessage em src/index.ts) — os casts `as unknown as QueueJob`
+  // que este tipo estreito exigia nos testes eram o sintoma do achado.
+  readonly sent: RelayQueueMessage[] = [];
   fail = false;
 
-  async send(body: QueueJob): Promise<void> {
+  async send(body: RelayQueueMessage): Promise<void> {
     if (this.fail) {
       throw new Error("test queue failure");
     }

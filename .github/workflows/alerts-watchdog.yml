@@ -16,8 +16,8 @@
 # workers/github-slack-relay/src/alerts/contract.ts — sincronia declarada,
 # conferida no portão da Tarefa 8). E a decisão 3: DUAS verificações
 # consecutivas sem resposta contam como problema. O estado entre execuções
-# vive no cache do Actions COM CONTEÚDO ("ok"/"falha"), porque cache é
-# imutável por chave: um marcador por existência ressuscitaria uma falha
+# vive no cache do Actions COM CONTEÚDO ("ok"/"falha"/"404:n"), porque cache
+# é imutável por chave: um marcador por existência ressuscitaria uma falha
 # antiga depois de um sucesso e fabricaria "segunda consecutiva".
 name: Alerts Watchdog
 
@@ -61,6 +61,7 @@ jobs:
         env:
           STATUS_SECRET: ${{ secrets.ALERTS_STATUS_SECRET }}
           MAX_PENDING_AGE_MS: "3600000"
+          MAX_404_TICKS: "8"
         run: |
           set -u
           anterior="ok"
@@ -80,15 +81,32 @@ jobs:
             body=$(printf '%s' "$response" | sed '$d')
           fi
 
-          # 404 é a JANELA DE ROLLOUT, não falha (achado da revisão): no
-          # primeiro merge, o agendamento ativa antes de o deploy serial
-          # (verify -> prove_remote_d1 -> deploy, até ~60 min) publicar a
-          # rota — o Worker antigo devolve 404 e dois tiques fabricariam o
-          # e-mail de alarme. Depois do deploy, /alerts/status nunca
-          # devolve 404 (401/200/503), e remover a rota exigiria outro PR.
-          # O marcador fica INTOCADO: neutro, nem ok nem falha.
+          # 404 é a JANELA DE ROLLOUT — com TETO (achado da revisão, em
+          # duas rodadas): no primeiro merge, o agendamento ativa antes de
+          # o deploy serial (verify -> prove_remote_d1 -> deploy, até
+          # ~60 min) publicar a rota, e dois tiques fabricariam o e-mail
+          # de alarme; mas neutro SEM limite deixaria o vigia verde para
+          # sempre se o deploy nunca completar, a rota sumir ou a URL
+          # apontar para o lugar errado. O marcador vira contador
+          # ("404:n"): até MAX_404_TICKS tiques consecutivos (8 × 15 min =
+          # 2h, o dobro do deploy serial) o 404 é neutro; do teto em
+          # diante, CADA tique alarma. Qualquer resposta não-404 devolve o
+          # marcador aos ramos normais (ok/falha), zerando o contador.
           if [ "$http_code" = "404" ]; then
-            echo "Rota /alerts/status ainda não implantada (HTTP 404); janela de rollout, sem contar falha."
+            n=1
+            case "$anterior" in
+              404:*)
+                prev=${anterior#404:}
+                case "$prev" in *[!0-9]*|"") prev=0 ;; esac
+                n=$((prev + 1))
+                ;;
+            esac
+            printf '404:%d' "$n" > .watchdog-marker
+            if [ "$n" -ge "$MAX_404_TICKS" ]; then
+              echo "::error::HTTP 404 do /alerts/status por ${n} tiques consecutivos (teto ${MAX_404_TICKS}): a janela de rollout acabou e a rota não existe onde o vigia olha. ADR-002 §4."
+              exit 1
+            fi
+            echo "Rota /alerts/status ainda não implantada (HTTP 404); tique ${n}/${MAX_404_TICKS} da janela de rollout, sem contar falha."
             exit 0
           fi
 
