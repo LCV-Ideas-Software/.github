@@ -7,6 +7,7 @@ import {
   assertAlertDeliveryStateConstraint,
   assertFinalSchema,
   assertInvalidAlertDeliveryStateWasRejected,
+  assertSentAlertDeliveryStateWasAccepted,
   cloudflareRequest,
   createDisposableDatabase,
   DATABASE_NAME_PREFIX,
@@ -190,6 +191,31 @@ test("a response body that resolves after the absolute deadline is still rejecte
   );
 });
 
+test("a non-abort body error remains visible even after the deadline", async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => ({
+    status: 200,
+    json: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      throw new SyntaxError("malformed JSON fixture");
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      cloudflareRequest(
+        FAKE_CONFIGURATION,
+        "/accounts/fake/d1/database",
+        {},
+        Date.now() + 10,
+      ),
+    /malformed JSON fixture/u,
+  );
+});
+
 test("the proof stops work before cleanup and retains a live cleanup budget", () => {
   const now = 1_000_000;
   const proofDeadlineMs = now + 20 * 60_000;
@@ -330,6 +356,15 @@ test("the alert_delivery behavioral proof rejects an out-of-contract state", () 
     assert.throws(
       () => assertInvalidAlertDeliveryStateWasRejected(rows),
       /accepted a state outside pending\/sent/u,
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertSentAlertDeliveryStateWasAccepted([{ state: "sent" }]),
+  );
+  for (const rows of [[], [{ state: "pending" }], [{ state: "parked" }]]) {
+    assert.throws(
+      () => assertSentAlertDeliveryStateWasAccepted(rows),
+      /rejected the required sent state/u,
     );
   }
 });

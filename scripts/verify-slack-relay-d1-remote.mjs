@@ -194,6 +194,7 @@ export async function cloudflareRequest(
   deadlineMs,
 ) {
   const timeoutMs = deadlineBoundedTimeout(deadlineMs);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   let response;
   let payload;
   try {
@@ -205,14 +206,22 @@ export async function cloudflareRequest(
         ...(init.headers ?? {}),
       },
       redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: timeoutSignal,
     });
     // The response body is part of the same bounded operation. A server can
     // deliver headers and then stall JSON consumption until the signal aborts.
     payload = await response.json();
     deadlineBoundedTimeout(deadlineMs);
   } catch (error) {
-    if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+    if (error instanceof RemoteMaintenanceDeadlineError) {
+      throw error;
+    }
+    if (
+      timeoutSignal.aborted &&
+      (error === timeoutSignal.reason ||
+        error?.name === "AbortError" ||
+        error?.name === "TimeoutError")
+    ) {
       throw new RemoteMaintenanceDeadlineError();
     }
     throw error;
@@ -779,6 +788,13 @@ export function assertInvalidAlertDeliveryStateWasRejected(rows) {
   );
 }
 
+export function assertSentAlertDeliveryStateWasAccepted(rows) {
+  invariant(
+    rows.length === 1 && rows[0]?.state === "sent",
+    "The migrated alert_delivery table rejected the required sent state.",
+  );
+}
+
 async function proveAlertDeliveryRoundtrip(
   configuration,
   databaseId,
@@ -822,6 +838,19 @@ async function proveAlertDeliveryRoundtrip(
     deadlineMs,
   );
   assertInvalidAlertDeliveryStateWasRejected(rejectedStateRows);
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE alert_delivery SET state = 'sent' WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  const acceptedStateRows = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT state FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  assertSentAlertDeliveryStateWasAccepted(acceptedStateRows);
   const definitionRows = await d1Query(
     configuration,
     databaseId,
