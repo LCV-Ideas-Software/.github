@@ -12,13 +12,15 @@ Produto da Tarefa 1 do plano. Nenhum valor aqui é gosto: cada um tem ou uma cit
 
 Lidas da configuração desta branch, não de memória — `workers/github-slack-relay/wrangler.jsonc`:
 
-| Ajuste | Valor | Linha |
-|---|---|---|
-| `max_retries` do consumidor de alertas | `5` | 81 |
-| `retry_delay` do consumidor | `2` (segundos) | 83 |
-| `max_batch_size` | `1` | 79 |
-| `max_concurrency` | `1` | 82 |
-| Cron do Worker | `*/5 * * * *` | 111 |
+*(A coluna de linha foi removida em 16/08: os bindings adicionados no mesmo PR deslocaram o arquivo e as cinco referências numéricas apodreceram — achado da revisão. Âncora por chave, que sobrevive a edição.)*
+
+| Ajuste (no `wrangler.jsonc`, consumidor de `github-slack-alerts`) | Valor |
+|---|---|
+| `max_retries` | `5` |
+| `retry_delay` | `2` (segundos) |
+| `max_batch_size` | `1` |
+| `max_concurrency` | `1` |
+| `triggers.crons` do Worker | `*/5 * * * *` |
 
 Da [documentação de batching, retries e delays](https://developers.cloudflare.com/queues/configuration/batching-retries/), verbatim:
 
@@ -34,7 +36,7 @@ function calculateExponentialBackoff(attempts, baseDelaySeconds) {
 }
 ```
 
-**Consequência que fixa tudo o mais** — ~~a mensagem que esgota as tentativas é **apagada**~~. **Corrigido em 16/08:** essa frase descreve uma configuração que **esta branch não tem**. `wrangler.jsonc:78` define `dead_letter_queue: "github-slack-alerts-dlq"` e `:86-91` a consome, então hoje a mensagem esgotada **vai para a fila de descarte**, não é apagada. A premissa só passa a valer depois que a decisão 8 remover a fila — e, com a emenda do cron único (ADR-002 §4), ela deixa de importar por completo: o consumidor **sempre confirma** a mensagem, então nenhuma tentativa jamais se esgota e nem o `max_retries` nem a fila de descarte chegam a disparar.
+**Consequência que fixa tudo o mais** — ~~a mensagem que esgota as tentativas é **apagada**~~. **Corrigido em 16/08:** essa frase descreve uma configuração que **esta branch não tem**. o consumidor de `github-slack-alerts` no `wrangler.jsonc` define `dead_letter_queue: "github-slack-alerts-dlq"`, e a DLQ tem consumidor próprio — então hoje a mensagem esgotada **vai para a fila de descarte**, não é apagada. A premissa só passa a valer depois que a decisão 8 remover a fila — e, com a emenda do cron único (ADR-002 §4), ela deixa de importar por completo: o consumidor **sempre confirma** a mensagem, então nenhuma tentativa jamais se esgota e nem o `max_retries` nem a fila de descarte chegam a disparar.
 
 ---
 
@@ -52,7 +54,7 @@ function calculateExponentialBackoff(attempts, baseDelaySeconds) {
 
 Substitui a antiga `RETRY_BASE_DELAY_SECONDS`, que existia para caber dentro de um teto que não existe mais.
 
-**Quem aplica:** o cron, e só ele. Com a emenda do agendador único (ADR-002 §4), a fila deixa de retentar — o consumidor sempre confirma a mensagem depois de registrar a tentativa. O `retry_delay: 2` de `wrangler.jsonc:83` deixa de ter efeito.
+**Quem aplica:** o cron, e só ele. Com a emenda do agendador único (ADR-002 §4), a fila deixa de retentar — o consumidor sempre confirma a mensagem depois de registrar o desfecho. O `retry_delay: 2` do consumidor no `wrangler.jsonc` deixa de ter efeito.
 
 **A forma:** o cron seleciona linhas em que `updated_ms + recuo(attempts) <= agora`, com `recuo` crescendo por tentativa e **saturando em 24 h**.
 
@@ -60,7 +62,7 @@ Substitui a antiga `RETRY_BASE_DELAY_SECONDS`, que existia para caber dentro de 
 
 **A conta que importa, e que eu já errei uma vez:** o recuo é logarítmico apenas **antes** de saturar. Depois de saturado, cada dia permite mais uma tentativa, então as cópias de um envio ambíguo crescem **linearmente**, cerca de uma por dia. Isso é limite de **taxa**, nunca de **total**.
 
-**Piso efetivo:** como o cron roda a cada 5 minutos (`wrangler.jsonc:111`), nenhuma retentativa acontece antes disso, qualquer que seja o valor do recuo.
+**Piso efetivo:** como o cron roda a cada 5 minutos (`triggers.crons` no `wrangler.jsonc`), nenhuma retentativa acontece antes disso, qualquer que seja o valor do recuo.
 
 ## ~~`CRON_STALE_AFTER_MS = 600_000` (10 minutos)~~ — MORTO junto com o segundo agendador
 
