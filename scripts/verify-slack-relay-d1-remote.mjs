@@ -133,9 +133,11 @@ async function cloudflareRequest(configuration, path, init = {}) {
         .filter((code) => Number.isFinite(code))
         .join(",")
     : "";
+  // A mensagem nunca inclui o caminho: ele embute o account id vindo do
+  // ambiente, e nada derivado do ambiente pode alcançar um log.
   invariant(
     payload?.success === true,
-    `Cloudflare API ${path} failed (HTTP ${response.status}; error codes: ${numericErrorCodes || "none"}).`,
+    `A Cloudflare API request failed (HTTP ${response.status}; error codes: ${numericErrorCodes || "none"}); the failing step names the operation.`,
   );
   return payload;
 }
