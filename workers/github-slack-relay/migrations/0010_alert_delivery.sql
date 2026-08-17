@@ -35,6 +35,15 @@ CREATE TABLE alert_delivery (
   -- a próxima tentativa, não suja um relatório.
   attempts INTEGER NOT NULL DEFAULT 0
     CHECK (typeof(attempts) = 'integer' AND attempts >= 0),
+  -- O tempo devido, PRÉ-COMPUTADO no carimbo do cron (ADR-002 §4):
+  -- next_due_ms = agora + recuo(attempts). Pré-computado porque a forma
+  -- por expressão — updated_ms + recuo(attempts) na consulta — não é
+  -- indexável: updated_ms carrega o agora do último carimbo, então
+  -- "updated_ms <= agora" casa com praticamente toda linha pendente, e o
+  -- conjunto pendente é ilimitado por desenho (decisão 12). DEFAULT 0 é
+  -- recuo(0): linha recém-inserida é devida no próximo passe.
+  next_due_ms INTEGER NOT NULL DEFAULT 0
+    CHECK (typeof(next_due_ms) = 'integer' AND next_due_ms >= 0),
   slack_message_ts TEXT,
   last_error TEXT,
   -- Âncora da idade que o vigia lê. NENHUM caminho de recuperação escreve
@@ -54,11 +63,10 @@ CREATE TABLE alert_delivery (
 --    que nenhum caminho de recuperação escreve (instância B).
 CREATE INDEX idx_alert_delivery_pending ON alert_delivery (state, created_ms);
 --
--- 2) O CRON seleciona por tempo devido, que é updated_ms + recuo(attempts).
---    O índice é por updated_ms e não pela expressão inteira: como recuo é
---    limitado a 24 h, `updated_ms <= agora` é condição NECESSÁRIA para a
---    linha ser devida, então o índice estreita a varredura e o predicado
---    exato decide no conjunto já estreitado. Índice sobre expressão exigiria
---    congelar a curva do recuo no esquema, e curva é decisão de §4, não de
---    migração.
-CREATE INDEX idx_alert_delivery_due ON alert_delivery (state, updated_ms);
+-- 2) O CRON seleciona por tempo devido pré-computado: next_due_ms.
+--    (A versão anterior deste índice era por updated_ms, com um comentário
+--    afirmando que "updated_ms <= agora" estreitava a varredura. Falso, e a
+--    revisão pegou: updated_ms É o agora do último carimbo, então a condição
+--    casa com praticamente tudo. A curva do recuo continua fora do esquema —
+--    ela vive no código que carimba, e o esquema só guarda o resultado.)
+CREATE INDEX idx_alert_delivery_due ON alert_delivery (state, next_due_ms);

@@ -81,17 +81,21 @@ A versão anterior dizia que o cron reenfileira toda linha pendente mais velha q
 
 ```sql
 UPDATE alert_delivery
-   SET attempts = attempts + 1, updated_ms = :agora
+   SET attempts    = attempts + 1,
+       updated_ms  = :agora,
+       next_due_ms = :agora + :recuo_da_proxima_tentativa
  WHERE delivery_id = :id
    AND state = 'pending'
-   AND updated_ms + recuo(attempts) <= :agora
+   AND next_due_ms <= :agora
 ```
 
 Se `changes = 1`, publica; se `0`, outro passe já pegou a linha e este não faz nada. A linha deixa de ser devida **no instante do enfileiramento**, e não quando o consumidor roda.
 
+*(Emendado em 16/08, mesma noite: a primeira forma avaliava `updated_ms + recuo(attempts)` na consulta, e a revisão derrubou — `updated_ms` carrega o agora do último carimbo, então `updated_ms <= agora` casa com praticamente toda linha pendente e **nenhum índice estreita a varredura**, num conjunto que é ilimitado por desenho. O tempo devido passa a ser **pré-computado no carimbo**, na coluna `next_due_ms`, e a seleção do cron vira exatamente indexável: `WHERE state = 'pending' AND next_due_ms <= :agora ORDER BY next_due_ms`. A curva continua no código que carimba; o esquema guarda só o resultado.)*
+
 **E `delaySeconds` some inteiro.** Se o cron já espera o tempo devido para publicar, atrasar a mensagem *dentro* da fila é o segundo relógio que criava a janela onde as cópias se empilhavam — o deepseek pediu exatamente essa reconciliação. Sem ele, a mensagem publicada é consumida em segundos, e o único relógio do sistema é o predicado de tempo devido.
 
-**Nenhuma coluna nova**: `attempts` e `updated_ms` já existem. `attempts` passa a contar tentativas **agendadas**, e `updated_ms` marca o último agendamento — quem lê idade é o vigia, e o vigia lê `created_ms`, intocado. É a distinção que o H40 do ADR-001 exigia.
+~~**Nenhuma coluna nova**: `attempts` e `updated_ms` já existem.~~ **Retratado na mesma noite: uma coluna entrou — `next_due_ms` — e a regra 7 exige a justificativa contra a promessa, então aqui está.** Ela é **derivada**, escrita atomicamente no mesmo `UPDATE` do carimbo, lida por exatamente uma consulta, e existe porque a alternativa sem ela — o predicado por expressão — obrigava cada passe do cron a varrer o conjunto pendente inteiro, que a decisão 12 torna ilimitado. Sem ela, o custo de cada passe cresceria com o tamanho da patologia que o sistema promete sobreviver. `attempts` conta tentativas **agendadas**, `updated_ms` marca o último agendamento, e quem lê idade é o vigia, em `created_ms`, intocado — a distinção que o H40 do ADR-001 exigia.
 
 **A curva, escrita por inteiro porque o grok cobrou o valor de `recuo(0)`:**
 
@@ -111,6 +115,8 @@ Se `changes = 1`, publica; se `0`, outro passe já pegou a linha e este não faz
 **As 24 h são política da aplicação, não restrição de plataforma** — e a distinção importa porque a versão anterior as justificava pelo teto de `delaySeconds`, que este desenho **não usa**: o tempo devido é calculado no D1 e a publicação é imediata. O critério verdadeiro é o da decisão 12: em regime, no máximo uma cópia por dia de um envio permanentemente ambíguo. Um teto menor acelera duplicatas; um maior atrasa a retentativa de causa externa já consertada.
 
 **O ingress publica só quando INSERE**, nunca para uma linha pendente que já existe — exigência do grok, e ela fecha a última porta pela qual uma publicação escapava do carimbo. A inserção é idempotente pelo GUID (chave primária), então uma redelivery do GitHub não vira segunda publicação.
+
+**O agendador residual que a plataforma impõe, e como ele é neutralizado** *(achado da revisão sobre o commit anterior, e procede)*: "o consumidor sempre confirma" só vale quando o handler **retorna**. Se o Worker morre entre o POST no Slack e o retorno, a plataforma trata a entrega como falha e **reentrega a mensagem** — com o `max_retries: 5` de hoje, um único agendamento do cron poderia virar várias postagens em segundos, por fora do recuo. A neutralização tem três camadas, nenhuma delas nova: (1) o consumidor **relê a linha antes de postar** e retorna se `state = 'sent'` — a reentrega só duplica se a morte caiu exatamente na janela POST→gravação; (2) a decisão 8 (emendada) leva o `max_retries` do consumidor ao **mínimo que a plataforma aceitar** — a documentação fixa default 3 e máximo 100, **não documenta o mínimo**, então o valor exato se verifica empiricamente na tarefa de configuração do §12, junto com a remoção da fila de descarte; (3) se a mensagem morrer sem reentrega, **nada se perde**: a linha continua `pendente` e o cron a recarimba quando `next_due_ms` vencer — a fonte de verdade é a linha, nunca a mensagem. O custo declarado: um crash na janela estreita pode produzir até o número de reentregas configurado de cópias; a taxa de regime da decisão 12 não é afetada.
 
 Três defeitos morrem juntos com essa resolução: a amplificação no ritmo do cron; a inanição que a revisão apontou em seguida — *"se pelo menos `limit` linhas forem irrecuperáveis, todos os alertas posteriores ficam fora de cada passe para sempre"* —, porque a ordenação passa a ser por tempo devido e a linha travada sai da cabeça da fila; e a dependência do `max_retries` e da fila de descarte, que nunca mais disparam, já que toda mensagem é confirmada.
 

@@ -97,6 +97,57 @@ describe("migração 0010: alert_delivery", () => {
     }
   });
 
+  it("next_due_ms existe, nasce devida (0) e tem domínio fechado", () => {
+    // ADR-002 §4: o tempo devido é PRÉ-COMPUTADO no carimbo, porque a
+    // alternativa — avaliar updated_ms + recuo(attempts) na consulta — não
+    // é indexável: updated_ms carrega o agora do último carimbo, então
+    // `updated_ms <= agora` casa com praticamente toda linha pendente
+    // (achado da revisão). DEFAULT 0 = recuo(0): linha nova é devida já.
+    const { database } = makeAlertDb();
+    database
+      .prepare(
+        `INSERT INTO alert_delivery
+           (delivery_id, payload_json, state, created_ms, updated_ms)
+         VALUES ('id-due-default', '{}', 'pending', 1, 1)`,
+      )
+      .run();
+    const row = database
+      .prepare(
+        "SELECT next_due_ms, typeof(next_due_ms) AS t FROM alert_delivery WHERE delivery_id = 'id-due-default'",
+      )
+      .get() as { next_due_ms: number; t: string };
+    expect(row).toEqual({ next_due_ms: 0, t: "integer" });
+
+    for (const bad of [-1, 0.5, "x"]) {
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO alert_delivery
+               (delivery_id, payload_json, state, next_due_ms, created_ms, updated_ms)
+             VALUES ('id-due-bad', '{}', 'pending', ?, 1, 1)`,
+          )
+          .run(bad as never),
+      ).toThrow(/CHECK constraint failed/);
+    }
+  });
+
+  it("o índice de tempo devido cobre (state, next_due_ms)", () => {
+    // Sem ele, cada passe do cron varre o conjunto pendente inteiro — e o
+    // conjunto pendente é ilimitado por desenho (decisão 12).
+    const { database } = makeAlertDb();
+    const plan = database
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT delivery_id FROM alert_delivery
+          WHERE state = 'pending' AND next_due_ms <= 99
+          ORDER BY next_due_ms ASC`,
+      )
+      .all() as Array<{ detail: string }>;
+    expect(plan.map((p) => p.detail).join(" | ")).toMatch(
+      /idx_alert_delivery_due/,
+    );
+  });
+
   it("attempts tem domínio fechado: nem negativo, nem fracionário, nem texto", () => {
     // `INTEGER` no SQLite é AFINIDADE, não tipo: sem typeof(), o CHECK
     // `attempts >= 0` aceita 0.5 e aceita texto numérico. E agora attempts
