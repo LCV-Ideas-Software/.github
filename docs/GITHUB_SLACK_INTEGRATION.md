@@ -99,7 +99,12 @@ GUID; um reenvio falho não muta variável nenhuma do repositório.
    esquema final exato do v2 (mais o roundtrip e o CHECK de dois estados),
    com prazo fail-closed e reaper de descartáveis obsoletos
    (`slack-d1-disposable-reaper.yml`).
-3. **Deploy** — aplica as migrações no banco real e publica o Worker.
+3. **Deploy** — publica o Worker verificado PRIMEIRO e só então aplica as
+   migrações no banco real. A ordem é vinculante (contract-phase): o
+   Worker novo tolera o esquema anterior, mas o Worker anterior não
+   tolera uma migração destrutiva — aplicar migrações antes de publicar
+   recria a janela de incompatibilidade que essa ordem elimina. Vale
+   também para deploy manual ou recuperação fora do workflow.
 
 ## Runbook
 

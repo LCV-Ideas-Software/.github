@@ -142,13 +142,37 @@ async function cloudflareRequest(configuration, path, init = {}) {
   return payload;
 }
 
-async function listDatabases(configuration) {
-  const payload = await cloudflareRequest(
-    configuration,
-    `/accounts/${configuration.accountId}/d1/database?per_page=1000`,
+export const INVENTORY_PAGE_SIZE = 1000;
+const MAX_INVENTORY_PAGES = 100;
+
+export function inventoryPageIsLast(resultInfo, pageLength, collectedCount) {
+  if (pageLength < INVENTORY_PAGE_SIZE) return true;
+  const totalCount = Number(resultInfo?.total_count);
+  return Number.isFinite(totalCount) && collectedCount >= totalCount;
+}
+
+// O inventário percorre TODAS as páginas: uma leitura parcial faria o
+// reaper ignorar descartáveis além da primeira página e faria a
+// confirmação de DELETE reportar ausência de um banco que só não coube
+// na página lida.
+export async function listDatabases(configuration, requestFn = cloudflareRequest) {
+  const collected = [];
+  for (let page = 1; page <= MAX_INVENTORY_PAGES; page += 1) {
+    const payload = await requestFn(
+      configuration,
+      `/accounts/${configuration.accountId}/d1/database?per_page=${String(INVENTORY_PAGE_SIZE)}&page=${String(page)}`,
+    );
+    invariant(Array.isArray(payload.result), "D1 database list is not an array.");
+    collected.push(...payload.result);
+    if (
+      inventoryPageIsLast(payload.result_info, payload.result.length, collected.length)
+    ) {
+      return collected;
+    }
+  }
+  throw new Error(
+    `The D1 inventory exceeded ${MAX_INVENTORY_PAGES} pages; refusing to treat a partial read as the full inventory.`,
   );
-  invariant(Array.isArray(payload.result), "D1 database list is not an array.");
-  return payload.result;
 }
 
 export function parseDisposableTimestamp(name) {
@@ -156,12 +180,35 @@ export function parseDisposableTimestamp(name) {
   return match === null ? null : Number.parseInt(match[1], 10);
 }
 
+// Teto de trabalho por execução: cada colheita custa até 4 DELETEs + 4
+// leituras do inventário, e tanto o reaper agendado (timeout de 10 min)
+// quanto a prova (prazo fail-closed) não podem gastar a janela inteira
+// num backlog degradado. O excedente fica DECLARADO no log e sai nas
+// execuções seguintes — o cron do reaper é o backstop.
+export const MAX_REAP_PER_RUN = 5;
+
+export function selectStaleDisposables(databases, nowMs, limit = MAX_REAP_PER_RUN) {
+  const stale = databases
+    .map((database) => ({
+      database,
+      createdMs: parseDisposableTimestamp(database.name ?? ""),
+    }))
+    .filter(
+      (entry) =>
+        entry.createdMs !== null && nowMs - entry.createdMs >= STALE_DATABASE_AGE_MS,
+    )
+    .sort((left, right) => left.createdMs - right.createdMs)
+    .map((entry) => entry.database);
+  return Object.freeze({
+    stale: Object.freeze(stale.slice(0, limit)),
+    deferredCount: Math.max(0, stale.length - limit),
+  });
+}
+
 async function reapStaleDisposables(configuration, nowMs) {
   const databases = await listDatabases(configuration);
-  for (const database of databases) {
-    const createdMs = parseDisposableTimestamp(database.name ?? "");
-    if (createdMs === null) continue;
-    if (nowMs - createdMs < STALE_DATABASE_AGE_MS) continue;
+  const { stale, deferredCount } = selectStaleDisposables(databases, nowMs);
+  for (const database of stale) {
     invariant(
       database.uuid !== PRODUCTION_DATABASE_ID,
       "Refusing to reap: a disposable-named database carries the production ID.",
@@ -171,9 +218,47 @@ async function reapStaleDisposables(configuration, nowMs) {
     );
     await deleteDatabaseWithConfirmation(configuration, database.uuid);
   }
+  if (deferredCount > 0) {
+    console.log(
+      `Deferring ${String(deferredCount)} stale disposable database(s) to the next run (per-run cap ${String(MAX_REAP_PER_RUN)}).`,
+    );
+  }
 }
 
-async function createDisposableDatabase(configuration, nowMs) {
+// Uma resposta perdida, expirada ou ilegível pode ter criado o banco
+// mesmo assim — e a limpeza do proveRemoteMigration só se instala DEPOIS
+// do retorno daqui. O nome é conhecido ANTES do POST, então a
+// reconciliação procura o órfão pelo nome exato e o apaga antes de
+// propagar a falha original; se a própria reconciliação falhar, o reaper
+// de obsoletos continua sendo o backstop declarado.
+async function reconcileAmbiguousCreation(configuration, name, requestFn) {
+  try {
+    const databases = await listDatabases(configuration, requestFn);
+    const orphan = databases.find((database) => database.name === name);
+    if (orphan === undefined) {
+      console.log("Ambiguous disposable creation left no orphan behind.");
+      return;
+    }
+    invariant(
+      orphan.uuid !== PRODUCTION_DATABASE_ID,
+      "Refusing to reconcile: the orphan carries the production ID.",
+    );
+    await deleteDatabaseWithConfirmation(configuration, orphan.uuid, requestFn);
+    // O nome é construído localmente (prefixo + relógio + sufixo local);
+    // nada dele veio da rede.
+    console.log(`Deleted the orphaned disposable database ${name}.`);
+  } catch {
+    console.log(
+      "Ambiguous disposable creation could not be reconciled; the stale reaper remains the backstop.",
+    );
+  }
+}
+
+export async function createDisposableDatabase(
+  configuration,
+  nowMs,
+  requestFn = cloudflareRequest,
+) {
   const suffix = [...crypto.getRandomValues(new Uint8Array(4))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
@@ -182,39 +267,64 @@ async function createDisposableDatabase(configuration, nowMs) {
     DISPOSABLE_DATABASE_NAME_PATTERN.test(name),
     `Generated disposable name does not match its own pattern: ${name}`,
   );
-  const payload = await cloudflareRequest(
-    configuration,
-    `/accounts/${configuration.accountId}/d1/database`,
-    { method: "POST", body: JSON.stringify({ name }) },
-  );
-  const databaseId = payload.result?.uuid;
-  invariant(
-    typeof databaseId === "string" && DATABASE_ID_PATTERN.test(databaseId),
-    "Disposable D1 creation returned no usable database ID.",
-  );
-  invariant(
-    databaseId !== PRODUCTION_DATABASE_ID,
-    "Disposable D1 creation returned the PRODUCTION database ID.",
-  );
-  return { databaseId, name };
+  try {
+    const payload = await requestFn(
+      configuration,
+      `/accounts/${configuration.accountId}/d1/database`,
+      { method: "POST", body: JSON.stringify({ name }) },
+    );
+    const databaseId = payload.result?.uuid;
+    invariant(
+      typeof databaseId === "string" && DATABASE_ID_PATTERN.test(databaseId),
+      "Disposable D1 creation returned no usable database ID.",
+    );
+    invariant(
+      databaseId !== PRODUCTION_DATABASE_ID,
+      "Disposable D1 creation returned the PRODUCTION database ID.",
+    );
+    return { databaseId, name };
+  } catch (error) {
+    await reconcileAmbiguousCreation(configuration, name, requestFn);
+    throw error;
+  }
 }
 
-async function deleteDatabaseWithConfirmation(configuration, databaseId) {
+export async function deleteDatabaseWithConfirmation(
+  configuration,
+  databaseId,
+  requestFn = cloudflareRequest,
+) {
   invariant(
     databaseId !== PRODUCTION_DATABASE_ID,
     "Refusing to delete the production database.",
   );
   for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
     try {
-      await cloudflareRequest(
+      await requestFn(
         configuration,
         `/accounts/${configuration.accountId}/d1/database/${databaseId}`,
         { method: "DELETE" },
       );
     } catch (error) {
-      if (attempt + 1 === DELETE_CONFIRMATION_ATTEMPTS) throw error;
+      if (attempt + 1 === DELETE_CONFIRMATION_ATTEMPTS) {
+        // Um DELETE anterior pode ter vencido com o inventário atrasado:
+        // o erro do último DELETE (um 404, por exemplo) só é veredito se
+        // o banco AINDA estiver listado. Se o inventário estiver
+        // indisponível, a causa raiz continua sendo o erro original.
+        let stillListed = true;
+        try {
+          const databases = await listDatabases(configuration, requestFn);
+          stillListed = databases.some(
+            (database) => database.uuid === databaseId,
+          );
+        } catch {
+          // inventário indisponível: propaga o erro original do DELETE
+        }
+        if (!stillListed) return;
+        throw error;
+      }
     }
-    const databases = await listDatabases(configuration);
+    const databases = await listDatabases(configuration, requestFn);
     if (!databases.some((database) => database.uuid === databaseId)) {
       return;
     }
