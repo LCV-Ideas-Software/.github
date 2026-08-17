@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { handleFetch, runScheduledRecovery } from "../src/index";
+import { handleFetch } from "../src/index";
+import { runAlertCron } from "../src/alerts/cron";
+import { AlertStore } from "../src/alerts/store";
+import type { QueueJob } from "../src/store";
+import { closeAlertDatabases, makeAlertDb } from "./alerts/helpers";
 import {
   FakeQueue,
   makeEnv,
@@ -10,12 +14,15 @@ import {
   workflowPayload,
 } from "./helpers";
 
+afterEach(closeAlertDatabases);
+
 const NOW = Date.parse("2026-08-03T12:00:00.000Z");
 
 describe("GitHub webhook ingress", () => {
   it("verifies HMAC before parsing and accepts a relevant workflow failure", async () => {
+    // ADR-002 §2/§4: aceito = linha em alert_delivery; publica {v:2, ...}.
     const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
+    const alertStore = new AlertStore(makeAlertDb().d1);
     const deliveryId = "00000000-0000-4000-8000-000000000001";
     const request = await signedRequest(
       "workflow_run",
@@ -24,14 +31,16 @@ describe("GitHub webhook ingress", () => {
     );
 
     const response = await handleFetch(request, makeEnv(queue), {
-      store,
+      alertStore,
       now: () => NOW,
     });
 
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ accepted: true, queued: true });
-    expect(queue.sent).toEqual([{ deliveryId }]);
-    expect(store.deliveries.get(deliveryId)?.status).toBe("queued");
+    expect(queue.sent).toEqual([
+      { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+    ]);
+    expect((await alertStore.get(deliveryId))?.state).toBe("pending");
   });
 
   it("rejects an invalid signature without parsing a malformed body", async () => {
@@ -143,77 +152,75 @@ describe("GitHub webhook ingress", () => {
   });
 
   it("deduplicates X-GitHub-Delivery before enqueueing", async () => {
+    // Decisão 10: a linha guardada É a trava; publica SÓ quando insere.
     const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
+    const alertStore = new AlertStore(makeAlertDb().d1);
     const deliveryId = "00000000-0000-4000-8000-000000000009";
 
     const first = await handleFetch(
       await signedRequest("workflow_run", deliveryId, workflowPayload()),
       makeEnv(queue),
-      { store, now: () => NOW },
+      { alertStore, now: () => NOW },
     );
     const second = await handleFetch(
       await signedRequest("workflow_run", deliveryId, workflowPayload()),
       makeEnv(queue),
-      { store, now: () => NOW },
+      { alertStore, now: () => NOW },
     );
 
     expect(first.status).toBe(202);
     expect(second.status).toBe(202);
     expect(await second.json()).toEqual({ accepted: true, duplicate: true });
-    expect(queue.sent).toEqual([{ deliveryId }]);
-    expect(store.deliveries.size).toBe(1);
+    expect(queue.sent).toHaveLength(1);
   });
 
-  it("persists before enqueue and lets the scheduler recover a queue failure", async () => {
+  it("persists before enqueue and the CRON recovers a queue failure", async () => {
+    // ADR-002 §4: a fila é otimização de latência; o cron é a vivacidade.
+    // A semântica antiga (503 + recovery agendado no store legado) morreu:
+    // a linha nasce devida (next_due_ms = 0) e o alerta já está ACEITO.
     const queue = new FakeQueue();
     queue.fail = true;
-    const store = new MemoryDeliveryStore();
+    const alertStore = new AlertStore(makeAlertDb().d1);
     const deliveryId = "00000000-0000-4000-8000-000000000010";
 
     const response = await handleFetch(
       await signedRequest("workflow_run", deliveryId, workflowPayload()),
       makeEnv(queue),
-      { store, now: () => NOW },
+      { alertStore, now: () => NOW },
     );
 
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({
-      error: "queue_unavailable",
-      recovery_scheduled: true,
-    });
-    expect(store.deliveries.get(deliveryId)?.status).toBe("pending");
+    expect(response.status).toBe(202);
+    expect((await alertStore.get(deliveryId))?.state).toBe("pending");
 
     queue.fail = false;
-    const result = await runScheduledRecovery(makeEnv(queue), {
-      store,
+    const result = await runAlertCron({
+      store: alertStore,
+      queue: { send: (m) => queue.send(m as QueueJob) },
       now: () => NOW + 5_001,
     });
-    expect(result.recovered).toBe(1);
-    expect(queue.sent).toEqual([{ deliveryId }]);
-    expect(store.deliveries.get(deliveryId)?.status).toBe("queued");
+    expect(result.published).toBe(1);
+    expect(queue.sent).toEqual([
+      { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+    ]);
   });
 
   it("accepts a legitimate signed payload larger than 2 MiB", async () => {
     const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
+    const alertStore = new AlertStore(makeAlertDb().d1);
+    const deliveryId = "00000000-0000-4000-8000-000000000011";
     const payload = {
       ...workflowPayload(),
       ignored_padding: "x".repeat(2 * 1024 * 1024 + 1),
     };
-    const request = await signedRequest(
-      "workflow_run",
-      "00000000-0000-4000-8000-000000000011",
-      payload,
-    );
+    const request = await signedRequest("workflow_run", deliveryId, payload);
 
     const response = await handleFetch(request, makeEnv(queue), {
-      store,
+      alertStore,
       now: () => NOW,
     });
 
     expect(response.status).toBe(202);
-    expect(store.deliveries.size).toBe(1);
+    expect(await alertStore.get(deliveryId)).not.toBeNull();
   });
 
   it("cancels a streamed body once the hard 25,000,000-byte limit is exceeded", async () => {

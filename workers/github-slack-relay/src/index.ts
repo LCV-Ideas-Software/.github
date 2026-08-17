@@ -31,8 +31,13 @@ import {
   type QueueJob,
   type StoredDelivery,
 } from "./store";
+import { processAlertMessage } from "./alerts/consumer";
+import { runAlertCron } from "./alerts/cron";
+import { statusBody, verifyStatusSecret } from "./alerts/status";
+import { AlertStore } from "./alerts/store";
 
 const WEBHOOK_PATH = "/github/webhook";
+const ALERTS_STATUS_PATH = "/alerts/status";
 const HEALTH_PATH = "/healthz";
 const SLACK_PROGRESS_PATH = "/slack/progress";
 const SLACK_RECONCILIATION_PATH = "/slack/reconciliation";
@@ -61,6 +66,7 @@ const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 
 export interface RuntimeOverrides {
   store?: DeliveryStore;
+  alertStore?: AlertStore;
   now?: () => number;
   fetch?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -119,6 +125,7 @@ function runtime(
 ): Required<RuntimeOverrides> {
   return {
     store: overrides?.store ?? new D1DeliveryStore(env.DB),
+    alertStore: overrides?.alertStore ?? new AlertStore(env.DB),
     now: overrides?.now ?? Date.now,
     fetch: overrides?.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     sleep: overrides?.sleep ?? ((milliseconds) => scheduler.wait(milliseconds)),
@@ -861,6 +868,29 @@ export async function handleFetch(
     return handleSlackControlRequest(request, url.pathname, env, dependencies);
   }
 
+  // ADR-002 §4: os dois números do vigia, atrás do segredo compartilhado
+  // (decisão 9). 401 idêntico para segredo ausente, errado ou binding
+  // indisponível — a rota não explica a si mesma para quem não a conhece.
+  if (url.pathname === ALERTS_STATUS_PATH && request.method === "GET") {
+    let expected: string;
+    try {
+      expected = await readSecret(env.ALERTS_STATUS_SECRET);
+    } catch {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (!(await verifyStatusSecret(request, expected))) {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    try {
+      const body = await statusBody(dependencies.alertStore, dependencies.now());
+      return jsonResponse(body, 200);
+    } catch {
+      // O vigia trata "não consegui responder" como sinal (decisão 3);
+      // um 503 explícito é melhor que um corpo inventado.
+      return jsonResponse({ error: "status_unavailable" }, 503);
+    }
+  }
+
   if (url.pathname === HEALTH_PATH && request.method === "GET") {
     const now = dependencies.now();
     const deployedRevision = env.WORKER_VERSION?.tag;
@@ -1026,46 +1056,35 @@ export async function handleFetch(
     );
   }
 
+  // ADR-002 §2: a promessa ancora AQUI — aceito = linha gravada + sucesso
+  // respondido. O INSERT falhando, o erro volta ao GitHub e a entrega fica
+  // registrada no painel de webhooks (sem reenvio automático; reenvio
+  // manual por 3 dias).
   const now = dependencies.now();
   let inserted: boolean;
   try {
-    inserted = await dependencies.store.insert({
+    inserted = await dependencies.alertStore.insert(
       deliveryId,
-      eventType: event,
-      action: normalized.payload.action,
-      repository: normalized.payload.repository,
-      destination: normalized.destination,
-      payload: normalized.payload,
+      JSON.stringify(normalized.payload),
       now,
-    });
+    );
   } catch {
     return jsonResponse({ error: "persistence_unavailable" }, 503);
   }
 
   if (!inserted) {
+    // Redelivery do GitHub: a linha guardada É a trava de deduplicação
+    // (decisão 10). Publicar aqui violaria "publica só quando INSERE".
     return jsonResponse({ accepted: true, duplicate: true }, 202);
   }
 
   try {
-    await destinationQueue(env, normalized.destination).send({ deliveryId });
+    await env.ALERT_QUEUE.send({ v: 2, delivery_id: deliveryId });
   } catch {
-    await dependencies.store.markEnqueueFailed(
-      deliveryId,
-      now,
-      now + 5_000,
-      "queue_enqueue_failed",
-    );
-    return jsonResponse(
-      { error: "queue_unavailable", recovery_scheduled: true },
-      503,
-    );
-  }
-
-  try {
-    await dependencies.store.markQueued(deliveryId, now);
-  } catch {
-    // The persisted pending row and queued delivery are intentionally retained.
-    // Either the queue consumer or the scheduled recovery loop can finish it.
+    // A fila é otimização de latência; o cron é a vivacidade (ADR-002 §4).
+    // A linha nasceu com next_due_ms = 0: devida no próximo passe. O
+    // alerta está ACEITO — responder erro aqui faria o GitHub registrar
+    // falha de uma entrega que já é nossa.
   }
 
   return jsonResponse({ accepted: true, queued: true }, 202);
@@ -1501,6 +1520,15 @@ export async function handleQueue(
   overrides?: RuntimeOverrides,
 ): Promise<void> {
   for (const message of batch.messages) {
+    // ADR-002: mensagem nova é {v:2, delivery_id}, discriminada por
+    // declaração. Vale em QUALQUER fila — inclusive na DLQ, enquanto a
+    // configuração do §12 não a remover: o consumidor relê a linha, então
+    // reprocessar é idempotente por construção.
+    const body = asRecord(message.body);
+    if (body?.v === 2) {
+      await processAlertV2Message(message.body, env, overrides);
+      continue;
+    }
     if (
       batch.queue === ALERT_DEAD_LETTER_QUEUE ||
       batch.queue === ACTIVITY_DEAD_LETTER_QUEUE
@@ -1515,6 +1543,40 @@ export async function handleQueue(
       throw new Error("unexpected_queue");
     }
   }
+}
+
+// O consumidor do ADR-002 §8. Retorno normal = ack implícito; nada aqui
+// lança, então a fila nunca agenda nada — o cron é o único agendador.
+async function processAlertV2Message(
+  raw: unknown,
+  env: Env,
+  overrides?: RuntimeOverrides,
+): Promise<void> {
+  const dependencies = runtime(env, overrides);
+  let botToken: string;
+  try {
+    botToken = await readSecret(env.SLACK_BOT_TOKEN);
+  } catch {
+    // Sem token não há envio; a linha fica pendente e o cron recarimba.
+    try {
+      const body = asRecord(raw);
+      if (typeof body?.delivery_id === "string") {
+        await dependencies.alertStore.recordFailure(
+          body.delivery_id,
+          "bot_token_unavailable",
+        );
+      }
+    } catch {
+      // Direção do erro: atraso, nunca perda.
+    }
+    return;
+  }
+  await processAlertMessage(raw, {
+    store: dependencies.alertStore,
+    botToken,
+    fetch: dependencies.fetch,
+    now: dependencies.now,
+  });
 }
 
 export async function runScheduledRecovery(
@@ -1597,6 +1659,23 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
+    // ADR-002 §4: o cron dos alertas é o ÚNICO agendador do caminho novo —
+    // carimbo, publicação e retenção. Roda antes do legado, e um erro num
+    // caminho não cala o outro.
+    try {
+      await runAlertCron({
+        store: new AlertStore(env.DB),
+        queue: {
+          send: async (m): Promise<void> => {
+            await env.ALERT_QUEUE.send(m);
+          },
+        },
+        now: Date.now,
+      });
+    } catch {
+      // A falha de um passe é atraso de um período de cron, nunca perda;
+      // o vigia alarma pela idade se isso virar padrão.
+    }
     await runScheduledRecovery(env);
   },
 } satisfies ExportedHandler<Env, QueueJob>;
