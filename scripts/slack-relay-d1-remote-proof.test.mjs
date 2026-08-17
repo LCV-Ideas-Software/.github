@@ -134,6 +134,12 @@ function createPostSealSchemaDatabase() {
         "utf8",
       ),
     );
+    // ADR-002: a 0010 cria alert_delivery e seus dois índices; a prova de
+    // inventário exato os exige (achado da revisão da PR #201 — sem isto,
+    // o primeiro run da main falharia após aplicar a migração).
+    database.exec(
+      readFileSync(`${migrationsDirectory}/0010_alert_delivery.sql`, "utf8"),
+    );
     return database;
   } catch (error) {
     database.close();

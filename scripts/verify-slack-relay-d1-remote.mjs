@@ -1706,6 +1706,13 @@ export async function proveSchemaInventory(
   exactRows(
     schema.results,
     [
+      // ADR-002: os dois índices da tabela de dois estados (migração 0010);
+      // a tabela em si entra abaixo, no bloco das tabelas — a prova compara
+      // na ordem do SQL (type, name). Sem as três linhas, o primeiro run da
+      // main falharia DEPOIS de aplicar a migração e ANTES do deploy —
+      // achado da revisão da PR #201.
+      { type: "index", name: "idx_alert_delivery_due" },
+      { type: "index", name: "idx_alert_delivery_pending" },
       { type: "index", name: "idx_deliveries_destination_status" },
       { type: "index", name: "idx_deliveries_recovery" },
       { type: "index", name: "idx_deliveries_retention" },
@@ -1726,6 +1733,7 @@ export async function proveSchemaInventory(
       { type: "index", name: "idx_slack_workflow_traces_delivery" },
       { type: "index", name: "idx_slack_workflow_traces_message" },
       { type: "index", name: "idx_slack_workflow_traces_send_execution" },
+      { type: "table", name: "alert_delivery" },
       { type: "table", name: "d1_migrations" },
       { type: "table", name: "deliveries" },
       { type: "table", name: "relay_state" },

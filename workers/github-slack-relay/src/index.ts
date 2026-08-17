@@ -31,8 +31,14 @@ import {
   type QueueJob,
   type StoredDelivery,
 } from "./store";
+import { type AlertQueueMessage, recuoMs } from "./alerts/contract";
+import { processAlertMessage } from "./alerts/consumer";
+import { runAlertCron } from "./alerts/cron";
+import { statusBody, verifyStatusSecret } from "./alerts/status";
+import { AlertStore } from "./alerts/store";
 
 const WEBHOOK_PATH = "/github/webhook";
+const ALERTS_STATUS_PATH = "/alerts/status";
 const HEALTH_PATH = "/healthz";
 const SLACK_PROGRESS_PATH = "/slack/progress";
 const SLACK_RECONCILIATION_PATH = "/slack/reconciliation";
@@ -61,6 +67,7 @@ const WORKER_REVISION_PATTERN = /^[0-9a-f]{40}$/u;
 
 export interface RuntimeOverrides {
   store?: DeliveryStore;
+  alertStore?: AlertStore;
   now?: () => number;
   fetch?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -119,6 +126,7 @@ function runtime(
 ): Required<RuntimeOverrides> {
   return {
     store: overrides?.store ?? new D1DeliveryStore(env.DB),
+    alertStore: overrides?.alertStore ?? new AlertStore(env.DB),
     now: overrides?.now ?? Date.now,
     fetch: overrides?.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     sleep: overrides?.sleep ?? ((milliseconds) => scheduler.wait(milliseconds)),
@@ -861,6 +869,36 @@ export async function handleFetch(
     return handleSlackControlRequest(request, url.pathname, env, dependencies);
   }
 
+  // ADR-002 §4: os dois números do vigia, atrás do segredo compartilhado
+  // (decisão 9). 401 idêntico para segredo ausente, errado ou binding
+  // indisponível — a rota não explica a si mesma para quem não a conhece.
+  if (url.pathname === ALERTS_STATUS_PATH && request.method === "GET") {
+    let expected: string;
+    try {
+      expected = await readSecret(env.ALERTS_STATUS_SECRET);
+    } catch {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (!hasSafeSecretLength(expected)) {
+      // Piso de 32 bytes na classe "segredo que NÓS provisionamos" — a
+      // mesma guarda que o webhook tem na rota (achado da revisão: um
+      // valor truncado na provisão virava autenticação de um caractere).
+      // 401 idêntico, e o vigia alarma em dois tiques até a rotação.
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (!(await verifyStatusSecret(request, expected))) {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    try {
+      const body = await statusBody(dependencies.alertStore, dependencies.now());
+      return jsonResponse(body, 200);
+    } catch {
+      // O vigia trata "não consegui responder" como sinal (decisão 3);
+      // um 503 explícito é melhor que um corpo inventado.
+      return jsonResponse({ error: "status_unavailable" }, 503);
+    }
+  }
+
   if (url.pathname === HEALTH_PATH && request.method === "GET") {
     const now = dependencies.now();
     const deployedRevision = env.WORKER_VERSION?.tag;
@@ -871,6 +909,17 @@ export async function handleFetch(
       return jsonResponse({ status: "unavailable" }, 503);
     }
     try {
+      // A CLASSE da prontidão é "tudo de que uma rota do Worker precisa
+      // para servir" — e o caminho v2 (ADR-002) acrescentou dois segredos
+      // e uma tabela. Achado da revisão: /healthz dizia `ready` com o
+      // SLACK_BOT_TOKEN ilegível (toda mensagem v2 parada em pending) e
+      // com o ALERTS_STATUS_SECRET ausente (vigia sem rota). A sonda do
+      // alert_delivery é o schemaProbe, em trabalho CONSTANTE (segundo
+      // achado da revisão: o /healthz é público, e o agregado do
+      // statusSnapshot aqui viraria amplificação de carga no D1 — o
+      // retrato completo fica no /alerts/status, atrás do segredo).
+      // readSecret lança para binding ausente ou vazio; string vazia de
+      // fixture cai no checque de comprimento.
       const [
         healthy,
         githubSecret,
@@ -878,6 +927,8 @@ export async function handleFetch(
         activityUrl,
         relaySigning,
         legacyUnverified,
+        botToken,
+        statusSecret,
       ] = await Promise.all([
         dependencies.store.healthcheck(now, deployedRevision),
         readSecret(env.GITHUB_WEBHOOK_SECRET),
@@ -885,13 +936,21 @@ export async function handleFetch(
         readSecret(env.SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL),
         relaySigningConfiguration(env),
         dependencies.store.hasLegacyUnverifiedDebt(),
+        readSecret(env.SLACK_BOT_TOKEN),
+        readSecret(env.ALERTS_STATUS_SECRET),
+        dependencies.alertStore.schemaProbe(),
       ]);
       const ready =
         healthy &&
         hasSafeSecretLength(githubSecret) &&
         relaySigning !== null &&
         slackWorkflowUrl(alertsUrl) !== null &&
-        slackWorkflowUrl(activityUrl) !== null;
+        slackWorkflowUrl(activityUrl) !== null &&
+        botToken.length > 0 &&
+        // O segredo do /status é NOSSO dos dois lados: vale o piso de 32
+        // bytes do webhook. O token do bot é formato do Slack — só
+        // legibilidade e não-vazio.
+        hasSafeSecretLength(statusSecret);
       return jsonResponse(
         ready
           ? { status: "ready", legacy_unverified: legacyUnverified }
@@ -1026,49 +1085,77 @@ export async function handleFetch(
     );
   }
 
+  // ADR-002 §2: a promessa ancora AQUI — aceito = linha gravada + sucesso
+  // respondido. O INSERT falhando, o erro volta ao GitHub e a entrega fica
+  // registrada no painel de webhooks (sem reenvio automático; reenvio
+  // manual por 3 dias).
   const now = dependencies.now();
   let inserted: boolean;
   try {
-    inserted = await dependencies.store.insert({
+    inserted = await dependencies.alertStore.insert(
       deliveryId,
-      eventType: event,
-      action: normalized.payload.action,
-      repository: normalized.payload.repository,
-      destination: normalized.destination,
-      payload: normalized.payload,
+      JSON.stringify(normalized.payload),
       now,
-    });
+    );
   } catch {
     return jsonResponse({ error: "persistence_unavailable" }, 503);
   }
 
   if (!inserted) {
+    // Redelivery do GitHub: a linha guardada É a trava de deduplicação
+    // (decisão 10). Publicar aqui violaria "publica só quando INSERE".
     return jsonResponse({ accepted: true, duplicate: true }, 202);
   }
 
+  // PUBLICA SÓ QUEM CARIMBA — inclusive o ingress, e o send é GATEADO no
+  // resultado do carimbo (achados da revisão, em duas rodadas): sem o
+  // carimbo, a primeira tentativa falhada era reagendada em segundos,
+  // furando o recuo(1); e sem o GATE, um passe do cron carimbando entre o
+  // INSERT e o carimbo do ingress produzia DUAS publicações da primeira
+  // tentativa — o changes=0 do CAS é exatamente o sinal de que outro
+  // agendador já publicou esta tentativa.
+  // O carimbo que LANÇA equivale a carimbo perdido (terceiro achado da
+  // revisão): a fronteira de aceitação é o INSERT — depois dele a resposta
+  // é 202 SEMPRE, senão o GitHub registra falha de uma entrega que já tem
+  // linha durável. Sem carimbo, a linha continua com next_due_ms = 0:
+  // devida no próximo passe do cron.
+  let stamped = false;
   try {
-    await destinationQueue(env, normalized.destination).send({ deliveryId });
-  } catch {
-    await dependencies.store.markEnqueueFailed(
+    // A linha que o ingress acabou de INSERIR tem attempts = 0 — a versão
+    // observada do pino do CAS (achado da rodada 15). Um passe do cron que
+    // carimbe antes muda a versão, e o pino falha como o prazo falharia.
+    stamped = await dependencies.alertStore.stampDue(
       deliveryId,
       now,
-      now + 5_000,
-      "queue_enqueue_failed",
+      now + recuoMs(1),
+      0,
     );
-    return jsonResponse(
-      { error: "queue_unavailable", recovery_scheduled: true },
-      503,
-    );
-  }
-
-  try {
-    await dependencies.store.markQueued(deliveryId, now);
   } catch {
-    // The persisted pending row and queued delivery are intentionally retained.
-    // Either the queue consumer or the scheduled recovery loop can finish it.
+    // stamped continua false: publica só quem carimba.
   }
 
-  return jsonResponse({ accepted: true, queued: true }, 202);
+  let queued = false;
+  if (stamped) {
+    try {
+      await env.ALERT_QUEUE.send({ v: 2, delivery_id: deliveryId });
+      queued = true;
+    } catch {
+      // A fila é otimização de latência; o cron é a vivacidade (ADR-002
+      // §4). O alerta está ACEITO — responder erro faria o GitHub
+      // registrar falha de uma entrega que já é nossa. Mas o corpo diz a
+      // verdade (queued:true durante a queda da fila mentia ao
+      // diagnóstico).
+    }
+  }
+  // stamped=false: um passe concorrente do cron venceu o CAS e a
+  // publicação desta tentativa é dele — publicar aqui seria a segunda.
+
+  return jsonResponse(
+    queued
+      ? { accepted: true, queued: true }
+      : { accepted: true, queued: false, recovery: "cron" },
+    202,
+  );
 }
 
 function slackWorkflowUrl(value: string): string | null {
@@ -1495,26 +1582,83 @@ export async function processDeadLetterMessage(
   message.ack();
 }
 
+// O contrato REAL da fila é a união dos dois protocolos: o QueueJob legado
+// e a mensagem v2 do ADR-002. Achado da revisão: o handler declarado como
+// MessageBatch<QueueJob> excluía o formato v2 que ele mesmo processa, e os
+// casts `as unknown as QueueJob` nos testes eram o sintoma.
+export type RelayQueueMessage = QueueJob | AlertQueueMessage;
+
 export async function handleQueue(
-  batch: MessageBatch<QueueJob>,
+  batch: MessageBatch<RelayQueueMessage>,
   env: Env,
   overrides?: RuntimeOverrides,
 ): Promise<void> {
   for (const message of batch.messages) {
+    // ADR-002: mensagem nova é {v:2, delivery_id}, discriminada por
+    // declaração — mas SÓ nas filas primárias. A revisão derrubou a versão
+    // anterior, que processava v2 também na DLQ: isso fazia da DLQ um
+    // SEGUNDO caminho de entrega com ciclo de retentativas próprio
+    // (max_retries: 10), por fora do único agendador. Na DLQ, v2 é
+    // DESCARTADA de propósito: a linha continua `pending` no D1 e o cron a
+    // recarimba — a fonte de verdade é a linha, nunca a mensagem.
+    const body = asRecord(message.body);
     if (
       batch.queue === ALERT_DEAD_LETTER_QUEUE ||
       batch.queue === ACTIVITY_DEAD_LETTER_QUEUE
     ) {
-      await processDeadLetterMessage(message, env, overrides);
+      if (body?.v === 2) {
+        message.ack();
+        continue;
+      }
+      // body.v !== 2 é a discriminação do protocolo: daqui para baixo a
+      // mensagem é do formato legado (o TS não estreita Message<A|B> pelo
+      // corpo, então o estreitamento é declarado uma vez, junto do guarda).
+      await processDeadLetterMessage(message as Message<QueueJob>, env, overrides);
+    } else if (body?.v === 2) {
+      await processAlertV2Message(message.body, env, overrides);
     } else if (
       batch.queue === ALERT_QUEUE_NAME ||
       batch.queue === ACTIVITY_QUEUE_NAME
     ) {
-      await processPrimaryMessage(message, env, overrides);
+      await processPrimaryMessage(message as Message<QueueJob>, env, overrides);
     } else {
       throw new Error("unexpected_queue");
     }
   }
+}
+
+// O consumidor do ADR-002 §8. Retorno normal = ack implícito; nada aqui
+// lança, então a fila nunca agenda nada — o cron é o único agendador.
+async function processAlertV2Message(
+  raw: unknown,
+  env: Env,
+  overrides?: RuntimeOverrides,
+): Promise<void> {
+  const dependencies = runtime(env, overrides);
+  let botToken: string;
+  try {
+    botToken = await readSecret(env.SLACK_BOT_TOKEN);
+  } catch {
+    // Sem token não há envio; a linha fica pendente e o cron recarimba.
+    try {
+      const body = asRecord(raw);
+      if (typeof body?.delivery_id === "string") {
+        await dependencies.alertStore.recordFailure(
+          body.delivery_id,
+          "bot_token_unavailable",
+        );
+      }
+    } catch {
+      // Direção do erro: atraso, nunca perda.
+    }
+    return;
+  }
+  await processAlertMessage(raw, {
+    store: dependencies.alertStore,
+    botToken,
+    fetch: dependencies.fetch,
+    now: dependencies.now,
+  });
 }
 
 export async function runScheduledRecovery(
@@ -1597,6 +1741,41 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
-    await runScheduledRecovery(env);
+    await runScheduledEntry(env);
   },
-} satisfies ExportedHandler<Env, QueueJob>;
+} satisfies ExportedHandler<Env, RelayQueueMessage>;
+
+// ADR-002 §4: o cron dos alertas é o ÚNICO agendador do caminho novo —
+// carimbo, publicação e retenção. Roda antes do legado, e um erro num
+// caminho não cala o outro; mas o erro do cron de alertas NÃO é engolido
+// (achado da revisão): engoli-lo fazia toda falha do passe parecer
+// invocação bem-sucedida — em particular, uma falha persistente só da
+// retenção (deleteSentOlderThan) seria invisível ao vigia, que lê idade
+// de PENDENTE, e as linhas `sent` cresceriam sem limite sem sinal algum.
+// O relançamento DEPOIS do legado torna o passe observavelmente falho na
+// plataforma sem calar o outro caminho. A direção do erro continua a
+// mesma: atraso de um período de cron, nunca perda.
+export async function runScheduledEntry(
+  env: Env,
+  overrides?: RuntimeOverrides,
+): Promise<void> {
+  const dependencies = runtime(env, overrides);
+  let alertCronError: unknown = null;
+  try {
+    await runAlertCron({
+      store: dependencies.alertStore,
+      queue: {
+        send: async (m): Promise<void> => {
+          await env.ALERT_QUEUE.send(m);
+        },
+      },
+      now: dependencies.now,
+    });
+  } catch (error) {
+    alertCronError = error;
+  }
+  await runScheduledRecovery(env, overrides);
+  if (alertCronError !== null) {
+    throw alertCronError;
+  }
+}

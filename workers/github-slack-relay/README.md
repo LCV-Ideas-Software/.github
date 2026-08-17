@@ -25,25 +25,30 @@ operations checklist.
 
 ## Event routing
 
-The destination is derived from the event type and lifecycle action. A webhook
-payload cannot supply a Slack channel, destination or trigger URL.
+**ADR-002 (16/08/2026): um destino só — `alerts` — e OITO eventos.** Os
+eventos de atividade saíram da allowlist de propósito: o app oficial
+"GitHub for Slack" os cobre no `#github-activity`, e este Worker entrega
+exclusivamente o que o oficial não sabe entregar. Um evento fora da lista
+morre no ingress com `event_not_supported` (202), sem linha e sem
+publicação. A webhook payload cannot supply a Slack channel, destination or
+trigger URL.
 
-| Destination | Accepted event families                                                                                                                                                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `alerts`    | Problematic completed `workflow_run`; `deployment_status` with state `error` or `failure`; relevant `dependabot_alert`, `code_scanning_alert`, and `secret_scanning_alert` lifecycle actions.                                                       |
-| `activity`  | Default-branch `push`; `deployment_status` with state `success` or `inactive`; relevant `pull_request`, `pull_request_review`, `pull_request_review_comment`, `issues`, `issue_comment`, `release`, `discussion`, and `discussion_comment` actions. |
+| Evento aceito | Condição |
+| --- | --- |
+| `workflow_run` | conclusão em `action_required`, `cancelled`, `failure`, `stale`, `startup_failure`, `timed_out`; exclui, por **repositório+caminho**, o vigia e o deploy do relay |
+| `dependabot_alert` | ações de ciclo de vida relevantes |
+| `code_scanning_alert` | ações de ciclo de vida relevantes |
+| `secret_scanning_alert` | ações de ciclo de vida relevantes |
+| `repository_advisory` | `published`, `reported` |
+| `security_and_analysis` | presença do registro `changes` (o evento não tem `action`) |
+| `secret_scanning_alert_location` | `created` |
+| `secret_scanning_scan` | `completed` |
 
-Problematic workflow conclusions are `action_required`, `cancelled`, `failure`,
-`stale`, `startup_failure`, and `timed_out`. Successful workflows, transient
-deployment states, non-default-branch pushes, unsupported actions, archived
-repositories, and repositories outside `LCV-Ideas-Software` are not queued.
-For deployments, every state other than `error`, `failure`, `success`, or
-`inactive` is ignored.
-Resolution events for security alerts remain visible as informational records;
-reopening events are incidents.
-
-Discussion and discussion-comment events are intentional first-class activity
-events. They must be selected when the organization webhook is created.
+`security_advisory` (o feed global) **não** entra: a disponibilidade
+documentada é `app` — webhook de organização não o recebe. Repositórios
+arquivados ou fora de `LCV-Ideas-Software` não são aceitos. Os
+normalizadores dos eventos de atividade permanecem no código como legado
+declarado, inalcançáveis pela allowlist.
 
 ## Inbound security
 
@@ -149,7 +154,7 @@ no secret values:
 | Worker         | `github-slack-alerts`                                             |
 | D1             | `github-slack-alerts-db` / `cf070eb0-32d9-4ee0-9516-d469833cdc77` |
 | Alerts Queue   | `github-slack-alerts`                                             |
-| Alerts DLQ     | `github-slack-alerts-dlq`                                         |
+| Alerts DLQ     | removida da configuração (ADR-002 decisão 8); o recurso na Cloudflare pende de exclusão (§12) |
 | Activity Queue | `github-slack-activity`                                           |
 | Activity DLQ   | `github-slack-activity-dlq`                                       |
 | Secrets Store  | `df90c0935ba1460899c3c2c457548a90`                                |
@@ -370,7 +375,14 @@ checkpoints, no row is in `manual_review` or `dead_letter`, and no
 current `accepted_by_slack`, `accepted_by_trigger`, or `send_started` row has
 exceeded its reconciliation deadline. The configured current and distinct
 `NEXT` HMAC bindings, active signer selection, and both Slack
-trigger bindings must validate. The ready reply contains only the boolean
+trigger bindings must validate. The v2 alerts path belongs to the same
+readiness class: `SLACK_BOT_TOKEN` must be readable and non-empty,
+`ALERTS_STATUS_SECRET` must be readable and at least 32 bytes long (the same
+floor the webhook secret has — both sides of it are provisioned by us), and
+the `alert_delivery` table must answer a constant-work
+schema probe (`LIMIT 1`; the aggregate snapshot stays behind the secret on
+`/alerts/status` because `/healthz` is unauthenticated). The ready reply
+contains only the boolean
 `legacy_unverified`, making quarantined historical debt visible without making
 it a readiness failure or exposing a count or identifier. A failed check or
 exception returns the same HTTP 503 `unavailable`.

@@ -51,6 +51,26 @@
       "secret_name": "github-slack-activity-workflow-url",
     },
     {
+      // ADR-002 §5, decisão 11: transporte chat.postMessage. O binding
+      // esteve REMOVIDO até a rotação do §12 item 8 (o arquivo aciona
+      // deploy no merge, e o token anterior carregava groups:*). Rotação
+      // executada pelo operador em 16/08/2026 ~22:00: escopos reduzidos a
+      // chat:write, token antigo revogado (auth.revoke ok:true; auth.test
+      // com ele devolve account_inactive), valor novo no Secrets Store.
+      "binding": "SLACK_BOT_TOKEN",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-alerts-bot-token",
+    },
+    {
+      // ADR-002 §5, decisão 9: /status protegido por segredo compartilhado.
+      // O mesmo valor vive no environment `alerts-watchdog` do repositório
+      // como ALERTS_STATUS_SECRET, para o vigia autenticar (repo-level foi
+      // removido — §12 item 3). Criados os dois lados em 16/08/2026.
+      "binding": "ALERTS_STATUS_SECRET",
+      "store_id": "df90c0935ba1460899c3c2c457548a90",
+      "secret_name": "github-slack-alerts-status-secret",
+    },
+    {
       "binding": "SLACK_RELAY_SIGNING_SECRET",
       "store_id": "df90c0935ba1460899c3c2c457548a90",
       "secret_name": "github-slack-relay-signing-secret",
@@ -74,19 +94,19 @@
     ],
     "consumers": [
       {
+        // ADR-002 §5, decisão 8: SEM fila de descarte — ela era um segundo
+        // mecanismo de entrega com política própria. E max_retries no
+        // mínimo: o consumidor sempre confirma, então retentativa de
+        // plataforma só existiria no crash — e crash pertence ao cron (a
+        // linha fica pendente e é recarimbada). Mensagem de crash é
+        // descartada SEM perda: a fonte de verdade é a linha no D1.
+        // O mínimo aceito não é documentado (default 3, máximo 100);
+        // 0 valida no primeiro deploy — se a API recusar, o fallback
+        // registrado é 1, com o mesmo raciocínio.
         "queue": "github-slack-alerts",
-        "dead_letter_queue": "github-slack-alerts-dlq",
         "max_batch_size": 1,
         "max_batch_timeout": 1,
-        "max_retries": 5,
-        "max_concurrency": 1,
-        "retry_delay": 2,
-      },
-      {
-        "queue": "github-slack-alerts-dlq",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 10,
+        "max_retries": 0,
         "max_concurrency": 1,
       },
       {

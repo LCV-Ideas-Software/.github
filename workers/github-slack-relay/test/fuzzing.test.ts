@@ -1,8 +1,14 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { handleFetch } from "../src/index";
-import { SUPPORTED_RELAY_EVENTS } from "../src/domain";
+import {
+  SUPPORTED_RELAY_EVENTS,
+  type SlackWorkflowPayload,
+} from "../src/domain";
+import { AlertStore } from "../src/alerts/store";
+
+import { closeAlertDatabases, makeAlertDb } from "./alerts/helpers";
 import {
   FakeQueue,
   makeEnv,
@@ -10,6 +16,8 @@ import {
   signedRequest,
   TEST_WEBHOOK_SECRET,
 } from "./helpers";
+
+afterEach(closeAlertDatabases);
 
 const TARGET_REPOSITORY = "LCV-Ideas-Software/cross-review";
 const PRIVATE_SENTINEL = "PRIVATE_WEBHOOK_FIELD_MUST_NOT_BE_RELAYED";
@@ -78,21 +86,27 @@ describe("property-based GitHub webhook security", () => {
         async (event, deliveryId, payload) => {
           const queue = new FakeQueue();
           const store = new MemoryDeliveryStore();
+          const alertStore = new AlertStore(makeAlertDb().d1);
           const response = await handleFetch(
             await signedRequest(event, deliveryId, payload),
             makeEnv(queue),
-            { store },
+            { store, alertStore },
           );
 
           expect(response.status).toBeLessThan(500);
           const result = (await response.json()) as Record<string, unknown>;
           if (result.accepted === true && result.queued === true) {
-            expect(store.deliveries.size).toBe(1);
-            expect(queue.sent).toEqual([{ deliveryId }]);
+            expect(await alertStore.get(deliveryId)).not.toBeNull();
+            expect(queue.sent).toEqual([
+              { v: 2, delivery_id: deliveryId },
+            ]);
           } else {
-            expect(store.deliveries.size).toBe(0);
+            expect(await alertStore.get(deliveryId)).toBeNull();
             expect(queue.sent).toHaveLength(0);
           }
+          // Uma propriedade abre um banco POR ITERAÇÃO (centenas antes do
+          // afterEach); fechar aqui evita esgotar handles na suíte cheia.
+          closeAlertDatabases();
         },
       ),
       { numRuns: 200 },
@@ -135,19 +149,26 @@ describe("property-based GitHub webhook security", () => {
             },
           };
 
+          const alertStore = new AlertStore(makeAlertDb().d1);
           const response = await handleFetch(
             await signedRequest("workflow_run", deliveryId, payload),
             makeEnv(queue),
-            { store },
+            { store, alertStore },
           );
 
           expect(response.status).toBe(202);
-          expect(queue.sent).toEqual([{ deliveryId }]);
-          const stored = store.deliveries.get(deliveryId);
-          expect(stored).toBeDefined();
-          if (stored === undefined) return;
+          expect(queue.sent).toEqual([
+            { v: 2, delivery_id: deliveryId },
+          ]);
+          const stored = await alertStore.get(deliveryId);
+          expect(stored).not.toBeNull();
+          if (stored === null) return;
 
-          const outbound = stored.payload;
+          // O payload guardado é o normalizado (a mensagem monta no envio);
+          // as fronteiras de sanitização valem sobre ele, intactas.
+          const outbound = JSON.parse(
+            stored.payloadJson,
+          ) as SlackWorkflowPayload;
           expect(
             Object.values(outbound).every((value) => typeof value === "string"),
           ).toBe(true);
@@ -169,6 +190,8 @@ describe("property-based GitHub webhook security", () => {
             expect(value).not.toMatch(/[\u0000-\u001f\u007f-\u009f<>]/u);
             expect(value.isWellFormed()).toBe(true);
           }
+          // Um banco por iteração; fechar aqui evita esgotar handles.
+          closeAlertDatabases();
         },
       ),
       { numRuns: 200 },

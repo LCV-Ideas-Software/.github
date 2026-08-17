@@ -163,6 +163,10 @@ function assertRecoveryEnvironmentIsolation(workflows) {
     }
   }
   assert.deepEqual(environmentDeclarations, [
+    // ADR-002: environment dedicado SEM regras de proteção — escopo de
+    // segredo do vigia (zizmor), nunca portão; proteção futura o travaria,
+    // e o aviso está no próprio YAML.
+    ["alerts-watchdog.yml", "watch", "alerts-watchdog"],
     ["cloudflare-pages.yml", "deploy", "cloudflare-production"],
     [
       "github-slack-integration.yml",
@@ -241,23 +245,19 @@ test("the organization webhook audit contract is exact", () => {
     WEBHOOK_URL,
     "https://github-slack-alerts.lcv.workers.dev/github/webhook",
   );
+  // ADR-002 §3 (emendado 16/08): OITO eventos — só o que o app oficial não
+  // entrega; security_advisory ficou fora (Availability: app).
   assert.deepEqual(HOOK_EVENTS, [
     "workflow_run",
-    "deployment_status",
     "dependabot_alert",
     "code_scanning_alert",
     "secret_scanning_alert",
-    "push",
-    "pull_request",
-    "pull_request_review",
-    "pull_request_review_comment",
-    "issues",
-    "issue_comment",
-    "release",
-    "discussion",
-    "discussion_comment",
+    "repository_advisory",
+    "security_and_analysis",
+    "secret_scanning_alert_location",
+    "secret_scanning_scan",
   ]);
-  assert.equal(new Set(HOOK_EVENTS).size, 14);
+  assert.equal(new Set(HOOK_EVENTS).size, 8);
   assert.equal(Object.isFrozen(HOOK_EVENTS), true);
 });
 

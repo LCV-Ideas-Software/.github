@@ -3,21 +3,21 @@ import { pathToFileURL } from "node:url";
 export const API_VERSION = "2026-03-10";
 export const WEBHOOK_URL =
   "https://github-slack-alerts.lcv.workers.dev/github/webhook";
+// ADR-002 §3 (emendado 16/08): OITO eventos — só o que o app oficial não
+// entrega. security_advisory ficou fora: "Availability: app" na
+// documentação — webhook de organização não o recebe. ATENÇÃO (§12): este
+// auditor pode ser CEGO para o hook se o token não for da mesma identidade
+// OAuth que o criou — "users cannot list, view, or edit webhooks that were
+// created by OAuth apps"; um resultado vazio aqui não prova ausência.
 export const HOOK_EVENTS = Object.freeze([
   "workflow_run",
-  "deployment_status",
   "dependabot_alert",
   "code_scanning_alert",
   "secret_scanning_alert",
-  "push",
-  "pull_request",
-  "pull_request_review",
-  "pull_request_review_comment",
-  "issues",
-  "issue_comment",
-  "release",
-  "discussion",
-  "discussion_comment",
+  "repository_advisory",
+  "security_and_analysis",
+  "secret_scanning_alert_location",
+  "secret_scanning_scan",
 ]);
 
 const API_ORIGIN = "https://api.github.com";

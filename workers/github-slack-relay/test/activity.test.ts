@@ -246,7 +246,11 @@ describe("normal activity routing", () => {
     });
   });
 
-  it("persists the destination selected by the normalizer", async () => {
+  it("evento de atividade é recusado na allowlist — o app oficial o cobre (ADR-002 §3)", async () => {
+    // Este teste prendia o roteamento de destino do normalizador. O escopo
+    // de oito eventos extinguiu o caminho de atividade no ingress de
+    // propósito: pull_request agora morre em event_not_supported, sem
+    // linha, sem publicação — e é isso que o teste passa a prender.
     const queue = new FakeQueue();
     const activityQueue = new FakeQueue();
     const store = new MemoryDeliveryStore();
@@ -266,9 +270,9 @@ describe("normal activity routing", () => {
     );
 
     expect(response.status).toBe(202);
-    expect(store.deliveries.get(DELIVERY_ID)?.destination).toBe("activity");
+    expect(store.deliveries.get(DELIVERY_ID)).toBeUndefined();
     expect(queue.sent).toHaveLength(0);
-    expect(activityQueue.sent).toEqual([{ deliveryId: DELIVERY_ID }]);
+    expect(activityQueue.sent).toHaveLength(0);
   });
 
   it("selects a fixed Secrets Store binding from destination, never from payload data", async () => {

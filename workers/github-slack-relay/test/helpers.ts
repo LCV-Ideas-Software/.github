@@ -1,6 +1,7 @@
 import { vi } from "vitest";
 
 import type { SlackWorkflowPayload } from "../src/domain";
+import type { RelayQueueMessage } from "../src/index";
 import {
   planSlackReconciliation,
   SlackReconciliationPlanConflictError,
@@ -1574,10 +1575,13 @@ export class MemoryDeliveryStore implements DeliveryStore {
 }
 
 export class FakeQueue {
-  readonly sent: QueueJob[] = [];
+  // O contrato real da fila é a união dos dois protocolos (ver
+  // RelayQueueMessage em src/index.ts) — os casts `as unknown as QueueJob`
+  // que este tipo estreito exigia nos testes eram o sintoma do achado.
+  readonly sent: RelayQueueMessage[] = [];
   fail = false;
 
-  async send(body: QueueJob): Promise<void> {
+  async send(body: RelayQueueMessage): Promise<void> {
     if (this.fail) {
       throw new Error("test queue failure");
     }
@@ -1595,6 +1599,8 @@ export function makeEnv(
     activityQueue?: FakeQueue;
     relaySigningSecret?: string;
     relaySigningSecretNext?: string;
+    botToken?: string;
+    statusSecret?: string;
     workerRevision?: string;
   } = {},
 ): Env {
@@ -1610,6 +1616,14 @@ export function makeEnv(
     SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL: (options.activitySlackUrl ??
       options.slackUrl ??
       TEST_SLACK_URL) as unknown as SecretsStoreSecret,
+    // ADR-002 §5, decisão 11. Fixture, nunca um token real. O binding
+    // reentrou em 16/08 após a rotação do §12 item 8.
+    SLACK_BOT_TOKEN: (options.botToken ??
+      "xoxb-token-de-teste") as unknown as SecretsStoreSecret,
+    // ADR-002 §5, decisão 9. Fixture, nunca o segredo real; ≥32 bytes
+    // porque a rota e a prontidão exigem o piso do webhook.
+    ALERTS_STATUS_SECRET: (options.statusSecret ??
+      "segredo-status-de-teste-com-mais-de-32-bytes") as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET: (options.relaySigningSecret ??
       TEST_RELAY_SIGNING_SECRET) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET_NEXT: (options.relaySigningSecretNext ??
