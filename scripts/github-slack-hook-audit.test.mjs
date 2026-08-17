@@ -176,6 +176,10 @@ function assertRecoveryEnvironmentIsolation(workflows) {
     ["github-slack-integration.yml", "deploy", "cloudflare-production"],
     ["github-slack-integration.yml", "deploy_slack", "slack-production"],
     ["github-slack-webhook-redelivery.yml", "redeliver", "webhook-recovery"],
+    // Linear Release: environment dedicado SEM regras de proteção — só escopo
+    // de segredo (política zizmor); a chave apenas cria releases na pipeline
+    // continuous deste repositório no Linear.
+    ["linear-release.yml", "linear_release", "linear-release"],
     ["pages.yml", "deploy", "github-pages"],
     ["slack-d1-disposable-reaper.yml", "reap", "cloudflare-production"],
     ["slack-github-integration.yml", "monitor", "slack-production"],
