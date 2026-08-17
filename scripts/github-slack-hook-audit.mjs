@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 export const API_VERSION = "2026-03-10";
 export const WEBHOOK_URL =
   "https://github-slack-alerts.lcv.workers.dev/github/webhook";
+const WEBHOOK_ENDPOINT = new URL(WEBHOOK_URL);
 // ADR-002 §3 (emendado 16/08): OITO eventos — só o que o app oficial não
 // entrega. security_advisory ficou fora: "Availability: app" na
 // documentação — webhook de organização não o recebe. ATENÇÃO (§12): este
@@ -195,6 +196,19 @@ function sameEvents(events) {
   return actual.every((event, index) => event === expected[index]);
 }
 
+function pointsToRelayEndpoint(hook) {
+  if (typeof hook?.config?.url !== "string") return false;
+  try {
+    const candidate = new URL(hook.config.url);
+    return (
+      candidate.origin === WEBHOOK_ENDPOINT.origin &&
+      candidate.pathname === WEBHOOK_ENDPOINT.pathname
+    );
+  } catch {
+    return false;
+  }
+}
+
 function validateTargetHook(hook, expectedHookId) {
   const hookId = hookIdFromResponse(hook);
   if (hookId !== expectedHookId) {
@@ -368,7 +382,7 @@ export async function auditOrganizationWebhook({
     );
   }
   validateTargetHook(targetHooks[0], configuration.hookId);
-  const relayHooks = hooks.filter((hook) => hook?.config?.url === WEBHOOK_URL);
+  const relayHooks = hooks.filter(pointsToRelayEndpoint);
   if (relayHooks.length !== 1) {
     throw new Error(
       `Expected exactly one installation-visible GitHub Slack relay webhook; found ${relayHooks.length}.`,

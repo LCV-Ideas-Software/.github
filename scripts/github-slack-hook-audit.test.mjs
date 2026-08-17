@@ -643,6 +643,10 @@ test("audit paginates and rejects absence, duplicates, ID drift, and configurati
       error: /GitHub Slack relay webhook; found 2/u,
     },
     {
+      list: [hook(), hook({ id: 12346, url: `${WEBHOOK_URL}?duplicate=1` })],
+      error: /GitHub Slack relay webhook; found 2/u,
+    },
+    {
       list: [hook({ id: 12346 })],
       error: /matching configured HOOK_ID; found 0/u,
     },
