@@ -30,15 +30,16 @@ export async function statusBody(
   sent: number;
   oldest_pending_age_ms: number | null;
 }> {
-  const [counts, oldest] = await Promise.all([
-    store.counts(),
-    store.oldestPendingCreatedMs(),
-  ]);
+  // Retrato ÚNICO (achado da revisão): contagens e idade vêm da MESMA
+  // instrução SQL, então o vigia nunca vê idade velha com pending 0, nem
+  // pendente sem idade.
+  const s = await store.statusSnapshot();
   return {
-    pending: counts.pending,
-    sent: counts.sent,
+    pending: s.pending,
+    sent: s.sent,
     // A idade ancora em created_ms, que nenhum caminho de recuperação
     // escreve (ADR-002 §6, instância B).
-    oldest_pending_age_ms: oldest === null ? null : now - oldest,
+    oldest_pending_age_ms:
+      s.oldestPendingCreatedMs === null ? null : now - s.oldestPendingCreatedMs,
   };
 }

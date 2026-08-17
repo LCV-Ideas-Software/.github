@@ -83,13 +83,31 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
     expect(await store.get("sent-nova")).not.toBeNull();
   });
 
-  it("counts e oldestPendingCreatedMs alimentam o /status", async () => {
+  it("statusSnapshot devolve contagens e idade num retrato ÚNICO (uma consulta)", async () => {
+    // Duas consultas independentes deixavam o consumidor marcar `sent` no
+    // meio: idade velha com pending 0, ou pendente sem idade — e o vigia
+    // decide pela idade (achado da revisão). Uma instrução SQL = um
+    // retrato consistente no D1.
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("a", "{}", 1_000);
     await store.insert("b", "{}", 3_000);
     await store.insert("c", "{}", 2_000);
     await store.markSent("c", null, 4_000);
-    expect(await store.counts()).toEqual({ pending: 2, sent: 1 });
-    expect(await store.oldestPendingCreatedMs()).toBe(1_000);
+    expect(await store.statusSnapshot()).toEqual({
+      pending: 2,
+      sent: 1,
+      oldestPendingCreatedMs: 1_000,
+    });
+  });
+
+  it("statusSnapshot com zero pendentes: idade nula e contagens coerentes no MESMO retrato", async () => {
+    const store = new AlertStore(makeAlertDb().d1);
+    await store.insert("s", "{}", 1_000);
+    await store.markSent("s", null, 2_000);
+    expect(await store.statusSnapshot()).toEqual({
+      pending: 0,
+      sent: 1,
+      oldestPendingCreatedMs: null,
+    });
   });
 });

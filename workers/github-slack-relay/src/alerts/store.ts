@@ -130,25 +130,33 @@ export class AlertStore {
       .run();
   }
 
-  async counts(): Promise<{ pending: number; sent: number }> {
+  // Um retrato ÚNICO para o /status: contagens e idade na MESMA instrução.
+  // (A versão anterior fazia duas consultas, e o consumidor marcando `sent`
+  // entre elas produzia idade velha com pending 0, ou pendente sem idade —
+  // e o vigia decide pela idade. Achado da revisão.)
+  async statusSnapshot(): Promise<{
+    pending: number;
+    sent: number;
+    oldestPendingCreatedMs: number | null;
+  }> {
     const row = await this.#db
       .prepare(
         `SELECT
            SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END) AS pending,
-           SUM(CASE WHEN state = 'sent' THEN 1 ELSE 0 END) AS sent
+           SUM(CASE WHEN state = 'sent' THEN 1 ELSE 0 END) AS sent,
+           MIN(CASE WHEN state = 'pending' THEN created_ms END) AS oldest
          FROM alert_delivery`,
       )
-      .first<{ pending: number | null; sent: number | null }>();
-    return { pending: row?.pending ?? 0, sent: row?.sent ?? 0 };
-  }
-
-  async oldestPendingCreatedMs(): Promise<number | null> {
-    const row = await this.#db
-      .prepare(
-        "SELECT MIN(created_ms) AS m FROM alert_delivery WHERE state = 'pending'",
-      )
-      .first<{ m: number | null }>();
-    return row?.m ?? null;
+      .first<{
+        pending: number | null;
+        sent: number | null;
+        oldest: number | null;
+      }>();
+    return {
+      pending: row?.pending ?? 0,
+      sent: row?.sent ?? 0,
+      oldestPendingCreatedMs: row?.oldest ?? null,
+    };
   }
 
   async deleteSentOlderThan(cutoffMs: number): Promise<number> {
