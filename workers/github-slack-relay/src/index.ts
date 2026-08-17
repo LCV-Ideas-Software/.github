@@ -1727,23 +1727,41 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
-    // ADR-002 §4: o cron dos alertas é o ÚNICO agendador do caminho novo —
-    // carimbo, publicação e retenção. Roda antes do legado, e um erro num
-    // caminho não cala o outro.
-    try {
-      await runAlertCron({
-        store: new AlertStore(env.DB),
-        queue: {
-          send: async (m): Promise<void> => {
-            await env.ALERT_QUEUE.send(m);
-          },
-        },
-        now: Date.now,
-      });
-    } catch {
-      // A falha de um passe é atraso de um período de cron, nunca perda;
-      // o vigia alarma pela idade se isso virar padrão.
-    }
-    await runScheduledRecovery(env);
+    await runScheduledEntry(env);
   },
 } satisfies ExportedHandler<Env, RelayQueueMessage>;
+
+// ADR-002 §4: o cron dos alertas é o ÚNICO agendador do caminho novo —
+// carimbo, publicação e retenção. Roda antes do legado, e um erro num
+// caminho não cala o outro; mas o erro do cron de alertas NÃO é engolido
+// (achado da revisão): engoli-lo fazia toda falha do passe parecer
+// invocação bem-sucedida — em particular, uma falha persistente só da
+// retenção (deleteSentOlderThan) seria invisível ao vigia, que lê idade
+// de PENDENTE, e as linhas `sent` cresceriam sem limite sem sinal algum.
+// O relançamento DEPOIS do legado torna o passe observavelmente falho na
+// plataforma sem calar o outro caminho. A direção do erro continua a
+// mesma: atraso de um período de cron, nunca perda.
+export async function runScheduledEntry(
+  env: Env,
+  overrides?: RuntimeOverrides,
+): Promise<void> {
+  const dependencies = runtime(env, overrides);
+  let alertCronError: unknown = null;
+  try {
+    await runAlertCron({
+      store: dependencies.alertStore,
+      queue: {
+        send: async (m): Promise<void> => {
+          await env.ALERT_QUEUE.send(m);
+        },
+      },
+      now: dependencies.now,
+    });
+  } catch (error) {
+    alertCronError = error;
+  }
+  await runScheduledRecovery(env, overrides);
+  if (alertCronError !== null) {
+    throw alertCronError;
+  }
+}

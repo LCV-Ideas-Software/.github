@@ -3,11 +3,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   handleFetch,
   handleQueue,
+  runScheduledEntry,
   type RelayQueueMessage,
 } from "../../src/index";
 import { AlertStore } from "../../src/alerts/store";
 import type { AlertQueueMessage } from "../../src/alerts/contract";
-import { FakeQueue, makeEnv, signedRequest } from "../helpers";
+import {
+  FakeQueue,
+  makeEnv,
+  MemoryDeliveryStore,
+  signedRequest,
+} from "../helpers";
 import { closeAlertDatabases, makeAlertDb } from "./helpers";
 
 afterEach(closeAlertDatabases);
@@ -228,6 +234,35 @@ describe("corrida ingress×cron no carimbo (ADR-002 §4)", () => {
     expect(r1.published).toBe(100); // CRON_SELECT_LIMIT
     expect(r2.published).toBe(50); // as carimbadas no passe 1 não voltam
     expect(sent).toHaveLength(150);
+  });
+});
+
+describe("passe agendado (ADR-002 §4)", () => {
+  it("falha do cron de alertas NÃO é engolida: o passe falha observavelmente, DEPOIS de rodar o legado", async () => {
+    // Achado da revisão: o catch do scheduled engolia o erro e toda falha
+    // do cron parecia invocação bem-sucedida — uma falha persistente só da
+    // retenção seria invisível (o vigia lê idade de PENDENTE) e as linhas
+    // `sent` cresceriam sem limite. O relançamento vem DEPOIS do caminho
+    // legado, que não pode ser calado pelo erro do caminho novo.
+    const quebrado = {
+      dueRows: () => Promise.reject(new Error("d1_cron_down")),
+    } as unknown as AlertStore;
+    await expect(
+      runScheduledEntry(makeEnv(new FakeQueue()), {
+        alertStore: quebrado,
+        store: new MemoryDeliveryStore(),
+      }),
+    ).rejects.toThrow("d1_cron_down");
+  });
+
+  it("cron saudável: o passe agendado resolve com o legado rodando em seguida", async () => {
+    const alertStore = new AlertStore(makeAlertDb().d1);
+    await expect(
+      runScheduledEntry(makeEnv(new FakeQueue()), {
+        alertStore,
+        store: new MemoryDeliveryStore(),
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 
