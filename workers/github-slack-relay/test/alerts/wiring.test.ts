@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { handleFetch } from "../../src/index";
+import { handleFetch, handleQueue } from "../../src/index";
 import { AlertStore } from "../../src/alerts/store";
 import type { QueueJob } from "../../src/store";
 import { FakeQueue, makeEnv, signedRequest } from "../helpers";
@@ -80,6 +80,69 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
     );
     expect(response.status).toBe(202); // aceito: a promessa ancora no INSERT
     expect((await alertStore.get(deliveryId))?.state).toBe("pending");
+  });
+});
+
+describe("roteamento v:2 na fila (ADR-002 §4)", () => {
+  function batchDe(
+    queueName: string,
+    body: unknown,
+  ): { batch: MessageBatch<QueueJob>; acks: number[] } {
+    const acks: number[] = [];
+    const message = {
+      body: body as QueueJob,
+      ack: () => acks.push(1),
+      retry: () => acks.push(-1),
+      attempts: 1,
+      id: "m-1",
+      timestamp: new Date(0),
+    };
+    return {
+      batch: {
+        queue: queueName,
+        messages: [message],
+      } as unknown as MessageBatch<QueueJob>,
+      acks,
+    };
+  }
+
+  it("v:2 na DLQ é DESCARTADA — a DLQ não é segundo caminho de entrega", async () => {
+    const alertStore = new AlertStore(makeAlertDb().d1);
+    await alertStore.insert("d-dlq", "{}", 1_000);
+    let chamadas = 0;
+    const contando: typeof fetch = (async () => {
+      chamadas++;
+      return new Response('{"ok":true}');
+    }) as unknown as typeof fetch;
+    const { batch, acks } = batchDe("github-slack-alerts-dlq", {
+      v: 2,
+      delivery_id: "d-dlq",
+    });
+    await handleQueue(batch, makeEnv(new FakeQueue()), {
+      alertStore,
+      fetch: contando,
+      now: () => 5_000,
+    });
+    expect(chamadas).toBe(0); // nenhum POST a partir da DLQ
+    expect(acks).toEqual([1]); // confirmada e descartada
+    expect((await alertStore.get("d-dlq"))?.state).toBe("pending"); // o cron recarimba
+  });
+
+  it("v:2 na fila primária é processada", async () => {
+    const alertStore = new AlertStore(makeAlertDb().d1);
+    await alertStore.insert("d-prim", '{"title":"T","delivery_id":"d-prim"}', 1_000);
+    const okFetch: typeof fetch = (async () =>
+      new Response('{"ok":true,"ts":"1786.9"}')) as unknown as typeof fetch;
+    const { batch } = batchDe("github-slack-alerts", {
+      v: 2,
+      delivery_id: "d-prim",
+    });
+    await handleQueue(batch, makeEnv(new FakeQueue()), {
+      alertStore,
+      fetch: okFetch,
+      now: () => 5_000,
+    });
+    expect((await alertStore.get("d-prim"))?.state).toBe("sent");
   });
 });
 

@@ -93,19 +93,19 @@
     ],
     "consumers": [
       {
+        // ADR-002 §5, decisão 8: SEM fila de descarte — ela era um segundo
+        // mecanismo de entrega com política própria. E max_retries no
+        // mínimo: o consumidor sempre confirma, então retentativa de
+        // plataforma só existiria no crash — e crash pertence ao cron (a
+        // linha fica pendente e é recarimbada). Mensagem de crash é
+        // descartada SEM perda: a fonte de verdade é a linha no D1.
+        // O mínimo aceito não é documentado (default 3, máximo 100);
+        // 0 valida no primeiro deploy — se a API recusar, o fallback
+        // registrado é 1, com o mesmo raciocínio.
         "queue": "github-slack-alerts",
-        "dead_letter_queue": "github-slack-alerts-dlq",
         "max_batch_size": 1,
         "max_batch_timeout": 1,
-        "max_retries": 5,
-        "max_concurrency": 1,
-        "retry_delay": 2,
-      },
-      {
-        "queue": "github-slack-alerts-dlq",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 10,
+        "max_retries": 0,
         "max_concurrency": 1,
       },
       {

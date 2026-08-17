@@ -149,7 +149,7 @@ no secret values:
 | Worker         | `github-slack-alerts`                                             |
 | D1             | `github-slack-alerts-db` / `cf070eb0-32d9-4ee0-9516-d469833cdc77` |
 | Alerts Queue   | `github-slack-alerts`                                             |
-| Alerts DLQ     | `github-slack-alerts-dlq`                                         |
+| Alerts DLQ     | removida da configuração (ADR-002 decisão 8); o recurso na Cloudflare pende de exclusão (§12) |
 | Activity Queue | `github-slack-activity`                                           |
 | Activity DLQ   | `github-slack-activity-dlq`                                       |
 | Secrets Store  | `df90c0935ba1460899c3c2c457548a90`                                |

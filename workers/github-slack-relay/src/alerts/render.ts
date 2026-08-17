@@ -24,10 +24,13 @@ export function renderAlertText(payload: Record<string, unknown>): string {
     if (v !== null) linhas.push(`${rotulo}: ${v}`);
   }
 
-  const corpo = s("body");
+  // As chaves são as do CONTRATO (SlackWorkflowPayload: details/url) — a
+  // versão anterior lia body/html_url, que o payload normalizado não tem, e
+  // omitia corpo e link em silêncio (achado da revisão).
+  const corpo = s("details");
   if (corpo !== null) linhas.push(corpo);
 
-  const url = s("html_url");
+  const url = s("url");
   if (url !== null) linhas.push(`<${url}|Open in GitHub>`);
 
   const id = s("delivery_id");

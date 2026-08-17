@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { normalizeGitHubEvent } from "../../src/domain";
 import { renderAlertText } from "../../src/alerts/render";
 
 // A montagem é NO ENVIO (ADR-002 §4): corrigir o renderizador e implantar
@@ -7,26 +8,61 @@ import { renderAlertText } from "../../src/alerts/render";
 // canal em 16/08 (mensagens do relay legado, que o Slack Workflow formatava
 // e agora é responsabilidade nossa).
 describe("renderAlertText", () => {
-  it("monta título, campos, link e a linha de delivery", () => {
+  it("monta título, campos, link e a linha de delivery — com as chaves do CONTRATO (details/url)", () => {
+    // A revisão pegou a versão anterior lendo body/html_url, chaves que o
+    // payload normalizado NÃO tem (SlackWorkflowPayload define details e
+    // url) — corpo e link seriam omitidos em silêncio, e a fixture errada
+    // deixava o teste passar.
     const texto = renderAlertText({
       severity: "high",
       title: "OpenSSF Scorecard: failure",
       repository: "LCV-Ideas-Software/astrologo-app",
-      source: "GitHub Actions / workflow_run:completed",
+      source: "GitHub Actions",
       branch: "main",
       actor: "github-merge-queue[bot]",
-      body: "Workflow OpenSSF Scorecard completed with conclusion failure.",
-      html_url:
-        "https://github.com/LCV-Ideas-Software/astrologo-app/actions/runs/1",
+      details: "Workflow OpenSSF Scorecard completed with conclusion failure.",
+      url: "https://github.com/LCV-Ideas-Software/astrologo-app/actions/runs/1",
       delivery_id: "fa20c8e0-0000-0000-0000-000000000000",
       occurred_at: "2026-08-16T18:43:01Z",
     });
     expect(texto).toContain("*[high] OpenSSF Scorecard: failure*");
     expect(texto).toContain("Repository: LCV-Ideas-Software/astrologo-app");
     expect(texto).toContain(
+      "Workflow OpenSSF Scorecard completed with conclusion failure.",
+    );
+    expect(texto).toContain(
       "<https://github.com/LCV-Ideas-Software/astrologo-app/actions/runs/1|Open in GitHub>",
     );
     expect(texto).toContain("fa20c8e0-0000-0000-0000-000000000000");
+  });
+
+  it("renderiza a SAÍDA REAL do normalizador — o contrato não pode derivar de novo", () => {
+    const resultado = normalizeGitHubEvent(
+      "workflow_run",
+      {
+        action: "completed",
+        sender: { login: "octocat" },
+        workflow_run: {
+          conclusion: "failure",
+          name: "CI",
+          path: ".github/workflows/ci.yml",
+          head_branch: "main",
+          html_url: "https://github.com/o/r/actions/runs/7",
+          updated_at: "2026-08-16T00:00:00Z",
+        },
+      },
+      "d-contrato",
+      "LCV-Ideas-Software/astrologo-app",
+    );
+    expect(resultado.kind).toBe("accepted");
+    if (resultado.kind !== "accepted") return;
+    const texto = renderAlertText(
+      resultado.payload as unknown as Record<string, unknown>,
+    );
+    expect(texto).toContain("CI: failure"); // title
+    expect(texto).toContain("completed with conclusion failure"); // details
+    expect(texto).toContain("|Open in GitHub>"); // url
+    expect(texto).toContain("d-contrato"); // delivery_id
   });
 
   it("campo ausente não derruba: linha é omitida, nunca 'undefined' no texto", () => {

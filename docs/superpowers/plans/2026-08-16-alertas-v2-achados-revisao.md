@@ -219,6 +219,22 @@ Por ordem do operador, o PR foi relido **por inteiro**: 19 corpos de revisão, 4
 - **O token carrega escopo que o desenho não usa** — `groups:history`/`groups:read` são leitura de canal privado; o desenho só posta. Redução a `chat:write` + rotação viram item 8 do §12, ação do operador.
 - **O inventário dizia "falta" para o que a fonte já tem** — a tabela do §12 passou a distinguir fonte × deploy.
 
+## A varredura do §6 sobre o código escrito (T8, passo 4 — 17/08)
+
+Veredito instância a instância, contra a implementação real (T1–T7 + T8):
+
+- **A — o vigia fabrica o que vigia:** FECHADA POR CÓDIGO. `isExcludedWorkflowRun` exige repositório+caminho e cobre o vigia e o deploy; teste em `scope.test.ts` prova que a falha do próprio vigia não vira linha.
+- **B — a recuperação desarma a detecção:** FECHADA POR CÓDIGO E MUTAÇÃO. O vigia lê `created_ms` (via `oldestPendingCreatedMs`); nenhum método do store o escreve após o INSERT — provado por mutação (`recordFailure` + `created_ms = 0` fez o teste da matriz falhar).
+- **C — vermelho permanente não carrega informação:** RESPONDIDA POR FORMA. O sinal é quantitativo (idade + contagem no `/status`); linha nova travada move os dois números. O resíduo de habituação humana segue declarado no ADR.
+- **C′ — a resolução de C reintroduzia C:** INEXISTENTE POR CONSTRUÇÃO. Não há estacionamento; o banco recusa `failed` e não tem `parked` (testes de esquema).
+- **D — ausência de sinal lê como saúde:** LIMITE DECLARADO, mitigado no que dá: o vigia valida corpo além do código HTTP, e resposta ilegível entra na política das duas consecutivas.
+- **E — o status servido pelo vigiado:** FECHADA POR CÓDIGO. Duas verificações consecutivas sem resposta (ou ilegíveis) falham o job — decisão 3 implementada com marcador com conteúdo.
+- **F/F′ — detector e fonte na mesma plataforma:** LIMITE DECLARADO, sem mudança — todo braço disponível passa pelo GitHub ou pelo Slack.
+- **G — o aviso depende de uma caixa de e-mail:** LIMITE DECLARADO (3º), com a posse do cron fixada e `contato@lcv.dev` confirmado pelo operador.
+- **H — o deploy do relay é execução de workflow:** FECHADA POR CÓDIGO, pela mesma exclusão repo+caminho da instância A.
+
+E o agendador residual da plataforma (não numerado no §6 original, incorporado ao §4): a fila não retenta mais nada — `max_retries: 0` na fonte, DLQ de alertas fora dos consumers, v2 na DLQ descartada com `ack` — e o crash vira atraso de um recuo, com a linha como fonte de verdade.
+
 ## O que isto significa para a sequência
 
 As Tarefas 3, 5 e 7 estão **bloqueadas** pela raiz 1 — ou deixam de estar, se a deleção acima for aprovada. Tudo o mais é meu para consertar sem esperar: as três citações, a cláusula operacional da regra 1, a aplicabilidade de §7, a decisão 2 do §5 e a instância G do §6, o reenfileiramento de `falhou` externo, a limpeza por retenção, o marco do delta, as duas superfícies da raiz 2, e os três achados internos do plano.

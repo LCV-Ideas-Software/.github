@@ -1521,19 +1521,24 @@ export async function handleQueue(
 ): Promise<void> {
   for (const message of batch.messages) {
     // ADR-002: mensagem nova é {v:2, delivery_id}, discriminada por
-    // declaração. Vale em QUALQUER fila — inclusive na DLQ, enquanto a
-    // configuração do §12 não a remover: o consumidor relê a linha, então
-    // reprocessar é idempotente por construção.
+    // declaração — mas SÓ nas filas primárias. A revisão derrubou a versão
+    // anterior, que processava v2 também na DLQ: isso fazia da DLQ um
+    // SEGUNDO caminho de entrega com ciclo de retentativas próprio
+    // (max_retries: 10), por fora do único agendador. Na DLQ, v2 é
+    // DESCARTADA de propósito: a linha continua `pending` no D1 e o cron a
+    // recarimba — a fonte de verdade é a linha, nunca a mensagem.
     const body = asRecord(message.body);
-    if (body?.v === 2) {
-      await processAlertV2Message(message.body, env, overrides);
-      continue;
-    }
     if (
       batch.queue === ALERT_DEAD_LETTER_QUEUE ||
       batch.queue === ACTIVITY_DEAD_LETTER_QUEUE
     ) {
+      if (body?.v === 2) {
+        message.ack();
+        continue;
+      }
       await processDeadLetterMessage(message, env, overrides);
+    } else if (body?.v === 2) {
+      await processAlertV2Message(message.body, env, overrides);
     } else if (
       batch.queue === ALERT_QUEUE_NAME ||
       batch.queue === ACTIVITY_QUEUE_NAME

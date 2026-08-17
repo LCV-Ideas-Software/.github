@@ -45,7 +45,11 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .watchdog-marker
-          key: alerts-watchdog-marker-${{ github.run_id }}
+          # run_attempt na chave (achado da revisão): re-execução mantém o
+          # run_id e incrementa o attempt — sem ele, a chave imutável já
+          # existiria e a re-execução não persistiria seu marcador,
+          # fabricando ou perdendo o par de falhas consecutivas.
+          key: alerts-watchdog-marker-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             alerts-watchdog-marker-
 
@@ -82,11 +86,38 @@ jobs:
             exit 0
           fi
 
+          # Um 200 com corpo malformado NÃO é saúde (achado da revisão: só
+          # o código HTTP era validado, e um JSON quebrado podia concluir
+          # sucesso). Corpo que não parseia, ou idade que não é número nem
+          # null, conta como falha de transporte — entra na política das
+          # duas consecutivas.
+          if ! age=$(printf '%s' "$body" | jq -er '.oldest_pending_age_ms | if . == null then "null" else tostring end' 2>/dev/null); then
+            printf 'falha' > .watchdog-marker
+            if [ "$anterior" = "falha" ]; then
+              echo "::error::Segunda resposta consecutiva ilegível do /alerts/status. Decisão 3 do ADR-002: conta como problema."
+              exit 1
+            fi
+            echo "Resposta 200 com corpo ilegível; a segunda consecutiva falha o job."
+            exit 0
+          fi
+          case "$age" in
+            null|*[!0-9]*)
+              if [ "$age" != "null" ]; then
+                printf 'falha' > .watchdog-marker
+                if [ "$anterior" = "falha" ]; then
+                  echo "::error::Segunda idade consecutiva não numérica ('${age}'). Conta como problema."
+                  exit 1
+                fi
+                echo "Idade não numérica ('${age}'); a segunda consecutiva falha o job."
+                exit 0
+              fi
+              ;;
+          esac
+
           printf 'ok' > .watchdog-marker
           echo "status: ${body}"
 
-          age=$(printf '%s' "$body" | jq -r '.oldest_pending_age_ms')
-          pending=$(printf '%s' "$body" | jq -r '.pending')
+          pending=$(printf '%s' "$body" | jq -r '.pending // "?"')
           if [ "$age" = "null" ]; then
             echo "Nenhuma linha pendente (${pending} pendentes)."
             exit 0
@@ -106,4 +137,4 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .watchdog-marker
-          key: alerts-watchdog-marker-${{ github.run_id }}
+          key: alerts-watchdog-marker-${{ github.run_id }}-${{ github.run_attempt }}
