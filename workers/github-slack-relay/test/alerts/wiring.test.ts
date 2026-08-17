@@ -79,6 +79,28 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
     expect(queue.sent).toHaveLength(1); // publica SÓ quando insere
   });
 
+  it("INSERT indisponível: 503 persistence_unavailable — antes da fronteira de aceitação, a recuperação é do GitHub (§2)", async () => {
+    // Achado da revisão: o caminho existia sem teste. Antes do INSERT
+    // durável não há promessa nossa; o 503 faz o GitHub registrar a falha
+    // e a janela de redelivery manual cobrir a entrega.
+    const queue = new FakeQueue();
+    const quebrado = {
+      insert: () => Promise.reject(new Error("d1_unavailable")),
+    } as unknown as AlertStore;
+    const response = await handleFetch(
+      await signedRequest(
+        "dependabot_alert",
+        "88888888-2222-3333-4444-555555555555",
+        dependabotPayload(),
+      ),
+      makeEnv(queue),
+      { alertStore: quebrado, now: () => NOW },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "persistence_unavailable" });
+    expect(queue.sent).toHaveLength(0); // nada publicado sem linha durável
+  });
+
   it("fila indisponível: aceito com queued:false — o corpo diz a verdade, e o cron recupera após o recuo", async () => {
     const queue = new FakeQueue();
     queue.fail = true;

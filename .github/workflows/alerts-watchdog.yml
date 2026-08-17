@@ -138,8 +138,12 @@ jobs:
             echo "Resposta 200 com corpo ilegível; a segunda consecutiva falha o job."
             exit 0
           fi
+          # A string VAZIA precisa de alternativa própria (achado da
+          # revisão): `*[!0-9]*` exige ao menos UM caractere não-dígito,
+          # então `{"oldest_pending_age_ms":""}` escapava do case, gravava
+          # `ok` e o passo terminava saudável com idade ilegível.
           case "$age" in
-            null|*[!0-9]*)
+            null|""|*[!0-9]*)
               if [ "$age" != "null" ]; then
                 printf 'falha' > .watchdog-marker
                 if [ "$anterior" = "falha" ]; then
