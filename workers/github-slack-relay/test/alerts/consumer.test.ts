@@ -134,13 +134,12 @@ describe("consumidor (ADR-002 §8: ok:true = enviado; resto fica pendente)", () 
     expect(row?.lastError).toMatch(/^exception:/);
   });
 
-  it("payload que não é JSON válido: registra e retorna, linha fica pendente", async () => {
+  it("linha AUSENTE no store: retorna sem lançar e sem postar — a mensagem morre, o alerta não existe", async () => {
+    // O nome anterior prometia "payload que não é JSON válido", que este
+    // caso não exercita (achado da revisão): json_valid barra lixo no
+    // INSERT (schema.test) e a exceção do renderizador está coberta acima.
+    // O que ESTE caso prende é a guarda de linha ausente do consumidor.
     const store = new AlertStore(makeAlertDb().d1);
-    // json_valid barra lixo no INSERT, então o caso real é JSON válido cujo
-    // conteúdo explode o renderizador — simulado por fetch nunca chamado +
-    // JSON.parse de string ok. Forçamos a exceção mais cedo: payload é
-    // válido para o banco, e o fetch explode; já coberto acima. Aqui: linha
-    // ausente não lança.
     await expect(
       processAlertMessage(
         { v: 2, delivery_id: "nao-existe" },
