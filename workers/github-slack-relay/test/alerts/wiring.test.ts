@@ -106,6 +106,73 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
   });
 });
 
+describe("corrida ingress×cron no carimbo (ADR-002 §4)", () => {
+  it("cron carimba entre o INSERT e o carimbo do ingress: UMA publicação total, e é a do cron", async () => {
+    // Corrida determinística por barreira: o insert do store dispara um
+    // passe do cron ANTES de o ingress carimbar. O CAS decide: o cron
+    // vence, o stampDue do ingress devolve false, e o send do ingress é
+    // GATEADO — total de publicações TEM de ser 1.
+    const queue = new FakeQueue();
+    const { d1 } = makeAlertDb();
+    const base = new AlertStore(d1);
+    const { runAlertCron } = await import("../../src/alerts/cron");
+    const cronQueue = { send: async (m: unknown) => queue.send(m as QueueJob) };
+
+    // Subclasse com barreira: depois do INSERT do ingress e ANTES do seu
+    // carimbo, o "outro isolate" roda um passe do cron sobre o MESMO banco.
+    class RacingStore extends AlertStore {
+      override async insert(
+        id: string,
+        payload: string,
+        now: number,
+      ): Promise<boolean> {
+        const inserted = await super.insert(id, payload, now);
+        if (inserted) {
+          await runAlertCron({ store: base, queue: cronQueue, now: () => now });
+        }
+        return inserted;
+      }
+    }
+    const racing = new RacingStore(d1);
+
+    const deliveryId = "77777777-2222-3333-4444-555555555555";
+    const response = await handleFetch(
+      await signedRequest("dependabot_alert", deliveryId, dependabotPayload()),
+      makeEnv(queue),
+      { alertStore: racing, now: () => NOW },
+    );
+
+    expect(response.status).toBe(202);
+    // O ingress perdeu o CAS: o corpo diz queued:false (a publicação é do cron).
+    expect(await response.json()).toEqual({
+      accepted: true,
+      queued: false,
+      recovery: "cron",
+    });
+    // UMA publicação no total — a do cron. Duas seria a corrida que a
+    // revisão apontou.
+    expect(queue.sent).toEqual([
+      { v: 2, delivery_id: deliveryId } as unknown as QueueJob,
+    ]);
+    expect((await base.get(deliveryId))?.attempts).toBe(1);
+  });
+
+  it("drenagem acima do LIMIT: 150 devidas drenam em dois passes (100 + 50), sem inanição", async () => {
+    const base = new AlertStore(makeAlertDb().d1);
+    const sent: unknown[] = [];
+    const queue = { send: async (m: unknown) => void sent.push(m) };
+    const { runAlertCron } = await import("../../src/alerts/cron");
+    for (let i = 0; i < 150; i++) {
+      await base.insert(`d-${String(i).padStart(3, "0")}`, "{}", 1_000 + i);
+    }
+    const r1 = await runAlertCron({ store: base, queue, now: () => 10_000 });
+    const r2 = await runAlertCron({ store: base, queue, now: () => 10_500 });
+    expect(r1.published).toBe(100); // CRON_SELECT_LIMIT
+    expect(r2.published).toBe(50); // as carimbadas no passe 1 não voltam
+    expect(sent).toHaveLength(150);
+  });
+});
+
 describe("roteamento v:2 na fila (ADR-002 §4)", () => {
   function batchDe(
     queueName: string,
