@@ -100,6 +100,16 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
     });
   });
 
+  it("schemaProbe: resolve com o esquema migrado e rejeita sem a tabela — trabalho constante para o /healthz público", async () => {
+    // Achado da revisão: agregado de tabela inteira num probe não
+    // autenticado é amplificação de carga; a prontidão sonda com LIMIT 1.
+    const migrado = new AlertStore(makeAlertDb().d1);
+    await expect(migrado.schemaProbe()).resolves.toBeUndefined();
+
+    const cru = new AlertStore(makeAlertDb({ aplicarMigracao: false }).d1);
+    await expect(cru.schemaProbe()).rejects.toThrow();
+  });
+
   it("statusSnapshot com zero pendentes: idade nula e contagens coerentes no MESMO retrato", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("s", "{}", 1_000);

@@ -329,10 +329,11 @@ describe("GitHub webhook ingress", () => {
 
   it("returns the same generic 503 when alert_delivery is unavailable — o caminho v2 entra na prontidão", async () => {
     // A mesma classe do healthcheck legado: o esquema que a rota precisa
-    // tem de existir. O sondador é o statusSnapshot (uma consulta).
+    // tem de existir. O sondador é o schemaProbe (trabalho constante — o
+    // /healthz é público, e agregado aqui seria amplificação de carga).
     const queue = new FakeQueue();
     const alertStore = {
-      statusSnapshot: () => Promise.reject(new Error("no_such_table")),
+      schemaProbe: () => Promise.reject(new Error("no_such_table")),
     } as unknown as AlertStore;
 
     const response = await handleFetch(

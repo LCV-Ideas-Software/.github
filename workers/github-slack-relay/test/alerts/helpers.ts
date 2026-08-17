@@ -69,9 +69,13 @@ function sqliteD1(database: DatabaseSync): D1Database {
   } as unknown as D1Database;
 }
 
-export function makeAlertDb(): { database: DatabaseSync; d1: D1Database } {
+export function makeAlertDb(
+  opcoes: { aplicarMigracao?: boolean } = {},
+): { database: DatabaseSync; d1: D1Database } {
   const database = new DatabaseSync(":memory:");
   openDatabases.push(database);
-  database.exec(migrationSource("0010_alert_delivery.sql"));
+  if (opcoes.aplicarMigracao !== false) {
+    database.exec(migrationSource("0010_alert_delivery.sql"));
+  }
   return { database, d1: sqliteD1(database) };
 }

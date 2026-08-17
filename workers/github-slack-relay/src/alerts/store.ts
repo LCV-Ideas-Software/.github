@@ -130,6 +130,17 @@ export class AlertStore {
       .run();
   }
 
+  // Sonda de prontidão em trabalho CONSTANTE (achado da revisão: o
+  // /healthz é público, e um agregado de tabela inteira por probe não
+  // autenticado vira amplificação de carga no D1 — o conjunto pendente é
+  // ilimitado por desenho). LIMIT 1 prova esquema e leitura sem varrer; o
+  // retrato agregado fica reservado ao /alerts/status, atrás do segredo.
+  async schemaProbe(): Promise<void> {
+    await this.#db
+      .prepare("SELECT delivery_id FROM alert_delivery LIMIT 1")
+      .first();
+  }
+
   // Um retrato ÚNICO para o /status: contagens e idade na MESMA instrução.
   // (A versão anterior fazia duas consultas, e o consumidor marcando `sent`
   // entre elas produzia idade velha com pending 0, ou pendente sem idade —

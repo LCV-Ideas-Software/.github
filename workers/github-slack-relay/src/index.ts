@@ -907,9 +907,12 @@ export async function handleFetch(
       // e uma tabela. Achado da revisão: /healthz dizia `ready` com o
       // SLACK_BOT_TOKEN ilegível (toda mensagem v2 parada em pending) e
       // com o ALERTS_STATUS_SECRET ausente (vigia sem rota). A sonda do
-      // alert_delivery é o statusSnapshot: uma consulta, o mesmo retrato
-      // que o /alerts/status serve. readSecret lança para binding ausente
-      // ou vazio; string vazia de fixture cai no checque de comprimento.
+      // alert_delivery é o schemaProbe, em trabalho CONSTANTE (segundo
+      // achado da revisão: o /healthz é público, e o agregado do
+      // statusSnapshot aqui viraria amplificação de carga no D1 — o
+      // retrato completo fica no /alerts/status, atrás do segredo).
+      // readSecret lança para binding ausente ou vazio; string vazia de
+      // fixture cai no checque de comprimento.
       const [
         healthy,
         githubSecret,
@@ -928,7 +931,7 @@ export async function handleFetch(
         dependencies.store.hasLegacyUnverifiedDebt(),
         readSecret(env.SLACK_BOT_TOKEN),
         readSecret(env.ALERTS_STATUS_SECRET),
-        dependencies.alertStore.statusSnapshot(),
+        dependencies.alertStore.schemaProbe(),
       ]);
       const ready =
         healthy &&
