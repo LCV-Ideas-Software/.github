@@ -306,6 +306,9 @@ describe("GitHub webhook ingress", () => {
     ["SLACK_BOT_TOKEN", ""],
     ["ALERTS_STATUS_SECRET", null],
     ["ALERTS_STATUS_SECRET", ""],
+    // Piso de 32 bytes na classe "segredo que NÓS provisionamos" (achado
+    // da revisão): curto demais autenticava e dizia ready.
+    ["ALERTS_STATUS_SECRET", "short"],
   ])(
     "returns the same generic 503 for invalid binding %s",
     async (binding, value) => {

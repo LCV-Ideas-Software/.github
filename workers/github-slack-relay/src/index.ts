@@ -879,6 +879,13 @@ export async function handleFetch(
     } catch {
       return jsonResponse({ error: "unauthorized" }, 401);
     }
+    if (!hasSafeSecretLength(expected)) {
+      // Piso de 32 bytes na classe "segredo que NÓS provisionamos" — a
+      // mesma guarda que o webhook tem na rota (achado da revisão: um
+      // valor truncado na provisão virava autenticação de um caractere).
+      // 401 idêntico, e o vigia alarma em dois tiques até a rotação.
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
     if (!(await verifyStatusSecret(request, expected))) {
       return jsonResponse({ error: "unauthorized" }, 401);
     }
@@ -940,7 +947,10 @@ export async function handleFetch(
         slackWorkflowUrl(alertsUrl) !== null &&
         slackWorkflowUrl(activityUrl) !== null &&
         botToken.length > 0 &&
-        statusSecret.length > 0;
+        // O segredo do /status é NOSSO dos dois lados: vale o piso de 32
+        // bytes do webhook. O token do bot é formato do Slack — só
+        // legibilidade e não-vazio.
+        hasSafeSecretLength(statusSecret);
       return jsonResponse(
         ready
           ? { status: "ready", legacy_unverified: legacyUnverified }

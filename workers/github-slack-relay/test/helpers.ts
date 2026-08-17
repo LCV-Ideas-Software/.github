@@ -1620,9 +1620,10 @@ export function makeEnv(
     // reentrou em 16/08 após a rotação do §12 item 8.
     SLACK_BOT_TOKEN: (options.botToken ??
       "xoxb-token-de-teste") as unknown as SecretsStoreSecret,
-    // ADR-002 §5, decisão 9. Fixture, nunca o segredo real.
+    // ADR-002 §5, decisão 9. Fixture, nunca o segredo real; ≥32 bytes
+    // porque a rota e a prontidão exigem o piso do webhook.
     ALERTS_STATUS_SECRET: (options.statusSecret ??
-      "segredo-status-de-teste") as unknown as SecretsStoreSecret,
+      "segredo-status-de-teste-com-mais-de-32-bytes") as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET: (options.relaySigningSecret ??
       TEST_RELAY_SIGNING_SECRET) as unknown as SecretsStoreSecret,
     SLACK_RELAY_SIGNING_SECRET_NEXT: (options.relaySigningSecretNext ??

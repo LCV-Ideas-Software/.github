@@ -347,13 +347,29 @@ describe("/alerts/status (decisão 9)", () => {
     }
   });
 
+  it("segredo GUARDADO curto: 401 mesmo com o valor certo no header — piso de 32 bytes, a classe do webhook", async () => {
+    // Achado da revisão: a rota comparava contra QUALQUER valor guardado —
+    // um segredo truncado na provisão virava autenticação de um caractere.
+    // A classe já existia no webhook (hasSafeSecretLength na rota); aqui o
+    // 401 é idêntico ao de segredo ilegível, e o vigia alarma em dois
+    // tiques (fail-loud) até a rotação corrigir.
+    const alertStore = new AlertStore(makeAlertDb().d1);
+    const r = await handleFetch(
+      statusRequest("curto"),
+      makeEnv(new FakeQueue(), { statusSecret: "curto" }),
+      { alertStore, now: () => NOW },
+    );
+    expect(r.status).toBe(401);
+    expect(await r.text()).not.toContain("pending");
+  });
+
   it("com o segredo: pending, sent e a idade da pendente mais velha por created_ms", async () => {
     const alertStore = new AlertStore(makeAlertDb().d1);
     await alertStore.insert("a-1", "{}", NOW - 120_000);
     await alertStore.insert("a-2", "{}", NOW - 60_000);
     await alertStore.markSent("a-2", null, NOW - 30_000);
     const r = await handleFetch(
-      statusRequest("segredo-status-de-teste"),
+      statusRequest("segredo-status-de-teste-com-mais-de-32-bytes"),
       makeEnv(new FakeQueue()),
       { alertStore, now: () => NOW },
     );
