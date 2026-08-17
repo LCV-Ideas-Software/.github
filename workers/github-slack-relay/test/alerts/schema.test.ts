@@ -131,6 +131,24 @@ describe("migração 0010: alert_delivery", () => {
     }
   });
 
+  it("a consulta da retenção usa o índice (state, created_ms)", () => {
+    // A retenção apaga `sent` por idade de INGRESSO — created_ms, nunca
+    // updated_ms — e por isso o índice do vigia a serve também. Sem isso,
+    // cada limpeza varreria a tabela inteira, incluindo o conjunto pendente
+    // que a decisão 12 permite crescer sem limite.
+    const { database } = makeAlertDb();
+    const plan = database
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         DELETE FROM alert_delivery
+          WHERE state = 'sent' AND created_ms < 99`,
+      )
+      .all() as Array<{ detail: string }>;
+    expect(plan.map((p) => p.detail).join(" | ")).toMatch(
+      /idx_alert_delivery_pending/,
+    );
+  });
+
   it("o índice de tempo devido cobre (state, next_due_ms)", () => {
     // Sem ele, cada passe do cron varre o conjunto pendente inteiro — e o
     // conjunto pendente é ilimitado por desenho (decisão 12).

@@ -1595,7 +1595,6 @@ export function makeEnv(
     activityQueue?: FakeQueue;
     relaySigningSecret?: string;
     relaySigningSecretNext?: string;
-    botToken?: string;
     statusSecret?: string;
     workerRevision?: string;
   } = {},
@@ -1612,10 +1611,8 @@ export function makeEnv(
     SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL: (options.activitySlackUrl ??
       options.slackUrl ??
       TEST_SLACK_URL) as unknown as SecretsStoreSecret,
-    // ADR-002 §5, decisão 11. Valor de fixture, nunca um token real
-    // (o formato xoxb-… existe só para o teste reconhecer a forma).
-    SLACK_BOT_TOKEN: (options.botToken ??
-      "xoxb-token-de-teste") as unknown as SecretsStoreSecret,
+    // O binding SLACK_BOT_TOKEN saiu do wrangler.jsonc até a rotação do
+    // token (ADR-002 §12, item 8) — o campo volta aqui junto com o binding.
     // ADR-002 §5, decisão 9. Fixture, nunca o segredo real.
     ALERTS_STATUS_SECRET: (options.statusSecret ??
       "segredo-status-de-teste") as unknown as SecretsStoreSecret,

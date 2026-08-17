@@ -50,18 +50,16 @@
       "store_id": "df90c0935ba1460899c3c2c457548a90",
       "secret_name": "github-slack-activity-workflow-url",
     },
-    {
-      // ADR-002 §5, decisão 11: o transporte é chat.postMessage. O app é o
-      // "LCV Ideas Software GitHub Alerts" (bot U0BR6NL2B9N), já membro do
-      // canal privado — verificado por auth.test em 16/08/2026.
-      // Escopos concedidos hoje: chat:write,groups:history,groups:read.
-      // PENDÊNCIA DO OPERADOR (ADR-002 §12, item 8): o desenho só posta;
-      // groups:history/groups:read são leitura de canal privado que nada
-      // aqui usa — reduzir o app a chat:write e reinstalar/rotacionar.
-      "binding": "SLACK_BOT_TOKEN",
-      "store_id": "df90c0935ba1460899c3c2c457548a90",
-      "secret_name": "github-slack-alerts-bot-token",
-    },
+    // O binding SLACK_BOT_TOKEN (ADR-002 §5, decisão 11) foi REMOVIDO desta
+    // revisão de propósito: este arquivo aciona o deploy automático no
+    // merge, e o token de hoje carrega groups:history/groups:read — um
+    // merge exporia o histórico do canal privado ao Worker ANTES da redução
+    // de escopo e rotação que o §12, item 8, exige como pré-requisito
+    // (achado da revisão). O binding re-entra no mesmo commit em que o
+    // operador confirmar o token novo com escopo só chat:write:
+    //   { "binding": "SLACK_BOT_TOKEN",
+    //     "store_id": "df90c0935ba1460899c3c2c457548a90",
+    //     "secret_name": "github-slack-alerts-bot-token" }
     {
       // ADR-002 §5, decisão 9: /status protegido por segredo compartilhado.
       // O mesmo valor vive no repositório como ALERTS_STATUS_SECRET, para o

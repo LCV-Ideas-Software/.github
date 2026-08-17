@@ -51,21 +51,27 @@ CREATE TABLE alert_delivery (
   -- mutação pertence ao store, que ainda NÃO existe nesta branch — até ele
   -- existir, esta linha é intenção declarada, não restrição observada.
   -- typeof() nas duas colunas de tempo pela mesma razão do attempts — e com
-  -- dano maior se faltasse: o vigia computa idade de created_ms, e o
-  -- carimbo soma sobre updated_ms. Valor malformado corromperia detecção e
-  -- agendamento de uma vez (achado da revisão: a classe, não a instância).
+  -- dano maior se faltasse: o vigia computa idade de created_ms, e a
+  -- retenção apaga `sent` por created_ms. Valor malformado corromperia
+  -- detecção e limpeza (achado da revisão: a classe, não a instância).
   created_ms INTEGER NOT NULL
     CHECK (typeof(created_ms) = 'integer' AND created_ms >= 0),
-  -- Escrito a cada carimbo do cron. O vigia NÃO pode lê-lo
-  -- (ADR-001 H40: ancorar a idade aqui manteria o alarme mudo).
+  -- Registro do último carimbo do cron. NÃO decide elegibilidade — quem
+  -- decide é next_due_ms, pré-computado acima. O vigia também não pode
+  -- lê-lo (ADR-001 H40: ancorar a idade aqui manteria o alarme mudo).
   updated_ms INTEGER NOT NULL
     CHECK (typeof(updated_ms) = 'integer' AND updated_ms >= 0)
 );
 
--- Dois índices, dois leitores diferentes, e a distinção é o desenho:
+-- Dois índices, TRÊS leitores, e a distinção é o desenho:
 --
--- 1) O VIGIA lê a idade da linha pendente mais velha, ancorada em created_ms,
---    que nenhum caminho de recuperação escreve (instância B).
+-- 1) (state, created_ms) serve DOIS leitores que ancoram na mesma coluna:
+--    o VIGIA, que lê a idade da linha pendente mais velha, e a RETENÇÃO,
+--    que apaga `sent` mais velho que o prazo — a janela de deduplicação
+--    corre do INGRESSO, então o prazo ancora em created_ms, nunca em
+--    updated_ms (a revisão pediu um terceiro índice por updated_ms; a
+--    resposta certa era dizer qual coluna a retenção lê). created_ms não é
+--    escrito por nenhum caminho de recuperação (instância B).
 CREATE INDEX idx_alert_delivery_pending ON alert_delivery (state, created_ms);
 --
 -- 2) O CRON seleciona por tempo devido pré-computado: next_due_ms.
