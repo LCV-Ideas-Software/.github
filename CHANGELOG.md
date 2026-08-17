@@ -47,7 +47,9 @@ presentation rule this organization applies to text meant for people
 - Hardened the terminal v2 proof so quoted SQL identifiers cannot impersonate the exact
   `pending`/`sent` constraint, same-endpoint HTTP and root-dot webhook aliases count as duplicate
   relay hooks, and a disposable D1 database is created only inside an installed local cleanup
-  scope. Evidence: #244.
+  scope. DELETE confirmation also retries transient inventory/`total_count` disagreement inside
+  the existing deadline without ever accepting a partial inventory as proof of absence. Evidence:
+  #244.
 
 ## 15/08/2026 — Official security automation
 

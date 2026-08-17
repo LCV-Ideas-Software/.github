@@ -639,7 +639,19 @@ export async function deleteDatabaseWithConfirmation(
         throw error;
       }
     }
-    const databases = await listDatabases(configuration, requestFn, deadlineMs);
+    let databases;
+    try {
+      databases = await listDatabases(configuration, requestFn, deadlineMs);
+    } catch (error) {
+      // Depois de um DELETE aceito, a lista e o total_count do plano de
+      // controle podem convergir em momentos diferentes. Nunca trate essa
+      // leitura contraditória como ausência: repita o ciclo de DELETE +
+      // inventário dentro do mesmo teto e propague o erro na última tentativa.
+      const backoffMs = deleteConfirmationBackoffMs(attempt, deadlineMs);
+      if (backoffMs === 0) throw error;
+      await delay(backoffMs);
+      continue;
+    }
     if (!databases.some((database) => database.uuid === databaseId)) {
       return;
     }

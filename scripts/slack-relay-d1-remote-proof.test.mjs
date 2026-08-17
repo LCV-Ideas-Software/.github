@@ -890,6 +890,46 @@ test("ambiguous creation uses the cleanup reserve after the work deadline", asyn
   );
 });
 
+test("DELETE confirmation retries contradictory inventory metadata without accepting partial absence", async () => {
+  const databaseId = "55555555-5555-4555-8555-555555555555";
+  const remainingDatabases = [
+    fakeDatabase(1),
+    fakeDatabase(2),
+    fakeDatabase(3),
+  ];
+  let deleteAttempts = 0;
+  let listCalls = 0;
+  const requestFn = async (_configuration, _path, init = {}) => {
+    if ((init.method ?? "GET") === "DELETE") {
+      deleteAttempts += 1;
+      return { success: true, result: null };
+    }
+    listCalls += 1;
+    return {
+      result: remainingDatabases,
+      result_info: {
+        count: remainingDatabases.length,
+        page: 1,
+        per_page: INVENTORY_PAGE_SIZE,
+        // O inventário pode perder o banco antes de total_count convergir.
+        total_count:
+          listCalls === 1
+            ? remainingDatabases.length + 1
+            : remainingDatabases.length,
+      },
+    };
+  };
+
+  await deleteDatabaseWithConfirmation(
+    FAKE_CONFIGURATION,
+    databaseId,
+    requestFn,
+    Date.now() + 60_000,
+  );
+  assert.equal(deleteAttempts, 2);
+  assert.equal(listCalls, 2);
+});
+
 test("a final DELETE error is not authoritative when the database is already gone", async () => {
   const databaseId = "22222222-2222-4222-8222-222222222222";
   let deleteAttempts = 0;
