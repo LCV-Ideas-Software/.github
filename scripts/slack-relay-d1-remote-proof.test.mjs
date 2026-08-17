@@ -10,6 +10,7 @@ import {
   assertSentAlertDeliveryStateWasAccepted,
   cloudflareRequest,
   createDisposableDatabase,
+  DATABASE_ID_PATTERN,
   DATABASE_NAME_PREFIX,
   deadlineBoundedTimeout,
   deleteDatabaseWithConfirmation,
@@ -48,6 +49,32 @@ function fakeDatabase(index, name = `db-${String(index)}`) {
     uuid: `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
   };
 }
+
+test("D1 database IDs require the canonical lowercase UUID grouping", () => {
+  assert.equal(
+    DATABASE_ID_PATTERN.test("00000000-0000-4000-8000-000000000001"),
+    true,
+  );
+  for (const malformedId of [
+    "-".repeat(36),
+    "000000000000-4000-8000-000000000001",
+    "00000000-0000-4000-8000-00000000001-",
+    "00000000-0000-4000-8000-00000000000G",
+  ]) {
+    assert.equal(DATABASE_ID_PATTERN.test(malformedId), false, malformedId);
+  }
+});
+
+test("the D1 inventory rejects a non-canonical database UUID", async () => {
+  await assert.rejects(
+    () =>
+      listDatabases(FAKE_CONFIGURATION, async () => ({
+        result: [{ name: "malformed", uuid: "-".repeat(36) }],
+        result_info: { total_count: 1 },
+      })),
+    /D1 database UUID/u,
+  );
+});
 
 test("the deadline gate fails closed on a missing or malformed value", () => {
   for (const environment of [

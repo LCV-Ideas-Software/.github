@@ -29,7 +29,8 @@ const WRANGLER_ENTRYPOINT = join(
 export const DATABASE_NAME_PREFIX = "tmp-slack-relay-171-";
 export const DISPOSABLE_DATABASE_NAME_PATTERN =
   /^tmp-slack-relay-171-[0-9]{13}-[0-9a-f]{8}$/u;
-const DATABASE_ID_PATTERN = /^[0-9a-f-]{36}$/u;
+export const DATABASE_ID_PATTERN =
+  /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const PRODUCTION_DATABASE_ID = "cf070eb0-32d9-4ee0-9516-d469833cdc77";
 export const API_TIMEOUT_MS = 15_000;

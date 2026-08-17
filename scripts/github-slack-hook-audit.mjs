@@ -359,12 +359,15 @@ export async function auditOrganizationWebhook({
   }
 
   const hooks = await listVisibleHooks({ ...configuration, fetchImpl });
-  if (hooks.length !== 1) {
+  const targetHooks = hooks.filter(
+    (hook) => hookIdFromResponse(hook) === configuration.hookId,
+  );
+  if (targetHooks.length !== 1) {
     throw new Error(
-      `Expected exactly one installation-visible organization webhook; found ${hooks.length}.`,
+      `Expected exactly one installation-visible organization webhook matching configured HOOK_ID; found ${targetHooks.length}.`,
     );
   }
-  validateTargetHook(hooks[0], configuration.hookId);
+  validateTargetHook(targetHooks[0], configuration.hookId);
   validateTargetHook(
     await getHook({ ...configuration, fetchImpl }),
     configuration.hookId,

@@ -600,7 +600,7 @@ test("pagination accepts only the exact GitHub organization hooks endpoint", () 
   assert.equal(next?.href, `https://api.github.com${path}?per_page=100&page=2`);
 });
 
-test("audit proves one exact active hook through GET-only list and detail reads", async () => {
+test("audit proves the configured hook while preserving unrelated integrations", async () => {
   const requests = [];
   const messages = [];
   const result = await auditOrganizationWebhook({
@@ -609,7 +609,14 @@ test("audit proves one exact active hook through GET-only list and detail reads"
       const request = requestSnapshot(input, init);
       requests.push(request);
       if (request.pathname === "/orgs/example-org/hooks") {
-        return responseJson([hook()]);
+        return responseJson([
+          hook({
+            id: 12346,
+            url: "https://public-api.linear.app/webhooks/github",
+            events: ["push"],
+          }),
+          hook(),
+        ]);
       }
       if (request.pathname === "/orgs/example-org/hooks/12345") {
         return responseJson(hook());
@@ -630,9 +637,11 @@ test("audit proves one exact active hook through GET-only list and detail reads"
 
 test("audit paginates and rejects absence, duplicates, ID drift, and configuration drift", async () => {
   const scenarios = [
-    { list: [], error: /found 0/ },
-    { list: [hook(), hook({ id: 12346 })], error: /found 2/ },
-    { list: [hook({ id: 12346 })], error: /does not match configured HOOK_ID/ },
+    { list: [], error: /matching configured HOOK_ID; found 0/u },
+    {
+      list: [hook({ id: 12346 })],
+      error: /matching configured HOOK_ID; found 0/u,
+    },
     { list: [hook({ active: false })], error: /is not active/ },
     {
       list: [hook({ events: HOOK_EVENTS.slice(1) })],
