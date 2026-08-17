@@ -12,7 +12,7 @@
 
 ## Restrições globais
 
-- **Branch:** `feat/alerts-v2`. Migração `0010_alert_delivery.sql` e seus 9 testes de esquema **já existem** (RED→GREEN feitos).
+- **Branch:** `feat/alerts-v2`. Migração `0010_alert_delivery.sql` e sua suíte de esquema (`test/alerts/schema.test.ts`) **já existem** (RED→GREEN feitos) — contagem de testes é âncora que apodrece; a suíte é a referência.
 - **Canal único:** `C0BMUK793NV`. Sem conceito de destino.
 - **Escopo — OITO eventos** *(emendado em 16/08: `security_advisory` tem disponibilidade `app` na documentação — webhook de organização não o recebe; ADR §3)*: `dependabot_alert`, `code_scanning_alert`, `secret_scanning_alert`, `repository_advisory`, `security_and_analysis`, `secret_scanning_alert_location`, `secret_scanning_scan`, e `workflow_run` com conclusão em `action_required|cancelled|failure|stale|startup_failure|timed_out`.
 - **Exclusão por repositório + caminho** (decisão 1 emendada), nunca só caminho, nunca nome.
