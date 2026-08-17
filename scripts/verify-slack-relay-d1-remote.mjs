@@ -514,12 +514,12 @@ export async function reapStaleDisposables(
   return Object.freeze({ reapedCount, deferredCount });
 }
 
-// Uma resposta perdida, expirada ou ilegível pode ter criado o banco
-// mesmo assim — e a limpeza do proveRemoteMigration só se instala DEPOIS
-// do retorno daqui. O nome é conhecido ANTES do POST, então a
-// reconciliação procura o órfão pelo nome exato e o apaga antes de
-// propagar a falha original; se a própria reconciliação falhar, o reaper
-// de obsoletos continua sendo o backstop declarado.
+// Uma resposta perdida, expirada ou ilegível pode ter criado o banco mesmo
+// assim. O chamador só recebe o databaseId depois de uma resposta válida,
+// mas o nome é conhecido ANTES do POST; por isso a reconciliação procura o
+// órfão pelo nome exato e o apaga antes de propagar a falha original. Se a
+// própria reconciliação falhar, o reaper de obsoletos permanece como o
+// backstop declarado.
 async function reconcileAmbiguousCreation(
   configuration,
   name,
@@ -739,18 +739,19 @@ export function assertFinalSchema(rows) {
   );
 }
 
-function sqlWithoutComments(sql) {
+function sqlWithoutCommentsOrQuotedIdentifiers(sql) {
   let result = "";
   let quote;
   for (let index = 0; index < sql.length; index += 1) {
     const character = sql[index];
     const next = sql[index + 1];
     if (quote !== undefined) {
-      result += character;
+      const preserve = quote === "'";
+      result += preserve ? character : " ";
       const closingCharacter = quote === "[" ? "]" : quote;
       if (character === closingCharacter) {
         if (quote !== "[" && next === closingCharacter) {
-          result += next;
+          result += preserve ? next : " ";
           index += 1;
         } else {
           quote = undefined;
@@ -765,7 +766,7 @@ function sqlWithoutComments(sql) {
       character === "["
     ) {
       quote = character;
-      result += character;
+      result += character === "'" ? character : " ";
       continue;
     }
     if (character === "-" && next === "-") {
@@ -800,7 +801,7 @@ export function assertAlertDeliveryStateConstraint(rows) {
   );
   invariant(
     /\bstate\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*state\s+IN\s*\(\s*'pending'\s*,\s*'sent'\s*\)\s*\)(?=\s*(?:,|\)))/iu.test(
-      sqlWithoutComments(rows[0].sql),
+      sqlWithoutCommentsOrQuotedIdentifiers(rows[0].sql),
     ),
     "The migrated alert_delivery table does not enforce the exact pending/sent state constraint.",
   );
@@ -879,6 +880,21 @@ async function proveAlertDeliveryRoundtrip(
     deadlineMs,
   );
   assertInvalidAlertDeliveryStateWasRejected(rejectedCaseVariantRows);
+  // Prove também que o domínio não foi ampliado por outra restrição que
+  // rejeite apenas os dois probes anteriores.
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE OR IGNORE alert_delivery SET state = 'unexpected' WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  const rejectedArbitraryStateRows = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT state FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  assertInvalidAlertDeliveryStateWasRejected(rejectedArbitraryStateRows);
   await d1Query(
     configuration,
     databaseId,
@@ -914,19 +930,21 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
     cloudflareRequest,
     reaperDeadlineMs,
   );
-  const { databaseId, name } = await createDisposableDatabase(
-    configuration,
-    nowMs,
-    cloudflareRequest,
-    workDeadlineMs,
-    cleanupDeadlineMs,
-  );
-  console.log(`Created disposable database ${name}.`);
-
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "slack-relay-remote-proof-"),
   );
+  let databaseId;
+  let name;
   try {
+    ({ databaseId, name } = await createDisposableDatabase(
+      configuration,
+      nowMs,
+      cloudflareRequest,
+      workDeadlineMs,
+      cleanupDeadlineMs,
+    ));
+    console.log(`Created disposable database ${name}.`);
+
     const temporaryConfigPath = join(temporaryDirectory, "wrangler.jsonc");
     const stagedMigrationsDir = join(temporaryDirectory, "migrations");
     await mkdir(stagedMigrationsDir);
@@ -1014,16 +1032,19 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
     );
   } finally {
     try {
-      await deleteDatabaseWithConfirmation(
-        configuration,
-        databaseId,
-        cloudflareRequest,
-        cleanupDeadlineMs,
-      );
+      if (databaseId !== undefined) {
+        await deleteDatabaseWithConfirmation(
+          configuration,
+          databaseId,
+          cloudflareRequest,
+          cleanupDeadlineMs,
+        );
+      }
     } finally {
       await rm(temporaryDirectory, { force: true, recursive: true });
     }
   }
+  invariant(name !== undefined, "The disposable database name is missing.");
   return Object.freeze({ status: "proved", database: name });
 }
 

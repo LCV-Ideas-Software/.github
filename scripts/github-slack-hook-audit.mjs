@@ -200,8 +200,10 @@ function pointsToRelayEndpoint(hook) {
   if (typeof hook?.config?.url !== "string") return false;
   try {
     const candidate = new URL(hook.config.url);
+    const normalizedHostname = (url) =>
+      url.hostname.toLowerCase().replace(/\.+$/u, "");
     return (
-      candidate.origin === WEBHOOK_ENDPOINT.origin &&
+      normalizedHostname(candidate) === normalizedHostname(WEBHOOK_ENDPOINT) &&
       candidate.pathname === WEBHOOK_ENDPOINT.pathname
     );
   } catch {
