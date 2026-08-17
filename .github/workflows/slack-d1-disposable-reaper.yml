@@ -21,6 +21,17 @@ jobs:
     timeout-minutes: 10
     environment: cloudflare-production
     steps:
+      # O job tem teto de 10 minutos. O prazo absoluto nasce no primeiro
+      # passo e vence em 8 minutos, deixando dois para cancelamento,
+      # diagnóstico e teardown do runner em vez de morrer no hard timeout.
+      - name: Establish the fail-closed reaper deadline
+        shell: bash
+        run: |
+          set -euo pipefail
+          now_ms="$(date +%s%3N)"
+          deadline_ms="$((now_ms + 8 * 60 * 1000))"
+          printf 'D1_REAPER_DEADLINE_MS=%s\n' "$deadline_ms" >> "$GITHUB_ENV"
+
       - name: Checkout default branch without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
