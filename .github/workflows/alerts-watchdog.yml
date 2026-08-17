@@ -4,8 +4,12 @@
 # confirmado pelo operador em 16/08/2026).
 #
 # Restrições que são consequência, não preferência (ADR §6-D): o job NÃO tem
-# `if:`, NÃO tem `environment:` e NÃO depende de `vars.*` — job pulado
-# conclui como SUCESSO e não gera e-mail.
+# `if:` e NÃO depende de `vars.*` — job pulado conclui como SUCESSO e não
+# gera e-mail. O `environment:` presente abaixo é a exceção REFINADA: um
+# environment dedicado e SEM regras de proteção não pula nem segura o job
+# (é só escopo de segredo, exigido pela política do repo); o §6-D veta o
+# que possa pular ou segurar, e proteção futura neste environment travaria
+# o vigia — o aviso está no bloco do job.
 #
 # Uma condição só: a idade da pendente mais velha (limiar 3_600_000 ms,
 # mantido em sincronia com WATCHDOG_MAX_PENDING_AGE_MS de
