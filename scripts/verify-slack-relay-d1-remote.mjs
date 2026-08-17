@@ -56,6 +56,28 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+// Reconstrução por alfabeto CONSTANTE: todo identificador vindo da rede que
+// precise aparecer num log, numa mensagem de erro ou num arquivo é
+// reconstruído caractere a caractere a partir deste alfabeto local — o
+// valor emitido nunca é a string remota em si (a classe inteira dos
+// findings de taint morre aqui, sem adjudicação humana).
+const SAFE_ALPHABET =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+
+function reconstructSafe(value, pattern, label) {
+  invariant(
+    typeof value === "string" && pattern.test(value),
+    `${label} failed strict validation before reconstruction.`,
+  );
+  let reconstructed = "";
+  for (const character of value) {
+    const index = SAFE_ALPHABET.indexOf(character);
+    invariant(index !== -1, `${label} contains an unexpected character.`);
+    reconstructed += SAFE_ALPHABET[index];
+  }
+  return reconstructed;
+}
+
 function delay(milliseconds) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
@@ -103,9 +125,17 @@ async function cloudflareRequest(configuration, path, init = {}) {
     },
   );
   const payload = await response.json();
+  // Diagnóstico sem conteúdo remoto: só o caminho local, o status HTTP e os
+  // CÓDIGOS numéricos de erro (Number() não carrega taint de string).
+  const numericErrorCodes = Array.isArray(payload?.errors)
+    ? payload.errors
+        .map((entry) => Number(entry?.code))
+        .filter((code) => Number.isFinite(code))
+        .join(",")
+    : "";
   invariant(
     payload?.success === true,
-    `Cloudflare API ${path} failed (HTTP ${response.status}): ${JSON.stringify(payload?.errors ?? [])}`,
+    `Cloudflare API ${path} failed (HTTP ${response.status}; error codes: ${numericErrorCodes || "none"}).`,
   );
   return payload;
 }
@@ -134,7 +164,9 @@ async function reapStaleDisposables(configuration, nowMs) {
       database.uuid !== PRODUCTION_DATABASE_ID,
       "Refusing to reap: a disposable-named database carries the production ID.",
     );
-    console.log(`Reaping stale disposable database ${database.name}.`);
+    console.log(
+      `Reaping stale disposable database ${reconstructSafe(database.name, DISPOSABLE_DATABASE_NAME_PATTERN, "Disposable database name")}.`,
+    );
     await deleteDatabaseWithConfirmation(configuration, database.uuid);
   }
 }
@@ -187,7 +219,7 @@ async function deleteDatabaseWithConfirmation(configuration, databaseId) {
     await delay(250 * 2 ** attempt);
   }
   throw new Error(
-    `Disposable database ${databaseId} still listed after ${DELETE_CONFIRMATION_ATTEMPTS} delete attempts.`,
+    `A disposable database is still listed after ${DELETE_CONFIRMATION_ATTEMPTS} delete attempts (ID withheld from the log; see the Cloudflare dashboard).`,
   );
 }
 
@@ -255,9 +287,21 @@ export function assertFinalSchema(rows) {
   const expected = [...EXPECTED_FINAL_SCHEMA].sort((left, right) =>
     `${left.type}:${left.name}`.localeCompare(`${right.type}:${right.name}`),
   );
+  // O diagnóstico nunca carrega as strings remotas: o esperado é constante
+  // local, e o observado entra reconstruído do alfabeto (ou marcado como
+  // fora-do-alfabeto), preservando a exatidão da comparação.
+  const describeObserved = observed
+    .map((entry) => {
+      try {
+        return `${String(entry.type) === "table" ? "table" : "index"}:${reconstructSafe(String(entry.name), /^[A-Za-z0-9_-]{1,128}$/u, "Schema object name")}`;
+      } catch {
+        return "objeto-fora-do-alfabeto";
+      }
+    })
+    .join(", ");
   invariant(
     JSON.stringify(observed) === JSON.stringify(expected),
-    `The migrated schema is not the exact v2 surface.\nExpected: ${JSON.stringify(expected)}\nObserved: ${JSON.stringify(observed)}`,
+    `The migrated schema is not the exact v2 surface. Expected: ${JSON.stringify(expected)}. Observed (reconstructed): ${describeObserved}.`,
   );
 }
 
@@ -274,12 +318,13 @@ async function proveAlertDeliveryRoundtrip(configuration, databaseId) {
     databaseId,
     `SELECT delivery_id, state, attempts, next_due_ms FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
   );
+  // Diagnóstico sem conteúdo remoto: só contagens e booleanos locais.
   invariant(
     rows.length === 1 &&
       rows[0].state === "pending" &&
       rows[0].attempts === 0 &&
       rows[0].next_due_ms === 0,
-    `alert_delivery roundtrip returned an unexpected row: ${JSON.stringify(rows)}`,
+    `alert_delivery roundtrip mismatch: rows=${String(rows.length)} pending=${String(rows[0]?.state === "pending")} attempts0=${String(rows[0]?.attempts === 0)} due0=${String(rows[0]?.next_due_ms === 0)}.`,
   );
   let rejected = false;
   try {
@@ -316,12 +361,12 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
     const temporaryConfigPath = join(temporaryDirectory, "wrangler.jsonc");
     const stagedMigrationsDir = join(temporaryDirectory, "migrations");
     await mkdir(stagedMigrationsDir);
-    // O id vem da API: o valor gravado no arquivo é a EXTRAÇÃO do casamento
-    // com o padrão estrito, nunca a string da rede em si.
-    const safeDatabaseId = DATABASE_ID_PATTERN.exec(databaseId)?.[0];
-    invariant(
-      typeof safeDatabaseId === "string" && safeDatabaseId !== "",
-      "Disposable database ID failed strict re-validation before the config write.",
+    // O id vem da API: o valor gravado no arquivo é RECONSTRUÍDO do
+    // alfabeto constante após a validação estrita, nunca a string da rede.
+    const safeDatabaseId = reconstructSafe(
+      databaseId,
+      DATABASE_ID_PATTERN,
+      "Disposable database ID",
     );
     const configuration_json = {
       name: "github-slack-alerts-remote-proof",
