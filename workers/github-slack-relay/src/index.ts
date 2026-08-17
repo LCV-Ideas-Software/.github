@@ -1104,11 +1104,21 @@ export async function handleFetch(
   // INSERT e o carimbo do ingress produzia DUAS publicações da primeira
   // tentativa — o changes=0 do CAS é exatamente o sinal de que outro
   // agendador já publicou esta tentativa.
-  const stamped = await dependencies.alertStore.stampDue(
-    deliveryId,
-    now,
-    now + recuoMs(1),
-  );
+  // O carimbo que LANÇA equivale a carimbo perdido (terceiro achado da
+  // revisão): a fronteira de aceitação é o INSERT — depois dele a resposta
+  // é 202 SEMPRE, senão o GitHub registra falha de uma entrega que já tem
+  // linha durável. Sem carimbo, a linha continua com next_due_ms = 0:
+  // devida no próximo passe do cron.
+  let stamped = false;
+  try {
+    stamped = await dependencies.alertStore.stampDue(
+      deliveryId,
+      now,
+      now + recuoMs(1),
+    );
+  } catch {
+    // stamped continua false: publica só quem carimba.
+  }
 
   let queued = false;
   if (stamped) {

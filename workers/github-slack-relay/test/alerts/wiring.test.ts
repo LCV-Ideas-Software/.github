@@ -101,6 +101,36 @@ describe("fiação do ingress (ADR-002 §2/§4)", () => {
     expect(queue.sent).toHaveLength(0); // nada publicado sem linha durável
   });
 
+  it("CARIMBO indisponível DEPOIS do INSERT: 202 queued:false — a linha durável já é nossa, e nasceu devida (§2)", async () => {
+    // Achado da revisão: o stampDue pós-INSERT estava fora do try; a
+    // exceção virava 500 no wrapper e o GitHub registrava falha de uma
+    // entrega que JÁ tem linha durável. A fronteira de aceitação é o
+    // INSERT: dali em diante a resposta é 202, e a recuperação é do cron
+    // (a linha nunca foi carimbada, então next_due_ms = 0: devida já).
+    const queue = new FakeQueue();
+    class CarimboQuebrado extends AlertStore {
+      override stampDue(): Promise<boolean> {
+        return Promise.reject(new Error("d1_hiccup_no_carimbo"));
+      }
+    }
+    const deliveryId = "66666666-2222-3333-4444-555555555555";
+    const alertStore = new CarimboQuebrado(makeAlertDb().d1);
+    const response = await handleFetch(
+      await signedRequest("dependabot_alert", deliveryId, dependabotPayload()),
+      makeEnv(queue),
+      { alertStore, now: () => NOW },
+    );
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      accepted: true,
+      queued: false,
+      recovery: "cron",
+    });
+    expect(queue.sent).toHaveLength(0); // publica só quem carimba
+    const row = await alertStore.get(deliveryId);
+    expect(row).toMatchObject({ state: "pending", nextDueMs: 0 }); // devida já
+  });
+
   it("fila indisponível: aceito com queued:false — o corpo diz a verdade, e o cron recupera após o recuo", async () => {
     const queue = new FakeQueue();
     queue.fail = true;
