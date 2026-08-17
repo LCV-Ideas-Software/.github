@@ -368,6 +368,12 @@ export async function auditOrganizationWebhook({
     );
   }
   validateTargetHook(targetHooks[0], configuration.hookId);
+  const relayHooks = hooks.filter((hook) => hook?.config?.url === WEBHOOK_URL);
+  if (relayHooks.length !== 1) {
+    throw new Error(
+      `Expected exactly one installation-visible GitHub Slack relay webhook; found ${relayHooks.length}.`,
+    );
+  }
   validateTargetHook(
     await getHook({ ...configuration, fetchImpl }),
     configuration.hookId,
