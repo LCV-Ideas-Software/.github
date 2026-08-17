@@ -383,6 +383,13 @@ test("the alert_delivery definition requires the exact pending/sent CHECK", () =
         )`,
       },
     ],
+    [
+      {
+        sql: `CREATE TABLE alert_delivery (
+          state TEXT NOT NULL CHECK (state IN ('pending', 'sent')) COLLATE NOCASE
+        )`,
+      },
+    ],
   ]) {
     assert.throws(
       () => assertAlertDeliveryStateConstraint(rows),

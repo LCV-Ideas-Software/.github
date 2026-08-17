@@ -783,7 +783,7 @@ export function assertAlertDeliveryStateConstraint(rows) {
     "The migrated alert_delivery table definition is missing.",
   );
   invariant(
-    /\bstate\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*state\s+IN\s*\(\s*'pending'\s*,\s*'sent'\s*\)\s*\)/iu.test(
+    /\bstate\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*state\s+IN\s*\(\s*'pending'\s*,\s*'sent'\s*\)\s*\)(?=\s*(?:,|\)))/iu.test(
       sqlWithoutComments(rows[0].sql),
     ),
     "The migrated alert_delivery table does not enforce the exact pending/sent state constraint.",
@@ -847,6 +847,22 @@ async function proveAlertDeliveryRoundtrip(
     deadlineMs,
   );
   assertInvalidAlertDeliveryStateWasRejected(rejectedStateRows);
+  // Uma collation permissiva (por exemplo, NOCASE) pode fazer o DDL parecer
+  // correto e ainda ampliar o domínio. Prove que a variante de caixa também
+  // é rejeitada antes de aceitar o literal canônico `sent`.
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE OR IGNORE alert_delivery SET state = 'PENDING' WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  const rejectedCaseVariantRows = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT state FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  assertInvalidAlertDeliveryStateWasRejected(rejectedCaseVariantRows);
   await d1Query(
     configuration,
     databaseId,
