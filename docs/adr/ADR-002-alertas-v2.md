@@ -53,7 +53,9 @@ Toda promessa de entrega tem uma fronteira de aceitação; o ADR-001 tinha exata
 
 ## 3. Escopo
 
-**Entra:** alerta do Dependabot, de code scanning, de secret scanning (incluindo os sub-eventos), aviso de segurança publicado, mudança de configuração de segurança, e execução de workflow cuja conclusão seja `action_required`, `cancelled`, `failure`, `stale`, `startup_failure` ou `timed_out`.
+**Entra:** alerta do Dependabot, de code scanning, de secret scanning (incluindo os sub-eventos), aviso de segurança publicado **nos nossos repositórios** (`repository_advisory`), mudança de configuração de segurança, e execução de workflow cuja conclusão seja `action_required`, `cancelled`, `failure`, `stale`, `startup_failure` ou `timed_out`. **Oito eventos.**
+
+**Um evento saiu do escopo por impossibilidade de plataforma, em 16/08** — o `security_advisory` global (banco de advisories do GitHub). Da [lista oficial de eventos](https://docs.github.com/en/webhooks/webhook-events-and-payloads), verbatim: sua disponibilidade é **"Availability: `app`"** — só GitHub Apps podem assiná-lo; webhook de organização não o recebe, e o nosso transporte é webhook de organização. Os outros quatro eventos novos listam `organization` na disponibilidade e entram. A lacuna residual é estreita: `repository_advisory` cobre advisories publicados nos nossos repositórios; o que fica de fora é o feed global, que voltaria ao escopo apenas se um dia existir um GitHub App próprio.
 
 **Sai, porque o oficial entrega:** issues, pull requests, commits, releases, deployment, revisões, comentários, branches e discussions.
 
@@ -299,13 +301,13 @@ A coluna de estado distingue **fonte** (o repositório contém a mudança) de **
 | # | Item | Estado em 16/08 | Como se verifica |
 |---|---|---|---|
 | 1 | Token de bot no Secrets Store | **feito** — `github-slack-alerts-bot-token`, id `e73fc103b19545d8a4466671fb52e113`, escopo `workers` | `GET /accounts/{acc}/secrets_store/stores/df90c093…/secrets` |
-| 2 | Binding do token no Worker | **removido da fonte de propósito** até o item 8 — o `wrangler.jsonc` aciona deploy automático no merge, e o binding entregaria o token largo ao Worker antes da rotação (achado da revisão). O bloco de reentrada está comentado no próprio arquivo | o binding **ausente** de `worker-configuration.d.ts` enquanto o item 8 pender |
+| 2 | Binding do token no Worker | **feito** — reentrou em 16/08 ~22:05, depois de o item 8 ser executado; `Env` regenerado com o wrangler pinado | `SLACK_BOT_TOKEN` presente em `worker-configuration.d.ts` |
 | 3 | Segredo compartilhado do `/status`, dos dois lados | **feito** — Secrets Store `github-slack-alerts-status-secret` (id `815c2dc254f24c3d9849d68629dc578a`) + segredo `ALERTS_STATUS_SECRET` no repositório + binding na fonte; deploy pende | `gh secret list` e o `Env` gerado |
 | 4 | Fila de descarte removida (decisão 8) | **falta** — presente em `wrangler.jsonc` e consumida em `src/index.ts` | ausência das ocorrências nos **cinco** arquivos abaixo |
-| 5 | Assinatura do webhook da organização com os nove eventos | **existe** (dois hooks na org, um para este Worker, última entrega bem-sucedida); faltam os cinco eventos novos | **não é verificável por `gh api`** — ver o bloco abaixo; verifica-se na tela da organização |
-| 6 | Endereço de notificação da conta que edita o cron do vigia | **não verificável por mim** | ajuste da conta no GitHub; a API me devolveu 404 por falta do escopo `user` — **é ação do operador** |
+| 5 | Assinatura do webhook da organização com os **oito** eventos alcançáveis | **feito** — operador assinou os eventos novos pela tela em 16/08 ~22:00 (`security_advisory` é inalcançável: disponibilidade `app`, ver §3) | **não é verificável por `gh api`** — ver o bloco abaixo; verifica-se na tela da organização |
+| 6 | Endereço de notificação da conta que edita o cron do vigia | **feito** — operador confirmou `contato@lcv.dev` em 16/08 ("concedido e confirmado") | declaração do operador; ajuste vive na conta, fora do alcance da API |
 | 7 | Bot presente no canal privado | **feito** — `U0BR6NL2B9N` no `#github-alerts` desde 14/08 16:51 | `auth.test` e a leitura do canal |
-| 8 | **Reduzir o app a `chat:write`** e reinstalar/rotacionar o token — **PRÉ-REQUISITO do deploy do Worker** | **pende — ação do operador** | o header `x-oauth-scopes` do `auth.test` deixa de listar `groups:history,groups:read` |
+| 8 | **Reduzir o app a `chat:write`** e reinstalar/rotacionar o token — **PRÉ-REQUISITO do deploy do Worker** | **feito** — 16/08 ~22:00: escopos reduzidos, `auth.revoke` devolveu `{"ok":true,"revoked":true}`, token novo no Secrets Store; o token vazado testado depois devolve `{"ok":false,"error":"account_inactive"}` | o header `x-oauth-scopes` do `auth.test` **com o token novo** listar só `chat:write` — pendente de o operador rodar (eu não leio o valor do Secrets Store) |
 
 **A ordem do item 8 é vinculante, não preferência** *(achado da revisão: o binding na fonte torna o token disponível ao Worker implantado)*: primeiro reduzir o escopo e rotacionar, **depois** o primeiro deploy que carrega o binding. Um Worker comprometido com o token atual leria o histórico do canal privado; com a ordem respeitada, o token que o binding entrega já nasce mínimo.
 

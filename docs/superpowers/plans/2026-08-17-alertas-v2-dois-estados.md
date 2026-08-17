@@ -14,7 +14,7 @@
 
 - **Branch:** `feat/alerts-v2`. Migração `0010_alert_delivery.sql` e seus 9 testes de esquema **já existem** (RED→GREEN feitos).
 - **Canal único:** `C0BMUK793NV`. Sem conceito de destino.
-- **Escopo — NOVE eventos:** `dependabot_alert`, `code_scanning_alert`, `secret_scanning_alert`, `security_advisory`, `repository_advisory`, `security_and_analysis`, `secret_scanning_alert_location`, `secret_scanning_scan`, e `workflow_run` com conclusão em `action_required|cancelled|failure|stale|startup_failure|timed_out`.
+- **Escopo — OITO eventos** *(emendado em 16/08: `security_advisory` tem disponibilidade `app` na documentação — webhook de organização não o recebe; ADR §3)*: `dependabot_alert`, `code_scanning_alert`, `secret_scanning_alert`, `repository_advisory`, `security_and_analysis`, `secret_scanning_alert_location`, `secret_scanning_scan`, e `workflow_run` com conclusão em `action_required|cancelled|failure|stale|startup_failure|timed_out`.
 - **Exclusão por repositório + caminho** (decisão 1 emendada), nunca só caminho, nunca nome.
 - **Mensagem da fila:** `{ v: 2, delivery_id }` — nada mais. O consumidor relê a linha; a linha é a verdade. O `v: 2` discrimina do `QueueJob` legado por declaração, não por inferência de forma.
 - **Matriz de escritas (testada por mutação na Tarefa 2):** INGRESS escreve a linha inteira no INSERT e nada depois; CRON escreve `attempts`, `updated_ms`, `next_due_ms` e apaga `sent` velho; CONSUMIDOR escreve `state='sent'` + `slack_message_ts` no sucesso e `last_error` no fracasso — **nunca** colunas de agendamento nem `created_ms`.
@@ -658,35 +658,35 @@ export async function runAlertCron(deps: Deps): Promise<{ published: number; pur
 
 ---
 
-### Tarefa 5: escopo do ingress — os nove eventos pelos três portões locais
+### Tarefa 5: escopo do ingress — os oito eventos pelos três portões locais
 
 **Arquivos:** modificar `src/domain.ts` (âncora: `export const SUPPORTED_RELAY_EVENTS` e o `switch` de `normalizeGitHubEvent`); modificar `scripts/github-slack-hook-audit.mjs` (âncora: `export const HOOK_EVENTS`); testar `test/alerts/scope.test.ts`.
 
 O portão 1 (assinatura do webhook da organização) é ação do operador (§12, item 5) — o teste cobre os portões 2 (allowlist) e 3 (normalizador), e o `HOOK_EVENTS` do script de auditoria acompanha para o portão 1 ser verificável.
 
-- [ ] **Passo 1: teste dirigido por tabela — NOVE eventos, e a exclusão por repo+caminho:**
+- [ ] **Passo 1: teste dirigido por tabela — OITO eventos, e a exclusão por repo+caminho:**
 
 ```ts
 import { describe, expect, it } from "vitest";
 import { SUPPORTED_RELAY_EVENTS, normalizeGitHubEvent, isExcludedWorkflowRun } from "../../src/domain";
 import { HOOK_EVENTS } from "../../../scripts/github-slack-hook-audit.mjs";
 
-const NOVE = [
+const OITO = [
   "dependabot_alert", "code_scanning_alert", "secret_scanning_alert",
-  "security_advisory", "repository_advisory", "security_and_analysis",
+  "repository_advisory", "security_and_analysis",
   "secret_scanning_alert_location", "secret_scanning_scan", "workflow_run",
 ] as const;
 
 describe("escopo — três portões locais (ADR-002 §3, §12)", () => {
-  it("allowlist aceita exatamente os nove", () => {
-    expect([...SUPPORTED_RELAY_EVENTS].sort()).toEqual([...NOVE].sort());
+  it("allowlist aceita exatamente os oito", () => {
+    expect([...SUPPORTED_RELAY_EVENTS].sort()).toEqual([...OITO].sort());
   });
 
-  it("HOOK_EVENTS do auditor tem os mesmos nove", () => {
-    expect([...HOOK_EVENTS].sort()).toEqual([...NOVE].sort());
+  it("HOOK_EVENTS do auditor tem os mesmos oito", () => {
+    expect([...HOOK_EVENTS].sort()).toEqual([...OITO].sort());
   });
 
-  it.each(NOVE)("normalizador produz linha para %s", (evento) => {
+  it.each(OITO)("normalizador produz linha para %s", (evento) => {
     const resultado = normalizeGitHubEvent(evento, fixturePara(evento));
     expect(resultado.kind).toBe("alert");
   });
@@ -704,11 +704,11 @@ describe("escopo — três portões locais (ADR-002 §3, §12)", () => {
 });
 ```
 
-*(O executor cria `fixturePara(evento)` no próprio teste com o payload mínimo real de cada evento — os cinco novos vêm da [documentação de webhooks do GitHub](https://docs.github.com/en/webhooks/webhook-events-and-payloads); `security_advisory` **não tem** campo `repository`, e o normalizador precisa aceitar isso — foi um dos achados da revisão.)*
+*(O executor cria `fixturePara(evento)` no próprio teste com o payload mínimo real de cada evento — os quatro novos vêm da [documentação de webhooks do GitHub](https://docs.github.com/en/webhooks/webhook-events-and-payloads). O `security_advisory`, que não tinha campo `repository`, saiu do escopo por ser inalcançável — disponibilidade `app`.)*
 
-- [ ] **Passo 2: rodar e ver falhar; implementar** — encolher a allowlist para os nove; adicionar os cinco `case` novos no `switch` (título/severidade/URL por evento, payload mínimo); `isExcludedWorkflowRun(repoFullName, path)` com os dois caminhos excluídos do repo do relay; `HOOK_EVENTS` no script com os nove.
+- [ ] **Passo 2: rodar e ver falhar; implementar** — encolher a allowlist para os oito; adicionar os quatro `case` novos no `switch` (título/severidade/URL por evento, payload mínimo); `isExcludedWorkflowRun(repoFullName, path)` com os dois caminhos excluídos do repo do relay; `HOOK_EVENTS` no script com os oito.
 - [ ] **Passo 3: rodar e ver passar; rodar a suíte INTEIRA** — o encolhimento da allowlist derruba testes legados de eventos de atividade; cada um é atualizado para esperar recusa, com o motivo no diff (o app oficial cobre).
-- [ ] **Passo 4: commit** — `feat(alerts): escopo de nove eventos nos três portões, exclusão por repo+caminho`
+- [ ] **Passo 4: commit** — `feat(alerts): escopo de oito eventos nos três portões, exclusão por repo+caminho`
 
 ---
 
