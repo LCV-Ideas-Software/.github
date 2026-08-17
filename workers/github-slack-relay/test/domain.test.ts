@@ -1,29 +1,9 @@
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
 import { normalizeGitHubEvent, sanitizeText } from "../src/domain";
-import { canonicalSlackRelayPayload } from "../src/security";
 
 const DELIVERY_ID = "00000000-0000-4000-8000-000000000020";
 const REPOSITORY = "LCV-Ideas-Software/cross-review";
-const RELAY_SIGNED_FIELD_ORDER = [
-  "source",
-  "severity",
-  "repository",
-  "title",
-  "details",
-  "actor",
-  "branch",
-  "url",
-  "occurred_at",
-  "delivery_id",
-  "event",
-  "action",
-  "destination",
-  "relay_attempt",
-  "relay_timestamp",
-] as const;
 const EXPECTED_KEYS = [
   "action",
   "actor",
@@ -82,33 +62,7 @@ function codeScanningPayload(action: string): Record<string, unknown> {
 }
 
 describe("event normalization", () => {
-  it("keeps the exact documented relay HMAC input aligned with production", () => {
-    const payload = Object.fromEntries(
-      RELAY_SIGNED_FIELD_ORDER.map((field) => [field, field]),
-    );
-    const canonicalValues = JSON.parse(
-      canonicalSlackRelayPayload(payload as never),
-    );
-    expect(canonicalValues).toEqual([...RELAY_SIGNED_FIELD_ORDER]);
-
-    const readme = readFileSync("README.md", "utf8");
-    expect(readme).toContain("- the current durable D1 `relay_attempt`;");
-    expect(readme).toContain(
-      `JSON.stringify([${RELAY_SIGNED_FIELD_ORDER.join(",")}])`,
-    );
-  });
-
-  it("documents stale sending recovery as manual review without resend", () => {
-    const readme = readFileSync("README.md", "utf8");
-    expect(readme).toContain(
-      "- recovers due `pending`, `enqueueing`, `queued`, and `dead_letter` records;",
-    );
-    expect(readme).toContain(
-      "- moves stale `sending` rows to `manual_review` as ambiguous, without resending;",
-    );
-  });
-
-  it("always emits the exact flat Workflow Builder contract using only strings", () => {
+  it("always emits the exact flat payload contract using only strings", () => {
     const result = normalizeGitHubEvent(
       "dependabot_alert",
       dependabotPayload("created"),
@@ -215,100 +169,6 @@ describe("event normalization", () => {
     expect(result.kind).toBe("accepted");
     if (result.kind !== "accepted") return;
     expect(result.payload.severity).toBe("info");
-  });
-
-  it("rejects non-problematic workflow and in-progress deployment states", () => {
-    const workflow = normalizeGitHubEvent(
-      "workflow_run",
-      { action: "completed", workflow_run: { conclusion: "success" } },
-      DELIVERY_ID,
-      REPOSITORY,
-    );
-
-    expect(workflow.kind).toBe("ignored");
-    for (const state of ["pending", "queued", "in_progress"]) {
-      const deployment = normalizeGitHubEvent(
-        "deployment_status",
-        { action: "created", deployment_status: { state } },
-        DELIVERY_ID,
-        REPOSITORY,
-      );
-      expect(deployment.kind).toBe("ignored");
-    }
-  });
-
-  it.each(["error", "failure"])(
-    "routes a %s deployment to alerts without relaying its description",
-    (state) => {
-      const sentinel = "PRIVATE_DEPLOYMENT_DESCRIPTION";
-      const result = normalizeGitHubEvent(
-        "deployment_status",
-        {
-          action: "created",
-          deployment: { environment: "production", ref: "main" },
-          deployment_status: {
-            created_at: "2026-08-03T12:00:00Z",
-            description: sentinel,
-            repository_url:
-              "https://github.com/LCV-Ideas-Software/cross-review",
-            state,
-          },
-        },
-        DELIVERY_ID,
-        REPOSITORY,
-      );
-
-      expect(result.kind).toBe("accepted");
-      if (result.kind !== "accepted") return;
-      expect(result.destination).toBe("alerts");
-      expect(result.payload.destination).toBe("alerts");
-      expect(result.payload.severity).toBe("high");
-      expect(JSON.stringify(result)).not.toContain(sentinel);
-    },
-  );
-
-  it.each(["success", "inactive"])(
-    "routes a %s deployment to activity without relaying its description",
-    (state) => {
-      const sentinel = "PRIVATE_DEPLOYMENT_DESCRIPTION";
-      const result = normalizeGitHubEvent(
-        "deployment_status",
-        {
-          action: "created",
-          deployment: { environment: "production", ref: "main" },
-          deployment_status: {
-            created_at: "2026-08-03T12:00:00Z",
-            description: sentinel,
-            repository_url:
-              "https://github.com/LCV-Ideas-Software/cross-review",
-            state,
-          },
-        },
-        DELIVERY_ID,
-        REPOSITORY,
-      );
-
-      expect(result.kind).toBe("accepted");
-      if (result.kind !== "accepted") return;
-      expect(result.destination).toBe("activity");
-      expect(result.payload.destination).toBe("activity");
-      expect(result.payload.severity).toBe("info");
-      expect(JSON.stringify(result)).not.toContain(sentinel);
-    },
-  );
-
-  it("ignores an unknown deployment state", () => {
-    const result = normalizeGitHubEvent(
-      "deployment_status",
-      { action: "created", deployment_status: { state: "unexpected" } },
-      DELIVERY_ID,
-      REPOSITORY,
-    );
-
-    expect(result).toEqual({
-      kind: "ignored",
-      reason: "deployment_state_not_relayed",
-    });
   });
 
   it("falls back to the repository URL for an untrusted URL", () => {

@@ -5,14 +5,7 @@ import { runAlertCron } from "../src/alerts/cron";
 import { AlertStore } from "../src/alerts/store";
 import type { AlertQueueMessage } from "../src/alerts/contract";
 import { closeAlertDatabases, makeAlertDb } from "./alerts/helpers";
-import {
-  FakeQueue,
-  makeEnv,
-  MemoryDeliveryStore,
-  signedRequest,
-  TEST_RELAY_SIGNING_SECRET,
-  workflowPayload,
-} from "./helpers";
+import { FakeQueue, makeEnv, signedRequest, workflowPayload } from "./helpers";
 
 afterEach(closeAlertDatabases);
 
@@ -45,7 +38,7 @@ describe("GitHub webhook ingress", () => {
 
   it("rejects an invalid signature without parsing a malformed body", async () => {
     const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
+    const alertStore = new AlertStore(makeAlertDb().d1);
     const request = await signedRequest(
       "workflow_run",
       "00000000-0000-4000-8000-000000000002",
@@ -53,11 +46,12 @@ describe("GitHub webhook ingress", () => {
       { rawBody: "{malformed", secret: "wrong-secret" },
     );
 
-    const response = await handleFetch(request, makeEnv(queue), { store });
+    const response = await handleFetch(request, makeEnv(queue), { alertStore });
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "invalid_signature" });
-    expect(store.deliveries.size).toBe(0);
+    expect((await alertStore.statusSnapshot()).pending).toBe(0);
+    expect(queue.sent).toHaveLength(0);
   });
 
   it("returns a JSON error for a signed but malformed body", async () => {
@@ -70,7 +64,7 @@ describe("GitHub webhook ingress", () => {
     );
 
     const response = await handleFetch(request, makeEnv(queue), {
-      store: new MemoryDeliveryStore(),
+      alertStore: new AlertStore(makeAlertDb().d1),
     });
 
     expect(response.status).toBe(400);
@@ -79,17 +73,18 @@ describe("GitHub webhook ingress", () => {
 
   it("validates the organization before accepting the initial ping", async () => {
     const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
+    const alertStore = new AlertStore(makeAlertDb().d1);
     const validPing = await signedRequest(
       "ping",
       "00000000-0000-4000-8000-000000000004",
       { organization: { login: "LCV-Ideas-Software" }, zen: "test" },
     );
-    const accepted = await handleFetch(validPing, makeEnv(queue), { store });
+    const accepted = await handleFetch(validPing, makeEnv(queue), {
+      alertStore,
+    });
 
     expect(accepted.status).toBe(200);
     expect(await accepted.json()).toEqual({ accepted: true, event: "ping" });
-    expect(store.deliveries.size).toBe(0);
     expect(queue.sent).toHaveLength(0);
 
     const invalidPing = await signedRequest(
@@ -97,13 +92,15 @@ describe("GitHub webhook ingress", () => {
       "00000000-0000-4000-8000-000000000005",
       { organization: { login: "another-owner" } },
     );
-    const rejected = await handleFetch(invalidPing, makeEnv(queue), { store });
+    const rejected = await handleFetch(invalidPing, makeEnv(queue), {
+      alertStore,
+    });
     expect(rejected.status).toBe(403);
   });
 
   it("filters successful workflows, unsupported events, and archived repositories", async () => {
     const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
+    const alertStore = new AlertStore(makeAlertDb().d1);
 
     const successful = await signedRequest(
       "workflow_run",
@@ -111,7 +108,7 @@ describe("GitHub webhook ingress", () => {
       workflowPayload("success"),
     );
     const successfulResponse = await handleFetch(successful, makeEnv(queue), {
-      store,
+      alertStore,
     });
     expect(successfulResponse.status).toBe(202);
     expect(await successfulResponse.json()).toMatchObject({ ignored: true });
@@ -125,7 +122,7 @@ describe("GitHub webhook ingress", () => {
       },
     );
     const unsupportedResponse = await handleFetch(unsupported, makeEnv(queue), {
-      store,
+      alertStore,
     });
     expect(await unsupportedResponse.json()).toMatchObject({
       ignored: true,
@@ -140,14 +137,14 @@ describe("GitHub webhook ingress", () => {
       archivedPayload,
     );
     const archivedResponse = await handleFetch(archived, makeEnv(queue), {
-      store,
+      alertStore,
     });
     expect(await archivedResponse.json()).toMatchObject({
       ignored: true,
       reason: "repository_archived",
     });
 
-    expect(store.deliveries.size).toBe(0);
+    expect((await alertStore.statusSnapshot()).pending).toBe(0);
     expect(queue.sent).toHaveLength(0);
   });
 
@@ -176,8 +173,6 @@ describe("GitHub webhook ingress", () => {
 
   it("persists before enqueue and the CRON recovers a queue failure", async () => {
     // ADR-002 §4: a fila é otimização de latência; o cron é a vivacidade.
-    // A semântica antiga (503 + recovery agendado no store legado) morreu:
-    // a linha nasce devida (next_due_ms = 0) e o alerta já está ACEITO.
     const queue = new FakeQueue();
     queue.fail = true;
     const alertStore = new AlertStore(makeAlertDb().d1);
@@ -239,69 +234,33 @@ describe("GitHub webhook ingress", () => {
     });
 
     const response = await handleFetch(request, makeEnv(queue), {
-      store: new MemoryDeliveryStore(),
+      alertStore: new AlertStore(makeAlertDb().d1),
     });
 
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({ error: "payload_too_large" });
   });
 
-  it("reports ready only after D1 and required live bindings validate", async () => {
+  it("reports ready only after the live bindings and schema validate", async () => {
     const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
     const fetchMock = vi.fn<typeof fetch>();
     const response = await handleFetch(
       new Request("https://relay.example/healthz"),
       makeEnv(queue),
-      { store, fetch: fetchMock, alertStore: new AlertStore(makeAlertDb().d1) },
+      { fetch: fetchMock, alertStore: new AlertStore(makeAlertDb().d1) },
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      status: "ready",
-      legacy_unverified: false,
-    });
+    expect(await response.json()).toEqual({ status: "ready" });
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("reports quarantined legacy debt without failing readiness", async () => {
-    const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
-    store.seed("legacy-quarantine", "accepted_by_slack", NOW, {
-      legacyUnverified: true,
-    });
-
-    const response = await handleFetch(
-      new Request("https://relay.example/healthz"),
-      makeEnv(queue),
-      { store, alertStore: new AlertStore(makeAlertDb().d1) },
-    );
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      status: "ready",
-      legacy_unverified: true,
-    });
   });
 
   it.each([
     ["GITHUB_WEBHOOK_SECRET", null],
     ["GITHUB_WEBHOOK_SECRET", "short"],
-    ["SLACK_ALERTS_WORKFLOW_WEBHOOK_URL", null],
-    ["SLACK_ALERTS_WORKFLOW_WEBHOOK_URL", "https://example.com/not-slack"],
-    ["SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL", null],
-    [
-      "SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL",
-      "https://hooks.slack.com/triggers/incomplete",
-    ],
-    ["SLACK_RELAY_SIGNING_SECRET", null],
-    ["SLACK_RELAY_SIGNING_SECRET", "short"],
-    ["SLACK_RELAY_SIGNING_SECRET_NEXT", "short"],
-    ["SLACK_RELAY_SIGNING_SECRET_NEXT", TEST_RELAY_SIGNING_SECRET],
-    // ADR-002: o caminho v2 entrou na prontidão — a CLASSE é "toda
-    // credencial que uma rota do Worker exige", e a mudança acrescentou
-    // duas (achado da revisão: /healthz dizia ready com o token ilegível
-    // e cada mensagem v2 parada em pending).
+    // ADR-002: a CLASSE da prontidão é "toda credencial que uma rota do
+    // Worker exige" (achado da revisão: /healthz dizia ready com o token
+    // ilegível e cada mensagem v2 parada em pending).
     ["SLACK_BOT_TOKEN", null],
     ["SLACK_BOT_TOKEN", ""],
     ["ALERTS_STATUS_SECRET", null],
@@ -319,10 +278,7 @@ describe("GitHub webhook ingress", () => {
       const response = await handleFetch(
         new Request("https://relay.example/healthz"),
         env,
-        {
-          store: new MemoryDeliveryStore(),
-          alertStore: new AlertStore(makeAlertDb().d1),
-        },
+        { alertStore: new AlertStore(makeAlertDb().d1) },
       );
 
       expect(response.status).toBe(503);
@@ -330,10 +286,10 @@ describe("GitHub webhook ingress", () => {
     },
   );
 
-  it("returns the same generic 503 when alert_delivery is unavailable — o caminho v2 entra na prontidão", async () => {
-    // A mesma classe do healthcheck legado: o esquema que a rota precisa
-    // tem de existir. O sondador é o schemaProbe (trabalho constante — o
-    // /healthz é público, e agregado aqui seria amplificação de carga).
+  it("returns the same generic 503 when alert_delivery is unavailable — o caminho v2 é a prontidão", async () => {
+    // O esquema que a rota precisa tem de existir. O sondador é o
+    // schemaProbe (trabalho constante — o /healthz é público, e agregado
+    // aqui seria amplificação de carga).
     const queue = new FakeQueue();
     const alertStore = {
       schemaProbe: () => Promise.reject(new Error("no_such_table")),
@@ -342,37 +298,7 @@ describe("GitHub webhook ingress", () => {
     const response = await handleFetch(
       new Request("https://relay.example/healthz"),
       makeEnv(queue),
-      { store: new MemoryDeliveryStore(), alertStore },
-    );
-
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ status: "unavailable" });
-  });
-
-  it("returns the same generic 503 for an unusable schema", async () => {
-    const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
-    store.healthy = false;
-
-    const response = await handleFetch(
-      new Request("https://relay.example/healthz"),
-      makeEnv(queue),
-      { store, alertStore: new AlertStore(makeAlertDb().d1) },
-    );
-
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ status: "unavailable" });
-  });
-
-  it("degrades readiness when any delivery requires manual review", async () => {
-    const queue = new FakeQueue();
-    const store = new MemoryDeliveryStore();
-    store.seed("manual-review-readiness", "manual_review", NOW);
-
-    const response = await handleFetch(
-      new Request("https://relay.example/healthz"),
-      makeEnv(queue),
-      { store, alertStore: new AlertStore(makeAlertDb().d1) },
+      { alertStore },
     );
 
     expect(response.status).toBe(503);

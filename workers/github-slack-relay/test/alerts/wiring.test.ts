@@ -1,19 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  handleFetch,
-  handleQueue,
-  runScheduledEntry,
-  type RelayQueueMessage,
-} from "../../src/index";
+import { handleFetch, handleQueue, runScheduledEntry } from "../../src/index";
 import { AlertStore } from "../../src/alerts/store";
 import type { AlertQueueMessage } from "../../src/alerts/contract";
-import {
-  FakeQueue,
-  makeEnv,
-  MemoryDeliveryStore,
-  signedRequest,
-} from "../helpers";
+import { FakeQueue, makeEnv, signedRequest } from "../helpers";
 import { closeAlertDatabases, makeAlertDb } from "./helpers";
 
 afterEach(closeAlertDatabases);
@@ -238,29 +228,27 @@ describe("corrida ingress×cron no carimbo (ADR-002 §4)", () => {
 });
 
 describe("passe agendado (ADR-002 §4)", () => {
-  it("falha do cron de alertas NÃO é engolida: o passe falha observavelmente, DEPOIS de rodar o legado", async () => {
+  it("falha do cron de alertas NÃO é engolida: o passe falha observavelmente", async () => {
     // Achado da revisão: o catch do scheduled engolia o erro e toda falha
     // do cron parecia invocação bem-sucedida — uma falha persistente só da
     // retenção seria invisível (o vigia lê idade de PENDENTE) e as linhas
-    // `sent` cresceriam sem limite. O relançamento vem DEPOIS do caminho
-    // legado, que não pode ser calado pelo erro do caminho novo.
+    // `sent` cresceriam sem limite. Com o legado aposentado, o passe é o
+    // cron de alertas puro e a exceção sobe direto para a plataforma.
     const quebrado = {
       dueRows: () => Promise.reject(new Error("d1_cron_down")),
     } as unknown as AlertStore;
     await expect(
       runScheduledEntry(makeEnv(new FakeQueue()), {
         alertStore: quebrado,
-        store: new MemoryDeliveryStore(),
       }),
     ).rejects.toThrow("d1_cron_down");
   });
 
-  it("cron saudável: o passe agendado resolve com o legado rodando em seguida", async () => {
+  it("cron saudável: o passe agendado resolve", async () => {
     const alertStore = new AlertStore(makeAlertDb().d1);
     await expect(
       runScheduledEntry(makeEnv(new FakeQueue()), {
         alertStore,
-        store: new MemoryDeliveryStore(),
       }),
     ).resolves.toBeUndefined();
   });
@@ -270,10 +258,10 @@ describe("roteamento v:2 na fila (ADR-002 §4)", () => {
   function batchDe(
     queueName: string,
     body: unknown,
-  ): { batch: MessageBatch<RelayQueueMessage>; acks: number[] } {
+  ): { batch: MessageBatch<AlertQueueMessage>; acks: number[] } {
     const acks: number[] = [];
     const message = {
-      body: body as RelayQueueMessage,
+      body: body as AlertQueueMessage,
       ack: () => acks.push(1),
       retry: () => acks.push(-1),
       attempts: 1,
@@ -284,12 +272,14 @@ describe("roteamento v:2 na fila (ADR-002 §4)", () => {
       batch: {
         queue: queueName,
         messages: [message],
-      } as unknown as MessageBatch<RelayQueueMessage>,
+      } as unknown as MessageBatch<AlertQueueMessage>,
       acks,
     };
   }
 
-  it("v:2 na DLQ é DESCARTADA — a DLQ não é segundo caminho de entrega", async () => {
+  it("fila desconhecida LANÇA — a única fila do caminho é github-slack-alerts", async () => {
+    // Com o legado aposentado, não existe DLQ nem fila de atividade: um
+    // batch de qualquer outra fila é erro de configuração e falha ALTO.
     const alertStore = new AlertStore(makeAlertDb().d1);
     await alertStore.insert("d-dlq", "{}", 1_000);
     let chamadas = 0;
@@ -301,14 +291,16 @@ describe("roteamento v:2 na fila (ADR-002 §4)", () => {
       v: 2,
       delivery_id: "d-dlq",
     });
-    await handleQueue(batch, makeEnv(new FakeQueue()), {
-      alertStore,
-      fetch: contando,
-      now: () => 5_000,
-    });
-    expect(chamadas).toBe(0); // nenhum POST a partir da DLQ
-    expect(acks).toEqual([1]); // confirmada e descartada
-    expect((await alertStore.get("d-dlq"))?.state).toBe("pending"); // o cron recarimba
+    await expect(
+      handleQueue(batch, makeEnv(new FakeQueue()), {
+        alertStore,
+        fetch: contando,
+        now: () => 5_000,
+      }),
+    ).rejects.toThrow("unexpected_queue");
+    expect(chamadas).toBe(0); // nenhum POST a partir de fila desconhecida
+    expect(acks).toEqual([]);
+    expect((await alertStore.get("d-dlq"))?.state).toBe("pending");
   });
 
   it("token do bot ilegível: NENHUM POST, last_error registrado, linha pendente — e o consumidor retorna sem retry", async () => {

@@ -17,7 +17,6 @@
 /.npmrc @lcv-leo
 /docs/GITHUB_SLACK_INTEGRATION.md @lcv-leo
 /scripts/ @lcv-leo
-/slack/github-integration/ @lcv-leo
 /workers/github-slack-relay/ @lcv-leo
 
 # Canonical repository artifacts audited on every sanitation

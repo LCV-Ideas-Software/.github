@@ -11,9 +11,6 @@
   "placement": {
     "mode": "smart",
   },
-  "vars": {
-    "SLACK_RELAY_SIGNING_ACTIVE_SLOT": "next",
-  },
   "version_metadata": {
     "binding": "WORKER_VERSION",
   },
@@ -41,16 +38,6 @@
       "secret_name": "github-slack-alerts-webhook-secret",
     },
     {
-      "binding": "SLACK_ALERTS_WORKFLOW_WEBHOOK_URL",
-      "store_id": "df90c0935ba1460899c3c2c457548a90",
-      "secret_name": "github-slack-alerts-workflow-url",
-    },
-    {
-      "binding": "SLACK_ACTIVITY_WORKFLOW_WEBHOOK_URL",
-      "store_id": "df90c0935ba1460899c3c2c457548a90",
-      "secret_name": "github-slack-activity-workflow-url",
-    },
-    {
       // ADR-002 §5, decisão 11: transporte chat.postMessage. O binding
       // esteve REMOVIDO até a rotação do §12 item 8 (o arquivo aciona
       // deploy no merge, e o token anterior carregava groups:*). Rotação
@@ -65,20 +52,11 @@
       // ADR-002 §5, decisão 9: /status protegido por segredo compartilhado.
       // O mesmo valor vive no environment `alerts-watchdog` do repositório
       // como ALERTS_STATUS_SECRET, para o vigia autenticar (repo-level foi
-      // removido — §12 item 3). Criados os dois lados em 16/08/2026.
+      // removido — §12 item 3). Criados os dois lados em 16/08/2026;
+      // rotacionados em conjunto em 17/08/2026 (piso de 32 bytes).
       "binding": "ALERTS_STATUS_SECRET",
       "store_id": "df90c0935ba1460899c3c2c457548a90",
       "secret_name": "github-slack-alerts-status-secret",
-    },
-    {
-      "binding": "SLACK_RELAY_SIGNING_SECRET",
-      "store_id": "df90c0935ba1460899c3c2c457548a90",
-      "secret_name": "github-slack-relay-signing-secret",
-    },
-    {
-      "binding": "SLACK_RELAY_SIGNING_SECRET_NEXT",
-      "store_id": "df90c0935ba1460899c3c2c457548a90",
-      "secret_name": "github-slack-relay-signing-secret-next",
     },
   ],
   "queues": {
@@ -86,10 +64,6 @@
       {
         "binding": "ALERT_QUEUE",
         "queue": "github-slack-alerts",
-      },
-      {
-        "binding": "ACTIVITY_QUEUE",
-        "queue": "github-slack-activity",
       },
     ],
     "consumers": [
@@ -100,29 +74,12 @@
         // plataforma só existiria no crash — e crash pertence ao cron (a
         // linha fica pendente e é recarimbada). Mensagem de crash é
         // descartada SEM perda: a fonte de verdade é a linha no D1.
-        // O mínimo aceito não é documentado (default 3, máximo 100);
-        // 0 valida no primeiro deploy — se a API recusar, o fallback
-        // registrado é 1, com o mesmo raciocínio.
+        // max_retries: 0 foi aceito pela API e validado no primeiro
+        // deploy (17/08/2026).
         "queue": "github-slack-alerts",
         "max_batch_size": 1,
         "max_batch_timeout": 1,
         "max_retries": 0,
-        "max_concurrency": 1,
-      },
-      {
-        "queue": "github-slack-activity",
-        "dead_letter_queue": "github-slack-activity-dlq",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 5,
-        "max_concurrency": 1,
-        "retry_delay": 2,
-      },
-      {
-        "queue": "github-slack-activity-dlq",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 10,
         "max_concurrency": 1,
       },
     ],
