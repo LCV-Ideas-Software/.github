@@ -17,6 +17,7 @@ import {
   EXPECTED_FINAL_SCHEMA,
   INVENTORY_PAGE_SIZE,
   inventoryPageIsLast,
+  isDeadlineAbort,
   listDatabases,
   MAX_REAP_PER_RUN,
   parseDisposableTimestamp,
@@ -138,6 +139,21 @@ test("remote requests are capped by the remaining deadline", () => {
   assert.throws(
     () => deadlineBoundedTimeout(now, now, API_TIMEOUT_MS),
     /deadline/u,
+  );
+});
+
+test("only an abort from the absolute deadline is classified as deferred maintenance", () => {
+  const timeoutError = new DOMException("timed out", "TimeoutError");
+  const abortedSignal = AbortSignal.abort(timeoutError);
+  assert.equal(isDeadlineAbort(timeoutError, abortedSignal, true), true);
+  assert.equal(isDeadlineAbort(timeoutError, abortedSignal, false), false);
+  assert.equal(
+    isDeadlineAbort(
+      new SyntaxError("malformed JSON fixture"),
+      abortedSignal,
+      true,
+    ),
+    false,
   );
 });
 

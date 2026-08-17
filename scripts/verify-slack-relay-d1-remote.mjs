@@ -193,7 +193,10 @@ export async function cloudflareRequest(
   init = {},
   deadlineMs,
 ) {
-  const timeoutMs = deadlineBoundedTimeout(deadlineMs);
+  const requestStartedAt = Date.now();
+  const deadlineLimited =
+    deadlineMs !== undefined && deadlineMs - requestStartedAt <= API_TIMEOUT_MS;
+  const timeoutMs = deadlineBoundedTimeout(deadlineMs, requestStartedAt);
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   let response;
   let payload;
@@ -216,12 +219,7 @@ export async function cloudflareRequest(
     if (error instanceof RemoteMaintenanceDeadlineError) {
       throw error;
     }
-    if (
-      timeoutSignal.aborted &&
-      (error === timeoutSignal.reason ||
-        error?.name === "AbortError" ||
-        error?.name === "TimeoutError")
-    ) {
+    if (isDeadlineAbort(error, timeoutSignal, deadlineLimited)) {
       throw new RemoteMaintenanceDeadlineError();
     }
     throw error;
@@ -241,6 +239,16 @@ export async function cloudflareRequest(
     `A Cloudflare API request failed (HTTP ${response.status}; error codes: ${numericErrorCodes || "none"}); the failing step names the operation.`,
   );
   return payload;
+}
+
+export function isDeadlineAbort(error, timeoutSignal, deadlineLimited) {
+  return (
+    deadlineLimited &&
+    timeoutSignal.aborted &&
+    (error === timeoutSignal.reason ||
+      error?.name === "AbortError" ||
+      error?.name === "TimeoutError")
+  );
 }
 
 export const INVENTORY_PAGE_SIZE = 1000;
