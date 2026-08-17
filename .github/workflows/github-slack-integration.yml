@@ -6,24 +6,13 @@ on:
     paths:
       - ".github/workflows/github-slack-integration.yml"
       - ".github/workflows/github-slack-webhook-redelivery.yml"
-      - ".github/workflows/slack-github-integration.yml"
       - "docs/GITHUB_SLACK_INTEGRATION.md"
       - "scripts/github-slack-hook-audit.mjs"
       - "scripts/github-slack-hook-audit.test.mjs"
       - "scripts/github-slack-webhook-redelivery.mjs"
       - "scripts/github-slack-webhook-redelivery.test.mjs"
-      - "scripts/slack-workflow-monitor.mjs"
-      - "scripts/slack-workflow-monitor.test.mjs"
-      - "scripts/provision-cloudflare-relay-secret.mjs"
-      - "scripts/provision-slack-relay-secret.mjs"
-      - "scripts/verify-slack-relay-signer.mjs"
-      - "scripts/verify-slack-relay-signer.test.mjs"
-      - "scripts/slack-delivery-protocol-contract.mjs"
-      - "scripts/slack-delivery-protocol-contract.test.mjs"
       - "scripts/slack-relay-d1-remote-proof.test.mjs"
-      - "scripts/slack-relay-secret-rollout.test.mjs"
       - "scripts/verify-slack-relay-d1-remote.mjs"
-      - "slack/github-integration/**"
       - "workers/github-slack-relay/**"
   pull_request:
     branches: [main]
@@ -65,11 +54,6 @@ jobs:
             package-lock.json
             workers/github-slack-relay/package-lock.json
 
-      - name: Setup Deno 2.9.5
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: 2.9.5
-
       - name: Install governance policy dependencies
         run: |
           test "$(npm config get registry)" = "https://registry.npmjs.org/"
@@ -92,10 +76,6 @@ jobs:
           node --test
           scripts/github-slack-hook-audit.test.mjs
           scripts/github-slack-webhook-redelivery.test.mjs
-          scripts/slack-workflow-monitor.test.mjs
-          scripts/verify-slack-relay-signer.test.mjs
-          scripts/slack-relay-secret-rollout.test.mjs
-          scripts/slack-delivery-protocol-contract.test.mjs
           scripts/slack-relay-d1-remote-proof.test.mjs
 
       - name: Verify Cloudflare relay
@@ -106,30 +86,11 @@ jobs:
           npm test
           npm run build
 
-      - name: Check Slack workflow app
-        working-directory: slack/github-integration
-        run: |
-          set -euo pipefail
-          if grep -R -n -E 'GITHUB_(ACTIVITY|ALERTS)_CHANNEL_ID|workflows:[[:space:]]*\[\]|"groups:(read|write)"' \
-            manifest.ts workflows; then
-            echo "::error::Slack app still contains bootstrap-only placeholders, an empty workflow list, or a provisioning scope."
-            exit 1
-          fi
-          deno task --config=deno.jsonc --frozen check
-
-      - name: Audit Slack workflow app dependencies
-        working-directory: slack/github-integration
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_TOKEN: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.token || '' }}
-        run: deno task --config=deno.jsonc --frozen audit
-
   prove_remote_d1:
     name: Prove remote D1 migration
     if: >-
-      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
-      (github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: verify
     permissions:
       contents: read
@@ -177,9 +138,8 @@ jobs:
   deploy:
     name: Deploy GitHub Slack relay
     if: >-
-      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
-      (github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: prove_remote_d1
     permissions:
       contents: read
@@ -210,39 +170,12 @@ jobs:
           expected_wrangler="$(node -p "require('./workers/github-slack-relay/package.json').devDependencies.wrangler")"
           test "$(workers/github-slack-relay/node_modules/.bin/wrangler --version)" = "$expected_wrangler"
 
-      - name: Apply durable inbox migrations
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
-            --remote \
-            --config workers/github-slack-relay/wrangler.jsonc
-
-      - name: Verify the sealed Slack delivery protocol contract
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          CONTRACT_SQL="$(node scripts/slack-delivery-protocol-contract.mjs --print-sql)"
-          workers/github-slack-relay/node_modules/.bin/wrangler d1 execute github-slack-alerts-db \
-            --remote \
-            --config workers/github-slack-relay/wrangler.jsonc \
-            --command "$CONTRACT_SQL" \
-            --json \
-            | node scripts/slack-delivery-protocol-contract.mjs
-
-      - name: Stage the new relay signer as Cloudflare NEXT
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          SLACK_RELAY_CURRENT_SECRET_ID: 2571d7508e9348ea8d27a17aa113a91e
-          SLACK_RELAY_SECRET_STORE_ID: df90c0935ba1460899c3c2c457548a90
-          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
-        run: node scripts/provision-cloudflare-relay-secret.mjs
-
+      # Ordem contract-phase (achado da revisão): o Worker novo tolera o
+      # esquema antigo (ignora as tabelas legadas), mas o Worker antigo NÃO
+      # tolera o novo (a 0011 dropa tabelas que ele consulta). Publicar o
+      # código ANTES de migrar elimina a janela em que a revisão anterior
+      # roda contra o esquema já contraído; migrações futuras nascem com o
+      # código que as usa e toleram segundos de esquema anterior.
       - name: Deploy verified relay
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -254,216 +187,11 @@ jobs:
             --message "GitHub Actions ${GITHUB_REPOSITORY}@${GITHUB_SHA}" \
             --config workers/github-slack-relay/wrangler.jsonc
 
-  deploy_slack:
-    name: Deploy Slack workflow app
-    if: >-
-      vars.SLACK_GITHUB_INTEGRATION_ENABLED == 'true' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs: deploy
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: slack-production
-    env:
-      SLACK_SKIP_UPDATE: "1"
-    steps:
-      - name: Checkout verified revision without persisted credentials
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Deno 2.9.5
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: 2.9.5
-
-      - name: Setup latest Node.js 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          check-latest: true
-
-      - name: Prove the slack-production signer against the deployed relay
+      - name: Apply durable inbox migrations
         env:
-          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
-        run: node scripts/verify-slack-relay-signer.mjs
-
-      - name: Install verified Slack CLI 4.6.0
-        id: install-slack-cli
-        shell: bash
-        env:
-          SLACK_CLI_ASSET: slack_cli_4.6.0_linux_64-bit.tar.gz
-          SLACK_CLI_SHA256: 2863e7721af346caef72be7dc3be2a520db7207de08a440d040a6ec1378baeca
-          SLACK_CLI_VERSION: 4.6.0
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          set -euo pipefail
-          archive="${RUNNER_TEMP}/${SLACK_CLI_ASSET}"
-          install_root="${RUNNER_TEMP}/slack-cli-${SLACK_CLI_VERSION}"
-          asset_url="https://github.com/slackapi/slack-cli/releases/download/v${SLACK_CLI_VERSION}/${SLACK_CLI_ASSET}"
-
-          curl --fail --silent --show-error --location \
-            --retry 3 --retry-all-errors \
-            --connect-timeout 10 --max-time 120 \
-            --proto '=https' --tlsv1.2 \
-            --output "$archive" \
-            "$asset_url"
-          printf '%s  %s\n' "$SLACK_CLI_SHA256" "$archive" \
-            | sha256sum --check --strict -
-
-          mkdir -p "$install_root"
-          tar --extract --gzip \
-            --file "$archive" \
-            --directory "$install_root" \
-            --no-same-owner \
-            --no-same-permissions \
-            LICENSE bin/slack
-          test -f "$install_root/bin/slack"
-          chmod 0755 "$install_root/bin/slack"
-          version_output=$("$install_root/bin/slack" version --skip-update)
-          printf '%s\n' "$version_output"
-          if [[ "$version_output" != *"v${SLACK_CLI_VERSION}"* ]]; then
-            echo "::error::The verified Slack CLI asset did not report the expected version."
-            exit 1
-          fi
-          printf 'slack_bin=%s\n' "$install_root/bin/slack" >> "$GITHUB_OUTPUT"
-
-      - name: Stage the new relay signer as Slack NEXT
-        env:
-          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
-          SLACK_RELAY_SIGNING_SECRET: ${{ secrets.SLACK_RELAY_SIGNING_SECRET }}
-          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
-        run: node scripts/provision-slack-relay-secret.mjs
-
-      - name: Deploy without exposing webhook triggers
-        working-directory: slack/github-integration
-        env:
-          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
-          SLACK_BIN: ${{ steps.install-slack-cli.outputs.slack_bin }}
-          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
-          SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
-        run: |
-          set -euo pipefail
-          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
-          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
-          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
-          "$SLACK_BIN" deploy \
-            --app "$SLACK_APP_ID" \
-            --team "$SLACK_TEAM_ID" \
-            --token "$SLACK_SERVICE_TOKEN" \
-            --hide-triggers \
-            --skip-update
-
-      - name: Update the two protected production webhook triggers
-        working-directory: slack/github-integration
-        env:
-          ACTIVITY_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ACTIVITY_TRIGGER_ID }}
-          ALERT_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ALERT_TRIGGER_ID }}
-          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
-          SLACK_BIN: ${{ steps.install-slack-cli.outputs.slack_bin }}
-          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
-          SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 077
-          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
-          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
-          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
-          for trigger_id in "$ACTIVITY_TRIGGER_ID" "$ALERT_TRIGGER_ID"; do
-            if [[ ! "$trigger_id" =~ ^Ft[A-Z0-9]{8,}$ ]]; then
-              echo "::error::A protected Slack webhook trigger ID is missing or malformed."
-              exit 1
-            fi
-          done
-          if [[ "$ACTIVITY_TRIGGER_ID" == "$ALERT_TRIGGER_ID" ]]; then
-            echo "::error::The activity and alert trigger IDs must be distinct."
-            exit 1
-          fi
-          if [[ ! "$SLACK_APP_ID" =~ ^A[A-Z0-9]{8,}$ ]]; then
-            echo "::error::The protected Slack app ID is malformed."
-            exit 1
-          fi
-
-          update_log="$(mktemp "${RUNNER_TEMP}/slack-trigger-update.XXXXXX")"
-          trap 'rm -f "$update_log"' EXIT
-          if ! "$SLACK_BIN" \
-            trigger update \
-            --trigger-id "$ACTIVITY_TRIGGER_ID" \
-            --trigger-def triggers/github_activity_webhook.ts \
-            --app "$SLACK_APP_ID" \
-            --team "$SLACK_TEAM_ID" \
-            --token "$SLACK_SERVICE_TOKEN" \
-            --no-color \
-            --skip-update \
-            >"$update_log" 2>&1; then
-            rm -f "$update_log"
-            echo "::error::The protected Slack activity trigger update failed."
-            exit 1
-          fi
-          : >"$update_log"
-          if ! "$SLACK_BIN" \
-            trigger update \
-            --trigger-id "$ALERT_TRIGGER_ID" \
-            --trigger-def triggers/github_alert_webhook.ts \
-            --app "$SLACK_APP_ID" \
-            --team "$SLACK_TEAM_ID" \
-            --token "$SLACK_SERVICE_TOKEN" \
-            --no-color \
-            --skip-update \
-            >"$update_log" 2>&1; then
-            rm -f "$update_log"
-            echo "::error::The protected Slack alert trigger update failed."
-            exit 1
-          fi
-          rm -f "$update_log"
-          trap - EXIT
-
-      - name: Verify the exact protected production trigger inventory
-        working-directory: slack/github-integration
-        env:
-          ACTIVITY_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ACTIVITY_TRIGGER_ID }}
-          ALERT_TRIGGER_ID: ${{ vars.SLACK_GITHUB_ALERT_TRIGGER_ID }}
-          SLACK_APP_ID: ${{ vars.SLACK_GITHUB_INTEGRATION_APP_ID }}
-          SLACK_BIN: ${{ steps.install-slack-cli.outputs.slack_bin }}
-          SLACK_SERVICE_TOKEN: ${{ secrets.SLACK_SERVICE_TOKEN }}
-          SLACK_TEAM_ID: ${{ vars.SLACK_WORKSPACE_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          : "${SLACK_APP_ID:?Missing SLACK_GITHUB_INTEGRATION_APP_ID}"
-          : "${SLACK_SERVICE_TOKEN:?Missing SLACK_SERVICE_TOKEN}"
-          : "${SLACK_TEAM_ID:?Missing SLACK_WORKSPACE_ID}"
-          for trigger_id in "$ACTIVITY_TRIGGER_ID" "$ALERT_TRIGGER_ID"; do
-            if [[ ! "$trigger_id" =~ ^Ft[A-Z0-9]{8,}$ ]]; then
-              echo "::error::A protected Slack webhook trigger ID is missing or malformed."
-              exit 1
-            fi
-          done
-          if [[ "$ACTIVITY_TRIGGER_ID" == "$ALERT_TRIGGER_ID" ]]; then
-            echo "::error::The activity and alert trigger IDs must be distinct."
-            exit 1
-          fi
-          if [[ ! "$SLACK_APP_ID" =~ ^A[A-Z0-9]{8,}$ ]]; then
-            echo "::error::The protected Slack app ID is malformed."
-            exit 1
-          fi
-
-          inventory_error="${RUNNER_TEMP}/slack-trigger-inventory.err"
-          request_body="$(printf '{"app_id":"%s","limit":100}' "$SLACK_APP_ID")"
-          if ! "$SLACK_BIN" \
-            api workflows.triggers.list \
-            --token "$SLACK_SERVICE_TOKEN" \
-            --json "$request_body" \
-            --no-color \
-            --skip-update \
-            2>"$inventory_error" \
-            | deno run \
-              --allow-env=ACTIVITY_TRIGGER_ID,ALERT_TRIGGER_ID,SLACK_APP_ID \
-              scripts/verify_trigger_inventory.ts; then
-            rm -f "$inventory_error"
-            echo "::error::Slack could not verify the exact production trigger inventory."
-            exit 1
-          fi
-          rm -f "$inventory_error"
+          workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
+            --remote \
+            --config workers/github-slack-relay/wrangler.jsonc

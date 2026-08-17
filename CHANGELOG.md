@@ -20,6 +20,31 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 17/08/2026 — Aposentadoria do pipeline legado GitHub→Slack
+
+### Removed
+
+- Removed the legacy Slack workflow-app pipeline end to end, authorized by the operator after the
+  ADR-002 alerts v2 path (PR #201) proved its first real deliveries: the `slack/github-integration/`
+  Deno app source, its deploy and monitor jobs (`deploy_slack`, `slack-github-integration.yml`),
+  the relay-signer staging scripts and steps (Cloudflare and Slack `NEXT` slots), the legacy
+  activity pipeline inside the Worker (`src/store.ts` and reconciliation modules, ~2,200 lines),
+  the activity queues from `wrangler.jsonc`, and the legacy test surface (~9,900 lines). The
+  hosted Slack app `A0BMWBGES20` had already stopped being hosted on 14/08 (`app_not_hosted`).
+- Migration `0011` dropped the eight legacy D1 tables (`deliveries`, `relay_state`,
+  reconciliation/trace/hydration tables). The full database was archived before the drop, outside
+  the repository, with a recorded SHA-256.
+- `/healthz` now reports the v2 readiness class only: worker version tag, the three live secrets
+  (with the 32-byte floors) and a constant-work schema probe on `alert_delivery`.
+
+### Fixed
+
+- The live queue `github-slack-alerts` had `delivery_paused=true` left over from the v1 shutdown
+  (found by the Codex audit); delivery was resumed, the stale v1 backlog was purged (the D1 row is
+  the source of truth and the cron republishes), and the first real alerts were delivered to
+  `#github-alerts` after the bot was re-invited to the private channel (`channel_not_found` is the
+  membership signal, now documented as a deployment precondition).
+
 ## 15/08/2026 — Official security automation
 
 ### Changed

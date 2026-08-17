@@ -12,7 +12,6 @@ import { closeAlertDatabases, makeAlertDb } from "./alerts/helpers";
 import {
   FakeQueue,
   makeEnv,
-  MemoryDeliveryStore,
   signedRequest,
   TEST_WEBHOOK_SECRET,
 } from "./helpers";
@@ -61,15 +60,11 @@ describe("property-based GitHub webhook security", () => {
             body: tamperedBody.buffer,
           });
           const queue = new FakeQueue();
-          const store = new MemoryDeliveryStore();
 
-          const response = await handleFetch(tampered, makeEnv(queue), {
-            store,
-          });
+          const response = await handleFetch(tampered, makeEnv(queue));
 
           expect(response.status).toBe(401);
           expect(await response.json()).toEqual({ error: "invalid_signature" });
-          expect(store.deliveries.size).toBe(0);
           expect(queue.sent).toHaveLength(0);
         },
       ),
@@ -85,12 +80,11 @@ describe("property-based GitHub webhook security", () => {
         fc.jsonValue(),
         async (event, deliveryId, payload) => {
           const queue = new FakeQueue();
-          const store = new MemoryDeliveryStore();
           const alertStore = new AlertStore(makeAlertDb().d1);
           const response = await handleFetch(
             await signedRequest(event, deliveryId, payload),
             makeEnv(queue),
-            { store, alertStore },
+            { alertStore },
           );
 
           expect(response.status).toBeLessThan(500);
@@ -126,7 +120,6 @@ describe("property-based GitHub webhook security", () => {
         }),
         async (deliveryId, generated) => {
           const queue = new FakeQueue();
-          const store = new MemoryDeliveryStore();
           const payload = {
             action: "completed",
             organization: { login: "LCV-Ideas-Software" },
@@ -153,7 +146,7 @@ describe("property-based GitHub webhook security", () => {
           const response = await handleFetch(
             await signedRequest("workflow_run", deliveryId, payload),
             makeEnv(queue),
-            { store, alertStore },
+            { alertStore },
           );
 
           expect(response.status).toBe(202);

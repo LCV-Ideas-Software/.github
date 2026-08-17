@@ -12,8 +12,8 @@ containerized Zizmor runtime, or policy wrapper of its own.
 Versions and licenses below were read from each package's own published manifest or from its
 upstream repository, not inferred. Versions are the ones actually resolved by the committed
 lockfiles, not the ranges declared in the manifests: the root `package.json` requests `prettier`
-as `^3.9.6` and resolves it to `3.9.6`; the Slack workflow and relay contract tests use the exact
-`yaml@2.9.0` parser.
+as `^3.9.6` and resolves it to `3.9.6`; the organization workflow controllers'' tests use the
+exact `yaml@2.9.0` parser.
 
 ## Repository root — `package.json`
 
@@ -35,46 +35,6 @@ as `^3.9.6` and resolves it to `3.9.6`; the Slack workflow and relay contract te
 
 The Worker itself ships no runtime dependency: every entry above is a development tool, and the
 deployed bundle is built from this repository's own source.
-
-## Slack workflow app — `slack/github-integration/deno.jsonc`
-
-| Component        | Version | License | Scope   | Source                                     |
-| ---------------- | ------- | ------- | ------- | ------------------------------------------ |
-| @slack/sdk       | 2.15.2  | MIT     | runtime | https://jsr.io/@slack/sdk                  |
-| @slack/api       | 2.9.3   | MIT     | runtime | https://jsr.io/@slack/api                  |
-| deno_slack_hooks | 1.5.0   | MIT     | build   | https://deno.land/x/deno_slack_hooks@1.5.0 |
-| esbuild          | 0.28.2  | MIT     | build   | https://www.npmjs.com/package/esbuild      |
-
-Licenses confirmed from the upstream repositories that publish these JSR packages:
-[`slackapi/deno-slack-sdk`](https://github.com/slackapi/deno-slack-sdk) and
-[`slackapi/deno-slack-api`](https://github.com/slackapi/deno-slack-api), both MIT.
-
-`deno_slack_hooks` is not a JSR import: it is the Slack CLI build hook, executed directly from
-`slack/github-integration/.slack/hooks.json:3` as
-`deno run -q --allow-read --allow-net https://deno.land/x/deno_slack_hooks@1.5.0/mod.ts`. Its
-version is pinned in that URL. Within the complete frozen production closure, the lock carries the
-exact integrity hashes for the 13 `deno_slack_hooks@1.5.0` source files reached by the production
-`get-hooks`, `get-manifest`, `build`, and `get-trigger` roots, including the executed `mod.ts` entry
-point and its `flags.ts` dependency. Update and local-run hooks remain deliberately
-outside this graph because every production CLI invocation uses `--skip-update` and the workflow
-never invokes `doctor`, `upgrade`, or `run`. Its license comes from the upstream repository that
-publishes it, [`slackapi/deno-slack-hooks`](https://github.com/slackapi/deno-slack-hooks), MIT.
-The official hook imports vulnerable `esbuild@0.24.2`; the project's Deno import map remaps that
-exact specifier to the reviewed patched release, `0.28.2`. The lockfile contains only the corrected
-package graph. Candidate verification type-checks all four production hook entry points with the
-frozen lock; `deno.jsonc` also makes that lock fail-closed for hook processes launched by the Slack
-CLI, disables local `node_modules` and vendored resolution, and limits the import-map surface to
-the three Slack aliases plus the one esbuild override. Both workflows select that config explicitly;
-the audit rejects competing Deno configs or package workspaces at every ancestor inside the checkout
-and verifies the reviewed integrity of all 26 platform packages. The daily trusted audit continues to verify
-the unmodified Slack hook source.
-Candidate verification also executes the pinned official `EsbuildBundler` directly against the
-two exact `source_file` entries declared by the source manifest, because the complete official
-build can finish through Deno's native bundler before reaching that fallback. Both generated
-modules must parse and expose the callable default handler expected by Slack.
-
-`deno.lock` additionally pins `@slack/api@2.9.0` as a transitive dependency of `@slack/sdk@2.15.2`;
-it is not imported directly by this repository.
 
 ## Externally hosted scripts — `site/sponsor/index.html`
 

@@ -165,7 +165,8 @@ function assertRecoveryEnvironmentIsolation(workflows) {
   assert.deepEqual(environmentDeclarations, [
     // ADR-002: environment dedicado SEM regras de proteção — escopo de
     // segredo do vigia (zizmor), nunca portão; proteção futura o travaria,
-    // e o aviso está no próprio YAML.
+    // e o aviso está no próprio YAML. Aposentadoria do legado (17/08/2026):
+    // deploy_slack e o monitor do app de workflow saíram com o pipeline.
     ["alerts-watchdog.yml", "watch", "alerts-watchdog"],
     ["cloudflare-pages.yml", "deploy", "cloudflare-production"],
     [
@@ -174,7 +175,6 @@ function assertRecoveryEnvironmentIsolation(workflows) {
       "cloudflare-production",
     ],
     ["github-slack-integration.yml", "deploy", "cloudflare-production"],
-    ["github-slack-integration.yml", "deploy_slack", "slack-production"],
     ["github-slack-webhook-redelivery.yml", "redeliver", "webhook-recovery"],
     // Linear Release: environment dedicado SEM regras de proteção — só escopo
     // de segredo (política zizmor); a chave apenas cria releases na pipeline
@@ -182,7 +182,6 @@ function assertRecoveryEnvironmentIsolation(workflows) {
     ["linear-release.yml", "linear_release", "linear-release"],
     ["pages.yml", "deploy", "github-pages"],
     ["slack-d1-disposable-reaper.yml", "reap", "cloudflare-production"],
-    ["slack-github-integration.yml", "monitor", "slack-production"],
   ]);
   assert.deepEqual(credentialReferences, [
     [
@@ -475,9 +474,11 @@ test("recovery documentation states exact token grants and control-flow boundary
     securityPolicy,
     /Outside that reviewed HMAC transition,[\s\S]*migration artifacts and must be removed before[\s\S]*#175/u,
   );
+  // Aposentadoria do legado (17/08/2026): o fluxo de signer NEXT saiu do
+  // SECURITY.md junto com o pipeline; o que se pina agora é o desenho v2.
   assert.match(
     securityPolicy,
-    /same newly generated signer[\s\S]*`slack-production` and `cloudflare-production`[\s\S]*runtime `NEXT` slots/u,
+    /ADR-002 two-state design[\s\S]*`chat\.postMessage`[\s\S]*`max_retries: 0`/u,
   );
   assert.match(securityPolicy, /`github-dotgithub-production`/u);
   for (const permission of [
