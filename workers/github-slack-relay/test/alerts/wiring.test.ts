@@ -311,6 +311,41 @@ describe("roteamento v:2 na fila (ADR-002 §4)", () => {
     expect((await alertStore.get("d-dlq"))?.state).toBe("pending"); // o cron recarimba
   });
 
+  it("token do bot ilegível: NENHUM POST, last_error registrado, linha pendente — e o consumidor retorna sem retry", async () => {
+    // Cobertura do ramo fail-safe (achado da revisão): sem token não há
+    // envio; o desfecho é registrado, a linha fica pendente e o retorno
+    // normal confirma a mensagem — a recuperação é do cron, nunca da fila.
+    const alertStore = new AlertStore(makeAlertDb().d1);
+    await alertStore.insert(
+      "d-sem-token",
+      '{"title":"T","delivery_id":"d-sem-token"}',
+      1_000,
+    );
+    let chamadas = 0;
+    const contando: typeof fetch = (async () => {
+      chamadas++;
+      return new Response('{"ok":true}');
+    }) as unknown as typeof fetch;
+    const { batch, acks } = batchDe("github-slack-alerts", {
+      v: 2,
+      delivery_id: "d-sem-token",
+    });
+    // Binding AUSENTE (readSecret lança); a fixture string vazia não lança —
+    // ela é o caso do checque de comprimento na prontidão.
+    const env = makeEnv(new FakeQueue());
+    (env as unknown as Record<string, unknown>).SLACK_BOT_TOKEN = null;
+    await handleQueue(batch, env, {
+      alertStore,
+      fetch: contando,
+      now: () => 5_000,
+    });
+    expect(chamadas).toBe(0); // nenhum POST sem token
+    expect(acks).toEqual([]); // nem retry, nem ack explícito: retorno = ack
+    const row = await alertStore.get("d-sem-token");
+    expect(row?.state).toBe("pending"); // o cron recarimba
+    expect(row?.lastError).toBe("bot_token_unavailable");
+  });
+
   it("v:2 na fila primária é processada", async () => {
     const alertStore = new AlertStore(makeAlertDb().d1);
     await alertStore.insert("d-prim", '{"title":"T","delivery_id":"d-prim"}', 1_000);
