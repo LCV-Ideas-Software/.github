@@ -179,6 +179,10 @@ function assertRecoveryEnvironmentIsolation(workflows) {
     // Linear Release: environment dedicado SEM regras de proteção — só escopo
     // de segredo (política zizmor); a chave apenas cria releases na pipeline
     // continuous deste repositório no Linear.
+    // Linear Freshness: environment dedicado SEM regras de proteção — só escopo
+    // do segredo de leitura (Personal API key read-only) do vigia de frescor
+    // das release pipelines (issue #207).
+    ["linear-freshness.yml", "freshness", "linear-observability"],
     ["linear-release.yml", "linear_release", "linear-release"],
     ["pages.yml", "deploy", "github-pages"],
     ["slack-d1-disposable-reaper.yml", "reap", "cloudflare-production"],
