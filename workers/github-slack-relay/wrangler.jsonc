@@ -63,8 +63,9 @@
     },
     {
       // ADR-002 §5, decisão 9: /status protegido por segredo compartilhado.
-      // O mesmo valor vive no repositório como ALERTS_STATUS_SECRET, para o
-      // vigia autenticar. Criados os dois lados em 16/08/2026.
+      // O mesmo valor vive no environment `alerts-watchdog` do repositório
+      // como ALERTS_STATUS_SECRET, para o vigia autenticar (repo-level foi
+      // removido — §12 item 3). Criados os dois lados em 16/08/2026.
       "binding": "ALERTS_STATUS_SECRET",
       "store_id": "df90c0935ba1460899c3c2c457548a90",
       "secret_name": "github-slack-alerts-status-secret",
