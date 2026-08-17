@@ -633,7 +633,7 @@ Slack][slack-deploy], [Slack CLI CI/CD authorization][slack-cli-auth], and
 
 The latest upstream `deno_slack_hooks@1.5.0` imports `esbuild@0.24.2`, affected
 by `GHSA-67mh-4wv8-2f99`. The [Deno import map][deno-config] remaps that one exact upstream
-specifier to the reviewed patched version, `esbuild@0.28.1`; the official Slack
+specifier to the reviewed patched version, `esbuild@0.28.2`; the official Slack
 hook remains unmodified and no source is forked or vendored. The audit script
 fails closed unless the mapping is exact, the lockfile contains only the
 corrected esbuild graph, `deno audit` reports zero advisories, and the hook is
@@ -650,7 +650,7 @@ configuration sets `lock.frozen=true`, `nodeModulesDir="none"`, and
 `vendor=false`, so hook subprocesses cannot silently add a missing dependency
 or substitute local package/vendor content during deployment. The import-map
 surface is limited to the exact three Slack aliases and single esbuild
-override, and every esbuild platform package must retain its reviewed `0.28.1`
+override, and every esbuild platform package must retain its reviewed `0.28.2`
 integrity. Both verification workflows explicitly select `deno.jsonc`; the
 audit rejects a competing `deno.json`, `package.json` workspace, or Deno
 workspace at the app, `slack/`, or repository-root boundary. The

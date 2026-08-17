@@ -115,7 +115,7 @@ Slack's latest `deno_slack_hooks@1.5.0` build hook imports `esbuild@0.24.2`,
 which is reported by `GHSA-67mh-4wv8-2f99`. The project's
 [Deno import map](https://docs.deno.com/runtime/reference/deno_json/#dependencies)
 remaps that exact upstream specifier to the reviewed patched release,
-`esbuild@0.28.1`. The hook remains the official Slack release; no source is
+`esbuild@0.28.2`. The hook remains the official Slack release; no source is
 forked or vendored. The regenerated lockfile contains no vulnerable esbuild
 version, and the reviewed hook still invokes only `build()` and `stop()`. Within
 the complete frozen production closure, it also pins the exact subset of 13
