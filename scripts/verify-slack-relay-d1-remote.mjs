@@ -3,7 +3,14 @@
 // deploy) e afirma o esquema FINAL do caminho v2 — alert_delivery e seus
 // dois índices, nada além. A prova roda ANTES do deploy tocar o banco de
 // produção; se a cadeia não aplicar limpa aqui, o deploy nem começa.
-import { copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -22,13 +29,17 @@ const WRANGLER_ENTRYPOINT = join(
 export const DATABASE_NAME_PREFIX = "tmp-slack-relay-171-";
 export const DISPOSABLE_DATABASE_NAME_PATTERN =
   /^tmp-slack-relay-171-[0-9]{13}-[0-9a-f]{8}$/u;
-const DATABASE_ID_PATTERN = /^[0-9a-f-]{36}$/u;
+export const DATABASE_ID_PATTERN =
+  /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u;
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const PRODUCTION_DATABASE_ID = "cf070eb0-32d9-4ee0-9516-d469833cdc77";
 export const API_TIMEOUT_MS = 15_000;
 export const WRANGLER_TIMEOUT_MS = 120_000;
 export const STALE_DATABASE_AGE_MS = 3 * 60 * 60_000;
 export const REMOTE_PROOF_MINIMUM_MARGIN_MS = 10 * 60_000;
+export const REAPER_MINIMUM_MARGIN_MS = 60_000;
+export const REMOTE_PROOF_CLEANUP_RESERVE_MS = 5 * 60_000;
+const REMOTE_PROOF_REAPER_BUDGET_MS = 5 * 60_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
 
 // A migração 0006 sela o protocolo legado e EXIGE o estado de ativação
@@ -82,6 +93,51 @@ function delay(milliseconds) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
+class RemoteMaintenanceDeadlineError extends Error {
+  constructor() {
+    super("The remote maintenance deadline has been reached.");
+    this.name = "RemoteMaintenanceDeadlineError";
+  }
+}
+
+export function deadlineBoundedTimeout(
+  deadlineMs,
+  nowMs = Date.now(),
+  maximumTimeoutMs = API_TIMEOUT_MS,
+) {
+  invariant(
+    Number.isSafeInteger(nowMs) && nowMs >= 0,
+    "The local clock is not a usable millisecond timestamp.",
+  );
+  invariant(
+    Number.isSafeInteger(maximumTimeoutMs) && maximumTimeoutMs > 0,
+    "The maximum remote-operation timeout must be a positive integer.",
+  );
+  if (deadlineMs === undefined) return maximumTimeoutMs;
+  invariant(
+    Number.isSafeInteger(deadlineMs) && deadlineMs > 0,
+    "The remote maintenance deadline is malformed.",
+  );
+  const remainingMs = deadlineMs - nowMs;
+  if (remainingMs <= 0) throw new RemoteMaintenanceDeadlineError();
+  return Math.min(maximumTimeoutMs, remainingMs);
+}
+
+export function deleteConfirmationBackoffMs(
+  attempt,
+  deadlineMs,
+  nowMs = Date.now(),
+) {
+  invariant(
+    Number.isSafeInteger(attempt) &&
+      attempt >= 0 &&
+      attempt < DELETE_CONFIRMATION_ATTEMPTS,
+    "The D1 delete-confirmation attempt is invalid.",
+  );
+  if (attempt + 1 === DELETE_CONFIRMATION_ATTEMPTS) return 0;
+  return deadlineBoundedTimeout(deadlineMs, nowMs, 250 * 2 ** attempt);
+}
+
 export function verifyRemoteProofDeadline(environment, nowMs = Date.now()) {
   const raw = environment.REMOTE_PROOF_DEADLINE_MS;
   invariant(
@@ -94,6 +150,43 @@ export function verifyRemoteProofDeadline(environment, nowMs = Date.now()) {
     `The remote proof has less than ${REMOTE_PROOF_MINIMUM_MARGIN_MS} ms of margin before the job deadline; refusing to start work it cannot finish.`,
   );
   return deadline;
+}
+
+export function verifyReaperDeadline(environment, nowMs = Date.now()) {
+  const raw = environment.D1_REAPER_DEADLINE_MS;
+  invariant(
+    typeof raw === "string" && /^[0-9]{1,15}$/u.test(raw),
+    "D1_REAPER_DEADLINE_MS is missing or malformed; the workflow must establish the fail-closed deadline first.",
+  );
+  const deadline = Number.parseInt(raw, 10);
+  invariant(
+    deadline - nowMs >= REAPER_MINIMUM_MARGIN_MS,
+    `The D1 reaper has less than ${REAPER_MINIMUM_MARGIN_MS} ms of margin before its deadline; refusing to start.`,
+  );
+  return deadline;
+}
+
+export function partitionRemoteProofDeadline(
+  proofDeadlineMs,
+  nowMs = Date.now(),
+) {
+  invariant(
+    Number.isSafeInteger(proofDeadlineMs) && proofDeadlineMs > 0,
+    "The remote proof deadline is malformed.",
+  );
+  const workDeadlineMs = proofDeadlineMs - REMOTE_PROOF_CLEANUP_RESERVE_MS;
+  invariant(
+    workDeadlineMs > nowMs,
+    "The remote proof deadline leaves no reserved cleanup window.",
+  );
+  return Object.freeze({
+    workDeadlineMs,
+    reaperDeadlineMs: Math.min(
+      workDeadlineMs,
+      nowMs + REMOTE_PROOF_REAPER_BUDGET_MS,
+    ),
+    cleanupDeadlineMs: proofDeadlineMs,
+  });
 }
 
 function readConfiguration(environment) {
@@ -110,10 +203,21 @@ function readConfiguration(environment) {
   return { accountId, apiToken };
 }
 
-async function cloudflareRequest(configuration, path, init = {}) {
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4${path}`,
-    {
+export async function cloudflareRequest(
+  configuration,
+  path,
+  init = {},
+  deadlineMs,
+) {
+  const requestStartedAt = Date.now();
+  const deadlineLimited =
+    deadlineMs !== undefined && deadlineMs - requestStartedAt <= API_TIMEOUT_MS;
+  const timeoutMs = deadlineBoundedTimeout(deadlineMs, requestStartedAt);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  let response;
+  let payload;
+  try {
+    response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
       ...init,
       headers: {
         Authorization: `Bearer ${configuration.apiToken}`,
@@ -121,10 +225,21 @@ async function cloudflareRequest(configuration, path, init = {}) {
         ...(init.headers ?? {}),
       },
       redirect: "error",
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
-    },
-  );
-  const payload = await response.json();
+      signal: timeoutSignal,
+    });
+    // The response body is part of the same bounded operation. A server can
+    // deliver headers and then stall JSON consumption until the signal aborts.
+    payload = await response.json();
+    deadlineBoundedTimeout(deadlineMs);
+  } catch (error) {
+    if (error instanceof RemoteMaintenanceDeadlineError) {
+      throw error;
+    }
+    if (isDeadlineAbort(error, timeoutSignal, deadlineLimited)) {
+      throw new RemoteMaintenanceDeadlineError();
+    }
+    throw error;
+  }
   // Diagnóstico sem conteúdo remoto: só o caminho local, o status HTTP e os
   // CÓDIGOS numéricos de erro (Number() não carrega taint de string).
   const numericErrorCodes = Array.isArray(payload?.errors)
@@ -142,30 +257,177 @@ async function cloudflareRequest(configuration, path, init = {}) {
   return payload;
 }
 
+export function isDeadlineAbort(error, timeoutSignal, deadlineLimited) {
+  return (
+    deadlineLimited &&
+    timeoutSignal.aborted &&
+    (error === timeoutSignal.reason ||
+      error?.name === "AbortError" ||
+      error?.name === "TimeoutError")
+  );
+}
+
 export const INVENTORY_PAGE_SIZE = 1000;
 const MAX_INVENTORY_PAGES = 100;
 
-export function inventoryPageIsLast(resultInfo, pageLength, collectedCount) {
-  if (pageLength < INVENTORY_PAGE_SIZE) return true;
-  const totalCount = Number(resultInfo?.total_count);
-  return Number.isFinite(totalCount) && collectedCount >= totalCount;
+function optionalNonNegativeInteger(value, label) {
+  if (value === undefined) return undefined;
+  invariant(
+    Number.isSafeInteger(value) && value >= 0,
+    `${label} must be a non-negative integer when present.`,
+  );
+  return value;
+}
+
+function inventoryResultInfo(resultInfo, requestedPage, pageLength) {
+  if (resultInfo === undefined) return Object.freeze({});
+  invariant(
+    resultInfo !== null &&
+      typeof resultInfo === "object" &&
+      !Array.isArray(resultInfo),
+    "D1 inventory result_info must be an object when present.",
+  );
+  const count = optionalNonNegativeInteger(
+    resultInfo.count,
+    "D1 inventory result_info.count",
+  );
+  const page = optionalNonNegativeInteger(
+    resultInfo.page,
+    "D1 inventory result_info.page",
+  );
+  const perPage = optionalNonNegativeInteger(
+    resultInfo.per_page,
+    "D1 inventory result_info.per_page",
+  );
+  const totalCount = optionalNonNegativeInteger(
+    resultInfo.total_count,
+    "D1 inventory result_info.total_count",
+  );
+  invariant(
+    count === undefined || count === pageLength,
+    "D1 inventory result_info.count contradicts the page length.",
+  );
+  invariant(
+    page === undefined || page === requestedPage,
+    "D1 inventory result_info.page contradicts the requested page.",
+  );
+  invariant(
+    perPage === undefined || perPage === INVENTORY_PAGE_SIZE,
+    "D1 inventory result_info.per_page contradicts the requested page size.",
+  );
+  return Object.freeze({ totalCount });
+}
+
+export function inventoryPageIsLast(
+  resultInfo,
+  pageLength,
+  collectedCount,
+  knownTotalCount,
+) {
+  invariant(
+    Number.isSafeInteger(pageLength) &&
+      pageLength >= 0 &&
+      pageLength <= INVENTORY_PAGE_SIZE,
+    "The D1 inventory page length is outside the requested page size.",
+  );
+  invariant(
+    Number.isSafeInteger(collectedCount) && collectedCount >= pageLength,
+    "The D1 inventory collected count is malformed.",
+  );
+  const currentTotalCount = optionalNonNegativeInteger(
+    resultInfo?.total_count,
+    "D1 inventory result_info.total_count",
+  );
+  if (knownTotalCount !== undefined && currentTotalCount !== undefined) {
+    invariant(
+      currentTotalCount === knownTotalCount,
+      "D1 inventory total_count changed between pages.",
+    );
+  }
+  const totalCount = currentTotalCount ?? knownTotalCount;
+  invariant(
+    totalCount === undefined || collectedCount <= totalCount,
+    "The D1 inventory collected count exceeds total_count.",
+  );
+  const shortPage = pageLength < INVENTORY_PAGE_SIZE;
+  invariant(
+    !shortPage || totalCount === undefined || collectedCount === totalCount,
+    "A short D1 inventory page contradicts total_count; refusing a partial inventory.",
+  );
+  // Sem total_count, uma página curta e não vazia pode ser um lote parcial;
+  // pedir a página seguinte avançaria pelo per_page solicitado e poderia
+  // saltar entradas. Somente páginas cheias continuam e uma vazia encerra.
+  invariant(
+    totalCount !== undefined || !shortPage || pageLength === 0,
+    "A non-empty short D1 inventory page without total_count cannot prove a contiguous inventory.",
+  );
+  return totalCount === undefined
+    ? pageLength === 0
+    : collectedCount === totalCount;
 }
 
 // O inventário percorre TODAS as páginas: uma leitura parcial faria o
 // reaper ignorar descartáveis além da primeira página e faria a
 // confirmação de DELETE reportar ausência de um banco que só não coube
 // na página lida.
-export async function listDatabases(configuration, requestFn = cloudflareRequest) {
+export async function listDatabases(
+  configuration,
+  requestFn = cloudflareRequest,
+  deadlineMs,
+) {
   const collected = [];
+  const seenDatabaseIds = new Set();
+  let stableTotalCount;
   for (let page = 1; page <= MAX_INVENTORY_PAGES; page += 1) {
+    deadlineBoundedTimeout(deadlineMs);
     const payload = await requestFn(
       configuration,
       `/accounts/${configuration.accountId}/d1/database?per_page=${String(INVENTORY_PAGE_SIZE)}&page=${String(page)}`,
+      {},
+      deadlineMs,
     );
-    invariant(Array.isArray(payload.result), "D1 database list is not an array.");
-    collected.push(...payload.result);
+    invariant(
+      Array.isArray(payload.result),
+      "D1 database list is not an array.",
+    );
+    const { totalCount } = inventoryResultInfo(
+      payload.result_info,
+      page,
+      payload.result.length,
+    );
+    if (totalCount !== undefined) {
+      invariant(
+        stableTotalCount === undefined || stableTotalCount === totalCount,
+        "D1 inventory total_count changed between pages.",
+      );
+      stableTotalCount = totalCount;
+    }
+    for (const database of payload.result) {
+      invariant(
+        database !== null &&
+          typeof database === "object" &&
+          !Array.isArray(database),
+        "D1 inventory contains a malformed database entry.",
+      );
+      const safeDatabaseId = reconstructSafe(
+        database.uuid,
+        DATABASE_ID_PATTERN,
+        "D1 database UUID",
+      );
+      invariant(
+        !seenDatabaseIds.has(safeDatabaseId),
+        "D1 inventory contains a duplicate D1 database UUID across pages.",
+      );
+      seenDatabaseIds.add(safeDatabaseId);
+      collected.push({ ...database, uuid: safeDatabaseId });
+    }
     if (
-      inventoryPageIsLast(payload.result_info, payload.result.length, collected.length)
+      inventoryPageIsLast(
+        payload.result_info,
+        payload.result.length,
+        collected.length,
+        stableTotalCount,
+      )
     ) {
       return collected;
     }
@@ -187,7 +449,11 @@ export function parseDisposableTimestamp(name) {
 // execuções seguintes — o cron do reaper é o backstop.
 export const MAX_REAP_PER_RUN = 5;
 
-export function selectStaleDisposables(databases, nowMs, limit = MAX_REAP_PER_RUN) {
+export function selectStaleDisposables(
+  databases,
+  nowMs,
+  limit = MAX_REAP_PER_RUN,
+) {
   const stale = databases
     .map((database) => ({
       database,
@@ -195,7 +461,8 @@ export function selectStaleDisposables(databases, nowMs, limit = MAX_REAP_PER_RU
     }))
     .filter(
       (entry) =>
-        entry.createdMs !== null && nowMs - entry.createdMs >= STALE_DATABASE_AGE_MS,
+        entry.createdMs !== null &&
+        nowMs - entry.createdMs >= STALE_DATABASE_AGE_MS,
     )
     .sort((left, right) => left.createdMs - right.createdMs)
     .map((entry) => entry.database);
@@ -205,10 +472,16 @@ export function selectStaleDisposables(databases, nowMs, limit = MAX_REAP_PER_RU
   });
 }
 
-async function reapStaleDisposables(configuration, nowMs) {
-  const databases = await listDatabases(configuration);
+export async function reapStaleDisposables(
+  configuration,
+  nowMs,
+  requestFn = cloudflareRequest,
+  deadlineMs,
+) {
+  const databases = await listDatabases(configuration, requestFn, deadlineMs);
   const { stale, deferredCount } = selectStaleDisposables(databases, nowMs);
-  for (const database of stale) {
+  let reapedCount = 0;
+  for (const [index, database] of stale.entries()) {
     invariant(
       database.uuid !== PRODUCTION_DATABASE_ID,
       "Refusing to reap: a disposable-named database carries the production ID.",
@@ -216,13 +489,29 @@ async function reapStaleDisposables(configuration, nowMs) {
     console.log(
       `Reaping stale disposable database ${reconstructSafe(database.name, DISPOSABLE_DATABASE_NAME_PATTERN, "Disposable database name")}.`,
     );
-    await deleteDatabaseWithConfirmation(configuration, database.uuid);
+    try {
+      await deleteDatabaseWithConfirmation(
+        configuration,
+        database.uuid,
+        requestFn,
+        deadlineMs,
+      );
+      reapedCount += 1;
+    } catch (error) {
+      if (!(error instanceof RemoteMaintenanceDeadlineError)) throw error;
+      const totalDeferred = deferredCount + stale.length - index;
+      console.log(
+        `Deferring ${String(totalDeferred)} stale disposable database(s) because the reaper deadline was reached.`,
+      );
+      return Object.freeze({ reapedCount, deferredCount: totalDeferred });
+    }
   }
   if (deferredCount > 0) {
     console.log(
       `Deferring ${String(deferredCount)} stale disposable database(s) to the next run (per-run cap ${String(MAX_REAP_PER_RUN)}).`,
     );
   }
+  return Object.freeze({ reapedCount, deferredCount });
 }
 
 // Uma resposta perdida, expirada ou ilegível pode ter criado o banco
@@ -231,9 +520,14 @@ async function reapStaleDisposables(configuration, nowMs) {
 // reconciliação procura o órfão pelo nome exato e o apaga antes de
 // propagar a falha original; se a própria reconciliação falhar, o reaper
 // de obsoletos continua sendo o backstop declarado.
-async function reconcileAmbiguousCreation(configuration, name, requestFn) {
+async function reconcileAmbiguousCreation(
+  configuration,
+  name,
+  requestFn,
+  deadlineMs,
+) {
   try {
-    const databases = await listDatabases(configuration, requestFn);
+    const databases = await listDatabases(configuration, requestFn, deadlineMs);
     const orphan = databases.find((database) => database.name === name);
     if (orphan === undefined) {
       console.log("Ambiguous disposable creation left no orphan behind.");
@@ -243,7 +537,12 @@ async function reconcileAmbiguousCreation(configuration, name, requestFn) {
       orphan.uuid !== PRODUCTION_DATABASE_ID,
       "Refusing to reconcile: the orphan carries the production ID.",
     );
-    await deleteDatabaseWithConfirmation(configuration, orphan.uuid, requestFn);
+    await deleteDatabaseWithConfirmation(
+      configuration,
+      orphan.uuid,
+      requestFn,
+      deadlineMs,
+    );
     // O nome é construído localmente (prefixo + relógio + sufixo local);
     // nada dele veio da rede.
     console.log(`Deleted the orphaned disposable database ${name}.`);
@@ -258,6 +557,8 @@ export async function createDisposableDatabase(
   configuration,
   nowMs,
   requestFn = cloudflareRequest,
+  deadlineMs,
+  reconciliationDeadlineMs = deadlineMs,
 ) {
   const suffix = [...crypto.getRandomValues(new Uint8Array(4))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -267,11 +568,13 @@ export async function createDisposableDatabase(
     DISPOSABLE_DATABASE_NAME_PATTERN.test(name),
     `Generated disposable name does not match its own pattern: ${name}`,
   );
+  deadlineBoundedTimeout(deadlineMs);
   try {
     const payload = await requestFn(
       configuration,
       `/accounts/${configuration.accountId}/d1/database`,
       { method: "POST", body: JSON.stringify({ name }) },
+      deadlineMs,
     );
     const databaseId = payload.result?.uuid;
     invariant(
@@ -284,7 +587,12 @@ export async function createDisposableDatabase(
     );
     return { databaseId, name };
   } catch (error) {
-    await reconcileAmbiguousCreation(configuration, name, requestFn);
+    await reconcileAmbiguousCreation(
+      configuration,
+      name,
+      requestFn,
+      reconciliationDeadlineMs,
+    );
     throw error;
   }
 }
@@ -293,6 +601,7 @@ export async function deleteDatabaseWithConfirmation(
   configuration,
   databaseId,
   requestFn = cloudflareRequest,
+  deadlineMs,
 ) {
   invariant(
     databaseId !== PRODUCTION_DATABASE_ID,
@@ -300,10 +609,12 @@ export async function deleteDatabaseWithConfirmation(
   );
   for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
     try {
+      deadlineBoundedTimeout(deadlineMs);
       await requestFn(
         configuration,
         `/accounts/${configuration.accountId}/d1/database/${databaseId}`,
         { method: "DELETE" },
+        deadlineMs,
       );
     } catch (error) {
       if (attempt + 1 === DELETE_CONFIRMATION_ATTEMPTS) {
@@ -313,7 +624,11 @@ export async function deleteDatabaseWithConfirmation(
         // indisponível, a causa raiz continua sendo o erro original.
         let stillListed = true;
         try {
-          const databases = await listDatabases(configuration, requestFn);
+          const databases = await listDatabases(
+            configuration,
+            requestFn,
+            deadlineMs,
+          );
           stillListed = databases.some(
             (database) => database.uuid === databaseId,
           );
@@ -324,29 +639,32 @@ export async function deleteDatabaseWithConfirmation(
         throw error;
       }
     }
-    const databases = await listDatabases(configuration, requestFn);
+    const databases = await listDatabases(configuration, requestFn, deadlineMs);
     if (!databases.some((database) => database.uuid === databaseId)) {
       return;
     }
-    await delay(250 * 2 ** attempt);
+    const backoffMs = deleteConfirmationBackoffMs(attempt, deadlineMs);
+    if (backoffMs > 0) await delay(backoffMs);
   }
   throw new Error(
     `A disposable database is still listed after ${DELETE_CONFIRMATION_ATTEMPTS} delete attempts (ID withheld from the log; see the Cloudflare dashboard).`,
   );
 }
 
-async function d1Query(configuration, databaseId, sql) {
+async function d1Query(configuration, databaseId, sql, deadlineMs) {
+  deadlineBoundedTimeout(deadlineMs);
   const payload = await cloudflareRequest(
     configuration,
     `/accounts/${configuration.accountId}/d1/database/${databaseId}/query`,
     { method: "POST", body: JSON.stringify({ sql }) },
+    deadlineMs,
   );
   const first = Array.isArray(payload.result) ? payload.result[0] : undefined;
   invariant(first?.success === true, `D1 query failed: ${sql}`);
   return first.results ?? [];
 }
 
-function applyMigrationsWithWrangler(temporaryConfigPath) {
+function applyMigrationsWithWrangler(temporaryConfigPath, deadlineMs) {
   // Ambiente esfregado: o wrangler só enxerga o necessário; o token entra
   // por variável e nunca por arquivo.
   const environment = {
@@ -376,7 +694,11 @@ function applyMigrationsWithWrangler(temporaryConfigPath) {
       cwd: REPOSITORY_ROOT,
       env: environment,
       stdio: ["ignore", "inherit", "inherit"],
-      timeout: WRANGLER_TIMEOUT_MS,
+      timeout: deadlineBoundedTimeout(
+        deadlineMs,
+        Date.now(),
+        WRANGLER_TIMEOUT_MS,
+      ),
     },
   );
   invariant(
@@ -417,18 +739,105 @@ export function assertFinalSchema(rows) {
   );
 }
 
-async function proveAlertDeliveryRoundtrip(configuration, databaseId) {
+function sqlWithoutComments(sql) {
+  let result = "";
+  let quote;
+  for (let index = 0; index < sql.length; index += 1) {
+    const character = sql[index];
+    const next = sql[index + 1];
+    if (quote !== undefined) {
+      result += character;
+      const closingCharacter = quote === "[" ? "]" : quote;
+      if (character === closingCharacter) {
+        if (quote !== "[" && next === closingCharacter) {
+          result += next;
+          index += 1;
+        } else {
+          quote = undefined;
+        }
+      }
+      continue;
+    }
+    if (
+      character === "'" ||
+      character === '"' ||
+      character === "`" ||
+      character === "["
+    ) {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === "-" && next === "-") {
+      index += 2;
+      while (index < sql.length && sql[index] !== "\n" && sql[index] !== "\r") {
+        index += 1;
+      }
+      result += "\n";
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      index += 2;
+      while (
+        index < sql.length &&
+        !(sql[index] === "*" && sql[index + 1] === "/")
+      ) {
+        index += 1;
+      }
+      index += 1;
+      result += " ";
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
+export function assertAlertDeliveryStateConstraint(rows) {
+  invariant(
+    rows.length === 1 && typeof rows[0]?.sql === "string",
+    "The migrated alert_delivery table definition is missing.",
+  );
+  invariant(
+    /\bstate\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(\s*state\s+IN\s*\(\s*'pending'\s*,\s*'sent'\s*\)\s*\)(?=\s*(?:,|\)))/iu.test(
+      sqlWithoutComments(rows[0].sql),
+    ),
+    "The migrated alert_delivery table does not enforce the exact pending/sent state constraint.",
+  );
+}
+
+export function assertInvalidAlertDeliveryStateWasRejected(rows) {
+  invariant(
+    rows.length === 1 && rows[0]?.state === "pending",
+    "The migrated alert_delivery table accepted a state outside pending/sent.",
+  );
+}
+
+export function assertSentAlertDeliveryStateWasAccepted(rows) {
+  invariant(
+    rows.length === 1 && rows[0]?.state === "sent",
+    "The migrated alert_delivery table rejected the required sent state.",
+  );
+}
+
+async function proveAlertDeliveryRoundtrip(
+  configuration,
+  databaseId,
+  deadlineMs,
+) {
   const deliveryId = "00000000-0000-4000-8000-00000000d1d1";
   await d1Query(
     configuration,
     databaseId,
     `INSERT INTO alert_delivery (delivery_id, payload_json, state, created_ms, updated_ms)
      VALUES ('${deliveryId}', '{"title":"prova"}', 'pending', 1000, 1000)`,
+    deadlineMs,
   );
   const rows = await d1Query(
     configuration,
     databaseId,
     `SELECT delivery_id, state, attempts, next_due_ms FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
   );
   // Diagnóstico sem conteúdo remoto: só contagens e booleanos locais.
   invariant(
@@ -438,31 +847,79 @@ async function proveAlertDeliveryRoundtrip(configuration, databaseId) {
       rows[0].next_due_ms === 0,
     `alert_delivery roundtrip mismatch: rows=${String(rows.length)} pending=${String(rows[0]?.state === "pending")} attempts0=${String(rows[0]?.attempts === 0)} due0=${String(rows[0]?.next_due_ms === 0)}.`,
   );
-  let rejected = false;
-  try {
-    await d1Query(
-      configuration,
-      databaseId,
-      `UPDATE alert_delivery SET state = 'parked' WHERE delivery_id = '${deliveryId}'`,
-    );
-  } catch {
-    rejected = true;
-  }
-  invariant(
-    rejected,
-    "alert_delivery accepted a state outside the two-state design; the CHECK constraint is missing.",
+  // Prova comportamental do CHECK sem converter falha SQL/rede em sucesso:
+  // OR IGNORE mantém o caminho remoto bem-sucedido, mas uma tabela sem a
+  // restrição aceitaria o estado fora do contrato e seria detectada abaixo.
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE OR IGNORE alert_delivery SET state = 'parked' WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
   );
+  const rejectedStateRows = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT state FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  assertInvalidAlertDeliveryStateWasRejected(rejectedStateRows);
+  // Uma collation permissiva (por exemplo, NOCASE) pode fazer o DDL parecer
+  // correto e ainda ampliar o domínio. Prove que a variante de caixa também
+  // é rejeitada antes de aceitar o literal canônico `sent`.
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE OR IGNORE alert_delivery SET state = 'PENDING' WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  const rejectedCaseVariantRows = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT state FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  assertInvalidAlertDeliveryStateWasRejected(rejectedCaseVariantRows);
+  await d1Query(
+    configuration,
+    databaseId,
+    `UPDATE alert_delivery SET state = 'sent' WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  const acceptedStateRows = await d1Query(
+    configuration,
+    databaseId,
+    `SELECT state FROM alert_delivery WHERE delivery_id = '${deliveryId}'`,
+    deadlineMs,
+  );
+  assertSentAlertDeliveryStateWasAccepted(acceptedStateRows);
+  const definitionRows = await d1Query(
+    configuration,
+    databaseId,
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_delivery'",
+    deadlineMs,
+  );
+  assertAlertDeliveryStateConstraint(definitionRows);
 }
 
 export async function proveRemoteMigration({ environment = process.env } = {}) {
-  verifyRemoteProofDeadline(environment);
+  const proofDeadlineMs = verifyRemoteProofDeadline(environment);
   const configuration = readConfiguration(environment);
   const nowMs = Date.now();
+  const { workDeadlineMs, reaperDeadlineMs, cleanupDeadlineMs } =
+    partitionRemoteProofDeadline(proofDeadlineMs, nowMs);
 
-  await reapStaleDisposables(configuration, nowMs);
+  await reapStaleDisposables(
+    configuration,
+    nowMs,
+    cloudflareRequest,
+    reaperDeadlineMs,
+  );
   const { databaseId, name } = await createDisposableDatabase(
     configuration,
     nowMs,
+    cloudflareRequest,
+    workDeadlineMs,
+    cleanupDeadlineMs,
   );
   console.log(`Created disposable database ${name}.`);
 
@@ -508,14 +965,16 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
       migrationNames.includes(SEAL_MIGRATION_NAME),
       `The migration chain no longer contains ${SEAL_MIGRATION_NAME}; the staged proof needs updating.`,
     );
-    const preSeal = migrationNames.filter((entry) => entry < SEAL_MIGRATION_NAME);
+    const preSeal = migrationNames.filter(
+      (entry) => entry < SEAL_MIGRATION_NAME,
+    );
     for (const entry of preSeal) {
       await copyFile(
         join(RELAY_ROOT, "migrations", entry),
         join(stagedMigrationsDir, entry),
       );
     }
-    applyMigrationsWithWrangler(temporaryConfigPath);
+    applyMigrationsWithWrangler(temporaryConfigPath, workDeadlineMs);
 
     // Semeadura da tupla de ativação histórica que a 0006 exige.
     await d1Query(
@@ -528,6 +987,7 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
               slack_delivery_protocol_activation_id = '${SEALED_PROTOCOL_ACTIVATION_ID}',
               slack_delivery_protocol_schema_revision = '0005_reconcile_live_slack_receipts'
         WHERE singleton_id = 1`,
+      workDeadlineMs,
     );
 
     // Estágio 2: a cadeia completa (o wrangler retoma depois das gravadas)
@@ -539,17 +999,30 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
         join(stagedMigrationsDir, entry),
       );
     }
-    applyMigrationsWithWrangler(temporaryConfigPath);
+    applyMigrationsWithWrangler(temporaryConfigPath, workDeadlineMs);
     const schemaRows = await d1Query(
       configuration,
       databaseId,
       "SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index') ORDER BY type, name",
+      workDeadlineMs,
     );
     assertFinalSchema(schemaRows);
-    await proveAlertDeliveryRoundtrip(configuration, databaseId);
+    await proveAlertDeliveryRoundtrip(
+      configuration,
+      databaseId,
+      workDeadlineMs,
+    );
   } finally {
-    await deleteDatabaseWithConfirmation(configuration, databaseId);
-    await rm(temporaryDirectory, { force: true, recursive: true });
+    try {
+      await deleteDatabaseWithConfirmation(
+        configuration,
+        databaseId,
+        cloudflareRequest,
+        cleanupDeadlineMs,
+      );
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
   }
   return Object.freeze({ status: "proved", database: name });
 }
@@ -558,17 +1031,28 @@ export async function reapStaleDisposablesOnly({
   environment = process.env,
 } = {}) {
   // Modo do slack-d1-disposable-reaper.yml: só a colheita de descartáveis
-  // obsoletos, sem prazo de prova (o workflow não define
-  // REMOTE_PROOF_DEADLINE_MS) e sem criar banco nenhum.
+  // obsoletos, com prazo próprio anterior ao timeout do workflow e sem
+  // criar banco nenhum.
+  const deadlineMs = verifyReaperDeadline(environment);
   const configuration = readConfiguration(environment);
-  await reapStaleDisposables(configuration, Date.now());
-  return Object.freeze({ status: "reaped" });
+  const { reapedCount, deferredCount } = await reapStaleDisposables(
+    configuration,
+    Date.now(),
+    cloudflareRequest,
+    deadlineMs,
+  );
+  return Object.freeze({ status: "reaped", reapedCount, deferredCount });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   const entry = process.argv.includes("--reap-stale")
-    ? reapStaleDisposablesOnly().then(() => {
-        console.log("Stale disposable reap completed.");
+    ? reapStaleDisposablesOnly().then(({ reapedCount, deferredCount }) => {
+        console.log(
+          `Stale disposable reap pass completed (reaped=${String(reapedCount)}, deferred=${String(deferredCount)}).`,
+        );
       })
     : proveRemoteMigration().then(({ database }) => {
         console.log(`Remote v2 migration proof passed on ${database}.`);
