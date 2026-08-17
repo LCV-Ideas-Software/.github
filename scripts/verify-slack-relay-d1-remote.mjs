@@ -201,6 +201,9 @@ function applyMigrationsWithWrangler(temporaryConfigPath) {
     PATH: process.env.PATH,
     WRANGLER_SEND_METRICS: "false",
   };
+  // stdio herdado: o wrangler escreve o próprio diagnóstico direto no log
+  // do job; este processo nunca captura nem re-registra a saída (que o
+  // CodeQL trata como derivada do ambiente, onde vive o token).
   const result = spawnSync(
     process.execPath,
     [
@@ -215,14 +218,14 @@ function applyMigrationsWithWrangler(temporaryConfigPath) {
     ],
     {
       cwd: REPOSITORY_ROOT,
-      encoding: "utf8",
       env: environment,
+      stdio: ["ignore", "inherit", "inherit"],
       timeout: WRANGLER_TIMEOUT_MS,
     },
   );
   invariant(
     result.status === 0,
-    `wrangler d1 migrations apply failed (status ${String(result.status)}):\n${result.stdout}\n${result.stderr}`,
+    `wrangler d1 migrations apply failed with status ${String(result.status)}; the wrangler output above carries the diagnostic.`,
   );
 }
 
@@ -299,6 +302,13 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
   );
   try {
     const temporaryConfigPath = join(temporaryDirectory, "wrangler.jsonc");
+    // O id vem da API: o valor gravado no arquivo é a EXTRAÇÃO do casamento
+    // com o padrão estrito, nunca a string da rede em si.
+    const safeDatabaseId = DATABASE_ID_PATTERN.exec(databaseId)?.[0];
+    invariant(
+      typeof safeDatabaseId === "string" && safeDatabaseId !== "",
+      "Disposable database ID failed strict re-validation before the config write.",
+    );
     const configuration_json = {
       name: "github-slack-alerts-remote-proof",
       main: join(RELAY_ROOT, "src", "index.ts"),
@@ -307,7 +317,7 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
         {
           binding: "DB",
           database_name: "github-slack-alerts-db",
-          database_id: databaseId,
+          database_id: safeDatabaseId,
           migrations_dir: join(RELAY_ROOT, "migrations"),
         },
       ],
