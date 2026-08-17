@@ -170,15 +170,12 @@ jobs:
           expected_wrangler="$(node -p "require('./workers/github-slack-relay/package.json').devDependencies.wrangler")"
           test "$(workers/github-slack-relay/node_modules/.bin/wrangler --version)" = "$expected_wrangler"
 
-      - name: Apply durable inbox migrations
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
-            --remote \
-            --config workers/github-slack-relay/wrangler.jsonc
-
+      # Ordem contract-phase (achado da revisão): o Worker novo tolera o
+      # esquema antigo (ignora as tabelas legadas), mas o Worker antigo NÃO
+      # tolera o novo (a 0011 dropa tabelas que ele consulta). Publicar o
+      # código ANTES de migrar elimina a janela em que a revisão anterior
+      # roda contra o esquema já contraído; migrações futuras nascem com o
+      # código que as usa e toleram segundos de esquema anterior.
       - name: Deploy verified relay
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -188,4 +185,13 @@ jobs:
             --strict \
             --tag "$GITHUB_SHA" \
             --message "GitHub Actions ${GITHUB_REPOSITORY}@${GITHUB_SHA}" \
+            --config workers/github-slack-relay/wrangler.jsonc
+
+      - name: Apply durable inbox migrations
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          workers/github-slack-relay/node_modules/.bin/wrangler d1 migrations apply github-slack-alerts-db \
+            --remote \
             --config workers/github-slack-relay/wrangler.jsonc

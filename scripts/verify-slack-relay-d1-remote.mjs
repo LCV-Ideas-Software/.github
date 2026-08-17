@@ -3,7 +3,7 @@
 // deploy) e afirma o esquema FINAL do caminho v2 — alert_delivery e seus
 // dois índices, nada além. A prova roda ANTES do deploy tocar o banco de
 // produção; se a cadeia não aplicar limpa aqui, o deploy nem começa.
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -30,6 +30,18 @@ export const WRANGLER_TIMEOUT_MS = 120_000;
 export const STALE_DATABASE_AGE_MS = 3 * 60 * 60_000;
 export const REMOTE_PROOF_MINIMUM_MARGIN_MS = 10 * 60_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
+
+// A migração 0006 sela o protocolo legado e EXIGE o estado de ativação
+// histórico em relay_state (a 0001 o cria inativo). O pipeline legado foi
+// aposentado, mas a cadeia de migrações é história imutável: a prova semeia
+// a MESMA tupla de produção entre a 0005 e a 0006, exatamente como a
+// implantação real viveu. Valores preservados do módulo de contrato
+// aposentado (slack-delivery-protocol-contract.mjs).
+const SEAL_MIGRATION_NAME = "0006_seal_slack_delivery_protocol.sql";
+const SEALED_PROTOCOL_REVISION = "e0131a758123cf210d9cc9e7e537b72dc0441a90";
+const SEALED_PROTOCOL_ACTIVATED_AT = 1_786_579_752_661;
+const SEALED_PROTOCOL_ACTIVATION_ID =
+  "18a94ba84d6bac0f8ae396996a5cd6ac026eb336be5eef702b92b3b6a60d4ff7";
 
 // O esquema final EXATO do caminho v2 (pós-0011): qualquer objeto a mais ou
 // a menos é falha — inclusive um vestígio legado que uma migração deixasse.
@@ -302,6 +314,8 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
   );
   try {
     const temporaryConfigPath = join(temporaryDirectory, "wrangler.jsonc");
+    const stagedMigrationsDir = join(temporaryDirectory, "migrations");
+    await mkdir(stagedMigrationsDir);
     // O id vem da API: o valor gravado no arquivo é a EXTRAÇÃO do casamento
     // com o padrão estrito, nunca a string da rede em si.
     const safeDatabaseId = DATABASE_ID_PATTERN.exec(databaseId)?.[0];
@@ -318,7 +332,7 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
           binding: "DB",
           database_name: "github-slack-alerts-db",
           database_id: safeDatabaseId,
-          migrations_dir: join(RELAY_ROOT, "migrations"),
+          migrations_dir: stagedMigrationsDir,
         },
       ],
     };
@@ -328,6 +342,46 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
       { encoding: "utf8", mode: 0o600 },
     );
 
+    // Estágio 1: só as migrações ANTERIORES ao selo (0001-0005), como a
+    // produção viveu antes da ativação.
+    const migrationNames = (await readdir(join(RELAY_ROOT, "migrations")))
+      .filter((entry) => entry.endsWith(".sql"))
+      .sort();
+    invariant(
+      migrationNames.includes(SEAL_MIGRATION_NAME),
+      `The migration chain no longer contains ${SEAL_MIGRATION_NAME}; the staged proof needs updating.`,
+    );
+    const preSeal = migrationNames.filter((entry) => entry < SEAL_MIGRATION_NAME);
+    for (const entry of preSeal) {
+      await copyFile(
+        join(RELAY_ROOT, "migrations", entry),
+        join(stagedMigrationsDir, entry),
+      );
+    }
+    applyMigrationsWithWrangler(temporaryConfigPath);
+
+    // Semeadura da tupla de ativação histórica que a 0006 exige.
+    await d1Query(
+      configuration,
+      databaseId,
+      `UPDATE relay_state
+          SET slack_delivery_protocol_active = 1,
+              slack_delivery_protocol_revision = '${SEALED_PROTOCOL_REVISION}',
+              slack_delivery_protocol_activated_at = ${String(SEALED_PROTOCOL_ACTIVATED_AT)},
+              slack_delivery_protocol_activation_id = '${SEALED_PROTOCOL_ACTIVATION_ID}',
+              slack_delivery_protocol_schema_revision = '0005_reconcile_live_slack_receipts'
+        WHERE singleton_id = 1`,
+    );
+
+    // Estágio 2: a cadeia completa (o wrangler retoma depois das gravadas)
+    // — inclusive a 0011, que dropa o legado e deixa o esquema final v2.
+    for (const entry of migrationNames) {
+      if (entry < SEAL_MIGRATION_NAME) continue;
+      await copyFile(
+        join(RELAY_ROOT, "migrations", entry),
+        join(stagedMigrationsDir, entry),
+      );
+    }
     applyMigrationsWithWrangler(temporaryConfigPath);
     const schemaRows = await d1Query(
       configuration,
@@ -343,15 +397,29 @@ export async function proveRemoteMigration({ environment = process.env } = {}) {
   return Object.freeze({ status: "proved", database: name });
 }
 
+export async function reapStaleDisposablesOnly({
+  environment = process.env,
+} = {}) {
+  // Modo do slack-d1-disposable-reaper.yml: só a colheita de descartáveis
+  // obsoletos, sem prazo de prova (o workflow não define
+  // REMOTE_PROOF_DEADLINE_MS) e sem criar banco nenhum.
+  const configuration = readConfiguration(environment);
+  await reapStaleDisposables(configuration, Date.now());
+  return Object.freeze({ status: "reaped" });
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  proveRemoteMigration()
-    .then(({ database }) => {
-      console.log(`Remote v2 migration proof passed on ${database}.`);
-    })
-    .catch((error) => {
-      console.error(
-        `Remote v2 migration proof failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      process.exitCode = 1;
-    });
+  const entry = process.argv.includes("--reap-stale")
+    ? reapStaleDisposablesOnly().then(() => {
+        console.log("Stale disposable reap completed.");
+      })
+    : proveRemoteMigration().then(({ database }) => {
+        console.log(`Remote v2 migration proof passed on ${database}.`);
+      });
+  entry.catch((error) => {
+    console.error(
+      `Remote D1 maintenance failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+  });
 }
