@@ -138,7 +138,10 @@ class AlertStore {
   insert(deliveryId: string, payloadJson: string, now: number): Promise<boolean>; // false = GUID repetido
   get(deliveryId: string): Promise<AlertRow | null>;
   dueRows(now: number, limit: number): Promise<AlertRow[]>;
-  stampDue(deliveryId: string, now: number, nextDueMs: number): Promise<boolean>; // o CAS; false = não estava devida
+  // (Emendado na rodada 15 da revisão, 17/08: o CAS ganhou o pino da versão
+  // observada — `observedAttempts` no WHERE — e o cron captura o relógio POR
+  // carimbo. Os trechos abaixo carregam a emenda.)
+  stampDue(deliveryId: string, now: number, nextDueMs: number, observedAttempts: number): Promise<boolean>; // o CAS; false = não estava devida OU a versão morreu
   markSent(deliveryId: string, ts: string | null, now: number): Promise<void>;
   recordFailure(deliveryId: string, error: string): Promise<void>; // NÃO toca agendamento
   counts(): Promise<{ pending: number; sent: number }>;
@@ -166,8 +169,8 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
   it("CAS: linha devida + dois passes = EXATAMENTE UM carimbo (teste vinculante do §9)", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-2", "{}", 1_000); // next_due_ms = 0: devida já
-    const primeiro = await store.stampDue("guid-2", 10_000, 310_000);
-    const segundo = await store.stampDue("guid-2", 10_001, 310_000);
+    const primeiro = await store.stampDue("guid-2", 10_000, 310_000, 0);
+    const segundo = await store.stampDue("guid-2", 10_001, 310_000, 0);
     expect(primeiro).toBe(true);
     expect(segundo).toBe(false); // next_due_ms=310000 > 10001: não devida
     expect((await store.get("guid-2"))?.attempts).toBe(1);
@@ -177,13 +180,13 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-3", "{}", 1_000);
     await store.markSent("guid-3", "1786.000001", 2_000);
-    expect(await store.stampDue("guid-3", 10_000, 310_000)).toBe(false);
+    expect(await store.stampDue("guid-3", 10_000, 310_000, 0)).toBe(false);
   });
 
   it("recordFailure NÃO toca agendamento nem created_ms (matriz por mutação)", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-4", "{}", 1_000);
-    await store.stampDue("guid-4", 5_000, 305_000);
+    await store.stampDue("guid-4", 5_000, 305_000, 0);
     await store.recordFailure("guid-4", "http_500");
     const row = await store.get("guid-4");
     expect(row).toMatchObject({
@@ -196,7 +199,7 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("velha", "{}", 1_000);
     await store.insert("nova", "{}", 2_000);
-    await store.stampDue("nova", 3_000, 999_000); // não-devida
+    await store.stampDue("nova", 3_000, 999_000, 0); // não-devida
     await store.insert("entregue", "{}", 1_500);
     await store.markSent("entregue", null, 2_500);
     const due = await store.dueRows(10_000, 10);
@@ -264,12 +267,15 @@ export class AlertStore {
   }
 
   // O carimbo (ADR-002 §4). created_ms NUNCA aparece num SET deste arquivo.
-  async stampDue(deliveryId: string, now: number, nextDueMs: number): Promise<boolean> {
+  // O pino de attempts é a emenda da rodada 15: quem leu retrato morto não
+  // carimba, mesmo com o prazo vencido por igualdade.
+  async stampDue(deliveryId: string, now: number, nextDueMs: number, observedAttempts: number): Promise<boolean> {
     const r = await this.#db.prepare(
       `UPDATE alert_delivery
           SET attempts = attempts + 1, updated_ms = ?, next_due_ms = ?
-        WHERE delivery_id = ? AND state = 'pending' AND next_due_ms <= ?`,
-    ).bind(now, nextDueMs, deliveryId, now).run();
+        WHERE delivery_id = ? AND state = 'pending' AND next_due_ms <= ?
+          AND attempts = ?`,
+    ).bind(now, nextDueMs, deliveryId, now, observedAttempts).run();
     return (r.meta.changes ?? 0) > 0;
   }
 
@@ -635,9 +641,11 @@ export async function runAlertCron(deps: Deps): Promise<{ published: number; pur
   const devidas = await deps.store.dueRows(agora, CRON_SELECT_LIMIT);
   for (const row of devidas) {
     // O carimbo (CAS): a linha deixa de ser devida NO enfileiramento.
+    // Emenda da rodada 15: relógio POR carimbo e versão observada no CAS.
+    const agoraDoCarimbo = deps.now();
     const proximaTentativa = row.attempts + 1;
     const carimbou = await deps.store.stampDue(
-      row.deliveryId, agora, agora + recuoMs(proximaTentativa),
+      row.deliveryId, agoraDoCarimbo, agoraDoCarimbo + recuoMs(proximaTentativa), row.attempts,
     );
     if (!carimbou) continue; // outro passe venceu, ou o consumidor marcou sent
     try {

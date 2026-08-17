@@ -15,8 +15,8 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
   it("CAS: linha devida + dois passes = EXATAMENTE UM carimbo (teste vinculante do §9)", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-2", "{}", 1_000); // next_due_ms = 0: devida já
-    const primeiro = await store.stampDue("guid-2", 10_000, 310_000);
-    const segundo = await store.stampDue("guid-2", 10_001, 310_000);
+    const primeiro = await store.stampDue("guid-2", 10_000, 310_000, 0);
+    const segundo = await store.stampDue("guid-2", 10_001, 310_000, 0);
     expect(primeiro).toBe(true);
     expect(segundo).toBe(false); // next_due_ms=310000 > 10001: não devida
     expect((await store.get("guid-2"))?.attempts).toBe(1);
@@ -30,24 +30,41 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-corrida", "{}", 1_000);
     const [a, b] = await Promise.all([
-      store.stampDue("guid-corrida", 10_000, 310_000),
-      store.stampDue("guid-corrida", 10_001, 310_001),
+      store.stampDue("guid-corrida", 10_000, 310_000, 0),
+      store.stampDue("guid-corrida", 10_001, 310_001, 0),
     ]);
     expect(Number(a) + Number(b)).toBe(1);
     expect((await store.get("guid-corrida"))?.attempts).toBe(1);
+  });
+
+  it("CAS pina a VERSÃO observada: quem leu retrato velho não carimba nem quando o relógio alcança o recuo (achado r15)", async () => {
+    // Dois passes leram o MESMO retrato (attempts=0). A carimba com t0 e o
+    // prazo vira t0+recuo(1). B, atrasado, só executa quando o relógio
+    // alcança exatamente esse prazo: o predicado de tempo devido passa por
+    // igualdade — mas a versão que B observou está morta, e o pino de
+    // attempts mata o segundo carimbo (senão B publicava de novo e a
+    // tentativa 2 nascia com recuo calculado do attempts velho).
+    const store = new AlertStore(makeAlertDb().d1);
+    await store.insert("guid-versao", "{}", 1_000);
+    expect(await store.stampDue("guid-versao", 10_000, 310_000, 0)).toBe(true);
+    expect(await store.stampDue("guid-versao", 310_000, 610_000, 0)).toBe(false);
+    expect(await store.get("guid-versao")).toMatchObject({
+      attempts: 1,
+      nextDueMs: 310_000,
+    });
   });
 
   it("linha 'sent' nunca é carimbada: o consumidor venceu a corrida", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-3", "{}", 1_000);
     await store.markSent("guid-3", "1786.000001", 2_000);
-    expect(await store.stampDue("guid-3", 10_000, 310_000)).toBe(false);
+    expect(await store.stampDue("guid-3", 10_000, 310_000, 0)).toBe(false);
   });
 
   it("recordFailure NÃO toca agendamento nem created_ms (matriz por mutação)", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("guid-4", "{}", 1_000);
-    await store.stampDue("guid-4", 5_000, 305_000);
+    await store.stampDue("guid-4", 5_000, 305_000, 0);
     await store.recordFailure("guid-4", "http_500");
     const row = await store.get("guid-4");
     expect(row).toMatchObject({
@@ -64,7 +81,7 @@ describe("AlertStore — a matriz de escritas do ADR-002 §4", () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("velha", "{}", 1_000);
     await store.insert("nova", "{}", 2_000);
-    await store.stampDue("nova", 3_000, 999_000); // não-devida
+    await store.stampDue("nova", 3_000, 999_000, 0); // não-devida
     await store.insert("entregue", "{}", 1_500);
     await store.markSent("entregue", null, 2_500);
     const due = await store.dueRows(10_000, 10);

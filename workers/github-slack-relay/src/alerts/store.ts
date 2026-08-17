@@ -91,18 +91,27 @@ export class AlertStore {
   }
 
   // O carimbo (ADR-002 §4): a linha deixa de ser devida NO enfileiramento.
+  // O CAS pina a VERSÃO observada (attempts) além do prazo — achado da
+  // rodada 15 da revisão: dois passes que leram o MESMO retrato podiam
+  // ambos carimbar quando o relógio do segundo alcançava o recuo do
+  // primeiro (o predicado de prazo passa por igualdade), publicando duas
+  // vezes e agendando a tentativa seguinte com o recuo do attempts velho.
+  // Quem leu retrato morto não carimba; a leitura fresca do passe seguinte
+  // agenda com a curva certa.
   async stampDue(
     deliveryId: string,
     now: number,
     nextDueMs: number,
+    observedAttempts: number,
   ): Promise<boolean> {
     const r = await this.#db
       .prepare(
         `UPDATE alert_delivery
             SET attempts = attempts + 1, updated_ms = ?, next_due_ms = ?
-          WHERE delivery_id = ? AND state = 'pending' AND next_due_ms <= ?`,
+          WHERE delivery_id = ? AND state = 'pending' AND next_due_ms <= ?
+            AND attempts = ?`,
       )
-      .bind(now, nextDueMs, deliveryId, now)
+      .bind(now, nextDueMs, deliveryId, now, observedAttempts)
       .run();
     return (r.meta.changes ?? 0) > 0;
   }

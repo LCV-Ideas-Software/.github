@@ -1121,10 +1121,14 @@ export async function handleFetch(
   // devida no próximo passe do cron.
   let stamped = false;
   try {
+    // A linha que o ingress acabou de INSERIR tem attempts = 0 — a versão
+    // observada do pino do CAS (achado da rodada 15). Um passe do cron que
+    // carimbe antes muda a versão, e o pino falha como o prazo falharia.
     stamped = await dependencies.alertStore.stampDue(
       deliveryId,
       now,
       now + recuoMs(1),
+      0,
     );
   } catch {
     // stamped continua false: publica só quem carimba.

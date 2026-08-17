@@ -18,11 +18,18 @@ export async function runAlertCron(
 
   const devidas = await deps.store.dueRows(agora, CRON_SELECT_LIMIT);
   for (const row of devidas) {
+    // Relógio POR carimbo e versão observada no CAS (achado da rodada 15
+    // da revisão): num passe lento que atravessa o tique seguinte, o
+    // relógio do início do passe já venceu o recuo — um prazo calculado
+    // dele nasceria vencido, e o retrato velho de attempts comprimia a
+    // curva. O pino da versão mata o carimbo de quem leu retrato morto.
+    const agoraDoCarimbo = deps.now();
     const proximaTentativa = row.attempts + 1;
     const carimbou = await deps.store.stampDue(
       row.deliveryId,
-      agora,
-      agora + recuoMs(proximaTentativa),
+      agoraDoCarimbo,
+      agoraDoCarimbo + recuoMs(proximaTentativa),
+      row.attempts,
     );
     if (!carimbou) continue; // outro passe venceu, ou o consumidor marcou sent
     try {

@@ -46,6 +46,50 @@ describe("cron — o único agendador (ADR-002 §4)", () => {
     expect((await store.get("d-2"))?.attempts).toBe(2);
   });
 
+  it("retrato VELHO não publica: o pino da versão barra o passe atrasado; a leitura fresca agenda a tentativa 2 com recuo(2) (achado r15)", async () => {
+    // O cenário da rodada 15 da revisão: o passe B leu o retrato de ANTES
+    // do carimbo de A (attempts=0, next_due_ms=0) e, atrasado, só executa
+    // quando o próprio relógio alcança o recuo de A — o prazo passa por
+    // igualdade e, sem o pino da versão, B publicava a MESMA linha de novo
+    // com recuo(1) no lugar de recuo(2), comprimindo a curva.
+    const db = makeAlertDb().d1;
+    const store = new AlertStore(db);
+    await store.insert("d-4", "{}", 1_000);
+    const retratoVelho = await store.get("d-4"); // versão 0, antes de A
+    expect(retratoVelho).not.toBeNull();
+
+    const { sent, queue } = fila();
+    const t0 = 10_000;
+    await runAlertCron({ store, queue, now: () => t0 }); // passe A: tentativa 1
+    expect(sent).toEqual([{ v: 2, delivery_id: "d-4" }]);
+
+    const storeComRetratoVelho = new (class extends AlertStore {
+      override async dueRows() {
+        return retratoVelho === null ? [] : [retratoVelho];
+      }
+    })(db);
+    const rB = await runAlertCron({
+      store: storeComRetratoVelho,
+      queue,
+      now: () => t0 + 300_000, // o relógio de B alcança o recuo de A
+    });
+    expect(rB.published).toBe(0);
+    expect(sent).toHaveLength(1); // um ÚNICO queue.send no total
+    expect(await store.get("d-4")).toMatchObject({
+      attempts: 1,
+      nextDueMs: t0 + 300_000,
+    });
+
+    // A leitura FRESCA é quem agenda a tentativa 2 — com recuo(2).
+    const t2 = t0 + 300_001;
+    const rC = await runAlertCron({ store, queue, now: () => t2 });
+    expect(rC.published).toBe(1);
+    expect(await store.get("d-4")).toMatchObject({
+      attempts: 2,
+      nextDueMs: t2 + 15 * 60_000,
+    });
+  });
+
   it("sent não é publicada; retenção apaga sent velha no mesmo passe", async () => {
     const store = new AlertStore(makeAlertDb().d1);
     await store.insert("s-1", "{}", 1_000);

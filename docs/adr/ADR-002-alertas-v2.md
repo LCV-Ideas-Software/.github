@@ -89,9 +89,12 @@ UPDATE alert_delivery
  WHERE delivery_id = :id
    AND state = 'pending'
    AND next_due_ms <= :agora
+   AND attempts = :attempts_observados
 ```
 
 Se `changes = 1`, publica; se `0`, outro passe já pegou a linha e este não faz nada. A linha deixa de ser devida **no instante do enfileiramento**, e não quando o consumidor roda.
+
+*(Emendado na rodada 15 da revisão da implementação, 17/08, e o achado é do codex:)* **o CAS pina a versão observada** (`attempts = :attempts_observados`) além do prazo, e o relógio do carimbo é capturado **por carimbo**, não por passe. Sem o pino, dois passes que leram o **mesmo retrato** podiam ambos carimbar quando o relógio do segundo alcançava exatamente o recuo do primeiro — o predicado de prazo passa por igualdade —, publicando **duas vezes** e agendando a tentativa seguinte com o recuo do `attempts` velho (a curva comprimia um degrau). Com o pino, quem leu retrato morto não carimba; a leitura fresca do passe seguinte agenda com a curva certa. E sem o relógio por carimbo, um passe lento que atravessa o tique seguinte carimbava um prazo que **já nascia vencido**. Reproduzido em teste antes da correção (dois passes com o mesmo retrato, relógios a `recuo(1)` de distância: duas publicações); o ingress pina `attempts = 0`, a versão da linha que ele acabou de inserir.
 
 *(Emendado em 16/08, mesma noite: a primeira forma avaliava `updated_ms + recuo(attempts)` na consulta, e a revisão derrubou — `updated_ms` carrega o agora do último carimbo, então `updated_ms <= agora` casa com praticamente toda linha pendente e **nenhum índice estreita a varredura**, num conjunto que é ilimitado por desenho. O tempo devido passa a ser **pré-computado no carimbo**, na coluna `next_due_ms`, e a seleção do cron vira exatamente indexável: `WHERE state = 'pending' AND next_due_ms <= :agora ORDER BY next_due_ms`. A curva continua no código que carimba; o esquema guarda só o resultado.)*
 
