@@ -43,6 +43,10 @@ const REAPER_WORKFLOW_URL = new URL(
   "../.github/workflows/slack-d1-disposable-reaper.yml",
   import.meta.url,
 );
+const REMOTE_PROOF_SOURCE_URL = new URL(
+  "./verify-slack-relay-d1-remote.mjs",
+  import.meta.url,
+);
 
 function fakeDatabase(index, name = `db-${String(index)}`) {
   return {
@@ -311,6 +315,59 @@ test("the reaper workflow establishes an internal deadline before its ten-minute
   assert.ok(deadlineStep < reaperStep);
 });
 
+test("the remote proof creates its local cleanup scope before the remote database", async () => {
+  const source = await readFile(REMOTE_PROOF_SOURCE_URL, "utf8");
+  const start = source.indexOf("export async function proveRemoteMigration");
+  const end = source.indexOf(
+    "export async function reapStaleDisposablesOnly",
+    start,
+  );
+  const proof = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  const localScope = proof.indexOf("await mkdtemp(");
+  const cleanupScope = proof.indexOf("try {", localScope);
+  const remoteCreation = proof.indexOf("await createDisposableDatabase(");
+  const cleanupFinally = proof.indexOf("} finally {", remoteCreation);
+  const localCleanup = proof.indexOf(
+    "await rm(temporaryDirectory",
+    cleanupFinally,
+  );
+  assert.notEqual(localScope, -1);
+  assert.notEqual(cleanupScope, -1);
+  assert.notEqual(remoteCreation, -1);
+  assert.notEqual(cleanupFinally, -1);
+  assert.notEqual(localCleanup, -1);
+  assert.ok(
+    localScope < cleanupScope &&
+      cleanupScope < remoteCreation &&
+      remoteCreation < cleanupFinally &&
+      cleanupFinally < localCleanup,
+    "remote D1 creation must remain inside the local cleanup try/finally",
+  );
+});
+
+test("the remote roundtrip rejects an arbitrary state before accepting sent", async () => {
+  const source = await readFile(REMOTE_PROOF_SOURCE_URL, "utf8");
+  const start = source.indexOf("async function proveAlertDeliveryRoundtrip");
+  const end = source.indexOf(
+    "export async function proveRemoteMigration",
+    start,
+  );
+  const roundtrip = source.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  const arbitraryProbe = roundtrip.indexOf("SET state = 'unexpected'");
+  const arbitraryAssertion = roundtrip.indexOf(
+    "assertInvalidAlertDeliveryStateWasRejected(rejectedArbitraryStateRows)",
+  );
+  const sentTransition = roundtrip.indexOf("SET state = 'sent'");
+  assert.ok(
+    arbitraryProbe >= 0 &&
+      arbitraryProbe < arbitraryAssertion &&
+      arbitraryAssertion < sentTransition,
+    "an arbitrary out-of-contract state must be rejected before sent is accepted",
+  );
+});
+
 test("disposable database names carry the prefix, a timestamp, and entropy", () => {
   const name = `${DATABASE_NAME_PREFIX}1755000000000-0a1b2c3d`;
   assert.match(name, DISPOSABLE_DATABASE_NAME_PATTERN);
@@ -399,6 +456,14 @@ test("the alert_delivery definition requires the exact pending/sent CHECK", () =
       {
         sql: `CREATE TABLE alert_delivery (
           state TEXT NOT NULL CHECK (state IN ('pending', 'sent')) COLLATE NOCASE
+        )`,
+      },
+    ],
+    [
+      {
+        sql: `CREATE TABLE alert_delivery (
+          "state TEXT NOT NULL CHECK (state IN ('pending', 'sent'))," TEXT,
+          state TEXT NOT NULL CHECK (state <> 'parked' AND state <> 'PENDING')
         )`,
       },
     ],

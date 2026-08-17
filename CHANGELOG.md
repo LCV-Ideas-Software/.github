@@ -44,6 +44,10 @@ presentation rule this organization applies to text meant for people
   the source of truth and the cron republishes), and the first real alerts were delivered to
   `#github-alerts` after the bot was re-invited to the private channel (`channel_not_found` is the
   membership signal, now documented as a deployment precondition).
+- Hardened the terminal v2 proof so quoted SQL identifiers cannot impersonate the exact
+  `pending`/`sent` constraint, same-endpoint HTTP and root-dot webhook aliases count as duplicate
+  relay hooks, and a disposable D1 database is created only inside an installed local cleanup
+  scope. Evidence: #244.
 
 ## 15/08/2026 — Official security automation
 
