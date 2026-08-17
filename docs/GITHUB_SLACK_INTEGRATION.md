@@ -729,8 +729,10 @@ and Slack-activity checkpoints, no delivery is in `manual_review` or
 `dead_letter`, and no current `accepted_by_slack`, `accepted_by_trigger`, or
 `send_started` row has exceeded its 20-minute reconciliation deadline. The
 current HMAC value and both Slack trigger values must validate. The v2 alerts
-path is part of the same readiness class: `SLACK_BOT_TOKEN` and
-`ALERTS_STATUS_SECRET` must be readable and non-empty, and the
+path is part of the same readiness class: `SLACK_BOT_TOKEN` must be readable
+and non-empty, `ALERTS_STATUS_SECRET` must be readable and at least 32 bytes
+long (the same floor the webhook secret has — both sides of it are
+provisioned by us), and the
 `alert_delivery` table must answer a constant-work schema probe (`LIMIT 1` —
 `/healthz` is unauthenticated, so the full aggregate snapshot stays behind
 the secret on `/alerts/status`). A ready reply

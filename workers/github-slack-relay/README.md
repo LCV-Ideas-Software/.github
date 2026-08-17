@@ -376,8 +376,10 @@ current `accepted_by_slack`, `accepted_by_trigger`, or `send_started` row has
 exceeded its reconciliation deadline. The configured current and distinct
 `NEXT` HMAC bindings, active signer selection, and both Slack
 trigger bindings must validate. The v2 alerts path belongs to the same
-readiness class: `SLACK_BOT_TOKEN` and `ALERTS_STATUS_SECRET` must be readable
-and non-empty, and the `alert_delivery` table must answer a constant-work
+readiness class: `SLACK_BOT_TOKEN` must be readable and non-empty,
+`ALERTS_STATUS_SECRET` must be readable and at least 32 bytes long (the same
+floor the webhook secret has — both sides of it are provisioned by us), and
+the `alert_delivery` table must answer a constant-work
 schema probe (`LIMIT 1`; the aggregate snapshot stays behind the secret on
 `/alerts/status` because `/healthz` is unauthenticated). The ready reply
 contains only the boolean
