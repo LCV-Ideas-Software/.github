@@ -30,43 +30,48 @@ it with the documented `/github unsubscribe` command. This is an exceptional
 cleanup action, not part of deployment. See [Using GitHub in Slack][github-slack]
 and [Implementing slash commands][slack-slash-commands].
 
-## End-to-end architecture
+## End-to-end architecture (ADR-002, alertas v2)
+
+**A arquitetura anterior — gatilho de Slack Workflow, HMAC Deno, recibos de
+fronteira de envio e reconciliação — foi REMOVIDA pelo ADR-002 (16/08/2026)
+para o caminho de alertas.** O `#github-activity` é coberto pelo app oficial
+"GitHub for Slack" (assinado nos 12 repositórios); este sistema entrega
+exclusivamente o que o oficial não entrega, num único canal:
 
 ```text
-GitHub organization webhook
+GitHub organization webhook (OITO eventos)
   -> POST /github/webhook
-  -> verify GitHub HMAC, organization, repository and event
-  -> normalize and sanitize; persist a D1 inbox row
-  -> github-slack-activity OR github-slack-alerts Queue
-  -> destination Slack webhook trigger
-  -> Deno custom function verifies downstream HMAC, destination and freshness
-  -> authenticated send-boundary receipt to D1
-  -> Slack SendMessage function
-  -> private #github-activity OR private #github-alerts
-  -> authenticated delivery receipt with Slack message_context.message_ts
-  -> paginated Slack activity reconciliation attaches trace_id
+  -> verifica HMAC do GitHub, organização, repositório e evento (allowlist)
+  -> normaliza e sanitiza; INSERT em alert_delivery (pending; GUID = PK)
+  -> carimbo CAS da 1ª tentativa (attempts=1, next_due=+recuo(1)) e,
+     SÓ se o carimbo venceu, publica {v:2, delivery_id} na fila
+  -> consumidor relê a linha; monta o texto NO ENVIO; chat.postMessage
+     com token de bot (chat:write) no privado #github-alerts
+  -> ok:true marca sent (ts é recibo); qualquer outra coisa fica pending
+  -> CRON (*/5) é o ÚNICO agendador: recarimba por next_due_ms com recuo
+     min(24h, 5min×3^(n-1)) e apaga sent com mais de 30 dias
+  -> /alerts/status (segredo compartilhado) serve idade+contagens de um
+     retrato único; o vigia (Actions, */15) falha alto por idade > 1h
 ```
 
-There is no manually assembled Slack workflow. The two workflows, their custom
-authentication function, and both webhook-trigger definitions live under
-`slack/github-integration/` and are deployed as the Slack-hosted app
-`LCV GitHub integration`.
+Não há estado terminal: linha recusada fica `pending` para sempre (decisão
+12), e a fila não retenta (`max_retries: 0`, sem DLQ de alertas) — crash de
+consumidor vira atraso de um recuo, nunca perda nem segunda agenda.
 
-The two destinations are fixed in code and cannot be selected by a GitHub
-payload:
+| Destino | Canal privado | Eventos |
+| --- | --- | --- |
+| `alerts` (único) | `#github-alerts` | `workflow_run` problemático (excluindo, por repositório+caminho, o vigia e o deploy do relay); `dependabot_alert`; `code_scanning_alert`; `secret_scanning_alert`; `repository_advisory`; `security_and_analysis`; `secret_scanning_alert_location`; `secret_scanning_scan` |
 
-| Destination | Private channel    | Routed events                                                                                                                                                                              |
-| ----------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `activity`  | `#github-activity` | Default-branch pushes; pull requests; pull-request reviews and review comments; issues and issue comments; releases; discussions and discussion comments; successful/inactive deployments. |
-| `alerts`    | `#github-alerts`   | Problematic completed Actions workflows; error/failure deployments; Dependabot, code-scanning, and secret-scanning alert lifecycle events, including resolution and reopening events.      |
+Eventos de atividade (pushes, PRs, issues, releases, discussions,
+`deployment_status`…) **não são aceitos** — morrem no ingress com
+`event_not_supported` (202); o app oficial os cobre. `security_advisory`
+global não é assinável por webhook de organização (disponibilidade `app`).
+Repositórios arquivados ou fora de `LCV-Ideas-Software` são recusados.
 
-Archived repositories, repositories outside `LCV-Ideas-Software`, unsupported
-actions, successful workflows, transient deployment states, and
-non-default-branch pushes are acknowledged without being queued. For
-`deployment_status`, `error` and `failure` route to alerts, `success` and
-`inactive` route to activity, and all other states are ignored. Discussion
-events are intentionally included in the organization webhook and activity
-route.
+O código do caminho legado (workflows Slack em `slack/github-integration/`,
+tabelas `deliveries`/traces, reconciliação) permanece no repositório como
+**legado declarado**, inalcançável pela allowlist; as filas de atividade
+estão pausadas. A retirada é tarefa futura, fora do ADR-002.
 
 ## Trust boundaries
 
@@ -177,13 +182,14 @@ logged.
 ### Human-facing date and time
 
 The Worker preserves the source timestamp as ISO 8601 in `occurred_at`, and
-that exact technical value remains part of the HMAC input. After successful
-authentication, the Slack app alone renders it as `dd/MM/aaaa às HH:mm:ss`,
-using `Intl.DateTimeFormat` with locale `pt-BR` and fixed IANA zone
-`Etc/GMT+3`. The POSIX/IANA sign convention is inverted, so `+3` means
-UTC−03:00. The technical timezone suffix is deliberately omitted from the
-user-facing text. Invalid, ambiguous or absent values become
-`Data e hora do evento: não informadas` and are never echoed.
+that exact technical value remains part of the HMAC input. **ADR-002: a
+fronteira de apresentação é o renderizador do Worker**
+(`src/alerts/render.ts`), que formata `occurred_at` como
+`dd/MM/aaaa às HH:mm:ss` em UTC−03:00 fixo (Brasília não tem horário de
+verão desde 2019); valores inválidos ou ausentes viram
+`Data e hora do evento: não informadas` e o ISO cru nunca é ecoado. O
+parágrafo seguinte descreve o comportamento do app Slack **legado**, mantido
+como registro histórico.
 
 The app deliberately does not use Slack's `<!date>` syntax because Slack
 renders that syntax in each viewer device's timezone. The native timestamp that

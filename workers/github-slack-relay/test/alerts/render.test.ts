@@ -65,6 +65,29 @@ describe("renderAlertText", () => {
     expect(texto).toContain("d-contrato"); // delivery_id
   });
 
+  it("occurred_at é apresentado em dd/MM/aaaa às HH:mm:ss UTC−03:00 — o renderizador é a fronteira de apresentação", () => {
+    // Contrato de docs/GITHUB_SLACK_INTEGRATION.md: o Slack Workflow que
+    // formatava datas saiu do caminho; quem apresenta agora é este
+    // renderizador (achado da revisão: o ISO cru vazava ao usuário).
+    const texto = renderAlertText({
+      title: "T",
+      delivery_id: "d-data",
+      occurred_at: "2026-08-14T18:43:01Z",
+    });
+    expect(texto).toContain("14/08/2026 às 15:43:01");
+    expect(texto).not.toContain("2026-08-14T18:43:01Z");
+  });
+
+  it("occurred_at inválido ou ausente: 'Data e hora do evento: não informadas'", () => {
+    for (const payload of [
+      { title: "T", delivery_id: "d-1" },
+      { title: "T", delivery_id: "d-2", occurred_at: "não-é-data" },
+    ]) {
+      const texto = renderAlertText(payload);
+      expect(texto).toContain("Data e hora do evento: não informadas");
+    }
+  });
+
   it("campo ausente não derruba: linha é omitida, nunca 'undefined' no texto", () => {
     const texto = renderAlertText({ title: "X", delivery_id: "d-1" });
     expect(texto).not.toContain("undefined");

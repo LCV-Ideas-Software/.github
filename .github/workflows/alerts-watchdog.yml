@@ -80,6 +80,18 @@ jobs:
             body=$(printf '%s' "$response" | sed '$d')
           fi
 
+          # 404 é a JANELA DE ROLLOUT, não falha (achado da revisão): no
+          # primeiro merge, o agendamento ativa antes de o deploy serial
+          # (verify -> prove_remote_d1 -> deploy, até ~60 min) publicar a
+          # rota — o Worker antigo devolve 404 e dois tiques fabricariam o
+          # e-mail de alarme. Depois do deploy, /alerts/status nunca
+          # devolve 404 (401/200/503), e remover a rota exigiria outro PR.
+          # O marcador fica INTOCADO: neutro, nem ok nem falha.
+          if [ "$http_code" = "404" ]; then
+            echo "Rota /alerts/status ainda não implantada (HTTP 404); janela de rollout, sem contar falha."
+            exit 0
+          fi
+
           if [ "$http_code" != "200" ]; then
             printf 'falha' > .watchdog-marker
             if [ "$anterior" = "falha" ]; then

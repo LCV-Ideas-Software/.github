@@ -34,9 +34,29 @@ export function renderAlertText(payload: Record<string, unknown>): string {
   if (url !== null) linhas.push(`<${url}|Open in GitHub>`);
 
   const id = s("delivery_id");
+  const quando = formatarBrasilia(s("occurred_at"));
   if (id !== null) {
-    const quando = s("occurred_at");
     linhas.push(`Delivery: \`${id}\`${quando ? ` · ${quando}` : ""}`);
   }
+  if (quando === null) {
+    // Contrato de apresentação (docs/GITHUB_SLACK_INTEGRATION.md): o
+    // fallback é explícito, nunca silêncio nem ISO cru.
+    linhas.push("Data e hora do evento: não informadas");
+  }
   return linhas.join("\n");
+}
+
+// dd/MM/aaaa às HH:mm:ss em UTC−03:00 (Brasília, sem horário de verão
+// desde 2019). O Slack Workflow que formatava datas saiu do caminho; o
+// renderizador é a fronteira de apresentação agora (achado da revisão).
+function formatarBrasilia(iso: string | null): string | null {
+  if (iso === null) return null;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t - 3 * 3_600_000);
+  const p = (n: number): string => String(n).padStart(2, "0");
+  return (
+    `${p(d.getUTCDate())}/${p(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}` +
+    ` às ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+  );
 }
