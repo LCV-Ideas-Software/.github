@@ -1,8 +1,11 @@
 // A matriz de escritas do ADR-002 §4 mora aqui, e é ela que os testes
-// prendem: o INGRESS escreve a linha inteira no INSERT e nada depois; o
-// CRON escreve attempts/updated_ms/next_due_ms (o carimbo) e apaga `sent`
-// velho; o CONSUMIDOR escreve só desfecho (state/slack_message_ts no
-// sucesso, last_error no fracasso). created_ms NUNCA aparece num SET.
+// prendem. O carimbo (attempts/updated_ms/next_due_ms, via stampDue) é do
+// PAPEL de agendador: o CRON o executa a cada passe, e o INGRESS o executa
+// UMA vez, no aceite, para a tentativa 1 — "publica só quem carimba" vale
+// inclusive para ele (a redação anterior, "INSERT e nada depois", ficou
+// falsa com essa emenda e a revisão pegou). O CONSUMIDOR escreve só
+// desfecho (state/slack_message_ts no sucesso, last_error no fracasso).
+// created_ms NUNCA aparece num SET depois do INSERT.
 
 export type AlertRow = {
   deliveryId: string;
