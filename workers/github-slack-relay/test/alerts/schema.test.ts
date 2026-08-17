@@ -148,6 +148,30 @@ describe("migração 0010: alert_delivery", () => {
     );
   });
 
+  it("created_ms e updated_ms têm o mesmo domínio fechado — a classe inteira, não a instância", () => {
+    // Mesma afinidade-não-é-tipo do attempts, e o dano é maior: o vigia
+    // computa idade de created_ms e o carimbo do cron soma sobre updated_ms.
+    // Um valor malformado numa delas corrompe detecção E agendamento.
+    const { database } = makeAlertDb();
+    const casos: ReadonlyArray<readonly [string, string, unknown, unknown]> = [
+      ["id-cm-txt", "created_ms texto", "x", 1],
+      ["id-cm-frac", "created_ms fração", 0.5, 1],
+      ["id-um-txt", "updated_ms texto", 1, "x"],
+      ["id-um-frac", "updated_ms fração", 1, 0.5],
+    ];
+    for (const [id, , createdMs, updatedMs] of casos) {
+      expect(() =>
+        database
+          .prepare(
+            `INSERT INTO alert_delivery
+               (delivery_id, payload_json, state, created_ms, updated_ms)
+             VALUES (?, '{}', 'pending', ?, ?)`,
+          )
+          .run(id, createdMs as never, updatedMs as never),
+      ).toThrow(/CHECK constraint failed/);
+    }
+  });
+
   it("attempts tem domínio fechado: nem negativo, nem fracionário, nem texto", () => {
     // `INTEGER` no SQLite é AFINIDADE, não tipo: sem typeof(), o CHECK
     // `attempts >= 0` aceita 0.5 e aceita texto numérico. E agora attempts

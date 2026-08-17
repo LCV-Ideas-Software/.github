@@ -305,7 +305,9 @@ A coluna de estado distingue **fonte** (o repositório contém a mudança) de **
 | 5 | Assinatura do webhook da organização com os nove eventos | **existe** (dois hooks na org, um para este Worker, última entrega bem-sucedida); faltam os cinco eventos novos | **não é verificável por `gh api`** — ver o bloco abaixo; verifica-se na tela da organização |
 | 6 | Endereço de notificação da conta que edita o cron do vigia | **não verificável por mim** | ajuste da conta no GitHub; a API me devolveu 404 por falta do escopo `user` — **é ação do operador** |
 | 7 | Bot presente no canal privado | **feito** — `U0BR6NL2B9N` no `#github-alerts` desde 14/08 16:51 | `auth.test` e a leitura do canal |
-| 8 | **Reduzir o app a `chat:write`** e reinstalar/rotacionar o token | **pende — ação do operador** | o header `x-oauth-scopes` do `auth.test` deixa de listar `groups:history,groups:read` |
+| 8 | **Reduzir o app a `chat:write`** e reinstalar/rotacionar o token — **PRÉ-REQUISITO do deploy do Worker** | **pende — ação do operador** | o header `x-oauth-scopes` do `auth.test` deixa de listar `groups:history,groups:read` |
+
+**A ordem do item 8 é vinculante, não preferência** *(achado da revisão: o binding na fonte torna o token disponível ao Worker implantado)*: primeiro reduzir o escopo e rotacionar, **depois** o primeiro deploy que carrega o binding. Um Worker comprometido com o token atual leria o histórico do canal privado; com a ordem respeitada, o token que o binding entrega já nasce mínimo.
 
 **O item 8 é achado da revisão automática, e procede como princípio de menor privilégio:** o token de hoje carrega `groups:history` e `groups:read`, mas este desenho **só posta** — a varredura de histórico está deliberadamente aposentada em §9, então nenhum caminho lê canal. Um Worker comprometido com o token atual leria o histórico do canal privado; com `chat:write` puro, não. A redução é na página **OAuth & Permissions** do app (remover os dois escopos de Bot Token Scopes, reinstalar, e o token novo substitui o do Secrets Store — a rotação que já estava recomendada por o token ter passado pelo chat).
 

@@ -50,11 +50,16 @@ CREATE TABLE alert_delivery (
   -- esta coluna: é o invariante da instância B. O teste que o prova por
   -- mutação pertence ao store, que ainda NÃO existe nesta branch — até ele
   -- existir, esta linha é intenção declarada, não restrição observada.
-  created_ms INTEGER NOT NULL,
-  -- Escrito a cada tentativa. É deste campo, somado ao recuo, que o cron
-  -- calcula o tempo devido — e é justamente por isso que o vigia NÃO pode
-  -- lê-lo (ADR-001 H40: ancorar a idade aqui manteria o alarme mudo).
+  -- typeof() nas duas colunas de tempo pela mesma razão do attempts — e com
+  -- dano maior se faltasse: o vigia computa idade de created_ms, e o
+  -- carimbo soma sobre updated_ms. Valor malformado corromperia detecção e
+  -- agendamento de uma vez (achado da revisão: a classe, não a instância).
+  created_ms INTEGER NOT NULL
+    CHECK (typeof(created_ms) = 'integer' AND created_ms >= 0),
+  -- Escrito a cada carimbo do cron. O vigia NÃO pode lê-lo
+  -- (ADR-001 H40: ancorar a idade aqui manteria o alarme mudo).
   updated_ms INTEGER NOT NULL
+    CHECK (typeof(updated_ms) = 'integer' AND updated_ms >= 0)
 );
 
 -- Dois índices, dois leitores diferentes, e a distinção é o desenho:
