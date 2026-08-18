@@ -83,11 +83,19 @@ jobs:
       - name: Audit both GitHub and Linear inventories
         env:
           LINEAR_READ_KEY: ${{ secrets.LINEAR_READ_KEY }}
-          # GITHUB_READ_TOKEN must be an organization-wide read-only credential.
-          # Until provisioned, GITHUB_TOKEN is allowed only as a fail-closed
-          # fallback: inaccessible repositories produce exit code 2, never clean.
-          GH_TOKEN: ${{ secrets.GITHUB_READ_TOKEN || github.token }}
+          # Organization-wide access is required because github.token silently
+          # omits Internal and Private repositories outside this repository.
+          GH_TOKEN: ${{ secrets.LINEAR_GITHUB_READ_TOKEN }}
           RECONCILIATION_JSON: github-linear-reconciliation.json
           STRICT_WARNINGS: "true"
           LINEAR_ONLY_TEAM_KEYS: ${{ vars.LINEAR_ONLY_TEAM_KEYS }}
         run: node scripts/github-linear-reconciler.mjs
+
+      - name: Preserve complete reconciliation result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: github-linear-reconciliation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: github-linear-reconciliation.json
+          if-no-files-found: error
+          retention-days: 14

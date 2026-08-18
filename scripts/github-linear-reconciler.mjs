@@ -7,9 +7,12 @@ const DEFAULT_COMMENT_GRACE_MS = 30 * 60 * 1000;
 const DEFAULT_RELEASE_REQUIRED_AFTER = new Date("2026-08-17T12:00:00.000Z");
 const MAX_GITHUB_PAGES = 1_000;
 const MAX_LINEAR_PAGES = 1_000;
-const GITHUB_LINK =
-  /https:\/\/github\.com\/LCV-Ideas-Software\/([^\s/#?]+)\/(issues|pull)\/(\d+)/giu;
+const GITHUB_URL_CANDIDATE = /https:\/\/github\.com\/[^\s<>"']+/giu;
 const GITHUB_COMMENT_TIME_TOLERANCE_MS = 1_000;
+const MIN_INFORMATIVE_DESCRIPTION_WORDS = 5;
+const MAX_DUPLICATE_COMPARISONS = 50_000;
+const MAX_MARKDOWN_FINDING_DETAILS = 500;
+const MAX_MARKDOWN_BYTES = 900 * 1024;
 const HUMAN_DATE_FORMATTER = new Intl.DateTimeFormat("pt-BR", {
   timeZone: "Etc/GMT+3",
   day: "2-digit",
@@ -77,20 +80,98 @@ function githubCommentCreatedAt(comment) {
   return comment?.created_at ?? comment?.createdAt ?? "";
 }
 
-export function canonicalizeCommentBody(value) {
-  return normalizeBody(value)
+function canonicalCrossReference(owner, repo, number, context) {
+  const full = `${owner}/${repo}#${number}`;
+  if (
+    context?.organization &&
+    context?.repository &&
+    githubUrlKey(owner) === githubUrlKey(context.organization) &&
+    githubUrlKey(repo) === githubUrlKey(context.repository)
+  ) {
+    return `#${number}`;
+  }
+  return full;
+}
+
+function canonicalizeCrossReferenceLinks(value, context) {
+  return String(value ?? "").replace(
+    /\[([^\]\n]+)\]\(\s*<?(https?:\/\/[^)\s>]+)>?\s*\)/giu,
+    (markdown, label, target) => {
+      let parsed;
+      try {
+        parsed = new URL(target);
+      } catch {
+        return markdown;
+      }
+      if (parsed.protocol !== "https:" || parsed.port !== "") return markdown;
+      const fullLabel = /^([\p{L}\p{N}_.-]+)\/([\p{L}\p{N}_.-]+)#(\d+)$/u.exec(
+        label,
+      );
+      if (
+        parsed.hostname.toLocaleLowerCase("en-US") === "linear.app" &&
+        /\/review(?:\/|$)/u.test(parsed.pathname) &&
+        fullLabel
+      ) {
+        return canonicalCrossReference(
+          fullLabel[1],
+          fullLabel[2],
+          fullLabel[3],
+          context,
+        );
+      }
+      if (parsed.hostname.toLocaleLowerCase("en-US") !== "github.com")
+        return markdown;
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (
+        parts.length !== 4 ||
+        !["issues", "pull"].includes(parts[2]) ||
+        !/^\d+$/u.test(parts[3])
+      ) {
+        return markdown;
+      }
+      const [owner, repo, , number] = parts;
+      const shortLabel = /^#(\d+)$/u.exec(label);
+      const labelMatches =
+        (shortLabel && shortLabel[1] === number) ||
+        (fullLabel &&
+          githubUrlKey(fullLabel[1]) === githubUrlKey(owner) &&
+          githubUrlKey(fullLabel[2]) === githubUrlKey(repo) &&
+          fullLabel[3] === number);
+      return labelMatches
+        ? canonicalCrossReference(owner, repo, number, context)
+        : markdown;
+    },
+  );
+}
+
+export function canonicalizeCommentBody(value, context) {
+  return normalizeBody(canonicalizeCrossReferenceLinks(value, context))
     .replace(/<(https?:\/\/[^>\s]+)>/gu, "$1")
     .replace(/^\s*[+*]\s+/gmu, "- ")
     .replace(/^\s*-\s+/gmu, "- ");
 }
 
+function foldLatinDiacritics(value) {
+  let output = "";
+  let latinBase = false;
+  for (const character of String(value).normalize("NFD")) {
+    if (/\p{M}/u.test(character)) {
+      if (!latinBase) output += character;
+      continue;
+    }
+    latinBase = /\p{Script=Latin}/u.test(character);
+    output += character;
+  }
+  return output.normalize("NFC");
+}
+
 function normalizeTitle(value) {
-  return normalizeBody(value)
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
+  const raw = normalizeBody(value).normalize("NFKC").toLocaleLowerCase("pt-BR");
+  const normalized = foldLatinDiacritics(raw)
     .toLocaleLowerCase("pt-BR")
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, " ")
     .trim();
+  return normalized || (raw ? `símbolo:${raw}` : "");
 }
 
 const TITLE_BOILERPLATE_WORDS = new Set([
@@ -142,9 +223,7 @@ function jaccard(left, right) {
   return intersection / (left.size + right.size - intersection);
 }
 
-function titleOverlap(left, right) {
-  const leftWords = titleWordSet(left);
-  const rightWords = titleWordSet(right);
+function wordSetOverlap(leftWords, rightWords) {
   let intersection = 0;
   for (const word of leftWords) if (rightWords.has(word)) intersection += 1;
   return {
@@ -174,24 +253,34 @@ function issueRelationIdentifiers(issue) {
   return identifiers;
 }
 
-function issuesAreExplicitlyReconciled(left, right) {
-  return (
-    left.duplicateOf?.identifier === right.identifier ||
-    right.duplicateOf?.identifier === left.identifier ||
-    issueRelationIdentifiers(left).has(right.identifier) ||
-    issueRelationIdentifiers(right).has(left.identifier)
-  );
+function duplicateRelationIdentifiers(issue) {
+  const identifiers = new Set();
+  if (issue.duplicateOf?.identifier)
+    identifiers.add(issue.duplicateOf.identifier);
+  for (const relation of [
+    ...connectionNodes(issue.relations),
+    ...connectionNodes(issue.inverseRelations),
+  ]) {
+    if (String(relation.type).toLocaleLowerCase("en-US") !== "duplicate")
+      continue;
+    const other =
+      relation.issue?.identifier === issue.identifier
+        ? relation.relatedIssue?.identifier
+        : (relation.issue?.identifier ?? relation.relatedIssue?.identifier);
+    if (other) identifiers.add(other);
+  }
+  return identifiers;
 }
 
-function linkedRepositories(issue) {
+function linkedRepositories(issue, organization = DEFAULT_ORGANIZATION) {
   return new Set(
-    collectGithubLinks(issue).map((link) => githubUrlKey(link.repo)),
+    collectGithubLinks(issue, organization).map((link) =>
+      githubUrlKey(link.repo),
+    ),
   );
 }
 
-function sharesRepository(left, right) {
-  const leftRepos = linkedRepositories(left);
-  const rightRepos = linkedRepositories(right);
+function setsIntersect(leftRepos, rightRepos) {
   for (const repo of leftRepos) if (rightRepos.has(repo)) return true;
   return false;
 }
@@ -266,36 +355,61 @@ function hasNativeGithubSync(issue) {
   );
 }
 
+function hasGithubHostUrl(value) {
+  try {
+    return new URL(value).hostname.toLocaleLowerCase("en-US") === "github.com";
+  } catch {
+    return false;
+  }
+}
+
+function isGithubExternalThread(thread) {
+  return Boolean(
+    thread &&
+    (isGithubService(thread.subType) ||
+      isGithubService(thread.name) ||
+      hasGithubHostUrl(thread.url)),
+  );
+}
+
+function hasGithubSyncedEntity(comment) {
+  return (comment?.syncedWith ?? []).some((entity) =>
+    isGithubService(entity.service),
+  );
+}
+
 function hasGithubExternalThread(issue) {
   return connectionNodes(issue.comments).some((comment) => {
-    const thread = comment.externalThread;
-    return (
-      thread &&
-      (isGithubService(thread.subType) || isGithubService(thread.name))
-    );
+    return isGithubExternalThread(comment.externalThread);
   });
 }
 
 function hasConnectedGithubExternalThread(issue) {
   return connectionNodes(issue.comments).some((comment) => {
     const thread = comment.externalThread;
-    return (
-      thread?.isConnected !== false &&
-      (isGithubService(thread?.subType) || isGithubService(thread?.name))
-    );
+    return thread?.isConnected !== false && isGithubExternalThread(thread);
   });
 }
 
 export function isGithubSyncedComment(linearComment, githubComment) {
-  const githubNodeId = githubComment.node_id ?? githubComment.nodeId;
+  const githubExternalIds = new Set(
+    [githubComment.node_id, githubComment.nodeId, githubComment.id]
+      .filter((value) => value !== undefined && value !== null)
+      .map(String),
+  );
   if (
-    githubNodeId &&
+    githubExternalIds.size > 0 &&
     (linearComment.syncedWith ?? []).some(
-      (entity) => isGithubService(entity.service) && entity.id === githubNodeId,
+      (entity) =>
+        isGithubService(entity.service) &&
+        entity.id !== undefined &&
+        entity.id !== null &&
+        githubExternalIds.has(String(entity.id)),
     )
   ) {
     return true;
   }
+  if (hasGithubSyncedEntity(linearComment)) return false;
   const linearTime = Date.parse(
     linearComment.createdAt ?? linearComment.created_at ?? "",
   );
@@ -312,11 +426,19 @@ export function isGithubSyncedComment(linearComment, githubComment) {
 }
 
 function commentsShareGithubNodeId(linearComment, githubComment) {
-  const githubNodeId = githubComment.node_id ?? githubComment.nodeId;
+  const githubExternalIds = new Set(
+    [githubComment.node_id, githubComment.nodeId, githubComment.id]
+      .filter((value) => value !== undefined && value !== null)
+      .map(String),
+  );
   return Boolean(
-    githubNodeId &&
+    githubExternalIds.size > 0 &&
     (linearComment.syncedWith ?? []).some(
-      (entity) => isGithubService(entity.service) && entity.id === githubNodeId,
+      (entity) =>
+        isGithubService(entity.service) &&
+        entity.id !== undefined &&
+        entity.id !== null &&
+        githubExternalIds.has(String(entity.id)),
     ),
   );
 }
@@ -324,9 +446,88 @@ function commentsShareGithubNodeId(linearComment, githubComment) {
 function hasConnectedGithubExternalThreadComment(linearComment) {
   const thread = linearComment?.externalThread;
   return Boolean(
-    thread?.isConnected !== false &&
-    (isGithubService(thread?.subType) || isGithubService(thread?.name)),
+    thread?.isConnected !== false && isGithubExternalThread(thread),
   );
+}
+
+function commentsShareCreatedAt(linearComment, githubComment) {
+  const linearTime = Date.parse(
+    linearComment.createdAt ?? linearComment.created_at ?? "",
+  );
+  const githubTime = Date.parse(
+    githubComment.created_at ?? githubComment.createdAt ?? "",
+  );
+  return (
+    Number.isFinite(linearTime) &&
+    Number.isFinite(githubTime) &&
+    Math.abs(linearTime - githubTime) <= GITHUB_COMMENT_TIME_TOLERANCE_MS
+  );
+}
+
+function integrationAnchorPairStatus(
+  linearComment,
+  githubComment,
+  { organization, githubIssueUrl, linearIssueUrl, linearIdentifier },
+) {
+  const linearBody = normalizeBody(linearComment?.body);
+  const githubBody = String(githubComment?.body ?? "");
+  const isPair =
+    /This comment thread is synced to a corresponding \[GitHub (?:issue|pull request)\]/iu.test(
+      linearBody,
+    ) && /<!--\s*linear-linkback\s*-->/iu.test(githubBody);
+  if (!isPair) return null;
+  const anchorTarget =
+    /This comment thread is synced to a corresponding \[GitHub (?:issue|pull request)\]\((https:\/\/github\.com\/[^)\s]+)\)/iu.exec(
+      linearBody,
+    )?.[1];
+  const anchorLink = githubLinkFromUrl(anchorTarget ?? "", organization);
+  const linkback = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/iu.exec(
+    githubBody,
+  );
+  let linearTargetMatches = false;
+  if (linkback) {
+    try {
+      const parsed = new URL(linkback[1]);
+      const expected = new URL(linearIssueUrl);
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      const expectedSegments = expected.pathname.split("/").filter(Boolean);
+      const issueIndex = segments.findIndex(
+        (segment) => segment.toLocaleLowerCase("en-US") === "issue",
+      );
+      const expectedIssueIndex = expectedSegments.findIndex(
+        (segment) => segment.toLocaleLowerCase("en-US") === "issue",
+      );
+      const sameWorkspace =
+        issueIndex >= 0 &&
+        expectedIssueIndex >= 0 &&
+        issueIndex === expectedIssueIndex &&
+        segments.slice(0, issueIndex).map(githubUrlKey).join("/") ===
+          expectedSegments
+            .slice(0, expectedIssueIndex)
+            .map(githubUrlKey)
+            .join("/");
+      linearTargetMatches =
+        parsed.protocol === "https:" &&
+        parsed.port === "" &&
+        parsed.hostname.toLocaleLowerCase("en-US") === "linear.app" &&
+        expected.protocol === "https:" &&
+        expected.port === "" &&
+        expected.hostname.toLocaleLowerCase("en-US") === "linear.app" &&
+        sameWorkspace &&
+        segments[issueIndex + 1]?.toLocaleLowerCase("en-US") ===
+          linearIdentifier.toLocaleLowerCase("en-US") &&
+        normalizeBody(linkback[2]).toLocaleLowerCase("en-US") ===
+          linearIdentifier.toLocaleLowerCase("en-US");
+    } catch {
+      linearTargetMatches = false;
+    }
+  }
+  return {
+    valid:
+      anchorLink?.kind === "issue" &&
+      githubUrlKey(anchorLink.url) === githubUrlKey(githubIssueUrl) &&
+      linearTargetMatches,
+  };
 }
 
 function pairSyncedComments(linearComments, githubComments) {
@@ -353,8 +554,15 @@ function pairSyncedComments(linearComments, githubComments) {
   pairPass(commentsShareGithubNodeId);
   pairPass(
     (linearComment, githubComment) =>
+      !hasGithubSyncedEntity(linearComment) &&
       hasConnectedGithubExternalThreadComment(linearComment) &&
       isGithubSyncedComment(linearComment, githubComment),
+  );
+  pairPass(
+    (linearComment, githubComment) =>
+      !hasGithubSyncedEntity(linearComment) &&
+      hasConnectedGithubExternalThreadComment(linearComment) &&
+      commentsShareCreatedAt(linearComment, githubComment),
   );
   return { pairs, usedLinear };
 }
@@ -402,6 +610,44 @@ function githubLinkFromSyncedEntity(entity, organization) {
   };
 }
 
+function githubLinkFromUrl(raw, organization) {
+  const candidate = String(raw).replace(/[),.;:!?}\]`]+$/u, "");
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.port !== "" ||
+    parsed.hostname.toLocaleLowerCase("en-US") !== "github.com"
+  ) {
+    return null;
+  }
+  const path = parsed.pathname.match(
+    /^\/([a-z0-9-]+)\/([a-z0-9_.-]+)\/(issues|pull)\/([1-9]\d*)(?:\/.*)?$/iu,
+  );
+  if (!path) return null;
+  const [, owner, repo, resource, numberText] = path;
+  if (
+    owner.toLocaleLowerCase("en-US") !== organization.toLocaleLowerCase("en-US")
+  ) {
+    return null;
+  }
+  const kind =
+    resource.toLocaleLowerCase("en-US") === "pull" ? "pull" : "issue";
+  const number = Number(numberText);
+  const normalizedResource = kind === "pull" ? "pull" : "issues";
+  return {
+    kind,
+    number,
+    owner: organization,
+    repo,
+    url: `https://github.com/${organization}/${repo}/${normalizedResource}/${number}`,
+  };
+}
+
 export function collectGithubLinks(issue, organization = DEFAULT_ORGANIZATION) {
   const links = new Map();
   for (const entity of issue.syncedWith ?? []) {
@@ -412,30 +658,16 @@ export function collectGithubLinks(issue, organization = DEFAULT_ORGANIZATION) {
     issue.description,
     ...connectionNodes(issue.attachments).map((attachment) => attachment.url),
     ...connectionNodes(issue.comments).map((comment) => comment.body),
+    ...connectionNodes(issue.comments).map(
+      (comment) => comment.externalThread?.url,
+    ),
   ];
   for (const source of sources) {
     if (!source) continue;
-    GITHUB_LINK.lastIndex = 0;
-    for (const match of String(source).matchAll(GITHUB_LINK)) {
-      const [raw, repo, resource, numberText] = match;
-      const owner = raw.split("/")[3];
-      if (
-        owner.toLocaleLowerCase("en-US") !==
-        organization.toLocaleLowerCase("en-US")
-      )
-        continue;
-      const kind =
-        resource.toLocaleLowerCase("en-US") === "pull" ? "pull" : "issue";
-      const number = Number(numberText);
-      const normalizedResource = kind === "pull" ? "pull" : "issues";
-      const url = `https://github.com/${organization}/${repo}/${normalizedResource}/${number}`;
-      links.set(url.toLocaleLowerCase("en-US"), {
-        kind,
-        number,
-        owner: organization,
-        repo,
-        url,
-      });
+    GITHUB_URL_CANDIDATE.lastIndex = 0;
+    for (const [raw] of String(source).matchAll(GITHUB_URL_CANDIDATE)) {
+      const link = githubLinkFromUrl(raw, organization);
+      if (link) links.set(link.url.toLocaleLowerCase("en-US"), link);
     }
   }
   return [...links.values()].sort((left, right) =>
@@ -473,67 +705,236 @@ function collectNativeGithubIssueLinks(issue, organization) {
     .filter(Boolean);
 }
 
-function findStrongDuplicateCandidates(linearIssues) {
-  const findings = [];
-  for (let leftIndex = 0; leftIndex < linearIssues.length; leftIndex += 1) {
-    const left = linearIssues[leftIndex];
-    for (
-      let rightIndex = leftIndex + 1;
-      rightIndex < linearIssues.length;
-      rightIndex += 1
-    ) {
-      const right = linearIssues[rightIndex];
-      if (issuesAreExplicitlyReconciled(left, right)) continue;
-      const titlesMatch =
-        normalizeTitle(left.title) === normalizeTitle(right.title);
-      const leftDescriptionWords = wordSet(left.description);
-      const rightDescriptionWords = wordSet(right.description);
-      const descriptionSimilarity = jaccard(
-        leftDescriptionWords,
-        rightDescriptionWords,
-      );
-      const sameRepository = sharesRepository(left, right);
-      if (titlesMatch && descriptionSimilarity >= 0.85 && sameRepository) {
-        findings.push({
-          severity: "error",
-          code: "duplicate_candidate",
-          issue: `${left.identifier}, ${right.identifier}`,
-          message:
-            `título, escopo e repositório coincidem (${Math.round(descriptionSimilarity * 100)}%); ` +
-            "registre duplicateOf ou uma relação explícita",
-        });
-      } else if (titlesMatch) {
-        findings.push({
-          severity: "warning",
-          code: "similar_issue_unlinked",
-          issue: `${left.identifier}, ${right.identifier}`,
-          message:
-            `título idêntico entre issues ainda não relacionados ` +
-            `(${Math.round(descriptionSimilarity * 100)}% de similaridade textual), sem relação explícita`,
-        });
-      } else {
-        const titleSimilarity = titleOverlap(left.title, right.title);
-        const descriptionsAreInformative =
-          leftDescriptionWords.size >= 5 && rightDescriptionWords.size >= 5;
-        if (
-          sameRepository &&
-          descriptionsAreInformative &&
-          descriptionSimilarity >= 0.85 &&
-          titleSimilarity.intersection >= 2 &&
-          titleSimilarity.overlap >= 2 / 3 &&
-          titleSimilarity.jaccard >= 0.5
-        ) {
-          findings.push({
-            severity: "warning",
-            code: "similar_issue_unlinked",
-            issue: `${left.identifier}, ${right.identifier}`,
-            message:
-              `títulos possivelmente parafraseados (${Math.round(titleSimilarity.overlap * 100)}% de cobertura), ` +
-              `descrições equivalentes (${Math.round(descriptionSimilarity * 100)}%) e mesmo repositório; ` +
-              "revise e registre duplicateOf ou uma relação explícita",
-          });
-        }
+function collectExternalThreadIssueLinks(issue, organization) {
+  const links = new Map();
+  for (const comment of connectionNodes(issue.comments)) {
+    const raw = comment.externalThread?.url;
+    if (!raw) continue;
+    const link = githubLinkFromUrl(raw, organization);
+    if (link?.kind === "issue") links.set(githubUrlKey(link.url), link);
+  }
+  return [...links.values()];
+}
+
+function commentsForGithubLink(issue, link, organization, isCanonical) {
+  const comments = connectionNodes(issue.comments);
+  const target = githubUrlKey(link.url);
+  return comments.filter((comment) => {
+    const rawThreadUrl = comment.externalThread?.url;
+    const threadLink = githubLinkFromUrl(rawThreadUrl ?? "", organization);
+    if (threadLink) return githubUrlKey(threadLink.url) === target;
+    return (
+      isCanonical &&
+      !rawThreadUrl &&
+      ((comment.syncedWith ?? []).some((entity) =>
+        isGithubService(entity.service),
+      ) ||
+        isGithubService(comment.externalThread?.subType) ||
+        isGithubService(comment.externalThread?.name))
+    );
+  });
+}
+
+function addBucketIndex(buckets, key, feature) {
+  const components = buckets.get(key) ?? new Map();
+  const existing = components.get(feature.reconciliationComponent) ?? [];
+  existing.push(feature.index);
+  components.set(feature.reconciliationComponent, existing);
+  buckets.set(key, components);
+}
+
+function collectBucketIndexes(buckets, key, right, candidateIndexes) {
+  for (const [component, indexes] of buckets.get(key) ?? []) {
+    if (component === right.reconciliationComponent) continue;
+    for (const index of indexes) candidateIndexes.add(index);
+  }
+}
+
+function duplicateIssueFeatures(issue, index, organization) {
+  return {
+    index,
+    issue,
+    normalizedTitle: normalizeTitle(issue.title),
+    titleWords: titleWordSet(issue.title),
+    descriptionWords: wordSet(issue.description),
+    repositories: linkedRepositories(issue, organization),
+    relatedIdentifiers: issueRelationIdentifiers(issue),
+    duplicateIdentifiers: duplicateRelationIdentifiers(issue),
+  };
+}
+
+function assignExplicitRelationComponents(features) {
+  const parent = features.map((_, index) => index);
+  const identifierIndexes = new Map(
+    features.map((feature) => [feature.issue.identifier, feature.index]),
+  );
+  const find = (index) => {
+    let root = index;
+    while (parent[root] !== root) root = parent[root];
+    while (parent[index] !== index) {
+      const next = parent[index];
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left, right) => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+  };
+
+  for (const feature of features) {
+    for (const relatedIdentifier of feature.duplicateIdentifiers) {
+      const relatedIndex = identifierIndexes.get(relatedIdentifier);
+      if (relatedIndex !== undefined) union(feature.index, relatedIndex);
+    }
+  }
+  for (const feature of features) {
+    feature.reconciliationComponent = find(feature.index);
+  }
+}
+
+function featuresAreExplicitlyReconciled(left, right) {
+  return (
+    left.reconciliationComponent === right.reconciliationComponent ||
+    left.relatedIdentifiers.has(right.issue.identifier) ||
+    right.relatedIdentifiers.has(left.issue.identifier)
+  );
+}
+
+function repositoryTitleTokenPairKeys(feature) {
+  const keys = [];
+  const titleWords = [...feature.titleWords].sort();
+  if (titleWords.length < 2) return keys;
+  for (const repository of feature.repositories) {
+    for (let left = 0; left < titleWords.length - 1; left += 1) {
+      for (let right = left + 1; right < titleWords.length; right += 1) {
+        keys.push(
+          `${repository}\u0000${titleWords[left]}\u0000${titleWords[right]}`,
+        );
       }
+    }
+  }
+  return keys;
+}
+
+function duplicateFinding(left, right) {
+  if (featuresAreExplicitlyReconciled(left, right)) return null;
+  const titlesMatch = left.normalizedTitle === right.normalizedTitle;
+  const descriptionSimilarity = jaccard(
+    left.descriptionWords,
+    right.descriptionWords,
+  );
+  const descriptionsAreInformative =
+    left.descriptionWords.size >= MIN_INFORMATIVE_DESCRIPTION_WORDS &&
+    right.descriptionWords.size >= MIN_INFORMATIVE_DESCRIPTION_WORDS;
+  const sameRepository = setsIntersect(left.repositories, right.repositories);
+  if (
+    titlesMatch &&
+    descriptionsAreInformative &&
+    descriptionSimilarity >= 0.85 &&
+    sameRepository
+  ) {
+    return {
+      severity: "error",
+      code: "duplicate_candidate",
+      issue: `${left.issue.identifier}, ${right.issue.identifier}`,
+      message:
+        `título, escopo e repositório coincidem (${Math.round(descriptionSimilarity * 100)}%); ` +
+        "registre duplicateOf ou uma relação explícita",
+    };
+  }
+  if (titlesMatch) {
+    if (!descriptionsAreInformative) return null;
+    return {
+      severity: "warning",
+      code: "similar_issue_unlinked",
+      issue: `${left.issue.identifier}, ${right.issue.identifier}`,
+      message:
+        `título idêntico entre issues ainda não relacionados ` +
+        `(${Math.round(descriptionSimilarity * 100)}% de similaridade textual), sem relação explícita`,
+    };
+  }
+  const titleSimilarity = wordSetOverlap(left.titleWords, right.titleWords);
+  if (
+    sameRepository &&
+    descriptionsAreInformative &&
+    descriptionSimilarity >= 0.85 &&
+    titleSimilarity.intersection >= 2 &&
+    titleSimilarity.overlap >= 2 / 3 &&
+    titleSimilarity.jaccard >= 0.5
+  ) {
+    return {
+      severity: "warning",
+      code: "similar_issue_unlinked",
+      issue: `${left.issue.identifier}, ${right.issue.identifier}`,
+      message:
+        `títulos possivelmente parafraseados (${Math.round(titleSimilarity.overlap * 100)}% de cobertura), ` +
+        `descrições equivalentes (${Math.round(descriptionSimilarity * 100)}%) e mesmo repositório; ` +
+        "revise e registre duplicateOf ou uma relação explícita",
+    };
+  }
+  return null;
+}
+
+function findStrongDuplicateCandidates(
+  linearIssues,
+  organization = DEFAULT_ORGANIZATION,
+) {
+  const findings = [];
+  const features = linearIssues.map((issue, index) =>
+    duplicateIssueFeatures(issue, index, organization),
+  );
+  assignExplicitRelationComponents(features);
+  const exactTitleBuckets = new Map();
+  const repositoryTokenPairBuckets = new Map();
+  let comparisons = 0;
+  scan: for (const right of features) {
+    // Every duplicate/similarity branch requires informative descriptions.
+    // Do not spend the bounded comparison budget on pairs that cannot produce
+    // a finding.
+    if (right.descriptionWords.size < MIN_INFORMATIVE_DESCRIPTION_WORDS)
+      continue;
+    const candidateIndexes = new Set();
+    if (right.normalizedTitle) {
+      collectBucketIndexes(
+        exactTitleBuckets,
+        right.normalizedTitle,
+        right,
+        candidateIndexes,
+      );
+    }
+    const tokenPairKeys = repositoryTitleTokenPairKeys(right);
+    for (const key of tokenPairKeys) {
+      collectBucketIndexes(
+        repositoryTokenPairBuckets,
+        key,
+        right,
+        candidateIndexes,
+      );
+    }
+    for (const leftIndex of candidateIndexes) {
+      if (comparisons >= MAX_DUPLICATE_COMPARISONS) {
+        findings.push({
+          severity: "incomplete",
+          code: "duplicate_scan_incomplete",
+          issue: "Linear",
+          message:
+            `varredura interrompida após ${MAX_DUPLICATE_COMPARISONS} comparações candidatas; ` +
+            "o snapshot não pode ser considerado limpo",
+        });
+        break scan;
+      }
+      comparisons += 1;
+      const finding = duplicateFinding(features[leftIndex], right);
+      if (finding) findings.push(finding);
+    }
+    if (right.normalizedTitle) {
+      addBucketIndex(exactTitleBuckets, right.normalizedTitle, right);
+    }
+    for (const key of tokenPairKeys) {
+      addBucketIndex(repositoryTokenPairBuckets, key, right);
     }
   }
   return findings;
@@ -738,6 +1139,11 @@ export function reconcileSnapshots({
   for (const issue of linearIssues) {
     const isLinearOnly = linearOnlyTeams.has(issue.team?.key);
     const links = collectGithubLinks(issue, organization);
+    const externalThreadIssueUrls = new Set(
+      collectExternalThreadIssueLinks(issue, organization).map((link) =>
+        githubUrlKey(link.url),
+      ),
+    );
     const mappedRepository = effectiveTeamRepositories[issue.team?.key];
     const attachmentIssueLinks = collectAttachmentIssueLinks(
       issue,
@@ -859,10 +1265,7 @@ export function reconcileSnapshots({
     const disconnectedThreads = connectionNodes(issue.comments).filter(
       (comment) => {
         const thread = comment.externalThread;
-        return (
-          thread?.isConnected === false &&
-          (isGithubService(thread.subType) || isGithubService(thread.name))
-        );
+        return thread?.isConnected === false && isGithubExternalThread(thread);
       },
     );
     if (disconnectedThreads.length > 0) {
@@ -871,6 +1274,25 @@ export function reconcileSnapshots({
         code: "comment_sync_disconnected",
         issue: issue.identifier,
         message: `${disconnectedThreads.length} thread(s) GitHub estão desconectadas no Linear`,
+      });
+    }
+
+    const invalidExternalThreadUrls = connectionNodes(issue.comments).filter(
+      (comment) => {
+        const thread = comment.externalThread;
+        if (!thread?.url || !isGithubExternalThread(thread)) return false;
+        const link = githubLinkFromUrl(thread.url, organization);
+        return link?.kind !== "issue";
+      },
+    );
+    if (invalidExternalThreadUrls.length > 0) {
+      findings.push({
+        severity: "error",
+        code: "external_thread_url_invalid_or_out_of_scope",
+        issue: issue.identifier,
+        message:
+          `${invalidExternalThreadUrls.length} thread(s) GitHub possuem URL inválida, ` +
+          "fora da organização configurada ou sem vínculo de Issue suportado",
       });
     }
 
@@ -902,10 +1324,10 @@ export function reconcileSnapshots({
         );
         continue;
       }
-      if (
-        link.kind === "issue" &&
-        canonicalIssueUrls.has(githubUrlKey(link.url))
-      ) {
+      const linkUrlKey = githubUrlKey(link.url);
+      const isCanonicalIssue =
+        link.kind === "issue" && canonicalIssueUrls.has(linkUrlKey);
+      if (isCanonicalIssue) {
         const linearState = linearIssueState(issue);
         const githubState = githubIssueState(github);
         if (linearState !== githubState) {
@@ -916,115 +1338,184 @@ export function reconcileSnapshots({
             message: `Linear=${linearState}; GitHub=${githubState} em ${link.url}`,
           });
         }
-        if (hasNativeGithubSync(issue) || hasGithubExternalThread(issue)) {
-          const linearComments = connectionNodes(issue.comments);
-          const githubComments = github.comments ?? [];
-          const { pairs: commentPairs, usedLinear } = pairSyncedComments(
-            linearComments,
-            githubComments,
+      }
+      if (
+        link.kind === "issue" &&
+        (isCanonicalIssue || externalThreadIssueUrls.has(linkUrlKey)) &&
+        (hasNativeGithubSync(issue) || hasGithubExternalThread(issue))
+      ) {
+        const linearComments = commentsForGithubLink(
+          issue,
+          link,
+          organization,
+          isCanonicalIssue,
+        );
+        const githubComments = github.comments ?? [];
+        const { pairs: commentPairs, usedLinear } = pairSyncedComments(
+          linearComments,
+          githubComments,
+        );
+        const cutoff = now.getTime() - commentGraceMs;
+        const missingComments = [];
+        let staleComments = 0;
+        let staleOnGithub = 0;
+        let divergentComments = 0;
+        for (
+          let githubIndex = 0;
+          githubIndex < githubComments.length;
+          githubIndex += 1
+        ) {
+          const githubComment = githubComments[githubIndex];
+          const createdAt = Date.parse(
+            githubComment.created_at ?? githubComment.createdAt ?? "",
           );
-          const cutoff = now.getTime() - commentGraceMs;
-          const missingComments = [];
-          let staleComments = 0;
-          for (
-            let githubIndex = 0;
-            githubIndex < githubComments.length;
-            githubIndex += 1
-          ) {
-            const githubComment = githubComments[githubIndex];
-            const createdAt = Date.parse(
-              githubComment.created_at ?? githubComment.createdAt ?? "",
-            );
-            if (
-              !Number.isFinite(createdAt) ||
-              createdAt > cutoff ||
-              !normalizeBody(githubComment.body)
-            )
-              continue;
-            const linearIndex = commentPairs.get(githubIndex);
-            const linearComment =
-              linearIndex === undefined
-                ? undefined
-                : linearComments[linearIndex];
-            if (!linearComment) {
-              missingComments.push(githubComment);
-              continue;
-            }
-            const githubUpdated = Date.parse(
-              githubComment.updated_at ??
-                githubComment.updatedAt ??
-                githubComment.created_at ??
-                "",
-            );
-            const linearUpdated = Date.parse(
-              linearComment.updatedAt ??
-                linearComment.updated_at ??
-                linearComment.createdAt ??
-                "",
-            );
-            if (
-              Number.isFinite(githubUpdated) &&
-              githubUpdated <= cutoff &&
-              ((Number.isFinite(linearUpdated) &&
-                githubUpdated - linearUpdated > commentGraceMs) ||
-                canonicalizeCommentBody(githubComment.body) !==
-                  canonicalizeCommentBody(linearComment.body))
-            ) {
-              staleComments += 1;
-            }
+          if (
+            !Number.isFinite(createdAt) ||
+            createdAt > cutoff ||
+            !normalizeBody(githubComment.body)
+          )
+            continue;
+          const linearIndex = commentPairs.get(githubIndex);
+          const linearComment =
+            linearIndex === undefined ? undefined : linearComments[linearIndex];
+          if (!linearComment) {
+            missingComments.push(githubComment);
+            continue;
           }
-          if (missingComments.length > 0) {
-            const newest = missingComments.sort(
-              (left, right) =>
-                Date.parse(githubCommentCreatedAt(right)) -
-                Date.parse(githubCommentCreatedAt(left)),
-            )[0];
-            findings.push({
-              severity: "error",
-              code: "comment_sync_gap",
-              issue: issue.identifier,
-              message:
-                `${missingComments.length} comentário(s) GitHub com mais de ` +
-                `${Math.round(commentGraceMs / 60_000)} min não aparecem no Linear; ` +
-                `mais recente em ${formatHumanDate(githubCommentCreatedAt(newest))}`,
-            });
-          }
-          if (staleComments > 0) {
-            findings.push({
-              severity: "error",
-              code: "comment_sync_stale",
-              issue: issue.identifier,
-              message: `${staleComments} comentário(s) sincronizados estão desatualizados no Linear`,
-            });
-          }
-          const missingOnGithub = linearComments.filter(
-            (linearComment, index) => {
-              const thread = linearComment.externalThread;
-              const isGithubThread =
-                thread &&
-                (isGithubService(thread.subType) ||
-                  isGithubService(thread.name));
-              const createdAt = Date.parse(linearComment.createdAt ?? "");
-              return (
-                isGithubThread &&
-                thread.isConnected !== false &&
-                Number.isFinite(createdAt) &&
-                createdAt <= cutoff &&
-                normalizeBody(linearComment.body) &&
-                !usedLinear.has(index)
-              );
+          const anchorStatus = integrationAnchorPairStatus(
+            linearComment,
+            githubComment,
+            {
+              organization,
+              githubIssueUrl: link.url,
+              linearIssueUrl: issue.url,
+              linearIdentifier: issue.identifier,
             },
           );
-          if (missingOnGithub.length > 0) {
-            findings.push({
-              severity: "error",
-              code: "comment_sync_gap_to_github",
-              issue: issue.identifier,
-              message:
-                `${missingOnGithub.length} comentário(s) do thread GitHub no Linear com mais de ` +
-                `${Math.round(commentGraceMs / 60_000)} min não aparecem no GitHub`,
-            });
+          if (anchorStatus) {
+            if (!anchorStatus.valid) {
+              findings.push({
+                severity: "error",
+                code: "integration_linkback_mismatch",
+                issue: issue.identifier,
+                message:
+                  "âncora Linear e linkback GitHub não apontam para os gêmeos canônicos",
+              });
+            }
+            continue;
           }
+          const githubUpdated = Date.parse(
+            githubComment.updated_at ??
+              githubComment.updatedAt ??
+              githubComment.created_at ??
+              "",
+          );
+          const linearUpdated = Date.parse(
+            linearComment.updatedAt ??
+              linearComment.updated_at ??
+              linearComment.createdAt ??
+              "",
+          );
+          const bodiesDiffer =
+            canonicalizeCommentBody(githubComment.body, {
+              organization,
+              repository: link.repo,
+            }) !==
+            canonicalizeCommentBody(linearComment.body, {
+              organization,
+              repository: link.repo,
+            });
+          if (
+            bodiesDiffer &&
+            Number.isFinite(githubUpdated) &&
+            Number.isFinite(linearUpdated) &&
+            githubUpdated <= cutoff &&
+            githubUpdated - linearUpdated > commentGraceMs
+          ) {
+            staleComments += 1;
+          } else if (
+            bodiesDiffer &&
+            Number.isFinite(githubUpdated) &&
+            Number.isFinite(linearUpdated) &&
+            linearUpdated <= cutoff &&
+            linearUpdated - githubUpdated > commentGraceMs
+          ) {
+            staleOnGithub += 1;
+          } else if (
+            bodiesDiffer &&
+            Number.isFinite(githubUpdated) &&
+            Number.isFinite(linearUpdated) &&
+            githubUpdated <= cutoff &&
+            linearUpdated <= cutoff
+          ) {
+            divergentComments += 1;
+          }
+        }
+        if (missingComments.length > 0) {
+          const newest = missingComments.sort(
+            (left, right) =>
+              Date.parse(githubCommentCreatedAt(right)) -
+              Date.parse(githubCommentCreatedAt(left)),
+          )[0];
+          findings.push({
+            severity: "error",
+            code: "comment_sync_gap",
+            issue: issue.identifier,
+            message:
+              `${missingComments.length} comentário(s) GitHub com mais de ` +
+              `${Math.round(commentGraceMs / 60_000)} min não aparecem no Linear; ` +
+              `mais recente em ${formatHumanDate(githubCommentCreatedAt(newest))}`,
+          });
+        }
+        if (staleComments > 0) {
+          findings.push({
+            severity: "error",
+            code: "comment_sync_stale",
+            issue: issue.identifier,
+            message: `${staleComments} comentário(s) sincronizados estão desatualizados no Linear`,
+          });
+        }
+        if (staleOnGithub > 0) {
+          findings.push({
+            severity: "error",
+            code: "comment_sync_stale_to_github",
+            issue: issue.identifier,
+            message: `${staleOnGithub} comentário(s) sincronizados estão desatualizados no GitHub`,
+          });
+        }
+        if (divergentComments > 0) {
+          findings.push({
+            severity: "error",
+            code: "comment_sync_content_divergence",
+            issue: issue.identifier,
+            message: `${divergentComments} comentário(s) pareados possuem conteúdo semanticamente divergente`,
+          });
+        }
+        const missingOnGithub = linearComments.filter(
+          (linearComment, index) => {
+            const thread = linearComment.externalThread;
+            const hasGithubProvenance =
+              hasGithubSyncedEntity(linearComment) ||
+              (thread?.isConnected !== false && isGithubExternalThread(thread));
+            const createdAt = Date.parse(linearComment.createdAt ?? "");
+            return (
+              hasGithubProvenance &&
+              Number.isFinite(createdAt) &&
+              createdAt <= cutoff &&
+              normalizeBody(linearComment.body) &&
+              !usedLinear.has(index)
+            );
+          },
+        );
+        if (missingOnGithub.length > 0) {
+          findings.push({
+            severity: "error",
+            code: "comment_sync_gap_to_github",
+            issue: issue.identifier,
+            message:
+              `${missingOnGithub.length} comentário(s) do thread GitHub no Linear com mais de ` +
+              `${Math.round(commentGraceMs / 60_000)} min não aparecem no GitHub`,
+          });
         }
       }
       if (
@@ -1100,7 +1591,7 @@ export function reconcileSnapshots({
       message: `Issues do repositório não puderam ser inventariados (HTTP ${failure.status ?? "desconhecido"})`,
     });
   }
-  findings.push(...findStrongDuplicateCandidates(linearIssues));
+  findings.push(...findStrongDuplicateCandidates(linearIssues, organization));
   findings.sort((left, right) =>
     `${left.severity}:${left.code}:${left.issue}`.localeCompare(
       `${right.severity}:${right.code}:${right.issue}`,
@@ -1149,13 +1640,73 @@ export function renderMarkdown(result) {
       "| Severidade | Código | Issue | Evidência |",
       "| --- | --- | --- | --- |",
     );
-    for (const finding of result.findings) {
+    const markdownCell = (value, maxLength) => {
+      const normalized = normalizeBody(value)
+        .replaceAll("|", "\\|")
+        .replaceAll("\n", " ");
+      return normalized.length <= maxLength
+        ? normalized
+        : `${normalized.slice(0, maxLength - 1)}…`;
+    };
+    let shown = 0;
+    for (const finding of result.findings.slice(
+      0,
+      MAX_MARKDOWN_FINDING_DETAILS,
+    )) {
+      const row =
+        `| ${markdownCell(finding.severity, 20)} | ` +
+        `\`${markdownCell(finding.code, 120)}\` | ` +
+        `${markdownCell(finding.issue, 160)} | ` +
+        `${markdownCell(finding.message, 1_200)} |`;
+      const candidate = `${[...lines, row].join("\n")}\n`;
+      if (Buffer.byteLength(candidate, "utf8") > MAX_MARKDOWN_BYTES - 512)
+        break;
+      lines.push(row);
+      shown += 1;
+    }
+    if (shown < result.findings.length) {
       lines.push(
-        `| ${finding.severity} | \`${finding.code}\` | ${finding.issue} | ${finding.message.replaceAll("|", "\\|")} |`,
+        "",
+        `Detalhes truncados: exibindo ${shown} de ${result.findings.length}; ` +
+          "o artifact JSON preserva o resultado completo.",
       );
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+export async function writeIncompleteSummary(
+  error,
+  {
+    summaryPath = process.env.GITHUB_STEP_SUMMARY,
+    jsonPath = process.env.RECONCILIATION_JSON,
+    appendFileImpl = appendFile,
+    writeFileImpl = writeFile,
+  } = {},
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  const result = {
+    auditedIssues: 0,
+    auditedGithubLinks: 0,
+    linearOnlyTeamKeys: [],
+    findings: [
+      {
+        severity: "incomplete",
+        code: "reconciliation_aborted",
+        issue: "execução",
+        message: `snapshot não concluído: ${message}`,
+      },
+    ],
+  };
+  const markdown = renderMarkdown(result);
+  if (jsonPath)
+    await writeFileImpl(
+      jsonPath,
+      `${JSON.stringify(result, null, 2)}\n`,
+      "utf8",
+    );
+  if (summaryPath) await appendFileImpl(summaryPath, markdown, "utf8");
+  return { result, markdown };
 }
 
 export async function graphqlQuery({
@@ -1170,15 +1721,35 @@ export async function graphqlQuery({
     headers: { Authorization: token, "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables }),
   });
-  if (!response.ok) throw new Error(`Linear API HTTP ${response.status}`);
-  const payload = await response.json();
-  if (payload.errors?.length) {
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // A resposta HTTP ainda é autoritativa mesmo sem um corpo JSON legível.
+  }
+  const graphqlErrors = Array.isArray(payload?.errors) ? payload.errors : [];
+  const errorSummary = graphqlErrors
+    .slice(0, 3)
+    .map((error) => {
+      const code = normalizeBody(error?.extensions?.code).slice(0, 80);
+      const message = normalizeBody(error?.message).slice(0, 300);
+      return `${code ? `[${code}] ` : ""}${message || "erro GraphQL sem mensagem"}`;
+    })
+    .join("; ");
+  if (!response.ok) {
     throw new Error(
-      `Linear API: ${payload.errors.map((error) => error.message).join("; ")}`,
+      `Linear API HTTP ${response.status}${errorSummary ? `: ${errorSummary}` : ""}`,
     );
   }
-  if (!payload.data)
-    throw new Error("Linear API retornou resposta parcial sem data");
+  if (graphqlErrors.length) {
+    throw new Error(
+      `Linear API: ${errorSummary || "erro GraphQL sem mensagem"}`,
+    );
+  }
+  if (!payload?.data)
+    throw new Error(
+      "Linear API retornou JSON inválido ou resposta parcial sem data",
+    );
   return payload.data;
 }
 
@@ -1209,6 +1780,14 @@ const ISSUE_FIELDS = `
     nodes { id name version commitSha completedAt pipeline { id name type } }
     pageInfo { hasNextPage endCursor }
   }
+  comments(first: 10, orderBy: createdAt) {
+    nodes {
+      id body createdAt updatedAt
+      syncedWith { id service }
+      externalThread { id isConnected name subType type url }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
 `;
 
 const RECONCILIATION_QUERY = `
@@ -1216,21 +1795,6 @@ const RECONCILIATION_QUERY = `
     issues(first: 50, after: $after, includeArchived: true, orderBy: updatedAt) {
       nodes { ${ISSUE_FIELDS} }
       pageInfo { hasNextPage endCursor }
-    }
-  }
-`;
-
-const COMMENTS_QUERY = `
-  query GitHubLinearComments($id: String!, $after: String) {
-    issue(id: $id) {
-      comments(first: 50, after: $after, orderBy: createdAt) {
-        nodes {
-          id body createdAt updatedAt
-          syncedWith { id service }
-          externalThread { id isConnected name subType type url }
-        }
-        pageInfo { hasNextPage endCursor }
-      }
     }
   }
 `;
@@ -1302,13 +1866,16 @@ const LINEAR_CONNECTION_FIELDS = Object.freeze({
   inverseRelations:
     "id type issue { id identifier } relatedIssue { id identifier }",
   releases: "id name version commitSha completedAt pipeline { id name type }",
+  comments:
+    "id body createdAt updatedAt syncedWith { id service } externalThread { id isConnected name subType type url }",
 });
 
 function linearConnectionQuery(connection, fields) {
+  const orderBy = connection === "comments" ? ", orderBy: createdAt" : "";
   return `
     query GitHubLinearConnection($id: String!, $after: String) {
       issue(id: $id) {
-        ${connection}(first: 50, after: $after) {
+        ${connection}(first: 50, after: $after${orderBy}) {
           nodes { ${fields} }
           pageInfo { hasNextPage endCursor }
         }
@@ -1361,38 +1928,7 @@ async function completeLinearConnection({
   };
 }
 
-async function readLinearComments({ issueId, token, fetchImpl }) {
-  const comments = [];
-  let after = null;
-  const seenCursors = new Set();
-  let pageCount = 0;
-  do {
-    pageCount += 1;
-    if (pageCount > MAX_LINEAR_PAGES)
-      throw new Error(`Linear comments ${issueId}: paginação excedeu o limite`);
-    const data = await graphqlQuery({
-      token,
-      query: COMMENTS_QUERY,
-      variables: { id: issueId, after },
-      fetchImpl,
-    });
-    if (!data.issue)
-      throw new Error(`Linear issue ${issueId} não pôde ser relida`);
-    comments.push(...data.issue.comments.nodes);
-    after = nextLinearCursor(
-      data.issue.comments.pageInfo,
-      `Linear comments ${issueId}`,
-      seenCursors,
-    );
-  } while (after);
-  return { nodes: comments, pageInfo: { hasNextPage: false, endCursor: null } };
-}
-
-export async function readLinearIssues({
-  token,
-  linearOnlyTeamKeys = [],
-  fetchImpl = fetch,
-}) {
+export async function readLinearIssues({ token, fetchImpl = fetch }) {
   const issues = [];
   let after = null;
   const seenCursors = new Set();
@@ -1433,27 +1969,6 @@ export async function readLinearIssues({
     },
   );
   await Promise.all(connectionWorkers);
-
-  const linearOnlyTeams = new Set(linearOnlyTeamKeys);
-  const queue = issues.filter(
-    (issue) =>
-      hasNativeGithubSync(issue) || linearOnlyTeams.has(issue.team?.key),
-  );
-  const workers = Array.from(
-    { length: Math.min(4, queue.length) },
-    async () => {
-      for (;;) {
-        const issue = queue.shift();
-        if (!issue) return;
-        issue.comments = await readLinearComments({
-          issueId: issue.id,
-          token,
-          fetchImpl,
-        });
-      }
-    },
-  );
-  await Promise.all(workers);
   for (const issue of issues)
     issue.comments ??= { nodes: [], pageInfo: { hasNextPage: false } };
   return issues;
@@ -1793,7 +2308,7 @@ async function main() {
     umbrellaTeamKey,
   );
   const [issues, linearTopology] = await Promise.all([
-    readLinearIssues({ token: linearToken, linearOnlyTeamKeys }),
+    readLinearIssues({ token: linearToken }),
     readLinearTopology({
       token: linearToken,
       umbrellaTeamKey,
@@ -1834,10 +2349,22 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  main().catch((error) => {
+  main().catch(async (error) => {
+    process.exitCode = 2;
     console.error(
       `::error::${error instanceof Error ? error.message : String(error)}`,
     );
-    process.exitCode = 2;
+    try {
+      const { markdown } = await writeIncompleteSummary(error);
+      process.stdout.write(markdown);
+    } catch (summaryError) {
+      console.error(
+        `::error::falha ao escrever GITHUB_STEP_SUMMARY: ${
+          summaryError instanceof Error
+            ? summaryError.message
+            : String(summaryError)
+        }`,
+      );
+    }
   });
 }

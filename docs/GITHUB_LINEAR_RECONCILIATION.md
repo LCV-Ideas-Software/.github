@@ -25,10 +25,10 @@ vírgula. A lista é estrita: entradas vazias, repetidas, desconhecidas ou a cha
 GitHub→Linear.
 
 O time guarda-chuva `LCV` permanece como contêiner de hierarquia, mas seu
-estado-alvo de trabalho é **vazio**,
-inclusive no histórico arquivado: nenhum Issue, Cycle, Project, Initiative ou
-Document diretamente vinculado. Seus sub-times podem permanecer parentados a
-ele. Cada entidade de trabalho deve ser migrada para o time individual
+estado-alvo de trabalho é **vazio**, inclusive no histórico arquivado: nenhum
+Issue, Cycle, Project, Initiative ou Document diretamente vinculado. Seus
+sub-times podem permanecer parentados a ele. Cada entidade de trabalho deve ser
+migrada para o time individual
 responsável, preservando relações, comentários, attachments e releases.
 Duplicatas são consolidadas no canônico antes da migração.
 
@@ -44,23 +44,29 @@ realiza a migração.
 - release `completed` de pipeline `continuous` ausente para cada PR mergeado,
   com SHA e pipeline correspondentes;
 - comentário ausente em qualquer direção, desatualizado ou com thread
-  desconectada;
+  desconectada, inválida ou fora da organização configurada;
 - duplicata ou item semelhante sem relação explícita, inclusive dentro do mesmo
   time;
 - qualquer entidade de trabalho ainda pertencente ao time `LCV`;
-- paginação, repositório inacessível, rate limit ou resposta parcial.
+- paginação, repositório inacessível, rate limit, resposta parcial ou teto
+  conservador de comparações de duplicatas excedido.
 
 O processo retorna `0` quando está limpo, `1` para drift acionável e `2` quando
 a auditoria é inconclusiva. Uma leitura parcial nunca é classificada como limpa.
+O Step Summary preserva as contagens completas e limita os detalhes para ficar
+abaixo do teto do GitHub Actions. O resultado JSON integral é publicado por 14
+dias no artifact `github-linear-reconciliation-<run>-<attempt>`, inclusive
+quando o audit termina com drift ou de forma inconclusiva.
 
 ## Credenciais
 
 O environment `linear-observability` contém `LINEAR_READ_KEY`, uma chave Linear
-somente leitura. Para cobrir também repositórios Internal, configure
-`GITHUB_READ_TOKEN` nesse environment com acesso organizacional somente leitura
-a Metadata, Issues e Pull requests. A preferência durável é um GitHub App com
-permissões equivalentes e token de curta duração.
+somente leitura, e deve conter `LINEAR_GITHUB_READ_TOKEN`, com acesso
+organizacional somente leitura a Metadata, Issues e Pull requests em todos os
+repositórios. A preferência durável é um GitHub App com permissões equivalentes
+e token de curta duração.
 
-Na ausência dessa credencial, o workflow usa o `GITHUB_TOKEN` local apenas como
-fallback fail-closed: qualquer repositório invisível torna o resultado
-inconclusivo (`exit 2`).
+`LINEAR_GITHUB_READ_TOKEN` é obrigatório. O workflow não usa o `GITHUB_TOKEN`
+local como fallback, pois esse token pode omitir silenciosamente repositórios
+Internal e Private fora do repositório `.github`. Se a credencial estiver
+ausente, a auditoria aborta como inconclusiva (`exit 2`).

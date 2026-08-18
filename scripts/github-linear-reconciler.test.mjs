@@ -16,6 +16,7 @@ import {
   readLinearTopology,
   reconcileSnapshots,
   renderMarkdown,
+  writeIncompleteSummary,
 } from "./github-linear-reconciler.mjs";
 
 const NOW = new Date("2026-08-18T03:00:00.000Z");
@@ -117,6 +118,47 @@ test("GraphQL HTTP 200 com errors nunca é aceito como snapshot", async () => {
   );
 });
 
+test("GraphQL HTTP 400 preserva código e causa sem expor credenciais", async () => {
+  await assert.rejects(
+    () =>
+      graphqlQuery({
+        token: "linear-read-only-secret",
+        query: "query Audit { viewer { id } }",
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              errors: [
+                {
+                  message: "Query complexity limit exceeded",
+                  extensions: { code: "RATELIMITED" },
+                },
+              ],
+            }),
+            { status: 400 },
+          ),
+      }),
+    (error) => {
+      assert.match(error.message, /HTTP 400/u);
+      assert.match(error.message, /RATELIMITED/u);
+      assert.match(error.message, /complexity limit/u);
+      assert.doesNotMatch(error.message, /linear-read-only-secret/u);
+      return true;
+    },
+  );
+});
+
+test("GraphQL HTTP 200 sem JSON falha com diagnóstico explícito", async () => {
+  await assert.rejects(
+    () =>
+      graphqlQuery({
+        token: "linear-read-only",
+        query: "query Audit { viewer { id } }",
+        fetchImpl: async () => new Response("not-json", { status: 200 }),
+      }),
+    /JSON inválido ou resposta parcial sem data/u,
+  );
+});
+
 test("pagina conexão Linear aninhada antes de concluir", async () => {
   const requests = [];
   const fetchImpl = async (_url, options) => {
@@ -148,6 +190,7 @@ test("pagina conexão Linear aninhada antes de concluir", async () => {
                     pageInfo: { hasNextPage: false },
                   },
                   releases: { nodes: [], pageInfo: { hasNextPage: false } },
+                  comments: { nodes: [], pageInfo: { hasNextPage: false } },
                 },
               ],
               pageInfo: { hasNextPage: false, endCursor: null },
@@ -184,6 +227,218 @@ test("pagina conexão Linear aninhada antes de concluir", async () => {
     requests.every((request) => !/\bmutation\b/iu.test(request.query)),
     true,
   );
+});
+
+test("carrega comments inline sem syncedWith para descobrir externalThread GitHub", async () => {
+  const requests = [];
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    if (request.query.includes("GitHubLinearReconciliation")) {
+      return new Response(
+        JSON.stringify({
+          data: {
+            issues: {
+              nodes: [
+                {
+                  ...linearIssue({
+                    id: "linear-with-thread",
+                    identifier: "GITHORG-71",
+                    syncedWith: [],
+                  }),
+                  attachments: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  relations: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  inverseRelations: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  releases: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  comments: {
+                    nodes: [
+                      {
+                        id: "comment-with-thread",
+                        body: "checkpoint",
+                        externalThread: {
+                          id: "thread-github",
+                          isConnected: false,
+                          subType: "github",
+                          type: "integration",
+                        },
+                        syncedWith: [],
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    throw new Error("não deveria executar uma consulta N+1 de comments");
+  };
+
+  const issues = await readLinearIssues({
+    token: "linear-read-only",
+    fetchImpl,
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(issues[0].comments.nodes.length, 1);
+  assert.equal(issues[0].comments.nodes[0].externalThread.subType, "github");
+});
+
+test("pagina somente comments truncados a partir do lote inline", async () => {
+  const requests = [];
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    if (request.query.includes("GitHubLinearReconciliation")) {
+      assert.match(request.query, /comments\(first: 10, orderBy: createdAt\)/u);
+      return new Response(
+        JSON.stringify({
+          data: {
+            issues: {
+              nodes: [
+                {
+                  ...linearIssue({ id: "linear-comments-paged" }),
+                  attachments: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  relations: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  inverseRelations: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  releases: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  comments: {
+                    nodes: [{ id: "comment-1", body: "primeiro" }],
+                    pageInfo: {
+                      hasNextPage: true,
+                      endCursor: "comments-cursor",
+                    },
+                  },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    assert.match(
+      request.query,
+      /comments\(first: 50, after: \$after, orderBy: createdAt\)/u,
+    );
+    assert.equal(request.variables.after, "comments-cursor");
+    return new Response(
+      JSON.stringify({
+        data: {
+          issue: {
+            comments: {
+              nodes: [{ id: "comment-2", body: "segundo" }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      }),
+      { status: 200 },
+    );
+  };
+
+  const issues = await readLinearIssues({
+    token: "linear-read-only",
+    fetchImpl,
+  });
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(
+    issues[0].comments.nodes.map((comment) => comment.id),
+    ["comment-1", "comment-2"],
+  );
+});
+
+test("200 issues sem comments usam somente as páginas principais", async () => {
+  const requests = [];
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    requests.push(request);
+    assert.match(request.query, /GitHubLinearReconciliation/u);
+    const page = request.variables.after
+      ? Number(request.variables.after.slice(1))
+      : 0;
+    const nodes = Array.from({ length: 50 }, (_, offset) => {
+      const index = page * 50 + offset;
+      return {
+        ...linearIssue({
+          id: `linear-${index}`,
+          identifier: `BULK-${index}`,
+        }),
+        attachments: {
+          nodes: [],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+        relations: {
+          nodes: [],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+        inverseRelations: {
+          nodes: [],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+        releases: {
+          nodes: [],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+        comments: {
+          nodes: [],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      };
+    });
+    return new Response(
+      JSON.stringify({
+        data: {
+          issues: {
+            nodes,
+            pageInfo: {
+              hasNextPage: page < 3,
+              endCursor: page < 3 ? `p${page + 1}` : null,
+            },
+          },
+        },
+      }),
+      { status: 200 },
+    );
+  };
+
+  const issues = await readLinearIssues({
+    token: "linear-read-only",
+    fetchImpl,
+  });
+
+  assert.equal(issues.length, 200);
+  assert.equal(requests.length, 4);
 });
 
 test("paginação Linear recusa cursor repetido", async () => {
@@ -390,6 +645,32 @@ test("extrai somente links GitHub de issues e PRs da organização", () => {
       owner: "LCV-Ideas-Software",
       repo: "admin-app",
       url: "https://github.com/LCV-Ideas-Software/admin-app/pull/501",
+    },
+  ]);
+});
+
+test("extrai links da organização configurada sem aceitar prefixos inválidos", () => {
+  const links = collectGithubLinks(
+    {
+      description:
+        "(https://github.com/Example-Org/service-api/issues/42), " +
+        "https://github.com/LCV-Ideas-Software/service-api/issues/43 e " +
+        "https://github.com/Example-Org/service-api/issues/44abc e " +
+        "https://github.com:444/Example-Org/service-api/issues/45",
+      attachments: { nodes: [] },
+      comments: { nodes: [] },
+      syncedWith: [],
+    },
+    "Example-Org",
+  );
+
+  assert.deepEqual(links, [
+    {
+      kind: "issue",
+      number: 42,
+      owner: "Example-Org",
+      repo: "service-api",
+      url: "https://github.com/Example-Org/service-api/issues/42",
     },
   ]);
 });
@@ -936,6 +1217,457 @@ test("detecta comentário do thread Linear ausente no GitHub", () => {
   );
 });
 
+test("syncedWith GitHub ausente no destino detecta gap mesmo sem externalThread", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const issue = linearIssue({
+    attachments: { nodes: [{ url }] },
+    syncedWith: [{ id: "I_issue", service: "github" }],
+    comments: {
+      nodes: [
+        {
+          id: "linear-comment-deleted-on-github",
+          body: "Comentário cujo original não está mais no GitHub",
+          createdAt: "2026-08-18T01:00:00Z",
+          updatedAt: "2026-08-18T01:00:00Z",
+          syncedWith: [{ id: "IC_deleted", service: "github" }],
+          externalThread: null,
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([[url, githubIssue({ url, comments: [] })]]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter(
+      (finding) => finding.code === "comment_sync_gap_to_github",
+    ).length,
+    1,
+  );
+});
+
+test("transformações normais do Markdown por node_id não parecem stale", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const issue = linearIssue({
+    attachments: { nodes: [{ url }] },
+    syncedWith: [{ id: "I_issue", service: "github" }],
+    comments: {
+      nodes: [
+        {
+          id: "linear-rich-reference",
+          body: "[LCV-Ideas-Software/.github#250](https://linear.app/lcv-ideas-software/review/250)\nProject [#22](<https://github.com/LCV-Ideas-Software/.github/issues/22>)",
+          createdAt: "2026-08-18T01:00:00Z",
+          updatedAt: "2026-08-18T01:00:03Z",
+          syncedWith: [{ id: "IC_rich_reference", service: "github" }],
+          externalThread: null,
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_rich_reference",
+              body: "#250\nProject #22",
+              created_at: "2026-08-18T01:00:00Z",
+              updated_at: "2026-08-18T01:00:00Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) =>
+      ["comment_sync_stale", "comment_sync_stale_to_github"].includes(
+        finding.code,
+      ),
+    ),
+    false,
+  );
+});
+
+test("canonicalização preserva destino genérico e identidade cross-repo", () => {
+  assert.notEqual(
+    canonicalizeCommentBody("[docs](https://good.example/a)"),
+    canonicalizeCommentBody("[docs](https://evil.example/a)"),
+  );
+  assert.notEqual(
+    canonicalizeCommentBody("LCV-Ideas-Software/repo-a#7"),
+    canonicalizeCommentBody("LCV-Ideas-Software/repo-b#7"),
+  );
+  assert.equal(
+    canonicalizeCommentBody(
+      "[LCV-Ideas-Software/.github#250](https://linear.app/lcv-ideas-software/review/abc)",
+      { organization: "LCV-Ideas-Software", repository: ".github" },
+    ),
+    "#250",
+  );
+  assert.equal(
+    canonicalizeCommentBody(
+      "[#22](<https://github.com/LCV-Ideas-Software/.github/issues/22>)",
+      { organization: "LCV-Ideas-Software", repository: ".github" },
+    ),
+    "#22",
+  );
+  assert.notEqual(
+    canonicalizeCommentBody(
+      "[LCV-Ideas-Software/.github#250](http://linear.app/lcv-ideas-software/review/abc)",
+      { organization: "LCV-Ideas-Software", repository: ".github" },
+    ),
+    "#250",
+  );
+});
+
+test("âncora Linear e linkback GitHub não são tratados como conteúdo divergente", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/249";
+  const issue = linearIssue({
+    url: "https://linear.app/lcv-ideas-software/issue/GITHORG-70/reconciliar-github-e-linear",
+    attachments: { nodes: [{ url }] },
+    comments: {
+      nodes: [
+        {
+          body: "This comment thread is synced to a corresponding [GitHub issue](https://github.com/LCV-Ideas-Software/.github/issues/249). All replies are synchronized.",
+          createdAt: "2026-08-18T01:00:00.000Z",
+          updatedAt: "2026-08-18T01:00:00.000Z",
+          syncedWith: [],
+          externalThread: {
+            isConnected: true,
+            name: "GitHub",
+            subType: "github",
+            url,
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_linear_linkback",
+              body: '<!-- linear-linkback --><p><a href="https://linear.app/lcv-ideas-software/issue/GITHORG-70">GITHORG-70</a></p>',
+              created_at: "2026-08-18T01:00:00.500Z",
+              updated_at: "2026-08-18T01:00:00.500Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) =>
+      [
+        "comment_sync_gap",
+        "comment_sync_gap_to_github",
+        "comment_sync_stale",
+        "comment_sync_stale_to_github",
+        "comment_sync_content_divergence",
+      ].includes(finding.code),
+    ),
+    false,
+  );
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "integration_linkback_mismatch",
+    ),
+    false,
+  );
+});
+
+test("âncora ou linkback apontando outro gêmeo falha explicitamente", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/249";
+  const issue = linearIssue({
+    identifier: "GITHORG-70",
+    url: "https://linear.app/lcv-ideas-software/issue/GITHORG-70/reconciliar-github-e-linear",
+    attachments: { nodes: [{ url }] },
+    comments: {
+      nodes: [
+        {
+          body: "This comment thread is synced to a corresponding [GitHub issue](https://github.com/LCV-Ideas-Software/.github/issues/999). All replies are synchronized.",
+          createdAt: "2026-08-18T01:00:00.000Z",
+          updatedAt: "2026-08-18T01:00:00.000Z",
+          syncedWith: [],
+          externalThread: {
+            isConnected: true,
+            name: "GitHub",
+            subType: "github",
+            url,
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_linear_linkback_wrong",
+              body: '<!-- linear-linkback --><p><a href="https://linear.app/lcv-ideas-software/issue/GITHORG-999">GITHORG-999</a></p>',
+              created_at: "2026-08-18T01:00:00.500Z",
+              updated_at: "2026-08-18T01:00:00.500Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter(
+      (finding) => finding.code === "integration_linkback_mismatch",
+    ).length,
+    1,
+  );
+
+  const validAnchorIssue = {
+    ...issue,
+    comments: {
+      nodes: [
+        {
+          ...issue.comments.nodes[0],
+          body: "This comment thread is synced to a corresponding [GitHub issue](https://github.com/LCV-Ideas-Software/.github/issues/249). All replies are synchronized.",
+        },
+      ],
+    },
+  };
+  const wrongWorkspace = reconcileSnapshots({
+    linearIssues: [validAnchorIssue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_linear_linkback_other_workspace",
+              body: '<!-- linear-linkback --><p><a href="https://linear.app/outro-workspace/issue/GITHORG-70">GITHORG-70</a></p>',
+              created_at: "2026-08-18T01:00:00.500Z",
+              updated_at: "2026-08-18T01:00:00.500Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+  assert.equal(
+    wrongWorkspace.findings.filter(
+      (finding) => finding.code === "integration_linkback_mismatch",
+    ).length,
+    1,
+  );
+});
+
+test("linkback Linear recusa downgrade HTTP", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/249";
+  const issue = linearIssue({
+    identifier: "GITHORG-70",
+    url: "https://linear.app/lcv-ideas-software/issue/GITHORG-70/reconciliar-github-e-linear",
+    attachments: { nodes: [{ url }] },
+    comments: {
+      nodes: [
+        {
+          body: "This comment thread is synced to a corresponding [GitHub issue](https://github.com/LCV-Ideas-Software/.github/issues/249). All replies are synchronized.",
+          createdAt: "2026-08-18T01:00:00.000Z",
+          updatedAt: "2026-08-18T01:00:00.000Z",
+          syncedWith: [],
+          externalThread: { isConnected: true, subType: "github", url },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_linear_linkback_http",
+              body: '<!-- linear-linkback --><p><a href="http://linear.app/lcv-ideas-software/issue/GITHORG-70">GITHORG-70</a></p>',
+              created_at: "2026-08-18T01:00:00.500Z",
+              updated_at: "2026-08-18T01:00:00.500Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter(
+      (finding) => finding.code === "integration_linkback_mismatch",
+    ).length,
+    1,
+  );
+});
+
+test("detecta atraso de edição em cada direção depois da tolerância", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const run = ({ linearUpdatedAt, githubUpdatedAt, linearBody, githubBody }) =>
+    reconcileSnapshots({
+      linearIssues: [
+        linearIssue({
+          attachments: { nodes: [{ url }] },
+          syncedWith: [{ id: "I_issue", service: "github" }],
+          comments: {
+            nodes: [
+              {
+                body: linearBody,
+                createdAt: "2026-08-18T01:00:00Z",
+                updatedAt: linearUpdatedAt,
+                syncedWith: [{ id: "IC_stale", service: "github" }],
+                externalThread: null,
+              },
+            ],
+          },
+        }),
+      ],
+      githubByUrl: new Map([
+        [
+          url,
+          githubIssue({
+            url,
+            comments: [
+              {
+                node_id: "IC_stale",
+                body: githubBody,
+                created_at: "2026-08-18T01:00:00Z",
+                updated_at: githubUpdatedAt,
+              },
+            ],
+          }),
+        ],
+      ]),
+      now: NOW,
+    });
+
+  const linearBehind = run({
+    linearUpdatedAt: "2026-08-18T01:00:00Z",
+    githubUpdatedAt: "2026-08-18T02:00:00Z",
+    linearBody: "Conteúdo original",
+    githubBody: "Conteúdo editado no GitHub",
+  });
+  assert.equal(
+    linearBehind.findings.filter(
+      (finding) => finding.code === "comment_sync_stale",
+    ).length,
+    1,
+  );
+
+  const githubBehind = run({
+    linearUpdatedAt: "2026-08-18T02:00:00Z",
+    githubUpdatedAt: "2026-08-18T01:00:00Z",
+    linearBody: "Conteúdo editado no Linear",
+    githubBody: "Conteúdo original",
+  });
+  assert.equal(
+    githubBehind.findings.filter(
+      (finding) => finding.code === "comment_sync_stale_to_github",
+    ).length,
+    1,
+  );
+
+  const sameContent = run({
+    linearUpdatedAt: "2026-08-18T01:00:00Z",
+    githubUpdatedAt: "2026-08-18T02:00:00Z",
+    linearBody: "Mesmo conteúdo semântico",
+    githubBody: "Mesmo conteúdo semântico",
+  });
+  assert.equal(
+    sameContent.findings.some((finding) =>
+      ["comment_sync_stale", "comment_sync_stale_to_github"].includes(
+        finding.code,
+      ),
+    ),
+    false,
+  );
+});
+
+test("pareia edição por thread e createdAt mesmo sem external ID", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const issue = linearIssue({
+    attachments: { nodes: [{ url }] },
+    comments: {
+      nodes: [
+        {
+          body: "Conteúdo original",
+          createdAt: "2026-08-18T00:00:00Z",
+          updatedAt: "2026-08-18T00:00:00Z",
+          syncedWith: [],
+          externalThread: {
+            isConnected: true,
+            name: null,
+            subType: null,
+            type: "integration",
+            url,
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_edited_without_linear_id",
+              body: "Conteúdo editado",
+              created_at: "2026-08-18T00:00:00Z",
+              updated_at: "2026-08-18T02:00:00Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter((finding) => finding.code === "comment_sync_stale")
+      .length,
+    1,
+  );
+  assert.equal(
+    result.findings.some((finding) =>
+      ["comment_sync_gap", "comment_sync_gap_to_github"].includes(finding.code),
+    ),
+    false,
+  );
+});
+
 test("reconhece comentário sincronizado por node_id mesmo com Markdown transformado", () => {
   const github = {
     node_id: "IC_kwDOAA",
@@ -954,6 +1686,80 @@ test("reconhece comentário sincronizado por node_id mesmo com Markdown transfor
   assert.equal(
     canonicalizeCommentBody(linear.body),
     canonicalizeCommentBody(github.body),
+  );
+});
+
+test("reconhece comentário sincronizado pelo id numérico externo", () => {
+  assert.equal(
+    isGithubSyncedComment(
+      {
+        body: "Conteúdo Linear transformado",
+        createdAt: "2026-08-18T01:00:00Z",
+        syncedWith: [{ id: "123456", service: "github" }],
+      },
+      {
+        id: 123456,
+        node_id: "IC_node_diferente",
+        body: "Conteúdo GitHub",
+        created_at: "2026-08-18T02:00:00Z",
+      },
+    ),
+    true,
+  );
+});
+
+test("external ID GitHub contraditório nunca cai no pareamento heurístico", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const createdAt = "2026-08-18T01:00:00Z";
+  const issue = linearIssue({
+    attachments: { nodes: [{ url }] },
+    comments: {
+      nodes: [
+        {
+          body: "Mesmo corpo e horário",
+          createdAt,
+          updatedAt: createdAt,
+          syncedWith: [{ id: "NODE_A", service: "github" }],
+          externalThread: {
+            isConnected: true,
+            subType: "github",
+            url,
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "NODE_B",
+              body: "Mesmo corpo e horário",
+              created_at: createdAt,
+              updated_at: createdAt,
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter((finding) => finding.code === "comment_sync_gap")
+      .length,
+    1,
+  );
+  assert.equal(
+    result.findings.filter(
+      (finding) => finding.code === "comment_sync_gap_to_github",
+    ).length,
+    1,
   );
 });
 
@@ -1048,8 +1854,225 @@ test("detecta thread GitHub desconectada no Linear", () => {
   );
 });
 
+test("externalThread.url suplementar audita comentários sem virar gêmeo canônico", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/271";
+  const issue = linearIssue({
+    identifier: "GITHORG-71",
+    title: "Auditar thread suplementar",
+    attachments: { nodes: [] },
+    syncedWith: [],
+    comments: {
+      nodes: [
+        {
+          id: "linear-thread-root",
+          body: "Thread sincronizada",
+          createdAt: "2026-08-18T01:00:00Z",
+          updatedAt: "2026-08-18T01:00:00Z",
+          syncedWith: [],
+          externalThread: {
+            id: "github-thread",
+            isConnected: true,
+            subType: "github",
+            type: "integration",
+            url,
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          state: "closed",
+          comments: [
+            {
+              node_id: "IC_missing",
+              body: "Comentário GitHub antigo ausente",
+              created_at: "2026-08-17T23:00:00Z",
+              updated_at: "2026-08-17T23:00:00Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(result.auditedGithubLinks, 1);
+  assert.equal(
+    result.findings.some((finding) => finding.code === "comment_sync_gap"),
+    true,
+  );
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "missing_github_issue_attachment",
+    ),
+    true,
+  );
+  assert.equal(
+    result.findings.some((finding) => finding.code === "status_divergence"),
+    false,
+  );
+});
+
+test("thread suplementar não contamina a auditoria do gêmeo canônico", () => {
+  const canonicalUrl =
+    "https://github.com/LCV-Ideas-Software/.github/issues/272";
+  const supplementaryUrl =
+    "https://github.com/LCV-Ideas-Software/.github/issues/273";
+  const issue = linearIssue({
+    identifier: "GITHORG-72",
+    attachments: { nodes: [{ url: canonicalUrl }] },
+    comments: {
+      nodes: [
+        {
+          id: "linear-supplementary-comment",
+          body: "Comentário do thread suplementar",
+          createdAt: "2026-08-17T23:00:00Z",
+          updatedAt: "2026-08-17T23:00:00Z",
+          syncedWith: [{ id: "IC_supplementary", service: "github" }],
+          externalThread: {
+            id: "supplementary-thread",
+            isConnected: true,
+            subType: "github",
+            type: "integration",
+            url: supplementaryUrl,
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [canonicalUrl, githubIssue({ url: canonicalUrl, comments: [] })],
+      [
+        supplementaryUrl,
+        githubIssue({
+          url: supplementaryUrl,
+          comments: [
+            {
+              node_id: "IC_supplementary",
+              body: "Comentário do thread suplementar",
+              created_at: "2026-08-17T23:00:00Z",
+              updated_at: "2026-08-17T23:00:00Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) =>
+      ["comment_sync_gap", "comment_sync_gap_to_github"].includes(finding.code),
+    ),
+    false,
+  );
+});
+
+test("externalThread GitHub fora da organização falha explicitamente", () => {
+  const canonicalUrl =
+    "https://github.com/LCV-Ideas-Software/.github/issues/274";
+  const issue = linearIssue({
+    identifier: "GITHORG-73",
+    attachments: { nodes: [{ url: canonicalUrl }] },
+    comments: {
+      nodes: [
+        {
+          id: "out-of-scope-thread",
+          body: "Thread externa",
+          createdAt: "2026-08-17T23:00:00Z",
+          syncedWith: [],
+          externalThread: {
+            id: "other-org-thread",
+            isConnected: true,
+            subType: null,
+            name: null,
+            type: "integration",
+            url: "https://github.com/Other-Org/other/issues/9",
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [canonicalUrl, githubIssue({ url: canonicalUrl, comments: [] })],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter(
+      (finding) =>
+        finding.code === "external_thread_url_invalid_or_out_of_scope",
+    ).length,
+    1,
+  );
+});
+
+test("externalThread identificado somente pela URL ainda ativa auditoria", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/311";
+  const issue = linearIssue({
+    identifier: "GITHORG-74",
+    attachments: { nodes: [{ url }] },
+    comments: {
+      nodes: [
+        {
+          id: "url-only-thread",
+          body: "Comentário recente no Linear",
+          createdAt: "2026-08-18T02:50:00Z",
+          updatedAt: "2026-08-18T02:50:00Z",
+          syncedWith: [],
+          externalThread: {
+            isConnected: true,
+            name: null,
+            subType: null,
+            type: "integration",
+            url,
+          },
+        },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_missing",
+              body: "Comentário GitHub antigo ainda não sincronizado",
+              created_at: "2026-08-18T01:00:00Z",
+              updated_at: "2026-08-18T01:00:00Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter((finding) => finding.code === "comment_sync_gap")
+      .length,
+    1,
+  );
+});
+
 test("classifica duplicata forte e similaridade sem vínculo", () => {
-  const commonDescription = "Mesmo escopo, mesmo repositório e mesmo carrier.";
+  const commonDescription =
+    "Mesmo escopo funcional, mesmo repositório, mesmo carrier e mesma entrega auditável.";
   const umbrella = linearIssue({
     identifier: "LCV-16",
     title:
@@ -1150,6 +2173,79 @@ test("detecta títulos parafraseados com descrição equivalente no mesmo reposi
   );
 });
 
+test("detecta duplicata com título e descrição em alfabeto não latino", () => {
+  const description =
+    "Одинаковая область работы использует тот же репозиторий и результат";
+  const firstUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/336";
+  const secondUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/337";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        identifier: "ASTROLO-36",
+        title: "Ошибка авторизации",
+        description,
+        attachments: { nodes: [{ url: firstUrl }] },
+      }),
+      linearIssue({
+        identifier: "ASTROLO-37",
+        title: "Ошибка авторизации",
+        description,
+        attachments: { nodes: [{ url: secondUrl }] },
+      }),
+    ],
+    githubByUrl: new Map([
+      [firstUrl, githubIssue({ url: firstUrl })],
+      [secondUrl, githubIssue({ url: secondUrl })],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter((finding) => finding.code === "duplicate_candidate")
+      .length,
+    1,
+  );
+});
+
+test("não colide marcas semânticas de alfabetos não latinos", () => {
+  const description =
+    "Mesmo escopo funcional com entrega auditável no repositório compartilhado";
+  const firstUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/338";
+  const secondUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/339";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        identifier: "ASTROLO-38",
+        title: "が",
+        description,
+        attachments: { nodes: [{ url: firstUrl }] },
+      }),
+      linearIssue({
+        identifier: "ASTROLO-39",
+        title: "か",
+        description,
+        attachments: { nodes: [{ url: secondUrl }] },
+      }),
+    ],
+    githubByUrl: new Map([
+      [firstUrl, githubIssue({ url: firstUrl })],
+      [secondUrl, githubIssue({ url: secondUrl })],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) =>
+      ["duplicate_candidate", "similar_issue_unlinked"].includes(finding.code),
+    ),
+    false,
+  );
+});
+
 test("não aproxima paráfrases sem repositório comum ou descrição informativa", () => {
   const richDescription =
     "O login rejeita credenciais válidas depois que a sessão expira no aplicativo.";
@@ -1211,8 +2307,138 @@ test("não aproxima paráfrases sem repositório comum ou descrição informativ
   }
 });
 
+test("descrições vazias não sustentam duplicata forte", () => {
+  const firstUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/338";
+  const secondUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/339";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        identifier: "ASTROLO-38",
+        title: "Corrigir problema no login",
+        description: "",
+        attachments: { nodes: [{ url: firstUrl }] },
+      }),
+      linearIssue({
+        identifier: "ASTROLO-39",
+        title: "Corrigir problema no login",
+        description: "",
+        attachments: { nodes: [{ url: secondUrl }] },
+      }),
+    ],
+    githubByUrl: new Map([
+      [firstUrl, githubIssue({ url: firstUrl })],
+      [secondUrl, githubIssue({ url: secondUrl })],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) => finding.code === "duplicate_candidate"),
+    false,
+  );
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "similar_issue_unlinked",
+    ),
+    false,
+  );
+
+  const largeEmptySet = reconcileSnapshots({
+    linearIssues: Array.from({ length: 400 }, (_, index) =>
+      linearIssue({
+        identifier: `EMPTY-${index + 1}`,
+        title: "Título repetido sem descrição",
+        description: "",
+      }),
+    ),
+    githubByUrl: new Map(),
+    now: NOW,
+    requireGithubIssueAttachment: false,
+  });
+  assert.equal(
+    largeEmptySet.findings.some(
+      (finding) => finding.code === "duplicate_scan_incomplete",
+    ),
+    false,
+  );
+});
+
+test("pré-computa features e evita comparar títulos de todos os pares", () => {
+  let titleReads = 0;
+  const issues = Array.from({ length: 80 }, (_, index) => {
+    const issue = linearIssue({
+      identifier: `PERF-${index + 1}`,
+      description: `Escopo exclusivo número ${index} sem relação com os demais registros`,
+      team: { key: "PERF", name: "performance-only" },
+    });
+    Object.defineProperty(issue, "title", {
+      enumerable: true,
+      get() {
+        titleReads += 1;
+        return `Título exclusivo ${index}`;
+      },
+    });
+    return issue;
+  });
+
+  reconcileSnapshots({
+    linearIssues: issues,
+    githubByUrl: new Map(),
+    now: NOW,
+    requireGithubIssueAttachment: false,
+  });
+
+  assert.ok(
+    titleReads <= issues.length * 3,
+    `leituras de título: ${titleReads}`,
+  );
+});
+
+test("limita streaming de candidatos sem materializar milhões de pares", () => {
+  const githubByUrl = new Map();
+  const issues = Array.from({ length: 2_000 }, (_, index) => {
+    const url = `https://github.com/LCV-Ideas-Software/.github/issues/${10_000 + index}`;
+    githubByUrl.set(url, githubIssue({ url }));
+    return linearIssue({
+      identifier: `SCALE-${index + 1}`,
+      title: `Autenticação login módulo${index}`,
+      description: `alpha${index} beta${index} gamma${index} delta${index} epsilon${index}`,
+      team: { key: "SCALE", name: "linear-scale-only" },
+      attachments: { nodes: [{ url }] },
+    });
+  });
+  const startedAt = performance.now();
+  const result = reconcileSnapshots({
+    linearIssues: issues,
+    githubByUrl,
+    now: NOW,
+    requireGithubIssueAttachment: false,
+  });
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.severity === "incomplete" &&
+        finding.code === "duplicate_scan_incomplete",
+    ),
+    true,
+  );
+  assert.equal(
+    result.findings.some((finding) =>
+      ["duplicate_candidate", "similar_issue_unlinked"].includes(finding.code),
+    ),
+    false,
+  );
+  assert.equal(determineExitCode(result), 2);
+  assert.ok(elapsedMs < 2_000, `varredura levou ${Math.round(elapsedMs)} ms`);
+});
+
 test("detecta duplicata forte dentro do mesmo time individual", () => {
-  const description = "Mesmo escopo e mesmo carrier no repositório.";
+  const description =
+    "Mesmo escopo funcional, mesmo carrier e mesma entrega auditável no repositório.";
   const first = linearIssue({
     identifier: "ASTROLO-20",
     title: "Corrigir o mesmo problema",
@@ -1256,10 +2482,12 @@ test("detecta duplicata forte dentro do mesmo time individual", () => {
 });
 
 test("não repete finding quando a duplicata já está explicitamente reconciliada", () => {
+  const description =
+    "Mesmo escopo funcional, mesmo repositório, mesma entrega e mesmo resultado.";
   const umbrella = linearIssue({
     identifier: "LCV-16",
     title: "Mesmo título",
-    description: "Mesmo conteúdo",
+    description,
     team: { key: "LCV", name: "LCV Ideas & Software" },
     relations: {
       nodes: [
@@ -1274,7 +2502,7 @@ test("não repete finding quando a duplicata já está explicitamente reconcilia
   const specific = linearIssue({
     identifier: "ASTROLO-8",
     title: "Mesmo título",
-    description: "Mesmo conteúdo",
+    description,
     team: { key: "ASTROLO", name: "astrologo-app" },
   });
   const result = reconcileSnapshots({
@@ -1287,6 +2515,148 @@ test("não repete finding quando a duplicata já está explicitamente reconcilia
   assert.equal(
     result.findings.some((finding) => finding.code === "duplicate_candidate"),
     false,
+  );
+});
+
+test("duplicatas da mesma canônica pertencem ao mesmo grupo reconciliado", () => {
+  const description =
+    "Mesmo escopo funcional, mesmo repositório, mesma entrega e mesmo resultado.";
+  const makeIssue = (identifier, number, relatedIssue) => {
+    const url = `https://github.com/LCV-Ideas-Software/astrologo-app/issues/${number}`;
+    return linearIssue({
+      identifier,
+      title: "Corrigir o mesmo comportamento",
+      description,
+      team: { key: "ASTROLO", name: "astrologo-app" },
+      attachments: { nodes: [{ url }] },
+      relations: relatedIssue
+        ? {
+            nodes: [
+              {
+                type: "duplicate",
+                issue: { identifier },
+                relatedIssue: { identifier: relatedIssue },
+              },
+            ],
+          }
+        : { nodes: [] },
+    });
+  };
+  const canonical = makeIssue("ASTROLO-30", 330);
+  const firstDuplicate = makeIssue("ASTROLO-31", 331, canonical.identifier);
+  const secondDuplicate = makeIssue("ASTROLO-32", 332, canonical.identifier);
+  const issues = [canonical, firstDuplicate, secondDuplicate];
+  const result = reconcileSnapshots({
+    linearIssues: issues,
+    githubByUrl: new Map(
+      issues.map((issue) => {
+        const url = issue.attachments.nodes[0].url;
+        return [url, githubIssue({ url })];
+      }),
+    ),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) =>
+      ["duplicate_candidate", "similar_issue_unlinked"].includes(finding.code),
+    ),
+    false,
+  );
+});
+
+test("grupo grande de duplicatas reconciliadas não consome o teto", () => {
+  const description =
+    "Mesmo escopo funcional, mesmo repositório, mesma entrega e mesmo resultado.";
+  const githubByUrl = new Map();
+  const issues = Array.from({ length: 400 }, (_, index) => {
+    const identifier = `GROUP-${index + 1}`;
+    const url = `https://github.com/LCV-Ideas-Software/astrologo-app/issues/${20_000 + index}`;
+    githubByUrl.set(url, githubIssue({ url }));
+    return linearIssue({
+      identifier,
+      title: "Corrigir comportamento já reconciliado",
+      description,
+      team: { key: "ASTROLO", name: "astrologo-app" },
+      attachments: { nodes: [{ url }] },
+      relations:
+        index === 0
+          ? { nodes: [] }
+          : {
+              nodes: [
+                {
+                  type: "duplicate",
+                  issue: { identifier },
+                  relatedIssue: { identifier: "GROUP-1" },
+                },
+              ],
+            },
+    });
+  });
+  const result = reconcileSnapshots({
+    linearIssues: issues,
+    githubByUrl,
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "duplicate_scan_incomplete",
+    ),
+    false,
+  );
+  assert.equal(
+    result.findings.some((finding) =>
+      ["duplicate_candidate", "similar_issue_unlinked"].includes(finding.code),
+    ),
+    false,
+  );
+});
+
+test("relações não equivalentes só suprimem o par diretamente relacionado", () => {
+  const description =
+    "Mesmo escopo funcional, mesmo repositório, mesma entrega e mesmo resultado.";
+  const makeIssue = (identifier, number, relatedIssue) => {
+    const url = `https://github.com/LCV-Ideas-Software/astrologo-app/issues/${number}`;
+    return linearIssue({
+      identifier,
+      title: "Revisar a mesma fronteira funcional",
+      description,
+      team: { key: "ASTROLO", name: "astrologo-app" },
+      attachments: { nodes: [{ url }] },
+      relations: relatedIssue
+        ? {
+            nodes: [
+              {
+                type: "related",
+                issue: { identifier },
+                relatedIssue: { identifier: relatedIssue },
+              },
+            ],
+          }
+        : { nodes: [] },
+    });
+  };
+  const first = makeIssue("ASTROLO-33", 333, "ASTROLO-34");
+  const middle = makeIssue("ASTROLO-34", 334, "ASTROLO-35");
+  const last = makeIssue("ASTROLO-35", 335);
+  const issues = [first, middle, last];
+  const result = reconcileSnapshots({
+    linearIssues: issues,
+    githubByUrl: new Map(
+      issues.map((issue) => {
+        const url = issue.attachments.nodes[0].url;
+        return [url, githubIssue({ url })];
+      }),
+    ),
+    now: NOW,
+  });
+
+  assert.deepEqual(
+    result.findings
+      .filter((finding) => finding.code === "duplicate_candidate")
+      .map((finding) => finding.issue),
+    ["ASTROLO-33, ASTROLO-35"],
   );
 });
 
@@ -1901,8 +3271,17 @@ test("workflow agendado não concede permissões de escrita", async () => {
   );
   assert.match(workflow, /^permissions: \{\}$/mu);
   assert.doesNotMatch(workflow, /^\s+[a-z-]+:\s*write\s*$/gmu);
-  assert.match(workflow, /GITHUB_READ_TOKEN \|\| github\.token/u);
+  assert.match(
+    workflow,
+    /GH_TOKEN: \$\{\{ secrets\.LINEAR_GITHUB_READ_TOKEN \}\}/u,
+  );
+  assert.doesNotMatch(workflow, /\|\|\s*github\.token/u);
   assert.match(workflow, /node scripts\/github-linear-reconciler\.mjs/u);
+  assert.match(
+    workflow,
+    /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u,
+  );
+  assert.match(workflow, /if:\s*always\(\)/u);
 });
 
 test("relatório Markdown contém contagens e detalhes acionáveis", () => {
@@ -1922,4 +3301,51 @@ test("relatório Markdown contém contagens e detalhes acionáveis", () => {
   assert.match(markdown, /2 issues Linear/);
   assert.match(markdown, /status_divergence/);
   assert.match(markdown, /GITHORG-70/);
+});
+
+test("relatório Markdown trunca detalhes deterministicamente abaixo do limite", () => {
+  const result = {
+    auditedIssues: 1_000,
+    auditedGithubLinks: 1_000,
+    linearOnlyTeamKeys: [],
+    findings: Array.from({ length: 1_000 }, (_, index) => ({
+      severity: "warning",
+      code: `similar_issue_unlinked_${index}`,
+      issue: `GITHORG-${index}`,
+      message: `Evidência ${index} ${"muito detalhada ".repeat(300)}`,
+    })),
+  };
+
+  const first = renderMarkdown(result);
+  const second = renderMarkdown(result);
+  assert.equal(first, second);
+  assert.ok(Buffer.byteLength(first, "utf8") < 900 * 1024);
+  assert.match(first, /1000 avisos/u);
+  assert.match(first, /Detalhes truncados: exibindo \d+ de 1000/u);
+  assert.doesNotMatch(first, /similar_issue_unlinked_999/u);
+});
+
+test("falha fatal escreve finding inconclusivo no step summary", async () => {
+  let appended = null;
+  let written = null;
+  const output = await writeIncompleteSummary(new Error("complexity limit"), {
+    summaryPath: "step-summary.md",
+    jsonPath: "github-linear-reconciliation.json",
+    appendFileImpl: async (path, content, encoding) => {
+      appended = { path, content, encoding };
+    },
+    writeFileImpl: async (path, content, encoding) => {
+      written = { path, content, encoding };
+    },
+  });
+
+  assert.equal(output.result.findings[0].severity, "incomplete");
+  assert.equal(output.result.findings[0].code, "reconciliation_aborted");
+  assert.equal(appended.path, "step-summary.md");
+  assert.equal(appended.encoding, "utf8");
+  assert.match(appended.content, /reconciliation_aborted/u);
+  assert.match(appended.content, /complexity limit/u);
+  assert.equal(written.path, "github-linear-reconciliation.json");
+  assert.equal(written.encoding, "utf8");
+  assert.match(written.content, /reconciliation_aborted/u);
 });
