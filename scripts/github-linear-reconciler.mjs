@@ -361,8 +361,8 @@ function releaseTargetsCommit(release, commit, repo) {
   const exact = String(release.commitSha ?? "").toLowerCase();
   const version = String(release.version ?? release.name ?? "").toLowerCase();
   const candidate = commit.toLowerCase();
-  if (release.commitSha !== null && release.commitSha !== undefined)
-    return exact === candidate;
+  if (!Object.hasOwn(release, "commitSha")) return false;
+  if (release.commitSha !== null) return exact === candidate;
   return version.length >= 7 && candidate.startsWith(version);
 }
 
@@ -371,8 +371,8 @@ function releaseCommitEvidenceConflicts(release, commit, repo) {
     githubUrlKey(release.pipeline?.name) !==
       githubUrlKey(expectedPipelineForRepository(repo)) ||
     release.pipeline?.type !== "continuous" ||
-    release.commitSha === null ||
-    release.commitSha === undefined
+    !Object.hasOwn(release, "commitSha") ||
+    release.commitSha === null
   )
     return false;
   const exact = String(release.commitSha).toLowerCase();
@@ -543,9 +543,14 @@ function linearCommentMetadataIsValid(comment, now) {
     Array.isArray(comment.syncedWith) &&
     comment.syncedWith.every(
       (entity) =>
-        !isGithubService(entity?.service) ||
-        isNonemptyTrimmedString(entity?.id),
+        entity &&
+        typeof entity === "object" &&
+        !Array.isArray(entity) &&
+        isNonemptyTrimmedString(entity.id) &&
+        isNonemptyTrimmedString(entity.service),
     ) &&
+    Object.hasOwn(comment, "externalThread") &&
+    linearExternalThreadMetadataIsValid(comment.externalThread) &&
     timestampsAreChronological(createdAt, updatedAt) &&
     timestampIsNotAfter(updatedAt, now)
   );
@@ -583,7 +588,129 @@ function linearTeamMetadataIsValid(team) {
   );
 }
 
-function linearIssueMetadataIsValid(issue) {
+function linearTeamIdentityIsValid(team) {
+  return (
+    team &&
+    typeof team === "object" &&
+    !Array.isArray(team) &&
+    isNonemptyTrimmedString(team.id) &&
+    isNonemptyTrimmedString(team.key) &&
+    isNonemptyTrimmedString(team.name)
+  );
+}
+
+function linearCycleMetadataIsValid(cycle) {
+  return (
+    cycle &&
+    typeof cycle === "object" &&
+    !Array.isArray(cycle) &&
+    isNonemptyTrimmedString(cycle.id) &&
+    Object.hasOwn(cycle, "name") &&
+    (cycle.name === null || isNonemptyTrimmedString(cycle.name)) &&
+    Number.isSafeInteger(cycle.number) &&
+    cycle.number > 0 &&
+    nullableLinearTimestampFieldIsValid(cycle, "archivedAt")
+  );
+}
+
+function linearProjectMetadataIsValid(project) {
+  return (
+    project &&
+    typeof project === "object" &&
+    !Array.isArray(project) &&
+    isNonemptyTrimmedString(project.id) &&
+    isNonemptyTrimmedString(project.name) &&
+    nullableLinearTimestampFieldIsValid(project, "archivedAt")
+  );
+}
+
+function linearInitiativeMetadataIsValid(initiative, teamId) {
+  return (
+    initiative &&
+    typeof initiative === "object" &&
+    !Array.isArray(initiative) &&
+    isNonemptyTrimmedString(initiative.id) &&
+    isNonemptyTrimmedString(initiative.name) &&
+    nullableLinearTimestampFieldIsValid(initiative, "archivedAt") &&
+    linearTeamIdentityIsValid(initiative.leadTeam) &&
+    initiative.leadTeam.id === teamId
+  );
+}
+
+function linearDocumentMetadataIsValid(document, teamId) {
+  return (
+    document &&
+    typeof document === "object" &&
+    !Array.isArray(document) &&
+    isNonemptyTrimmedString(document.id) &&
+    isNonemptyTrimmedString(document.title) &&
+    isNonemptyTrimmedString(document.slugId) &&
+    nullableLinearTimestampFieldIsValid(document, "archivedAt") &&
+    linearTeamIdentityIsValid(document.team) &&
+    document.team.id === teamId
+  );
+}
+
+function linearExternalThreadMetadataIsValid(thread) {
+  if (thread === null) return true;
+  return (
+    thread &&
+    typeof thread === "object" &&
+    !Array.isArray(thread) &&
+    isNonemptyTrimmedString(thread.id) &&
+    typeof thread.isConnected === "boolean" &&
+    Object.hasOwn(thread, "name") &&
+    (thread.name === null || typeof thread.name === "string") &&
+    Object.hasOwn(thread, "subType") &&
+    (thread.subType === null || typeof thread.subType === "string") &&
+    Object.hasOwn(thread, "type") &&
+    (thread.type === null || isNonemptyTrimmedString(thread.type)) &&
+    Object.hasOwn(thread, "url") &&
+    (thread.url === null || isNonemptyTrimmedString(thread.url))
+  );
+}
+
+function linearAttachmentMetadataIsValid(attachment) {
+  return (
+    attachment &&
+    typeof attachment === "object" &&
+    !Array.isArray(attachment) &&
+    isNonemptyTrimmedString(attachment.id) &&
+    isNonemptyTrimmedString(attachment.title) &&
+    isNonemptyTrimmedString(attachment.url)
+  );
+}
+
+function linearIssueReferenceMetadataIsValid(reference) {
+  return (
+    reference &&
+    typeof reference === "object" &&
+    !Array.isArray(reference) &&
+    isNonemptyTrimmedString(reference.id) &&
+    isNonemptyTrimmedString(reference.identifier)
+  );
+}
+
+function linearRelationMetadataIsValid(relation) {
+  return (
+    relation &&
+    typeof relation === "object" &&
+    !Array.isArray(relation) &&
+    isNonemptyTrimmedString(relation.id) &&
+    ["blocks", "duplicate", "related", "similar"].includes(relation.type) &&
+    linearIssueReferenceMetadataIsValid(relation.issue) &&
+    linearIssueReferenceMetadataIsValid(relation.relatedIssue)
+  );
+}
+
+function linearConnectionNodeIdentitiesAreUnique(nodes) {
+  const ids = nodes.map((node) =>
+    isNonemptyTrimmedString(node?.id) ? node.id : null,
+  );
+  return ids.every(Boolean) && new Set(ids).size === ids.length;
+}
+
+function linearIssueMetadataIsValid(issue, now) {
   const connectionNames = [
     "attachments",
     "relations",
@@ -591,6 +718,13 @@ function linearIssueMetadataIsValid(issue) {
     "releases",
     "comments",
   ];
+  const nodeValidators = {
+    attachments: linearAttachmentMetadataIsValid,
+    relations: linearRelationMetadataIsValid,
+    inverseRelations: linearRelationMetadataIsValid,
+    releases: (release) => linearReleaseMetadataIsValid(release, now),
+    comments: (comment) => linearCommentMetadataIsValid(comment, now),
+  };
   return (
     issue &&
     isNonemptyTrimmedString(issue.id) &&
@@ -624,9 +758,10 @@ function linearIssueMetadataIsValid(issue) {
         issue[name].pageInfo.hasNextPage === false &&
         Object.hasOwn(issue[name].pageInfo, "endCursor") &&
         (issue[name].pageInfo.endCursor === null ||
-          isNonemptyTrimmedString(issue[name].pageInfo.endCursor)),
-    ) &&
-    linearCommentIdentitiesAreUnique(issue.comments.nodes)
+          isNonemptyTrimmedString(issue[name].pageInfo.endCursor)) &&
+        linearConnectionNodeIdentitiesAreUnique(issue[name].nodes) &&
+        issue[name].nodes.every(nodeValidators[name]),
+    )
   );
 }
 
@@ -647,6 +782,12 @@ function linearReleaseMetadataIsValid(release, now) {
     release.pipeline.name.trim() === release.pipeline.name &&
     release.pipeline.name.length > 0 &&
     ["continuous", "scheduled"].includes(release.pipeline.type) &&
+    Object.hasOwn(release, "version") &&
+    (release.version === null || isNonemptyTrimmedString(release.version)) &&
+    Object.hasOwn(release, "commitSha") &&
+    (release.commitSha === null ||
+      (isNonemptyTrimmedString(release.commitSha) &&
+        /^[0-9a-f]{40}$/iu.test(release.commitSha))) &&
     Object.hasOwn(release, "completedAt") &&
     (release.completedAt === null ||
       timestampIsNotAfter(release.completedAt, now))
@@ -1062,7 +1203,7 @@ function githubLinkFromSyncedEntity(entity, organization) {
   };
 }
 
-function githubLinkFromUrl(raw, organization) {
+function parseGithubResourceUrl(raw) {
   const candidate = String(raw).replace(/[),.;:!?}\]`]+$/u, "");
   let parsed;
   try {
@@ -1082,11 +1223,6 @@ function githubLinkFromUrl(raw, organization) {
   );
   if (!path) return null;
   const [, owner, repo, resource, numberText] = path;
-  if (
-    owner.toLocaleLowerCase("en-US") !== organization.toLocaleLowerCase("en-US")
-  ) {
-    return null;
-  }
   const kind =
     resource.toLocaleLowerCase("en-US") === "pull" ? "pull" : "issue";
   const number = Number(numberText);
@@ -1095,10 +1231,51 @@ function githubLinkFromUrl(raw, organization) {
   return {
     kind,
     number,
-    owner: organization,
+    owner,
     repo,
-    url: `https://github.com/${organization}/${repo}/${normalizedResource}/${number}`,
+    url: `https://github.com/${owner}/${repo}/${normalizedResource}/${number}`,
   };
+}
+
+function githubLinkFromUrl(raw, organization) {
+  const link = parseGithubResourceUrl(raw);
+  if (
+    !link ||
+    link.owner.toLocaleLowerCase("en-US") !==
+      organization.toLocaleLowerCase("en-US")
+  )
+    return null;
+  return {
+    ...link,
+    owner: organization,
+    url: `https://github.com/${organization}/${link.repo}/${link.kind === "pull" ? "pull" : "issues"}/${link.number}`,
+  };
+}
+
+function collectExternalOrganizationGithubLinks(issue, organization) {
+  const links = new Map();
+  const sources = [
+    issue.description,
+    ...connectionNodes(issue.attachments).map((attachment) => attachment.url),
+    ...connectionNodes(issue.comments).map((comment) => comment.body),
+  ];
+  for (const source of sources) {
+    if (!source) continue;
+    GITHUB_URL_CANDIDATE.lastIndex = 0;
+    for (const [raw] of String(source).matchAll(GITHUB_URL_CANDIDATE)) {
+      const link = parseGithubResourceUrl(raw);
+      if (
+        link &&
+        link.owner.toLocaleLowerCase("en-US") !==
+          organization.toLocaleLowerCase("en-US")
+      ) {
+        links.set(githubUrlKey(link.url), link);
+      }
+    }
+  }
+  return [...links.values()].sort((left, right) =>
+    left.url.localeCompare(right.url),
+  );
 }
 
 export function collectGithubLinks(issue, organization = DEFAULT_ORGANIZATION) {
@@ -1241,13 +1418,6 @@ function collectGithubCommentAuditUrls(
       githubUrlKey(link.url),
     ),
   );
-  if (
-    !hasNativeGithubSync(issue) &&
-    !hasGithubExternalThread(issue) &&
-    !hasGithubSyncedComment(issue)
-  )
-    return urls;
-
   const mappedRepository = mappedRepositoryForIssue(issue, teamRepositories);
   if (!mappedRepository) return urls;
   const mappedNativeIssueLinks = collectNativeGithubIssueLinks(
@@ -1818,7 +1988,45 @@ export function reconcileSnapshots({
   }
 
   for (const issue of linearIssues) {
-    if (!linearIssueMetadataIsValid(issue)) {
+    const invalidReleaseNodes = Array.isArray(issue?.releases?.nodes)
+      ? issue.releases.nodes.filter(
+          (release) => !linearReleaseMetadataIsValid(release, now),
+        )
+      : [];
+    if (invalidReleaseNodes.length > 0) {
+      findings.push({
+        severity: "incomplete",
+        code: "linear_release_metadata_invalid",
+        issue:
+          (isNonemptyTrimmedString(issue?.identifier) && issue.identifier) ||
+          (isNonemptyTrimmedString(issue?.id) && issue.id) ||
+          "issue Linear sem identificador",
+        message:
+          `${invalidReleaseNodes.length} release(s) Linear possuem identidade, pipeline, ` +
+          "commitSha, version ou completedAt ausente/inválido",
+      });
+      continue;
+    }
+    const invalidCommentNodes = Array.isArray(issue?.comments?.nodes)
+      ? issue.comments.nodes.filter(
+          (comment) => !linearCommentMetadataIsValid(comment, now),
+        )
+      : [];
+    if (invalidCommentNodes.length > 0) {
+      findings.push({
+        severity: "incomplete",
+        code: "linear_comment_metadata_invalid",
+        issue:
+          (isNonemptyTrimmedString(issue?.identifier) && issue.identifier) ||
+          (isNonemptyTrimmedString(issue?.id) && issue.id) ||
+          "issue Linear sem identificador",
+        message:
+          `${invalidCommentNodes.length} comentário(s) Linear possuem identidade, corpo, ` +
+          "proveniência, externalThread ou timestamps ausentes/inválidos",
+      });
+      continue;
+    }
+    if (!linearIssueMetadataIsValid(issue, now)) {
       findings.push({
         severity: "incomplete",
         code: "linear_issue_metadata_invalid",
@@ -1834,6 +2042,9 @@ export function reconcileSnapshots({
     }
     const isLinearOnly = linearOnlyTeams.has(issue.team?.key);
     const links = collectGithubLinks(issue, organization);
+    const externalOrganizationGithubLinks = isLinearOnly
+      ? collectExternalOrganizationGithubLinks(issue, organization)
+      : [];
     const externalThreadIssueUrls = new Set(
       collectExternalThreadIssueLinks(issue, organization).map((link) =>
         githubUrlKey(link.url),
@@ -1958,6 +2169,14 @@ export function reconcileSnapshots({
           "issue de time Linear-only ainda possui sincronização GitHub conectada",
       });
     }
+    for (const link of externalOrganizationGithubLinks) {
+      findings.push({
+        severity: "error",
+        code: "linear_only_team_external_github_link",
+        issue: issue.identifier,
+        message: `issue de time Linear-only referencia recurso GitHub fora da organização auditada: ${link.url}`,
+      });
+    }
     if (
       requireGithubIssueAttachment &&
       mappedRepository &&
@@ -2080,10 +2299,7 @@ export function reconcileSnapshots({
       }
       if (
         link.kind === "issue" &&
-        (isCanonicalIssue || externalThreadIssueUrls.has(linkUrlKey)) &&
-        (hasNativeGithubSync(issue) ||
-          hasGithubExternalThread(issue) ||
-          hasGithubSyncedComment(issue))
+        (isCanonicalIssue || externalThreadIssueUrls.has(linkUrlKey))
       ) {
         const linearComments = commentsForGithubLink(
           issue,
@@ -2905,9 +3121,12 @@ async function readLinearConnectionPages({
   query,
   root,
   variables = {},
+  label = "Linear topology",
+  validateNode,
   fetchImpl,
 }) {
   const nodes = [];
+  const seenNodeIds = new Set();
   let after = null;
   const seenCursors = new Set();
   let pageCount = 0;
@@ -2924,6 +3143,15 @@ async function readLinearConnectionPages({
     const connection = root(data);
     if (!connection || !Array.isArray(connection.nodes))
       throw new Error("Linear topology retornou nodes ausentes ou inválidos");
+    if (validateNode && connection.nodes.some((node) => !validateNode(node)))
+      throw new Error(`${label}: node ausente ou inválido`);
+    if (validateNode) {
+      for (const node of connection.nodes) {
+        if (seenNodeIds.has(node.id))
+          throw new Error(`${label}: id duplicado ${node.id}`);
+        seenNodeIds.add(node.id);
+      }
+    }
     nodes.push(...connection.nodes);
     after = nextLinearCursor(
       connection.pageInfo,
@@ -2989,6 +3217,8 @@ export async function readLinearTopology({
       query: TEAM_CYCLES_QUERY,
       root: (data) => data.team?.cycles,
       variables: { id: team.id },
+      label: "Linear topology Cycles",
+      validateNode: linearCycleMetadataIsValid,
       fetchImpl,
     }),
     readLinearConnectionPages({
@@ -2996,6 +3226,8 @@ export async function readLinearTopology({
       query: TEAM_PROJECTS_QUERY,
       root: (data) => data.team?.projects,
       variables: { id: team.id },
+      label: "Linear topology Projects",
+      validateNode: linearProjectMetadataIsValid,
       fetchImpl,
     }),
     readLinearConnectionPages({
@@ -3003,6 +3235,9 @@ export async function readLinearTopology({
       query: TEAM_INITIATIVES_QUERY,
       root: (data) => data.initiatives,
       variables: { teamId: team.id },
+      label: "Linear topology Initiatives",
+      validateNode: (initiative) =>
+        linearInitiativeMetadataIsValid(initiative, team.id),
       fetchImpl,
     }),
     readLinearConnectionPages({
@@ -3010,6 +3245,9 @@ export async function readLinearTopology({
       query: TEAM_DOCUMENTS_QUERY,
       root: (data) => data.documents,
       variables: { teamId: team.id },
+      label: "Linear topology Documents",
+      validateNode: (document) =>
+        linearDocumentMetadataIsValid(document, team.id),
       fetchImpl,
     }),
   ]);

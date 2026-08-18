@@ -87,14 +87,62 @@ function linearIssue(overrides = {}) {
       };
     }
   }
+  if (issue.attachments?.nodes) {
+    issue.attachments = {
+      ...issue.attachments,
+      nodes: issue.attachments.nodes.map((attachment, index) => ({
+        id: `attachment-${index + 1}`,
+        title: `Attachment ${index + 1}`,
+        ...attachment,
+      })),
+    };
+  }
+  for (const connection of ["relations", "inverseRelations"]) {
+    if (!issue[connection]?.nodes) continue;
+    issue[connection] = {
+      ...issue[connection],
+      nodes: issue[connection].nodes.map((relation, index) => ({
+        id: `${connection}-${index + 1}`,
+        type: "related",
+        ...relation,
+        issue: relation.issue
+          ? {
+              id: `${connection}-${index + 1}-issue`,
+              ...relation.issue,
+            }
+          : relation.issue,
+        relatedIssue: relation.relatedIssue
+          ? {
+              id: `${connection}-${index + 1}-related`,
+              ...relation.relatedIssue,
+            }
+          : relation.relatedIssue,
+      })),
+    };
+  }
   if (issue.comments?.nodes) {
     issue.comments = {
       ...issue.comments,
       nodes: issue.comments.nodes.map((comment, index) => ({
         id: `linear-comment-${index + 1}`,
-        updatedAt: comment.createdAt,
+        createdAt: "2026-08-18T01:00:00Z",
+        updatedAt: comment.createdAt ?? "2026-08-18T01:00:00Z",
         syncedWith: [],
+        externalThread: null,
         ...comment,
+        ...(comment.externalThread
+          ? {
+              externalThread: {
+                id: `external-thread-${index + 1}`,
+                isConnected: true,
+                name: null,
+                subType: null,
+                type: "integration",
+                url: null,
+                ...comment.externalThread,
+              },
+            }
+          : {}),
       })),
     };
   }
@@ -104,6 +152,8 @@ function linearIssue(overrides = {}) {
       nodes: issue.releases.nodes.map((release, index) => ({
         id: `release-${index + 1}`,
         name: `Release ${index + 1}`,
+        version: null,
+        commitSha: null,
         ...release,
         pipeline: release.pipeline
           ? {
@@ -702,6 +752,44 @@ test("conexão Linear terminal aceita endCursor final não vazio", () => {
   );
 });
 
+test("nodes parciais nas conexões da Issue tornam o snapshot inconclusivo", () => {
+  for (const connection of [
+    "attachments",
+    "relations",
+    "inverseRelations",
+    "releases",
+    "comments",
+  ]) {
+    const issue = linearIssue();
+    issue[connection].nodes = [{}];
+    const result = reconcileSnapshots({
+      linearIssues: [issue],
+      githubByUrl: new Map(),
+      now: NOW,
+    });
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          [
+            "linear_issue_metadata_invalid",
+            "linear_release_metadata_invalid",
+            "linear_comment_metadata_invalid",
+          ].includes(finding.code) && finding.severity === "incomplete",
+      ),
+      true,
+      connection,
+    );
+    assert.equal(determineExitCode(result), 2, connection);
+    assert.equal(
+      result.findings.some(
+        (finding) => finding.code === "missing_github_issue_attachment",
+      ),
+      false,
+      connection,
+    );
+  }
+});
+
 test("200 issues sem comments usam somente as páginas principais", async () => {
   const requests = [];
   const fetchImpl = async (_url, options) => {
@@ -915,7 +1003,14 @@ test("inventaria topologia completa do time LCV", async () => {
           data: {
             team: {
               cycles: {
-                nodes: [{ id: "cycle-1", name: "C1", number: 1 }],
+                nodes: [
+                  {
+                    id: "cycle-1",
+                    name: "C1",
+                    number: 1,
+                    archivedAt: null,
+                  },
+                ],
                 pageInfo: { hasNextPage: false, endCursor: null },
               },
             },
@@ -991,6 +1086,76 @@ test("inventaria topologia completa do time LCV", async () => {
   assert.equal(topology.documents.length, 1);
   assert.equal(topology.subteams.length, 1);
   assert.deepEqual(topology.integrations, [GITHUB_INTEGRATION]);
+});
+
+test("topologia rejeita nodes parciais de cycles, projects, initiatives e documents", async () => {
+  for (const target of ["Cycles", "Projects", "Initiatives", "Documents"]) {
+    await assert.rejects(
+      () =>
+        readLinearTopology({
+          token: "linear-read-only",
+          fetchImpl: async (_url, options) => {
+            const { query } = JSON.parse(options.body);
+            if (query.includes("GitHubLinearTeams")) {
+              return new Response(
+                JSON.stringify({
+                  data: {
+                    teams: {
+                      nodes: [
+                        {
+                          id: "team-lcv",
+                          key: "LCV",
+                          name: "LCV",
+                          archivedAt: null,
+                          retiredAt: null,
+                        },
+                      ],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                }),
+                { status: 200 },
+              );
+            }
+            if (query.includes("GitHubLinearIntegrations")) {
+              return new Response(
+                JSON.stringify({
+                  data: {
+                    integrations: {
+                      nodes: [GITHUB_INTEGRATION],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                }),
+                { status: 200 },
+              );
+            }
+            const current = [
+              "Cycles",
+              "Projects",
+              "Initiatives",
+              "Documents",
+            ].find((name) => query.includes(`GitHubLinearUmbrella${name}`));
+            const root = current.toLocaleLowerCase("en-US");
+            const connection = {
+              nodes: current === target ? [{}] : [],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            };
+            return new Response(
+              JSON.stringify({
+                data:
+                  current === "Cycles" || current === "Projects"
+                    ? { team: { [root]: connection } }
+                    : { [root]: connection },
+              }),
+              { status: 200 },
+            );
+          },
+        }),
+      new RegExp(`topology ${target}.*node.*inválido`, "iu"),
+      target,
+    );
+  }
 });
 
 test("topologia rejeita time com identidade ou lifecycle parcial", async () => {
@@ -2099,6 +2264,57 @@ test("metadata non-null ausente na release torna a prova inconclusiva", () => {
         finding.severity === "incomplete",
     ),
     true,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
+test("release sem a propriedade commitSha torna a prova inconclusiva", () => {
+  const issueUrl = "https://github.com/LCV-Ideas-Software/.github/issues/259";
+  const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const issue = linearIssue({
+    attachments: { nodes: [{ url: issueUrl }, { url: pullUrl }] },
+    releases: {
+      nodes: [
+        {
+          version: commit.slice(0, 7),
+          completedAt: "2026-08-18T02:00:00Z",
+          pipeline: { name: ".github-org", type: "continuous" },
+        },
+      ],
+    },
+  });
+  delete issue.releases.nodes[0].commitSha;
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [issueUrl, githubIssue({ url: issueUrl })],
+      [
+        pullUrl,
+        {
+          kind: "pull",
+          url: pullUrl,
+          merged: true,
+          merged_at: "2026-08-18T01:00:00Z",
+          merge_commit_sha: commit,
+          comments: [],
+        },
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_release_metadata_invalid" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(
+    result.findings.some((finding) => finding.code === "missing_release"),
+    false,
   );
   assert.equal(determineExitCode(result), 2);
 });
@@ -4451,6 +4667,66 @@ test("time Linear-only rejeita sync GitHub declarado somente em comentário", ()
   );
 });
 
+test("time Linear-only rejeita links GitHub de outra organização sem consultá-los", () => {
+  const externalUrl = "https://github.com/Other-Org/private-repo/issues/7";
+  for (const source of ["description", "attachment"]) {
+    const issue = linearIssue({
+      identifier: `PANDROID-${source}`,
+      team: { key: "PANDROID", name: "programa-android" },
+      ...(source === "description"
+        ? { description: `Referência externa: ${externalUrl}` }
+        : {
+            attachments: {
+              nodes: [
+                {
+                  id: "external-attachment",
+                  title: "Referência externa",
+                  url: externalUrl,
+                },
+              ],
+            },
+          }),
+    });
+    assert.deepEqual(collectGithubLinks(issue), []);
+    const result = reconcileSnapshots({
+      linearIssues: [issue],
+      githubByUrl: new Map(),
+      linearTopology: {
+        teams: [
+          { key: "PANDROID", name: "programa-android", archivedAt: null },
+        ],
+        cycles: [],
+        projects: [],
+        initiatives: [],
+        documents: [],
+        subteams: [],
+        integrations: [GITHUB_INTEGRATION],
+      },
+      repositoryInventory: {
+        active: [],
+        issuesEnabled: [],
+        issues: [],
+        issueAuditFailures: {},
+      },
+      teamRepositories: {},
+      linearOnlyTeamKeys: ["PANDROID"],
+      linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+      linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "linear_only_team_external_github_link" &&
+          finding.severity === "error",
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 1);
+  }
+});
+
 test("404 de repo privado ausente do inventário não é aceito como tombstone Linear-only", () => {
   const url = "https://github.com/LCV-Ideas-Software/private-mobile/issues/1";
   const result = reconcileSnapshots({
@@ -5054,6 +5330,52 @@ test("comment.syncedWith GitHub ativa a leitura e reconciliação bidirecional",
     result.findings.some(
       (finding) => finding.code === "comment_sync_gap_to_github",
     ),
+    true,
+  );
+});
+
+test("attachment canônico sozinho ativa a leitura e auditoria de comentários", async () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const issue = linearIssue({ attachments: { nodes: [{ url }] } });
+  const calls = [];
+  const records = await readGithubRecords({
+    issues: [issue],
+    organization: "LCV-Ideas-Software",
+    token: "read-only",
+    fetchImpl: async (requestUrl) => {
+      calls.push(requestUrl);
+      if (requestUrl.includes("/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 260001,
+              node_id: "IC_attachment_only",
+              body: "Comentário GitHub antigo ausente no Linear",
+              created_at: "2026-08-18T01:00:00Z",
+              updated_at: "2026-08-18T01:00:00Z",
+            },
+          ]),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({ state: "open", state_reason: null }),
+        { status: 200 },
+      );
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: records,
+    now: NOW,
+  });
+
+  assert.equal(
+    calls.filter((requestUrl) => requestUrl.includes("/comments")).length,
+    1,
+  );
+  assert.equal(
+    result.findings.some((finding) => finding.code === "comment_sync_gap"),
     true,
   );
 });
