@@ -107,13 +107,19 @@ function linearIssue(overrides = {}) {
         ...relation,
         issue: relation.issue
           ? {
-              id: `${connection}-${index + 1}-issue`,
+              id:
+                relation.issue.identifier === issue.identifier
+                  ? issue.id
+                  : `${connection}-${index + 1}-issue`,
               ...relation.issue,
             }
           : relation.issue,
         relatedIssue: relation.relatedIssue
           ? {
-              id: `${connection}-${index + 1}-related`,
+              id:
+                relation.relatedIssue.identifier === issue.identifier
+                  ? issue.id
+                  : `${connection}-${index + 1}-related`,
               ...relation.relatedIssue,
             }
           : relation.relatedIssue,
@@ -790,6 +796,71 @@ test("nodes parciais nas conexões da Issue tornam o snapshot inconclusivo", () 
   }
 });
 
+test("relation precisa pertencer exatamente à Issue dona da conexão", () => {
+  for (const connection of ["relations", "inverseRelations"]) {
+    for (const endpoints of ["nenhum", "ambos"]) {
+      const issue = linearIssue();
+      const owner = { id: issue.id, identifier: issue.identifier };
+      issue[connection].nodes = [
+        {
+          id: `${connection}-${endpoints}`,
+          type: "related",
+          issue:
+            endpoints === "ambos"
+              ? owner
+              : { id: "issue-a", identifier: "OTHER-1" },
+          relatedIssue:
+            endpoints === "ambos"
+              ? owner
+              : { id: "issue-b", identifier: "OTHER-2" },
+        },
+      ];
+      const result = reconcileSnapshots({
+        linearIssues: [issue],
+        githubByUrl: new Map(),
+        now: NOW,
+      });
+      assert.equal(
+        result.findings.some(
+          (finding) =>
+            finding.code === "linear_issue_metadata_invalid" &&
+            finding.severity === "incomplete",
+        ),
+        true,
+        `${connection}:${endpoints}`,
+      );
+      assert.equal(determineExitCode(result), 2, `${connection}:${endpoints}`);
+    }
+
+    for (const ownerEndpoint of ["issue", "relatedIssue"]) {
+      const issue = linearIssue();
+      const owner = { id: issue.id, identifier: issue.identifier };
+      const other = { id: "issue-other", identifier: "OTHER-1" };
+      issue[connection].nodes = [
+        {
+          id: `${connection}-${ownerEndpoint}`,
+          type: "related",
+          issue: ownerEndpoint === "issue" ? owner : other,
+          relatedIssue: ownerEndpoint === "relatedIssue" ? owner : other,
+        },
+      ];
+      const result = reconcileSnapshots({
+        linearIssues: [issue],
+        githubByUrl: new Map(),
+        requireGithubIssueAttachment: false,
+        now: NOW,
+      });
+      assert.equal(
+        result.findings.some(
+          (finding) => finding.code === "linear_issue_metadata_invalid",
+        ),
+        false,
+        `${connection}:${ownerEndpoint}`,
+      );
+    }
+  }
+});
+
 test("200 issues sem comments usam somente as páginas principais", async () => {
   const requests = [];
   const fetchImpl = async (_url, options) => {
@@ -1179,11 +1250,14 @@ test("topologia rejeita time com identidade ou lifecycle parcial", async () => {
     withoutArchivedAt,
     withoutRetiredAt,
     { ...valid, retiredAt: "data-inválida" },
+    { ...valid, archivedAt: "2026-08-18T04:00:00Z" },
+    { ...valid, retiredAt: "2026-08-18T04:00:00Z" },
   ]) {
     await assert.rejects(
       () =>
         readLinearTopology({
           token: "linear-read-only",
+          now: NOW,
           fetchImpl: async (_url, options) => {
             const { query } = JSON.parse(options.body);
             const [root, nodes] = query.includes("GitHubLinearTeams")
@@ -2766,6 +2840,10 @@ test("canonicalização preserva whitespace semântico dentro de código Markdow
   assert.notEqual(
     canonicalizeCommentBody("Antes\n\n    if True:\n        executar()"),
     canonicalizeCommentBody("Antes\n\n    if True:\n     executar()"),
+  );
+  assert.notEqual(
+    canonicalizeCommentBody("````yaml\nraiz:\n  filho: valor\n`````"),
+    canonicalizeCommentBody("````yaml\nraiz:\n filho: valor\n`````"),
   );
   assert.equal(
     canonicalizeCommentBody("Texto   fora   do código"),
@@ -4724,6 +4802,79 @@ test("time Linear-only rejeita links GitHub de outra organização sem consultá
       true,
     );
     assert.equal(determineExitCode(result), 1);
+  }
+});
+
+test("time Linear-only rejeita link GitHub HTTP sem consultá-lo", () => {
+  const insecureUrl =
+    "http://github.com/LCV-Ideas-Software/private-repo/issues/7";
+  for (const source of ["description", "attachment", "comment"]) {
+    const issue = linearIssue({
+      identifier: `PANDROID-http-${source}`,
+      team: { key: "PANDROID", name: "programa-android" },
+      ...(source === "description"
+        ? { description: `Referência insegura: ${insecureUrl}` }
+        : source === "attachment"
+          ? {
+              attachments: {
+                nodes: [
+                  {
+                    id: "http-attachment",
+                    title: "Referência insegura",
+                    url: insecureUrl,
+                  },
+                ],
+              },
+            }
+          : {
+              comments: {
+                nodes: [
+                  {
+                    body: `Referência insegura: ${insecureUrl}`,
+                    createdAt: "2026-08-18T01:00:00Z",
+                  },
+                ],
+              },
+            }),
+    });
+    assert.deepEqual(collectGithubLinks(issue), []);
+    const result = reconcileSnapshots({
+      linearIssues: [issue],
+      githubByUrl: new Map(),
+      linearTopology: {
+        teams: [
+          { key: "PANDROID", name: "programa-android", archivedAt: null },
+        ],
+        cycles: [],
+        projects: [],
+        initiatives: [],
+        documents: [],
+        subteams: [],
+        integrations: [GITHUB_INTEGRATION],
+      },
+      repositoryInventory: {
+        active: [],
+        issuesEnabled: [],
+        issues: [],
+        issueAuditFailures: {},
+      },
+      teamRepositories: {},
+      linearOnlyTeamKeys: ["PANDROID"],
+      linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+      linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "linear_only_team_insecure_github_link" &&
+          finding.severity === "error",
+      ),
+      true,
+      source,
+    );
+    assert.equal(determineExitCode(result), 1, source);
   }
 });
 

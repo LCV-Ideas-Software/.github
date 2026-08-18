@@ -7,7 +7,7 @@ const DEFAULT_COMMENT_GRACE_MS = 30 * 60 * 1000;
 const DEFAULT_RELEASE_REQUIRED_AFTER = new Date("2026-08-17T12:00:00.000Z");
 const MAX_GITHUB_PAGES = 1_000;
 const MAX_LINEAR_PAGES = 1_000;
-const GITHUB_URL_CANDIDATE = /https:\/\/github\.com\/[^\s<>"']+/giu;
+const GITHUB_URL_CANDIDATE = /https?:\/\/github\.com\/[^\s<>"']+/giu;
 const GITHUB_COMMENT_TIME_TOLERANCE_MS = 1_000;
 const MIN_INFORMATIVE_DESCRIPTION_WORDS = 5;
 const MAX_DUPLICATE_COMPARISONS = 50_000;
@@ -162,10 +162,7 @@ function transformMarkdownProse(value, transform) {
     return `\uE000${index}\uE001`;
   };
   let source = String(value ?? "").replace(/\r\n/g, "\n");
-  source = source.replace(
-    /(^|\n)([ \t]{0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)/gu,
-    protect,
-  );
+  source = protectFencedMarkdownBlocks(source, protect);
   source = source.replace(
     /^(?: {4}|\t)[^\n]*(?:\n(?:[ \t]*\n)*(?: {4}|\t)[^\n]*)*/gmu,
     protect,
@@ -175,6 +172,29 @@ function transformMarkdownProse(value, transform) {
     /\uE000(\d+)\uE001/gu,
     (_match, index) => protectedCode[Number(index)],
   );
+}
+
+function protectFencedMarkdownBlocks(source, protect) {
+  const lines = source.split("\n");
+  const output = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const opening = /^( {0,3})(`{3,}|~{3,})[^\n]*$/u.exec(lines[index]);
+    if (!opening) {
+      output.push(lines[index]);
+      continue;
+    }
+    const marker = opening[2][0];
+    const closing = new RegExp(
+      `^ {0,3}${marker}{${opening[2].length},}[ \\t]*$`,
+      "u",
+    );
+    let end = index + 1;
+    while (end < lines.length && !closing.test(lines[end])) end += 1;
+    if (end >= lines.length) end = lines.length - 1;
+    output.push(protect(lines.slice(index, end + 1).join("\n")));
+    index = end;
+  }
+  return output.join("\n");
 }
 
 export function canonicalizeCommentBody(value, context) {
@@ -558,14 +578,16 @@ function isNonemptyTrimmedString(value) {
   );
 }
 
-function nullableLinearTimestampFieldIsValid(record, field) {
+function nullableLinearTimestampFieldIsValid(record, field, now) {
   return (
     Object.hasOwn(record, field) &&
-    (record[field] === null || timestampIsValid(record[field]))
+    (record[field] === null ||
+      (timestampIsValid(record[field]) &&
+        (!now || timestampIsNotAfter(record[field], now))))
   );
 }
 
-function linearTeamMetadataIsValid(team) {
+function linearTeamMetadataIsValid(team, now) {
   return (
     team &&
     typeof team === "object" &&
@@ -573,8 +595,8 @@ function linearTeamMetadataIsValid(team) {
     isNonemptyTrimmedString(team.id) &&
     isNonemptyTrimmedString(team.key) &&
     isNonemptyTrimmedString(team.name) &&
-    nullableLinearTimestampFieldIsValid(team, "archivedAt") &&
-    nullableLinearTimestampFieldIsValid(team, "retiredAt")
+    nullableLinearTimestampFieldIsValid(team, "archivedAt", now) &&
+    nullableLinearTimestampFieldIsValid(team, "retiredAt", now)
   );
 }
 
@@ -589,7 +611,7 @@ function linearTeamIdentityIsValid(team) {
   );
 }
 
-function linearCycleMetadataIsValid(cycle) {
+function linearCycleMetadataIsValid(cycle, now) {
   return (
     cycle &&
     typeof cycle === "object" &&
@@ -599,35 +621,35 @@ function linearCycleMetadataIsValid(cycle) {
     (cycle.name === null || isNonemptyTrimmedString(cycle.name)) &&
     Number.isSafeInteger(cycle.number) &&
     cycle.number > 0 &&
-    nullableLinearTimestampFieldIsValid(cycle, "archivedAt")
+    nullableLinearTimestampFieldIsValid(cycle, "archivedAt", now)
   );
 }
 
-function linearProjectMetadataIsValid(project) {
+function linearProjectMetadataIsValid(project, now) {
   return (
     project &&
     typeof project === "object" &&
     !Array.isArray(project) &&
     isNonemptyTrimmedString(project.id) &&
     isNonemptyTrimmedString(project.name) &&
-    nullableLinearTimestampFieldIsValid(project, "archivedAt")
+    nullableLinearTimestampFieldIsValid(project, "archivedAt", now)
   );
 }
 
-function linearInitiativeMetadataIsValid(initiative, teamId) {
+function linearInitiativeMetadataIsValid(initiative, teamId, now) {
   return (
     initiative &&
     typeof initiative === "object" &&
     !Array.isArray(initiative) &&
     isNonemptyTrimmedString(initiative.id) &&
     isNonemptyTrimmedString(initiative.name) &&
-    nullableLinearTimestampFieldIsValid(initiative, "archivedAt") &&
+    nullableLinearTimestampFieldIsValid(initiative, "archivedAt", now) &&
     linearTeamIdentityIsValid(initiative.leadTeam) &&
     initiative.leadTeam.id === teamId
   );
 }
 
-function linearDocumentMetadataIsValid(document, teamId) {
+function linearDocumentMetadataIsValid(document, teamId, now) {
   return (
     document &&
     typeof document === "object" &&
@@ -635,7 +657,7 @@ function linearDocumentMetadataIsValid(document, teamId) {
     isNonemptyTrimmedString(document.id) &&
     isNonemptyTrimmedString(document.title) &&
     isNonemptyTrimmedString(document.slugId) &&
-    nullableLinearTimestampFieldIsValid(document, "archivedAt") &&
+    nullableLinearTimestampFieldIsValid(document, "archivedAt", now) &&
     linearTeamIdentityIsValid(document.team) &&
     document.team.id === teamId
   );
@@ -681,7 +703,19 @@ function linearIssueReferenceMetadataIsValid(reference) {
   );
 }
 
-function linearRelationMetadataIsValid(relation) {
+function linearIssueReferenceMatchesIssue(reference, issue) {
+  return reference.id === issue.id && reference.identifier === issue.identifier;
+}
+
+function linearRelationMetadataIsValid(relation, owningIssue) {
+  const issueOwnsRelation = linearIssueReferenceMetadataIsValid(relation?.issue)
+    ? linearIssueReferenceMatchesIssue(relation.issue, owningIssue)
+    : false;
+  const relatedIssueOwnsRelation = linearIssueReferenceMetadataIsValid(
+    relation?.relatedIssue,
+  )
+    ? linearIssueReferenceMatchesIssue(relation.relatedIssue, owningIssue)
+    : false;
   return (
     relation &&
     typeof relation === "object" &&
@@ -689,7 +723,8 @@ function linearRelationMetadataIsValid(relation) {
     isNonemptyTrimmedString(relation.id) &&
     ["blocks", "duplicate", "related", "similar"].includes(relation.type) &&
     linearIssueReferenceMetadataIsValid(relation.issue) &&
-    linearIssueReferenceMetadataIsValid(relation.relatedIssue)
+    linearIssueReferenceMetadataIsValid(relation.relatedIssue) &&
+    issueOwnsRelation !== relatedIssueOwnsRelation
   );
 }
 
@@ -710,8 +745,9 @@ function linearIssueMetadataIsValid(issue, now) {
   ];
   const nodeValidators = {
     attachments: linearAttachmentMetadataIsValid,
-    relations: linearRelationMetadataIsValid,
-    inverseRelations: linearRelationMetadataIsValid,
+    relations: (relation) => linearRelationMetadataIsValid(relation, issue),
+    inverseRelations: (relation) =>
+      linearRelationMetadataIsValid(relation, issue),
     releases: (release) => linearReleaseMetadataIsValid(release, now),
     comments: (comment) => linearCommentMetadataIsValid(comment, now),
   };
@@ -1260,6 +1296,38 @@ function collectExternalOrganizationGithubLinks(issue, organization) {
   return [...links.values()].sort((left, right) =>
     left.url.localeCompare(right.url),
   );
+}
+
+function collectInsecureGithubLinks(issue) {
+  const links = new Set();
+  const sources = [
+    issue.description,
+    ...connectionNodes(issue.attachments).map((attachment) => attachment.url),
+    ...connectionNodes(issue.comments).map((comment) => comment.body),
+  ];
+  for (const source of sources) {
+    if (!source) continue;
+    GITHUB_URL_CANDIDATE.lastIndex = 0;
+    for (const [raw] of String(source).matchAll(GITHUB_URL_CANDIDATE)) {
+      const candidate = raw.replace(/[),.;:!?}\]`]+$/u, "");
+      try {
+        const parsed = new URL(candidate);
+        if (
+          parsed.protocol === "http:" &&
+          parsed.port === "" &&
+          parsed.hostname.toLocaleLowerCase("en-US") === "github.com" &&
+          /^\/([a-z0-9-]+)\/([a-z0-9_.-]+)\/(issues|pull)\/([1-9]\d*)(?:\/.*)?$/iu.test(
+            parsed.pathname,
+          )
+        ) {
+          links.add(candidate);
+        }
+      } catch {
+        // A fonte não contém uma URL GitHub HTTP estruturalmente válida.
+      }
+    }
+  }
+  return [...links].sort();
 }
 
 export function collectGithubLinks(issue, organization = DEFAULT_ORGANIZATION) {
@@ -2029,6 +2097,9 @@ export function reconcileSnapshots({
     const externalOrganizationGithubLinks = isLinearOnly
       ? collectExternalOrganizationGithubLinks(issue, organization)
       : [];
+    const insecureGithubLinks = isLinearOnly
+      ? collectInsecureGithubLinks(issue)
+      : [];
     const externalThreadIssueUrls = new Set(
       collectExternalThreadIssueLinks(issue, organization).map((link) =>
         githubUrlKey(link.url),
@@ -2159,6 +2230,14 @@ export function reconcileSnapshots({
         code: "linear_only_team_external_github_link",
         issue: issue.identifier,
         message: `issue de time Linear-only referencia recurso GitHub fora da organização auditada: ${link.url}`,
+      });
+    }
+    for (const url of insecureGithubLinks) {
+      findings.push({
+        severity: "error",
+        code: "linear_only_team_insecure_github_link",
+        issue: issue.identifier,
+        message: `issue de time Linear-only referencia recurso GitHub por HTTP: ${url}`,
       });
     }
     if (
@@ -3149,8 +3228,11 @@ async function readLinearConnectionPages({
 export async function readLinearTopology({
   token,
   umbrellaTeamKey = DEFAULT_UMBRELLA_TEAM_KEY,
+  now = new Date(),
   fetchImpl = fetch,
 }) {
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime()))
+    throw new Error("Linear topology recebeu data de referência inválida");
   const [teams, integrations] = await Promise.all([
     readLinearConnectionPages({
       token,
@@ -3165,7 +3247,7 @@ export async function readLinearTopology({
       fetchImpl,
     }),
   ]);
-  if (teams.some((team) => !linearTeamMetadataIsValid(team)))
+  if (teams.some((team) => !linearTeamMetadataIsValid(team, now)))
     throw new Error(
       "Linear topology retornou time com identidade ou lifecycle ausente/inválido",
     );
@@ -3202,7 +3284,7 @@ export async function readLinearTopology({
       root: (data) => data.team?.cycles,
       variables: { id: team.id },
       label: "Linear topology Cycles",
-      validateNode: linearCycleMetadataIsValid,
+      validateNode: (cycle) => linearCycleMetadataIsValid(cycle, now),
       fetchImpl,
     }),
     readLinearConnectionPages({
@@ -3211,7 +3293,7 @@ export async function readLinearTopology({
       root: (data) => data.team?.projects,
       variables: { id: team.id },
       label: "Linear topology Projects",
-      validateNode: linearProjectMetadataIsValid,
+      validateNode: (project) => linearProjectMetadataIsValid(project, now),
       fetchImpl,
     }),
     readLinearConnectionPages({
@@ -3221,7 +3303,7 @@ export async function readLinearTopology({
       variables: { teamId: team.id },
       label: "Linear topology Initiatives",
       validateNode: (initiative) =>
-        linearInitiativeMetadataIsValid(initiative, team.id),
+        linearInitiativeMetadataIsValid(initiative, team.id, now),
       fetchImpl,
     }),
     readLinearConnectionPages({
@@ -3231,7 +3313,7 @@ export async function readLinearTopology({
       variables: { teamId: team.id },
       label: "Linear topology Documents",
       validateNode: (document) =>
-        linearDocumentMetadataIsValid(document, team.id),
+        linearDocumentMetadataIsValid(document, team.id, now),
       fetchImpl,
     }),
   ]);
