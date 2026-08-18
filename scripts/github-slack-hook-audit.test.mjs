@@ -169,6 +169,7 @@ function assertRecoveryEnvironmentIsolation(workflows) {
     // deploy_slack e o monitor do app de workflow saíram com o pipeline.
     ["alerts-watchdog.yml", "watch", "alerts-watchdog"],
     ["cloudflare-pages.yml", "deploy", "cloudflare-production"],
+    ["github-linear-reconciliation.yml", "audit", "linear-observability"],
     [
       "github-slack-integration.yml",
       "prove_remote_d1",

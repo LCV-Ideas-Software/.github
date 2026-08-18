@@ -1,0 +1,93 @@
+name: GitHub Linear Reconciliation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/github-linear-reconciliation.yml"
+      - "docs/GITHUB_LINEAR_RECONCILIATION.md"
+      - "scripts/github-linear-reconciler.mjs"
+      - "scripts/github-linear-reconciler.test.mjs"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/github-linear-reconciliation.yml"
+      - "docs/GITHUB_LINEAR_RECONCILIATION.md"
+      - "scripts/github-linear-reconciler.mjs"
+      - "scripts/github-linear-reconciler.test.mjs"
+  merge_group:
+    types: [checks_requested]
+  schedule:
+    # 00:15 e 12:15 no horário de Brasília (UTC-03:00).
+    - cron: "15 3,15 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_OPTIONS: "--no-deprecation"
+
+concurrency:
+  group: github-linear-reconciliation-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify read-only reconciler
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Prove query-only Linear and GET-only GitHub behavior
+        run: node --test scripts/github-linear-reconciler.test.mjs
+
+  audit:
+    name: Reconcile GitHub and Linear read-only
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: linear-observability
+    permissions:
+      contents: read
+      issues: read # Inventory all issues and compare synchronized comments.
+      pull-requests: read # Verify merged carrier commits and Linear releases.
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+
+      - name: Audit both GitHub and Linear inventories
+        env:
+          LINEAR_READ_KEY: ${{ secrets.LINEAR_READ_KEY }}
+          # GITHUB_READ_TOKEN must be an organization-wide read-only credential.
+          # Until provisioned, GITHUB_TOKEN is allowed only as a fail-closed
+          # fallback: inaccessible repositories produce exit code 2, never clean.
+          GH_TOKEN: ${{ secrets.GITHUB_READ_TOKEN || github.token }}
+          RECONCILIATION_JSON: github-linear-reconciliation.json
+          STRICT_WARNINGS: "true"
+          LINEAR_ONLY_TEAM_KEYS: ${{ vars.LINEAR_ONLY_TEAM_KEYS }}
+        run: node scripts/github-linear-reconciler.mjs
