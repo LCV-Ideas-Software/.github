@@ -5183,6 +5183,72 @@ test("rejeita pull request devolvido pelo endpoint de Issue", async () => {
   );
 });
 
+test("leitura de comentários GitHub rejeita página que não seja array", async () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  await assert.rejects(
+    () =>
+      readGithubRecords({
+        issues: [
+          linearIssue({
+            attachments: { nodes: [{ url }] },
+            syncedWith: [
+              {
+                id: "github-issue-sync",
+                service: "github",
+                metadata: {
+                  __typename: "ExternalEntityInfoGithubMetadata",
+                  owner: "LCV-Ideas-Software",
+                  repo: ".github",
+                  number: 260,
+                },
+              },
+            ],
+          }),
+        ],
+        organization: "LCV-Ideas-Software",
+        token: "read-only",
+        fetchImpl: async (requestUrl) =>
+          requestUrl.includes("/comments?")
+            ? new Response(JSON.stringify(""), { status: 200 })
+            : new Response(
+                JSON.stringify({ state: "open", state_reason: null }),
+                { status: 200 },
+              ),
+      }),
+    /comentários.*array/iu,
+  );
+});
+
+test("inventário GitHub rejeita página ou Issue com metadata inválida", async () => {
+  for (const invalidIssues of [
+    "",
+    [{ number: 0, state: "open", state_reason: null }],
+  ]) {
+    await assert.rejects(
+      () =>
+        readGithubRepositoryInventory({
+          organization: "LCV-Ideas-Software",
+          token: "read-only",
+          fetchImpl: async (url) => {
+            if (url.includes("/orgs/"))
+              return new Response(
+                JSON.stringify([
+                  {
+                    name: "repo-ativo",
+                    archived: false,
+                    has_issues: true,
+                  },
+                ]),
+                { status: 200 },
+              );
+            return new Response(JSON.stringify(invalidIssues), { status: 200 });
+          },
+        }),
+      /inventário.*Issues.*(?:array|metadata)/iu,
+    );
+  }
+});
+
 test("inventário GitHub inclui fork ativo e exclui somente arquivado", async () => {
   const inventory = await readGithubRepositoryInventory({
     organization: "LCV-Ideas-Software",

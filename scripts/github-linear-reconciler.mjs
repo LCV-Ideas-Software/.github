@@ -3078,6 +3078,10 @@ async function readAllGithubComments({
       token,
       fetchImpl,
     );
+    if (!Array.isArray(batch))
+      throw new Error(
+        `${repo}#${number}: comentários GitHub retornaram página que não é array`,
+      );
     for (const comment of batch) {
       const key = githubCommentStableIdentity(comment);
       if (key === null)
@@ -3186,6 +3190,21 @@ export async function readGithubRepositoryInventory({
         token,
         fetchImpl,
       );
+      if (!Array.isArray(batch))
+        throw new Error(
+          "Inventário GitHub retornou página de repositórios que não é array",
+        );
+      if (
+        batch.some(
+          (repo) =>
+            !isNonemptyTrimmedString(repo?.name) ||
+            typeof repo.archived !== "boolean" ||
+            typeof repo.has_issues !== "boolean",
+        )
+      )
+        throw new Error(
+          "Inventário GitHub retornou repositório com metadata inválida",
+        );
       for (const repo of batch.filter((candidate) => !candidate.archived)) {
         if (active.includes(repo.name))
           throw new Error(`GitHub repetiu o repositório ${repo.name}`);
@@ -3226,8 +3245,20 @@ export async function readGithubRepositoryInventory({
               token,
               fetchImpl,
             );
+            if (!Array.isArray(batch))
+              throw new Error(
+                `${repo.name}: inventário de Issues retornou página que não é array`,
+              );
             for (const issue of batch) {
               if (issue.pull_request) continue;
+              if (
+                !Number.isSafeInteger(issue?.number) ||
+                issue.number <= 0 ||
+                !githubIssueMetadataIsValid(issue)
+              )
+                throw new Error(
+                  `${repo.name}: inventário de Issues retornou metadata inválida`,
+                );
               const url = `https://github.com/${organization}/${repo.name}/issues/${issue.number}`;
               if (seen.has(url))
                 throw new Error(`${repo.name}: GitHub repetiu ${url}`);
