@@ -1,7 +1,19 @@
-import { readFile as nodeReadFile } from "node:fs/promises";
+import {
+  lstat as nodeLstat,
+  readFile as nodeReadFile,
+  realpath as nodeRealpath,
+} from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
+
+import {
+  assertOutsideGitWorktree,
+  assertOwnedLocalProfile,
+  assertPrivateFile,
+} from "./local-profile.mjs";
+
+const MAX_CONFIG_BYTES = 64 * 1_024;
 
 const teamKeySchema = z.string().regex(/^[A-Z][A-Z0-9]{0,19}$/u);
 const repositorySchema = z
@@ -117,17 +129,66 @@ export function parseOperationalConfig(value) {
 
 export async function loadOperationalConfig(
   configPath,
-  { readFile = nodeReadFile } = {},
+  {
+    readFile = nodeReadFile,
+    lstatImpl = nodeLstat,
+    realpathImpl = nodeRealpath,
+    profileRoot,
+    env = process.env,
+    homedir,
+    platform = process.platform,
+  } = {},
 ) {
-  if (typeof configPath !== "string" || !path.isAbsolute(configPath)) {
+  if (
+    configPath !== undefined &&
+    (typeof configPath !== "string" || !path.isAbsolute(configPath))
+  ) {
     throw new Error(
       "o caminho da config operacional deve ser local e absoluto",
     );
   }
+  const profile = await assertOwnedLocalProfile({
+    root: profileRoot,
+    env,
+    homedir,
+    platform,
+    lstatImpl,
+    readFileImpl: readFile,
+    realpathImpl,
+  });
+  const selectedPath = configPath ?? profile.configPath;
+  const absolutePath = path.resolve(selectedPath);
+  if (path.relative(profile.configPath, absolutePath) !== "") {
+    throw new Error(
+      "a config operacional deve ser o filho fixo config.json do profile",
+    );
+  }
+
   let value;
   try {
-    value = JSON.parse(await readFile(configPath, "utf8"));
+    const metadata = await lstatImpl(absolutePath);
+    assertPrivateFile(metadata, "config operacional", platform);
+    if (metadata.size > MAX_CONFIG_BYTES) {
+      throw new TypeError("config operacional excede 64 KiB");
+    }
+    const canonicalPath = await realpathImpl(absolutePath);
+    await assertOutsideGitWorktree(canonicalPath, {
+      lstatImpl,
+      realpathImpl,
+    });
+    if (path.relative(profile.configPath, canonicalPath) !== "") {
+      throw new TypeError(
+        "config operacional possui destino canônico inválido",
+      );
+    }
+    value = JSON.parse(await readFile(canonicalPath, "utf8"));
   } catch (error) {
+    if (
+      error instanceof TypeError &&
+      /(?:config operacional|worktree Git)/u.test(error.message)
+    ) {
+      throw error;
+    }
     throw new Error("nao foi possivel ler a config operacional local", {
       cause: error,
     });

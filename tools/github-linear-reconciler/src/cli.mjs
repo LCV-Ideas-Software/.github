@@ -1,6 +1,4 @@
-import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
 
 import { renderRedactedStatus, writeLocalReport } from "./report/local.mjs";
 
@@ -32,28 +30,14 @@ function cliError(message) {
 }
 
 export function parseCliArgs(argv) {
-  let parsed;
-  try {
-    parsed = parseArgs({
-      args: argv,
-      allowPositionals: false,
-      strict: true,
-      tokens: true,
-      options: {
-        config: { type: "string" },
-      },
-    });
-  } catch {
+  if (!Array.isArray(argv)) {
     throw cliError("argumento desconhecido ou inválido");
   }
-  const configTokens = parsed.tokens.filter(
-    (token) => token.kind === "option" && token.name === "config",
-  );
-  if (configTokens.length > 1)
-    throw cliError("--config deve ser informado uma única vez");
-  const configPath = parsed.values.config?.trim();
-  if (!configPath) throw cliError("--config é obrigatório");
-  return { configPath };
+  if (argv.length === 0) return { mode: "audit" };
+  if (argv.length === 1 && argv[0] === "--init-profile") {
+    return { mode: "init-profile" };
+  }
+  throw cliError("argumento desconhecido ou inválido");
 }
 
 function requiredCredential(env, name) {
@@ -72,20 +56,36 @@ function isContinuousIntegration(env) {
   return CI_ENVIRONMENT_MARKERS.some((name) => environmentFlag(env[name]));
 }
 
+function localProfileEnvironment(env) {
+  return Object.fromEntries(
+    ["GITHUB_LINEAR_RECONCILER_PROFILE_DIR", "LOCALAPPDATA", "XDG_STATE_HOME"]
+      .filter((name) => typeof env[name] === "string")
+      .map((name) => [name, env[name]]),
+  );
+}
+
 export async function loadRuntimeDependencies() {
-  const [configModule, linearModule, githubModule, evaluateModule] =
-    await Promise.all([
-      import("./config.mjs"),
-      import("./adapters/linear.mjs"),
-      import("./adapters/github.mjs"),
-      import("./evaluate.mjs"),
-    ]);
+  const [
+    configModule,
+    linearModule,
+    githubModule,
+    evaluateModule,
+    profileModule,
+  ] = await Promise.all([
+    import("./config.mjs"),
+    import("./adapters/linear.mjs"),
+    import("./adapters/github.mjs"),
+    import("./evaluate.mjs"),
+    import("./local-profile.mjs"),
+  ]);
   return {
     loadConfig: configModule.loadConfig,
     readLinearSnapshot: linearModule.readLinearSnapshot,
     readGithubSnapshot: githubModule.readGithubSnapshot,
     evaluate: evaluateModule.evaluate,
     determineExitCode: evaluateModule.determineExitCode,
+    assertOwnedLocalProfile: profileModule.assertOwnedLocalProfile,
+    ensureOwnedLocalProfile: profileModule.ensureOwnedLocalProfile,
     writeLocalReport,
   };
 }
@@ -97,6 +97,7 @@ function assertRuntimeDependencies(dependencies) {
     "readGithubSnapshot",
     "evaluate",
     "determineExitCode",
+    "assertOwnedLocalProfile",
     "writeLocalReport",
   ]) {
     if (typeof dependencies?.[name] !== "function")
@@ -110,30 +111,58 @@ export async function runCli({
   stdout = process.stdout,
   dependencies,
   now = new Date(),
-  cwd = process.cwd(),
 } = {}) {
-  const { configPath } = parseCliArgs(argv);
+  const { mode } = parseCliArgs(argv);
   if (isContinuousIntegration(env))
     throw cliError("execução live é permitida somente em ambiente local");
 
-  const linearToken = requiredCredential(env, "LINEAR_READ_KEY");
-  const githubToken = requiredCredential(env, "LINEAR_GITHUB_READ_TOKEN");
   const runtime = dependencies ?? (await loadRuntimeDependencies());
+  const profileEnv = localProfileEnvironment(env);
+  if (mode === "init-profile") {
+    if (typeof runtime?.ensureOwnedLocalProfile !== "function") {
+      throw new TypeError(
+        "dependência runtime ausente: ensureOwnedLocalProfile",
+      );
+    }
+    await runtime.ensureOwnedLocalProfile({ env: profileEnv });
+    stdout.write('{"profile":"initialized"}\n');
+    return 0;
+  }
+
+  const linearToken = requiredCredential(env, "LINEAR_READ_KEY");
+  const githubAppId = requiredCredential(env, "LINEAR_GITHUB_APP_ID");
+  const githubPrivateKeyPath = requiredCredential(
+    env,
+    "LINEAR_GITHUB_APP_PRIVATE_KEY_PATH",
+  );
   assertRuntimeDependencies(runtime);
 
-  const absoluteConfigPath = path.resolve(cwd, configPath);
-  const config = await runtime.loadConfig(absoluteConfigPath);
+  const profile = await runtime.assertOwnedLocalProfile({ env: profileEnv });
+  const config = await runtime.loadConfig(profile.configPath, {
+    profileRoot: profile.root,
+    env: profileEnv,
+  });
   const capturedAt = now.toISOString();
   const [linear, github] = await Promise.all([
     runtime.readLinearSnapshot({ config, token: linearToken, capturedAt }),
-    runtime.readGithubSnapshot({ config, token: githubToken, capturedAt }),
+    runtime.readGithubSnapshot({
+      config,
+      appId: githubAppId,
+      privateKeyPath: githubPrivateKeyPath,
+      capturedAt,
+    }),
   ]);
   const result = await runtime.evaluate({ config, linear, github, now });
   const exitCode = runtime.determineExitCode(result);
   if (![0, 1, 2].includes(exitCode))
     throw new TypeError("determineExitCode retornou código inválido");
 
-  await runtime.writeLocalReport({ result, now, env });
+  await runtime.writeLocalReport({
+    result,
+    now,
+    env: profileEnv,
+    directory: profile.root,
+  });
   stdout.write(`${renderRedactedStatus(result)}\n`);
   return exitCode;
 }

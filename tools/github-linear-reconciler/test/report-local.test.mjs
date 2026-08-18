@@ -5,7 +5,6 @@ import {
   mkdir,
   readdir,
   readFile,
-  realpath,
   rm,
   stat,
   utimes,
@@ -21,6 +20,7 @@ import {
   resolveLocalReportDirectory,
   writeLocalReport,
 } from "../src/report/local.mjs";
+import { ensureOwnedLocalProfile } from "../src/local-profile.mjs";
 
 const NOW = new Date("2026-08-18T15:00:00.000Z");
 
@@ -107,23 +107,25 @@ test("diretório padrão fica fora do checkout e dentro do perfil local", () => 
   );
 });
 
-test("reaplica modo 0700 a diretório POSIX preexistente", async (context) => {
+test("não altera diretório preexistente que não pertença à ferramenta", async (context) => {
   const directory = await mkdtemp(
     path.join(tmpdir(), "github-linear-report-mode-test-"),
   );
   context.after(() => rm(directory, { recursive: true, force: true }));
   const calls = [];
 
-  await writeLocalReport({
-    result: resultFixture(),
-    now: NOW,
-    directory,
-    platform: "linux",
-    idFactory: () => "mode-test",
-    chmodImpl: async (...parameters) => calls.push(parameters),
-  });
+  await assert.rejects(
+    writeLocalReport({
+      result: resultFixture(),
+      now: NOW,
+      directory,
+      idFactory: () => "mode-test",
+      chmodImpl: async (...parameters) => calls.push(parameters),
+    }),
+    /marker/u,
+  );
 
-  assert.deepEqual(calls, [[await realpath(directory), 0o700]]);
+  assert.deepEqual(calls, []);
 });
 
 test("recusa relatório sob marcador de worktree Git", async (context) => {
@@ -153,10 +155,16 @@ test("recusa relatório sob marcador de worktree Git", async (context) => {
   }
 });
 
-test("grava atomicamente no perfil local e retém somente 14 dias", async () => {
-  const directory = await mkdtemp(
+test("grava atomicamente no perfil local e retém somente 14 dias", async (context) => {
+  const parent = await mkdtemp(
     path.join(tmpdir(), "github-linear-report-test-"),
   );
+  context.after(() => rm(parent, { recursive: true, force: true }));
+  const profile = await ensureOwnedLocalProfile({
+    root: path.join(parent, "profile"),
+  });
+  const directory = profile.reportsPath;
+  await mkdir(directory, { mode: 0o700 });
   const oldReport = path.join(
     directory,
     "github-linear-reconciliation-2026-08-01T00-00-00-000Z-old.json",
@@ -190,7 +198,7 @@ test("grava atomicamente no perfil local e retém somente 14 dias", async () => 
   const written = await writeLocalReport({
     result: resultFixture(),
     now: NOW,
-    directory,
+    directory: profile.root,
     idFactory: () => "fixed-id",
   });
 

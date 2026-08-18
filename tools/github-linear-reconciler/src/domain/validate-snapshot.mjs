@@ -1,4 +1,5 @@
 import { finding } from "./findings.mjs";
+import { findDuplicateOfCycles } from "./duplicate-graph.mjs";
 import { NORMALIZED_STATUSES } from "./model.mjs";
 
 function nonempty(value) {
@@ -9,6 +10,15 @@ function nonempty(value) {
 
 function canonical(value) {
   return nonempty(value) && value === value.toLowerCase();
+}
+
+function githubResourceKey(value) {
+  if (!canonical(value)) return false;
+  const match =
+    /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9][a-z0-9_.-]{0,99}#([1-9]\d*)$/u.exec(
+      value,
+    );
+  return match !== null && Number.isSafeInteger(Number(match[1]));
 }
 
 function sha40(value) {
@@ -62,13 +72,15 @@ function incompleteSnapshot(source, snapshot) {
   );
 }
 
-function validLinearComment(comment, nowMs) {
+function validLinearComment(comment, capturedAtMs) {
   if (
     !comment ||
     !nonempty(comment.id) ||
     !["github", "linear"].includes(comment.provenance) ||
     typeof comment.connected !== "boolean" ||
-    !instant(comment.createdAtMs, nowMs)
+    !instant(comment.createdAtMs, capturedAtMs) ||
+    !instant(comment.updatedAtMs, capturedAtMs) ||
+    comment.createdAtMs > comment.updatedAtMs
   ) {
     return false;
   }
@@ -81,44 +93,51 @@ function validLinearComment(comment, nowMs) {
     );
   }
   return (
-    canonical(comment.resourceKey) &&
+    githubResourceKey(comment.resourceKey) &&
     (comment.externalId === null || nonempty(comment.externalId)) &&
     comment.threadId === comment.resourceKey
   );
 }
 
-function validRelease(release, nowMs) {
+function validRelease(release, capturedAtMs) {
   return (
     release &&
     nonempty(release.id) &&
     stableUuid(release.pipelineId) &&
     ["continuous", "scheduled"].includes(release.pipelineType) &&
     sha40(release.commitSha) &&
-    instant(release.completedAtMs, nowMs)
+    (release.completedAtMs === null ||
+      instant(release.completedAtMs, capturedAtMs))
   );
 }
 
-function validLinearIssue(issue, teamKeys, nowMs) {
+function validLinearIssue(issue, teamById, teamByKey, capturedAtMs) {
+  const teamByStableId = teamById.get(issue?.teamId);
+  const teamByStableKey = teamByKey.get(issue?.teamKey);
   return (
     issue &&
     nonempty(issue.id) &&
     nonempty(issue.identifier) &&
-    teamKeys.has(issue.teamKey) &&
+    teamByStableId !== undefined &&
+    teamByStableId === teamByStableKey &&
+    instant(issue.updatedAtMs, capturedAtMs) &&
     NORMALIZED_STATUSES.includes(issue.status) &&
     uniqueStrings(issue.nativeCounterpartKeys) &&
-    issue.nativeCounterpartKeys.every(canonical) &&
+    issue.nativeCounterpartKeys.every(githubResourceKey) &&
     uniqueStrings(issue.attachmentIssueKeys) &&
-    issue.attachmentIssueKeys.every(canonical) &&
+    issue.attachmentIssueKeys.every(githubResourceKey) &&
     uniqueStrings(issue.insecureGithubResourceKeys) &&
-    issue.insecureGithubResourceKeys.every(canonical) &&
+    issue.insecureGithubResourceKeys.every(githubResourceKey) &&
     uniqueStrings(issue.carrierPullKeys) &&
-    issue.carrierPullKeys.every(canonical) &&
+    issue.carrierPullKeys.every(githubResourceKey) &&
     Array.isArray(issue.comments) &&
-    issue.comments.every((comment) => validLinearComment(comment, nowMs)) &&
+    issue.comments.every((comment) =>
+      validLinearComment(comment, capturedAtMs),
+    ) &&
     new Set(issue.comments.map((comment) => comment.id)).size ===
       issue.comments.length &&
     Array.isArray(issue.releases) &&
-    issue.releases.every((release) => validRelease(release, nowMs)) &&
+    issue.releases.every((release) => validRelease(release, capturedAtMs)) &&
     new Set(issue.releases.map((release) => release.id)).size ===
       issue.releases.length &&
     (issue.duplicateOf === null || nonempty(issue.duplicateOf)) &&
@@ -128,42 +147,48 @@ function validLinearIssue(issue, teamKeys, nowMs) {
   );
 }
 
-function validGithubComment(comment, issueKey, nowMs) {
+function validGithubComment(comment, issueKey, capturedAtMs) {
   return (
     comment &&
     nonempty(comment.id) &&
     comment.threadId === issueKey &&
-    instant(comment.createdAtMs, nowMs)
+    instant(comment.createdAtMs, capturedAtMs) &&
+    instant(comment.updatedAtMs, capturedAtMs) &&
+    comment.createdAtMs <= comment.updatedAtMs
   );
 }
 
-function validGithubIssue(issue, repositoryNames, organization, nowMs) {
+function validGithubIssue(issue, repositoryNames, organization, capturedAtMs) {
   return (
     issue &&
-    canonical(issue.key) &&
+    githubResourceKey(issue.key) &&
     repositoryNames.has(issue.repository) &&
     Number.isSafeInteger(issue.number) &&
     issue.number > 0 &&
     issue.key === `${organization}/${issue.repository}#${issue.number}` &&
     NORMALIZED_STATUSES.includes(issue.status) &&
+    instant(issue.updatedAtMs, capturedAtMs) &&
     Array.isArray(issue.comments) &&
     issue.comments.every((comment) =>
-      validGithubComment(comment, issue.key, nowMs),
+      validGithubComment(comment, issue.key, capturedAtMs),
     )
   );
 }
 
-function validGithubPull(pull, repositoryNames, organization, nowMs) {
+function validGithubPull(pull, repositoryNames, organization, capturedAtMs) {
   const merged = pull?.mergedAtMs !== null;
   return (
     pull &&
-    canonical(pull.key) &&
+    githubResourceKey(pull.key) &&
     repositoryNames.has(pull.repository) &&
     Number.isSafeInteger(pull.number) &&
     pull.number > 0 &&
     pull.key === `${organization}/${pull.repository}#${pull.number}` &&
-    (!merged || instant(pull.mergedAtMs, nowMs)) &&
-    (!merged || sha40(pull.mergeCommitSha))
+    instant(pull.updatedAtMs, capturedAtMs) &&
+    (!merged ||
+      (instant(pull.mergedAtMs, capturedAtMs) &&
+        pull.mergedAtMs <= pull.updatedAtMs)) &&
+    (merged ? sha40(pull.mergeCommitSha) : pull.mergeCommitSha === null)
   );
 }
 
@@ -201,14 +226,32 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     problems.push("github failures are invalid");
   }
 
+  const linearCapturedAtMs = linear?.capturedAtMs;
+  const githubCapturedAtMs = github?.capturedAtMs;
+  if (
+    !instant(linearCapturedAtMs, nowMs) ||
+    !instant(githubCapturedAtMs, nowMs) ||
+    linearCapturedAtMs !== githubCapturedAtMs
+  ) {
+    problems.push("snapshot capturedAt boundaries are invalid or divergent");
+  }
+  const capturedAtMs = Number.isSafeInteger(linearCapturedAtMs)
+    ? linearCapturedAtMs
+    : -1;
+
   const teams = Array.isArray(linear?.teams) ? linear.teams : [];
-  const teamKeys = new Set(teams.map((team) => team?.key));
+  const teamById = new Map(teams.map((team) => [team?.id, team]));
+  const teamByKey = new Map(teams.map((team) => [team?.key, team]));
   if (
     !Array.isArray(linear?.teams) ||
     teams.some(
-      (team) => !nonempty(team?.key) || typeof team?.active !== "boolean",
+      (team) =>
+        !nonempty(team?.id) ||
+        !nonempty(team?.key) ||
+        typeof team?.active !== "boolean",
     ) ||
-    teamKeys.size !== teams.length
+    teamById.size !== teams.length ||
+    teamByKey.size !== teams.length
   ) {
     problems.push("linear teams are invalid or repeated");
   }
@@ -217,9 +260,11 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   const issueIdentifiers = new Set(issues.map((issue) => issue?.identifier));
   if (
     !Array.isArray(linear?.issues) ||
-    issues.some((issue) => !validLinearIssue(issue, teamKeys, nowMs)) ||
-    duplicateValues(issues.map((issue) => issue.id)) ||
-    duplicateValues(issues.map((issue) => issue.identifier))
+    issues.some(
+      (issue) => !validLinearIssue(issue, teamById, teamByKey, capturedAtMs),
+    ) ||
+    duplicateValues(issues.map((issue) => issue?.id)) ||
+    duplicateValues(issues.map((issue) => issue?.identifier))
   ) {
     problems.push("linear issues are invalid or repeated");
   }
@@ -240,15 +285,42 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   ) {
     problems.push("linear issue references are unresolved or self-referential");
   }
+  if (
+    issues.every(
+      (issue) =>
+        issue &&
+        nonempty(issue.identifier) &&
+        (issue.duplicateOf === null || nonempty(issue.duplicateOf)),
+    ) &&
+    findDuplicateOfCycles(issues).length > 0
+  ) {
+    problems.push("linear duplicateOf graph contains a cycle");
+  }
+  const linearComments = issues.flatMap((issue) => issue?.comments ?? []);
+  if (
+    duplicateValues(linearComments.map((comment) => comment?.id)) ||
+    duplicateValues(
+      linearComments
+        .map((comment) => comment?.externalId)
+        .filter((externalId) => externalId !== null),
+    )
+  ) {
+    problems.push("linear comment identities are not globally unique");
+  }
   for (const collection of ["cycles", "projects", "initiatives", "documents"]) {
     const entities = linear?.[collection];
     if (
       !Array.isArray(entities) ||
       entities.some(
-        (entity) => !nonempty(entity?.id) || !teamKeys.has(entity?.teamKey),
+        (entity) =>
+          !nonempty(entity?.id) ||
+          teamById.get(entity?.teamId) === undefined ||
+          teamById.get(entity?.teamId) !== teamByKey.get(entity?.teamKey),
       ) ||
       duplicateValues(
-        (entities ?? []).map((entity) => `${entity.id}:${entity.teamKey}`),
+        (entities ?? []).map(
+          (entity) => `${entity.id}:${entity.teamId}:${entity.teamKey}`,
+        ),
       )
     ) {
       problems.push(`linear ${collection} are invalid or repeated`);
@@ -261,15 +333,23 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   const repositoryNames = new Set(
     repositories.map((repository) => repository?.name),
   );
+  const repositoryIds = new Set(
+    repositories.map((repository) => repository?.id),
+  );
   if (
+    github?.organization !== organization ||
     !Array.isArray(github?.repositories) ||
     repositories.some(
       (repository) =>
+        !Number.isSafeInteger(repository?.id) ||
+        repository.id <= 0 ||
         !canonical(repository?.name) ||
-        (repository.archived !== undefined &&
-          typeof repository.archived !== "boolean"),
+        repository.archived !== false ||
+        typeof repository.issuesEnabled !== "boolean" ||
+        typeof repository.fork !== "boolean",
     ) ||
-    repositoryNames.size !== repositories.length
+    repositoryNames.size !== repositories.length ||
+    repositoryIds.size !== repositories.length
   ) {
     problems.push("github repositories are invalid or repeated");
   }
@@ -277,19 +357,35 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   if (
     !Array.isArray(github?.issues) ||
     githubIssues.some(
-      (issue) => !validGithubIssue(issue, repositoryNames, organization, nowMs),
+      (issue) =>
+        !validGithubIssue(
+          issue,
+          repositoryNames,
+          organization,
+          githubCapturedAtMs,
+        ),
     ) ||
-    duplicateValues(githubIssues.map((issue) => issue.key))
+    duplicateValues(githubIssues.map((issue) => issue?.key))
   ) {
     problems.push("github issues are invalid or repeated");
+  }
+  const githubComments = githubIssues.flatMap((issue) => issue?.comments ?? []);
+  if (duplicateValues(githubComments.map((comment) => comment?.id))) {
+    problems.push("github comment identities are not globally unique");
   }
   const pulls = Array.isArray(github?.pulls) ? github.pulls : [];
   if (
     !Array.isArray(github?.pulls) ||
     pulls.some(
-      (pull) => !validGithubPull(pull, repositoryNames, organization, nowMs),
+      (pull) =>
+        !validGithubPull(
+          pull,
+          repositoryNames,
+          organization,
+          githubCapturedAtMs,
+        ),
     ) ||
-    duplicateValues(pulls.map((pull) => pull.key))
+    duplicateValues(pulls.map((pull) => pull?.key))
   ) {
     problems.push("github pulls are invalid or repeated");
   }

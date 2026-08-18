@@ -1,16 +1,12 @@
 import { finding } from "../domain/findings.mjs";
 
 export function evaluateReleases(context) {
-  const {
-    linear,
-    mappingByTeam,
-    mappingByRepository,
-    githubPullByKey,
-    releaseRequiredAfterMs,
-  } = context;
+  const { linear, mappingByTeam, githubPullByKey, releaseRequiredAfterMs } =
+    context;
   const findings = [];
   for (const issue of linear.issues) {
-    const mode = mappingByTeam.get(issue.teamKey)?.mode;
+    const teamMapping = mappingByTeam.get(issue.teamKey);
+    const mode = teamMapping?.mode;
     if (mode === "linear-only" && issue.releases.length > 0) {
       findings.push(
         finding(
@@ -37,21 +33,32 @@ export function evaluateReleases(context) {
         );
         continue;
       }
+      if (pull.repository !== teamMapping.repository) {
+        findings.push(
+          finding(
+            "drift",
+            "carrier_repository_mismatch",
+            issue.identifier,
+            "carrier repository does not match the issue team mapping",
+            [pullKey, teamMapping.repository, pull.repository],
+          ),
+        );
+        continue;
+      }
       if (
         pull.mergedAtMs === null ||
         pull.mergedAtMs < releaseRequiredAfterMs
       ) {
         continue;
       }
-      const pipelineId = mappingByRepository.get(
-        pull.repository,
-      )?.linearReleasePipelineId;
+      const pipelineId = teamMapping.linearReleasePipelineId;
       if (!pipelineId) continue;
       const matches = issue.releases.filter(
         (release) =>
           release.commitSha === pull.mergeCommitSha &&
           release.pipelineId === pipelineId &&
-          release.pipelineType === "continuous",
+          release.pipelineType === "continuous" &&
+          Number.isSafeInteger(release.completedAtMs),
       );
       if (matches.some((release) => release.completedAtMs < pull.mergedAtMs)) {
         findings.push(

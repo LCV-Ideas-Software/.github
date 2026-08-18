@@ -7,6 +7,11 @@ const NOW = new Date(10_000_000);
 const COMMENT_GRACE_MINUTES = 30;
 const ISSUE_KEY = "example-org/repo-a#1";
 const PIPELINE_ID = "00000000-0000-4000-8000-000000000001";
+const TEAM_IDS = Object.freeze({
+  TEAM_A: "team-a-id",
+  TEAM_LOCAL: "team-local-id",
+  TEAM_ROOT: "team-root-id",
+});
 
 function baseline() {
   return {
@@ -28,16 +33,19 @@ function baseline() {
     linear: {
       complete: true,
       failures: [],
+      capturedAtMs: NOW.getTime(),
       teams: [
-        { key: "TEAM_A", active: true },
-        { key: "TEAM_LOCAL", active: true },
-        { key: "TEAM_ROOT", active: true },
+        { id: TEAM_IDS.TEAM_A, key: "TEAM_A", active: true },
+        { id: TEAM_IDS.TEAM_LOCAL, key: "TEAM_LOCAL", active: true },
+        { id: TEAM_IDS.TEAM_ROOT, key: "TEAM_ROOT", active: true },
       ],
       issues: [
         {
           id: "linear-1",
           identifier: "TEAM_A-1",
+          teamId: TEAM_IDS.TEAM_A,
           teamKey: "TEAM_A",
+          updatedAtMs: 5_000,
           status: "active",
           nativeCounterpartKeys: [ISSUE_KEY],
           attachmentIssueKeys: [ISSUE_KEY],
@@ -59,13 +67,24 @@ function baseline() {
     github: {
       complete: true,
       failures: [],
-      repositories: [{ name: "repo-a" }],
+      capturedAtMs: NOW.getTime(),
+      organization: "example-org",
+      repositories: [
+        {
+          id: 1,
+          name: "repo-a",
+          archived: false,
+          issuesEnabled: true,
+          fork: false,
+        },
+      ],
       issues: [
         {
           key: ISSUE_KEY,
           repository: "repo-a",
           number: 1,
           status: "active",
+          updatedAtMs: 5_000,
           comments: [],
         },
       ],
@@ -93,6 +112,7 @@ function addLinearIssue(input, overrides) {
     insecureGithubResourceKeys: [],
     ...overrides,
   });
+  if (overrides.teamId === undefined) issue.teamId = TEAM_IDS[issue.teamKey];
   input.linear.issues.push(issue);
   return issue;
 }
@@ -212,6 +232,7 @@ test("snapshot parcial ou fora do contrato nunca executa regras como se fosse co
     key: ISSUE_KEY,
     repository: "repo-a",
     number: 1,
+    updatedAtMs: 5_000,
     mergedAtMs: null,
     mergeCommitSha: null,
   });
@@ -239,6 +260,7 @@ test("counterparts aplicam cardinalidade nos dois sentidos", () => {
     repository: "repo-a",
     number: 2,
     status: "active",
+    updatedAtMs: 5_000,
     comments: [],
   });
   assert.ok(
@@ -259,6 +281,33 @@ test("counterparts aplicam cardinalidade nos dois sentidos", () => {
   );
 });
 
+test("fronteira normalizada fecha relogio, identidade composta e ciclos duplicateOf", () => {
+  const divergentClock = baseline();
+  divergentClock.github.capturedAtMs -= 1;
+  assert.deepEqual(codes(evaluate(divergentClock)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const mismatchedTeam = baseline();
+  mismatchedTeam.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
+  assert.deepEqual(codes(evaluate(mismatchedTeam)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const cyclic = baseline();
+  cyclic.linear.issues[0].duplicateOf = "TEAM_A-2";
+  addLinearIssue(cyclic, { duplicateOf: "TEAM_A-1" });
+  assert.ok(codes(evaluate(cyclic)).includes("normalized_snapshot_invalid"));
+
+  const malformedResource = baseline();
+  malformedResource.linear.issues[0].nativeCounterpartKeys = [
+    "not-a-github-key",
+  ];
+  assert.deepEqual(codes(evaluate(malformedResource)), [
+    "normalized_snapshot_invalid",
+  ]);
+});
+
 test("mapeamento explícito distingue github-backed, linear-only e repositório desconhecido", () => {
   const linearOnly = baseline();
   const secondKey = "example-org/repo-a#2";
@@ -272,6 +321,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
     repository: "repo-a",
     number: 2,
     status: "active",
+    updatedAtMs: 5_000,
     comments: [],
   });
   const linearOnlyCodes = codes(evaluate(linearOnly));
@@ -291,6 +341,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
         threadId: secondKey,
         connected: true,
         createdAtMs: 1_000,
+        updatedAtMs: 1_000,
       },
     ],
     releases: [
@@ -309,12 +360,19 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
   assert.ok(evidenceCodes.includes("linear_only_github_release"));
 
   const unknownRepository = baseline();
-  unknownRepository.github.repositories.push({ name: "repo-b" });
+  unknownRepository.github.repositories.push({
+    id: 2,
+    name: "repo-b",
+    archived: false,
+    issuesEnabled: true,
+    fork: false,
+  });
   unknownRepository.github.issues.push({
     key: "example-org/repo-b#1",
     repository: "repo-b",
     number: 1,
     status: "active",
+    updatedAtMs: 5_000,
     comments: [],
   });
   assert.ok(
@@ -325,10 +383,13 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
 
   const archivedRepository = baseline();
   archivedRepository.github.repositories.push({
+    id: 2,
     name: "repo-archived",
     archived: true,
+    issuesEnabled: true,
+    fork: false,
   });
-  assert.equal(evaluate(archivedRepository).state, "clean");
+  assert.equal(evaluate(archivedRepository).state, "incomplete");
 });
 
 test("umbrella vazio cobre todas as classes finitas de work item", () => {
@@ -337,6 +398,7 @@ test("umbrella vazio cobre todas as classes finitas de work item", () => {
   for (const collection of ["cycles", "projects", "initiatives", "documents"]) {
     input.linear[collection].push({
       id: `${collection}-1`,
+      teamId: TEAM_IDS.TEAM_ROOT,
       teamKey: "TEAM_ROOT",
     });
   }
@@ -377,6 +439,7 @@ test("comments pareiam somente por IDs e proveniência estruturada", () => {
     id: "github-comment-1",
     threadId: ISSUE_KEY,
     createdAtMs: 1_000,
+    updatedAtMs: 1_000,
   });
   matched.linear.issues[0].comments.push({
     id: "linear-comment-1",
@@ -386,6 +449,7 @@ test("comments pareiam somente por IDs e proveniência estruturada", () => {
     threadId: ISSUE_KEY,
     connected: true,
     createdAtMs: 1_000,
+    updatedAtMs: 1_000,
   });
   assert.equal(evaluate(matched).state, "clean");
 
@@ -394,6 +458,7 @@ test("comments pareiam somente por IDs e proveniência estruturada", () => {
     id: "github-comment-1",
     threadId: ISSUE_KEY,
     createdAtMs: 1_000,
+    updatedAtMs: 1_000,
   });
   assert.ok(
     codes(evaluate(missingOnLinear)).includes("comment_sync_gap_to_linear"),
@@ -408,6 +473,7 @@ test("comments pareiam somente por IDs e proveniência estruturada", () => {
     threadId: ISSUE_KEY,
     connected: true,
     createdAtMs: 1_000,
+    updatedAtMs: 1_000,
   });
   assert.ok(
     codes(evaluate(missingOnGithub)).includes("comment_sync_gap_to_github"),
@@ -420,6 +486,7 @@ test("comment recente respeita grace e thread desconectada continua sendo drift"
     id: "github-comment-recent",
     threadId: ISSUE_KEY,
     createdAtMs: NOW.getTime() - COMMENT_GRACE_MINUTES * 60_000 + 1,
+    updatedAtMs: NOW.getTime() - COMMENT_GRACE_MINUTES * 60_000 + 1,
   });
   assert.equal(evaluate(recent).state, "clean");
 
@@ -432,10 +499,12 @@ test("comment recente respeita grace e thread desconectada continua sendo drift"
     threadId: ISSUE_KEY,
     connected: true,
     createdAtMs: NOW.getTime() - COMMENT_GRACE_MINUTES * 60_000 + 1,
+    updatedAtMs: NOW.getTime() - COMMENT_GRACE_MINUTES * 60_000 + 1,
   });
   assert.equal(evaluate(pendingFromLinear).state, "clean");
 
   pendingFromLinear.linear.issues[0].comments[0].createdAtMs = 1_000;
+  pendingFromLinear.linear.issues[0].comments[0].updatedAtMs = 1_000;
   assert.ok(
     codes(evaluate(pendingFromLinear)).includes(
       "comment_external_identity_missing",
@@ -447,6 +516,7 @@ test("comment recente respeita grace e thread desconectada continua sendo drift"
     id: "github-comment-1",
     threadId: ISSUE_KEY,
     createdAtMs: 1_000,
+    updatedAtMs: 1_000,
   });
   disconnected.linear.issues[0].comments.push({
     id: "linear-comment-1",
@@ -456,30 +526,33 @@ test("comment recente respeita grace e thread desconectada continua sendo drift"
     threadId: ISSUE_KEY,
     connected: false,
     createdAtMs: 1_000,
+    updatedAtMs: 1_000,
   });
   assert.ok(
     codes(evaluate(disconnected)).includes("comment_sync_disconnected"),
   );
 });
 
-test("identidade duplicada de comment torna o resultado inconclusivo", () => {
+test("identidade global duplicada de comment invalida o snapshot", () => {
   const input = baseline();
   input.github.issues[0].comments.push(
     {
       id: "github-comment-1",
       threadId: ISSUE_KEY,
       createdAtMs: 1_000,
+      updatedAtMs: 1_000,
     },
     {
       id: "github-comment-1",
       threadId: ISSUE_KEY,
       createdAtMs: 2_000,
+      updatedAtMs: 2_000,
     },
   );
 
   const result = evaluate(input);
   assert.equal(result.state, "incomplete");
-  assert.ok(codes(result).includes("comment_identity_ambiguous"));
+  assert.deepEqual(codes(result), ["normalized_snapshot_invalid"]);
   assert.equal(determineExitCode(result), 2);
 });
 
@@ -501,6 +574,7 @@ test("release exige commit e pipeline exatos depois do corte", () => {
     key: pullKey,
     repository: "repo-a",
     number: 2,
+    updatedAtMs: 2_500,
     mergedAtMs: 2_000,
     mergeCommitSha: commitSha,
   });
@@ -527,6 +601,7 @@ test("pull ausente é drift quando o snapshot GitHub está completo", () => {
 test("duplicatas e similares são somente advisory e relações explícitas suprimem", () => {
   const duplicate = baseline();
   duplicate.linear.issues[0].teamKey = "TEAM_LOCAL";
+  duplicate.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
   duplicate.linear.issues[0].nativeCounterpartKeys = [];
   duplicate.linear.issues[0].attachmentIssueKeys = [];
   duplicate.github.issues = [];
@@ -552,6 +627,7 @@ test("duplicatas e similares são somente advisory e relações explícitas supr
 
   const similar = baseline();
   similar.linear.issues[0].teamKey = "TEAM_LOCAL";
+  similar.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
   similar.linear.issues[0].nativeCounterpartKeys = [];
   similar.linear.issues[0].attachmentIssueKeys = [];
   similar.github.issues = [];
@@ -570,6 +646,7 @@ test("duplicatas e similares são somente advisory e relações explícitas supr
 test("grupo duplicateOf transitivo suprime siblings sem varredura por pares", () => {
   const input = baseline();
   input.linear.issues[0].teamKey = "TEAM_LOCAL";
+  input.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
   input.linear.issues[0].nativeCounterpartKeys = [];
   input.linear.issues[0].attachmentIssueKeys = [];
   input.linear.issues[0].duplicateKey = "exact-group";
@@ -595,7 +672,9 @@ test("scan global agrupa milhares de candidatos sem materializar findings por pa
     input.linear.issues.push({
       id: `linear-bulk-${index}`,
       identifier: `TEAM_LOCAL-${index}`,
+      teamId: TEAM_IDS.TEAM_LOCAL,
       teamKey: "TEAM_LOCAL",
+      updatedAtMs: 5_000,
       status: "active",
       nativeCounterpartKeys: [],
       attachmentIssueKeys: [],
@@ -618,7 +697,11 @@ test("scan global agrupa milhares de candidatos sem materializar findings por pa
 
 test("times históricos não exigem mapping e sync nativo não se confunde com attachment", () => {
   const historical = baseline();
-  historical.linear.teams.push({ key: "HISTORICAL", active: false });
+  historical.linear.teams.push({
+    id: "historical-team-id",
+    key: "HISTORICAL",
+    active: false,
+  });
   assert.equal(evaluate(historical).state, "clean");
 
   const attachmentOnly = baseline();
@@ -627,6 +710,7 @@ test("times históricos não exigem mapping e sync nativo não se confunde com a
     id: "github-comment-without-sync",
     threadId: ISSUE_KEY,
     createdAtMs: 1_000,
+    updatedAtMs: 1_000,
   });
   const result = evaluate(attachmentOnly);
   assert.ok(codes(result).includes("linear_issue_without_native_counterpart"));
@@ -651,6 +735,7 @@ test("pipeline usa ID estável e somente release continuous concluída prova car
     key: pullKey,
     repository: "repo-a",
     number: 2,
+    updatedAtMs: 2_500,
     mergedAtMs: 2_000,
     mergeCommitSha: commitSha,
   });
@@ -678,11 +763,13 @@ test("incomplete prevalece sobre drift e advisory; findings têm ordem estável"
       id: "duplicate-comment",
       threadId: ISSUE_KEY,
       createdAtMs: 1_000,
+      updatedAtMs: 1_000,
     },
     {
       id: "duplicate-comment",
       threadId: ISSUE_KEY,
       createdAtMs: 2_000,
+      updatedAtMs: 2_000,
     },
   );
 

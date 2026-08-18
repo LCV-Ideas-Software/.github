@@ -22,6 +22,7 @@ exact `yaml@2.9.0` parser.
 | Component                     | Version | License           | Scope       | Source                                                      |
 | ----------------------------- | ------- | ----------------- | ----------- | ----------------------------------------------------------- |
 | @linear/sdk                   | 90.0.0  | MIT               | runtime     | https://www.npmjs.com/package/@linear/sdk                   |
+| @octokit/auth-app             | 8.3.0   | MIT               | runtime     | https://www.npmjs.com/package/@octokit/auth-app             |
 | @octokit/core                 | 7.0.7   | MIT               | runtime     | https://www.npmjs.com/package/@octokit/core                 |
 | @octokit/plugin-paginate-rest | 15.0.0  | MIT               | runtime     | https://www.npmjs.com/package/@octokit/plugin-paginate-rest |
 | zod                           | 4.4.3   | MIT               | runtime     | https://www.npmjs.com/package/zod                           |
@@ -29,7 +30,7 @@ exact `yaml@2.9.0` parser.
 | wrangler                      | 4.120.1 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler                      |
 | yaml                          | 2.9.0   | ISC               | development | https://www.npmjs.com/package/yaml                          |
 
-`@linear/sdk` is Linear's official TypeScript SDK. The two `@octokit` packages are official GitHub
+`@linear/sdk` is Linear's official TypeScript SDK. The three `@octokit` packages are official GitHub
 client components. `zod` is the exact-pinned third-party schema validator used at provider boundaries.
 
 ## GitHub-to-Slack relay — `workers/github-slack-relay/package.json`

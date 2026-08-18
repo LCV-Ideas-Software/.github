@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import path from "node:path";
 import test from "node:test";
 
 import { main, parseCliArgs, runCli } from "../src/cli.mjs";
@@ -8,6 +7,11 @@ const NOW = new Date("2026-08-18T15:00:00.000Z");
 
 function dependencies(overrides = {}) {
   return {
+    assertOwnedLocalProfile: async () => ({
+      root: "C:\\profile",
+      configPath: "C:\\profile\\config.json",
+      reportsPath: "C:\\profile\\reports",
+    }),
     loadConfig: async (configPath) => ({
       organization: "example-org",
       releaseRequiredAfter: "2026-08-17T12:00:00.000Z",
@@ -16,7 +20,11 @@ function dependencies(overrides = {}) {
       configPath,
     }),
     readLinearSnapshot: async ({ token }) => ({ complete: true, token }),
-    readGithubSnapshot: async ({ token }) => ({ complete: true, token }),
+    readGithubSnapshot: async ({ appId, privateKeyPath }) => ({
+      complete: true,
+      appId,
+      privateKeyPath,
+    }),
     evaluate: ({ linear, github }) => ({
       state: "drift",
       counts: { drift: 1, advisory: 0, incomplete: 0 },
@@ -24,9 +32,9 @@ function dependencies(overrides = {}) {
         {
           severity: "drift",
           code: "status_divergence",
-          entity: `${linear.token}:${github.token}:SYNTH-12`,
+          entity: `${linear.token}:${github.appId}:SYNTH-12`,
           message: "detalhe privado",
-          references: ["https://example.invalid/private/SYNTH-12"],
+          references: [github.privateKeyPath],
         },
       ],
     }),
@@ -48,19 +56,13 @@ function outputSink() {
   };
 }
 
-test("aceita somente um --config explícito", () => {
-  assert.deepEqual(parseCliArgs(["--config", "audit.json"]), {
-    configPath: "audit.json",
+test("CLI aceita apenas audit sem argumentos ou init explícito", () => {
+  assert.deepEqual(parseCliArgs([]), { mode: "audit" });
+  assert.deepEqual(parseCliArgs(["--init-profile"]), {
+    mode: "init-profile",
   });
-  assert.deepEqual(parseCliArgs(["--config=audit.json"]), {
-    configPath: "audit.json",
-  });
-  assert.throws(() => parseCliArgs([]), /--config é obrigatório/u);
-  assert.throws(() => parseCliArgs(["audit.json"]), /argumento desconhecido/u);
-  assert.throws(
-    () => parseCliArgs(["--config", "a.json", "--config", "b.json"]),
-    /--config deve ser informado uma única vez/u,
-  );
+  assert.throws(() => parseCliArgs(["--config", "audit.json"]), /argumento/u);
+  assert.throws(() => parseCliArgs(["audit.json"]), /argumento/u);
 });
 
 test("recusa execução live em CI antes de carregar credenciais", async () => {
@@ -73,15 +75,11 @@ test("recusa execução live em CI antes de carregar credenciais", async () => {
     let loaded = false;
     await assert.rejects(
       runCli({
-        argv: ["--config", "audit.json"],
-        env: {
-          ...ciEnvironment,
-          LINEAR_READ_KEY: "linear-secret",
-          LINEAR_GITHUB_READ_TOKEN: "github-secret",
-        },
+        argv: [],
+        env: ciEnvironment,
         stdout: outputSink(),
         dependencies: dependencies({
-          loadConfig: async () => {
+          assertOwnedLocalProfile: async () => {
             loaded = true;
           },
         }),
@@ -93,14 +91,14 @@ test("recusa execução live em CI antes de carregar credenciais", async () => {
   }
 });
 
-test("credenciais obrigatórias falham antes de adapters ou rede", async () => {
+test("credenciais App obrigatórias falham antes de adapters ou rede", async () => {
   let loaded = false;
   await assert.rejects(
     runCli({
-      argv: ["--config", "audit.json"],
+      argv: [],
       env: {},
       dependencies: dependencies({
-        loadConfig: async () => {
+        assertOwnedLocalProfile: async () => {
           loaded = true;
         },
       }),
@@ -108,6 +106,18 @@ test("credenciais obrigatórias falham antes de adapters ou rede", async () => {
     /LINEAR_READ_KEY é obrigatório/u,
   );
   assert.equal(loaded, false);
+
+  await assert.rejects(
+    runCli({
+      argv: [],
+      env: {
+        LINEAR_READ_KEY: "linear-secret",
+        LINEAR_GITHUB_READ_TOKEN: "legacy-pat",
+      },
+      dependencies: dependencies(),
+    }),
+    /LINEAR_GITHUB_APP_ID é obrigatório/u,
+  );
 });
 
 test("executa snapshots em paralelo, grava relatório local e redige stdout", async () => {
@@ -120,7 +130,11 @@ test("executa snapshots em paralelo, grava relatório local e redige stdout", as
     },
     readGithubSnapshot: async (input) => {
       calls.push(["github", input]);
-      return { complete: true, token: input.token };
+      return {
+        complete: true,
+        appId: input.appId,
+        privateKeyPath: input.privateKeyPath,
+      };
     },
     writeLocalReport: async (input) => {
       calls.push(["report", input]);
@@ -129,16 +143,17 @@ test("executa snapshots em paralelo, grava relatório local e redige stdout", as
   });
 
   const exitCode = await runCli({
-    argv: ["--config", ".\\audit.json"],
+    argv: [],
     env: {
       CI: "false",
       LINEAR_READ_KEY: "linear-secret",
-      LINEAR_GITHUB_READ_TOKEN: "github-secret",
+      LINEAR_GITHUB_APP_ID: "456",
+      LINEAR_GITHUB_APP_PRIVATE_KEY_PATH: "C:\\private\\app.pem",
+      LINEAR_GITHUB_READ_TOKEN: "must-not-be-used",
     },
     stdout,
     dependencies: deps,
     now: NOW,
-    cwd: "C:\\audit-root",
   });
 
   assert.equal(exitCode, 1);
@@ -148,17 +163,15 @@ test("executa snapshots em paralelo, grava relatório local e redige stdout", as
   );
   assert.doesNotMatch(
     stdout.value(),
-    /linear-secret|github-secret|SYNTH-12|example\.invalid|status_divergence/u,
+    /linear-secret|must-not-be-used|SYNTH-12|private|status_divergence/u,
   );
   assert.equal(calls[0][0], "linear");
   assert.equal(calls[1][0], "github");
   assert.equal(calls[0][1].token, "linear-secret");
-  assert.equal(calls[1][1].token, "github-secret");
-  assert.equal(
-    calls[0][1].config.configPath,
-    path.resolve("C:\\audit-root", ".\\audit.json"),
-  );
+  assert.equal(calls[1][1].appId, "456");
+  assert.equal(calls[1][1].privateKeyPath, "C:\\private\\app.pem");
   assert.equal(calls[2][0], "report");
+  assert.equal(calls[2][1].directory, "C:\\profile");
   assert.equal(calls[2][1].now, NOW);
 });
 
@@ -166,16 +179,17 @@ test("falha terminal também mantém stdout redigido e não ecoa segredo", async
   const stdout = outputSink();
   const stderr = outputSink();
   const exitCode = await main({
-    argv: ["--config", "audit.json"],
+    argv: [],
     env: {
       LINEAR_READ_KEY: "linear-secret",
-      LINEAR_GITHUB_READ_TOKEN: "github-secret",
+      LINEAR_GITHUB_APP_ID: "456",
+      LINEAR_GITHUB_APP_PRIVATE_KEY_PATH: "C:\\private\\app.pem",
     },
     stdout,
     stderr,
     dependencies: dependencies({
       readLinearSnapshot: async () => {
-        throw new Error("upstream echoed github-secret");
+        throw new Error("upstream echoed linear-secret");
       },
     }),
   });
@@ -189,5 +203,5 @@ test("falha terminal também mantém stdout redigido e não ecoa segredo", async
     stderr.value(),
     "github-linear-reconciler: execução inconclusiva\n",
   );
-  assert.doesNotMatch(`${stdout.value()}${stderr.value()}`, /github-secret/u);
+  assert.doesNotMatch(`${stdout.value()}${stderr.value()}`, /linear-secret/u);
 });

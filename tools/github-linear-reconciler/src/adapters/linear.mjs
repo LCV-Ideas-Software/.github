@@ -67,6 +67,13 @@ function timestampMs(value, label) {
   return milliseconds;
 }
 
+function boundedTimestampMs(value, label, capturedAtMs) {
+  const milliseconds = timestampMs(value, label);
+  if (milliseconds < 0 || milliseconds > capturedAtMs)
+    throw new Error(`${label}: fora da janela capturedAt`);
+  return milliseconds;
+}
+
 function normalizeStatus(type) {
   if (type === "completed") return "completed";
   if (type === "canceled" || type === "duplicate") return "canceled";
@@ -125,15 +132,87 @@ function parseGithubResource(raw) {
     url.hostname.toLowerCase() !== "github.com"
   )
     return null;
-  const match = /^\/([^/]+)\/([^/]+)\/(issues|pull)\/([1-9]\d*)\/?$/u.exec(
-    url.pathname,
-  );
+  const match =
+    /^\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9][A-Za-z0-9_.-]{0,99})\/(issues|pull)\/([1-9]\d*)\/?$/u.exec(
+      url.pathname,
+    );
   if (!match) return null;
   return {
     kind: match[3] === "pull" ? "pull" : "issue",
     key: `${match[1]}/${match[2]}#${match[4]}`.toLowerCase(),
-    secure: url.protocol === "https:" && url.port === "",
+    secure:
+      url.protocol === "https:" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.search === "" &&
+      url.hash === "",
   };
+}
+
+function githubDiscriminator(value) {
+  return typeof value === "string" && value.toLowerCase() === "github";
+}
+
+function exactGithubIntegrationTuple(value) {
+  return value?.type === "integration" && value?.subType === "github";
+}
+
+function assertNoContradictoryGithubDiscriminator(value, label) {
+  if (
+    [value?.type, value?.subType].some(githubDiscriminator) &&
+    !exactGithubIntegrationTuple(value)
+  ) {
+    throw new Error(`${label}: discriminadores GitHub contraditorios`);
+  }
+}
+
+function hasGithubHostname(raw) {
+  if (typeof raw !== "string") return false;
+  try {
+    return new URL(raw).hostname.toLowerCase() === "github.com";
+  } catch {
+    return false;
+  }
+}
+
+function structuredCommentClaimsGithub(
+  externalThread,
+  threadResource,
+  botActor,
+) {
+  return Boolean(
+    threadResource ||
+    hasGithubHostname(externalThread?.url) ||
+    [externalThread?.type, externalThread?.subType].some(githubDiscriminator) ||
+    [botActor?.type, botActor?.subType].some(githubDiscriminator),
+  );
+}
+
+function isStructuredGithubAnchor({
+  githubEntity,
+  botActor,
+  externalThread,
+  externalUser,
+  expectedCounterpartKey,
+  parentId,
+  threadResource,
+}) {
+  return Boolean(
+    githubEntity == null &&
+    exactGithubIntegrationTuple(botActor) &&
+    externalThread &&
+    typeof externalThread.id === "string" &&
+    externalThread.id.trim() === externalThread.id &&
+    externalThread.id.length > 0 &&
+    exactGithubIntegrationTuple(externalThread) &&
+    externalThread.isConnected === true &&
+    threadResource?.kind === "issue" &&
+    threadResource.secure === true &&
+    threadResource.key === expectedCounterpartKey &&
+    externalUser === null &&
+    parentId === null,
+  );
 }
 
 function canonicalExternalNumber(value) {
@@ -235,7 +314,7 @@ function similaritySignals(title, description) {
   return signals.sort();
 }
 
-async function normalizeIssue(issue) {
+async function normalizeIssue(issue, capturedAtMs) {
   const base = z
     .object({
       id: idSchema,
@@ -246,7 +325,11 @@ async function normalizeIssue(issue) {
       syncedWith: z.array(z.unknown()).nullish(),
     })
     .parse(issue);
-  timestampMs(base.updatedAt, `${base.identifier}.updatedAt`);
+  const updatedAtMs = boundedTimestampMs(
+    base.updatedAt,
+    `${base.identifier}.updatedAt`,
+    capturedAtMs,
+  );
   const team = teamIdentitySchema.parse(await Promise.resolve(issue.team));
   const state = stateSchema.parse(await Promise.resolve(issue.state));
   const nativeGithubEntities = (base.syncedWith ?? []).filter(
@@ -292,10 +375,28 @@ async function normalizeIssue(issue) {
           id: idSchema,
           body: z.string(),
           createdAt: z.union([z.date(), z.string()]),
+          updatedAt: z.union([z.date(), z.string()]),
           syncedWith: z.array(z.unknown()).nullish(),
           externalThread: z.unknown().nullish(),
+          botActor: z.unknown().nullish(),
+          externalUser: z.unknown().nullish(),
+          parentId: idSchema.nullable().optional(),
         })
         .parse(comment);
+      const createdAtMs = boundedTimestampMs(
+        parsed.createdAt,
+        `${base.identifier}.comment.createdAt`,
+        capturedAtMs,
+      );
+      const commentUpdatedAtMs = boundedTimestampMs(
+        parsed.updatedAt,
+        `${base.identifier}.comment.updatedAt`,
+        capturedAtMs,
+      );
+      if (createdAtMs > commentUpdatedAtMs)
+        throw new Error(
+          `${base.identifier}.comment: createdAt posterior a updatedAt`,
+        );
       const githubEntities = (parsed.syncedWith ?? []).filter(
         (entity) => String(entity?.service ?? "").toLowerCase() === "github",
       );
@@ -311,14 +412,60 @@ async function normalizeIssue(issue) {
         throw new Error(
           `${base.identifier}.comment: externalId GitHub invalido`,
         );
-      const externalThread = parsed.externalThread;
+      const externalThread = parsed.externalThread
+        ? z
+            .object({
+              id: idSchema.nullish(),
+              type: idSchema.optional(),
+              subType: idSchema.nullish(),
+              url: z.string().nullish(),
+              isConnected: z.boolean().optional(),
+            })
+            .parse(await Promise.resolve(parsed.externalThread))
+        : null;
+      const botActor = parsed.botActor
+        ? z
+            .object({
+              id: idSchema.nullish(),
+              type: idSchema,
+              subType: idSchema.nullish(),
+            })
+            .parse(await Promise.resolve(parsed.botActor))
+        : null;
+      const externalUser =
+        parsed.externalUser === undefined
+          ? undefined
+          : await Promise.resolve(parsed.externalUser);
       const threadResource = parseGithubResource(externalThread?.url);
-      const integrationAnchor =
-        githubEntity == null &&
-        threadResource?.kind === "issue" &&
-        parsed.body.startsWith(
-          "This comment thread is synced to a corresponding [GitHub issue]",
+      assertNoContradictoryGithubDiscriminator(
+        externalThread,
+        `${base.identifier}.comment.externalThread`,
+      );
+      assertNoContradictoryGithubDiscriminator(
+        botActor,
+        `${base.identifier}.comment.botActor`,
+      );
+      if (
+        structuredCommentClaimsGithub(
+          externalThread,
+          threadResource,
+          botActor,
+        ) &&
+        (!threadResource || !threadResource.secure)
+      )
+        throw new Error(
+          `${base.identifier}.comment.externalThread: URL GitHub nao canonica`,
         );
+      const integrationAnchor = isStructuredGithubAnchor({
+        githubEntity,
+        botActor,
+        externalThread,
+        externalUser,
+        expectedCounterpartKey:
+          nativeCounterparts.length === 1 ? nativeCounterparts[0] : null,
+        parentId: parsed.parentId,
+        threadResource,
+      });
       if (integrationAnchor) return { id: parsed.id, ignored: true };
       const resourceKey =
         threadResource?.kind === "issue"
@@ -338,10 +485,8 @@ async function normalizeIssue(issue) {
         connected: githubProvenance
           ? externalThread == null || externalThread.isConnected === true
           : true,
-        createdAtMs: timestampMs(
-          parsed.createdAt,
-          `${base.identifier}.comment.createdAt`,
-        ),
+        createdAtMs,
+        updatedAtMs: commentUpdatedAtMs,
       };
     },
     `${base.identifier}.comments`,
@@ -392,23 +537,28 @@ async function normalizeIssue(issue) {
           completedAt: z.union([z.date(), z.string()]).nullish(),
         })
         .parse(release);
-      if (!parsed.commitSha || !parsed.completedAt)
-        return { id: parsed.id, ignored: true };
+      if (!parsed.commitSha) return { id: parsed.id, ignored: true };
+      const pipelineValue = await Promise.resolve(release.pipeline);
+      if (pipelineValue == null) return { id: parsed.id, ignored: true };
       const pipeline = z
         .object({
           id: uuidSchema,
           type: releasePipelineTypeSchema,
         })
-        .parse(await Promise.resolve(release.pipeline));
+        .parse(pipelineValue);
       return {
         id: parsed.id,
         pipelineId: pipeline.id,
         pipelineType: pipeline.type,
         commitSha: parsed.commitSha.toLowerCase(),
-        completedAtMs: timestampMs(
-          parsed.completedAt,
-          `${base.identifier}.release.completedAt`,
-        ),
+        completedAtMs:
+          parsed.completedAt == null
+            ? null
+            : boundedTimestampMs(
+                parsed.completedAt,
+                `${base.identifier}.release.completedAt`,
+                capturedAtMs,
+              ),
       };
     },
     `${base.identifier}.releases`,
@@ -451,9 +601,12 @@ async function normalizeIssue(issue) {
   return {
     id: base.id,
     identifier: base.identifier,
+    teamId: team.id,
     teamKey: team.key,
+    updatedAtMs,
     status: normalizeStatus(state.type),
     nativeCounterpartKeys: [...new Set(nativeCounterparts)].sort(),
+    _nativeGithubExternalIds: nativeGithubEntities.map((entity) => entity.id),
     attachmentIssueKeys: [
       ...new Set(
         attachmentResources
@@ -476,6 +629,7 @@ async function normalizeIssue(issue) {
       ),
     ].sort(),
     comments: comments.filter((comment) => !comment.ignored),
+    _commentIds: comments.map((comment) => comment.id),
     releases: releases.filter((release) => !release.ignored),
     duplicateOf:
       duplicateOf?.identifier ?? duplicateTargets[0]?.identifier ?? null,
@@ -490,6 +644,9 @@ async function normalizeIssue(issue) {
 function finalizeIssueReferences(issues) {
   const issueById = new Map();
   const issueByIdentifier = new Map();
+  const githubCommentByExternalId = new Map();
+  const githubIssueByExternalId = new Map();
+  const linearCommentById = new Map();
   for (const issue of issues) {
     if (issueById.has(issue.id))
       throw new Error(`issues: identidade duplicada ${issue.id}`);
@@ -497,6 +654,31 @@ function finalizeIssueReferences(issues) {
       throw new Error(`issues: identifier duplicado ${issue.identifier}`);
     issueById.set(issue.id, issue);
     issueByIdentifier.set(issue.identifier, issue);
+    for (const externalId of issue._nativeGithubExternalIds) {
+      const previous = githubIssueByExternalId.get(externalId);
+      if (previous)
+        throw new Error(
+          `${issue.identifier}: externalId GitHub nativo duplicado ${externalId} (tambem em ${previous})`,
+        );
+      githubIssueByExternalId.set(externalId, issue.identifier);
+    }
+    for (const commentId of issue._commentIds) {
+      const previous = linearCommentById.get(commentId);
+      if (previous)
+        throw new Error(
+          `${issue.identifier}.comment: id Linear duplicado ${commentId} (tambem em ${previous})`,
+        );
+      linearCommentById.set(commentId, issue.identifier);
+    }
+    for (const comment of issue.comments) {
+      if (comment.externalId === null) continue;
+      const previous = githubCommentByExternalId.get(comment.externalId);
+      if (previous)
+        throw new Error(
+          `${issue.identifier}.comment: externalId GitHub duplicado ${comment.externalId} (tambem em ${previous})`,
+        );
+      githubCommentByExternalId.set(comment.externalId, issue.identifier);
+    }
   }
 
   function resolve(reference, owner) {
@@ -524,7 +706,9 @@ function finalizeIssueReferences(issues) {
           throw new Error(`${issue.identifier}: duplicateOf autorreferente`);
       }
       const {
+        _commentIds: _discardCommentIds,
         _duplicateOfReference: _discardDuplicateOfReference,
+        _nativeGithubExternalIds: _discardNativeGithubExternalIds,
         _relatedReferences: _discardRelatedReferences,
         ...normalized
       } = issue;
@@ -542,9 +726,13 @@ async function normalizeTopology(client, method, scope) {
       const parsed = z.object({ id: idSchema }).parse(entity);
       let team = entity.team ?? entity.leadTeam;
       if (team) team = await Promise.resolve(team);
-      if (team == null) return { id: parsed.id, teamKey: null };
+      if (team == null) return { id: parsed.id, teamId: null, teamKey: null };
       const parsedTeam = teamIdentitySchema.parse(team);
-      return { id: parsed.id, teamKey: parsedTeam.key };
+      return {
+        id: parsed.id,
+        teamId: parsedTeam.id,
+        teamKey: parsedTeam.key,
+      };
     },
     scope,
   ).then((entities) =>
@@ -572,9 +760,39 @@ async function normalizeProjects(client) {
       async (team) => teamIdentitySchema.parse(team),
       `projects.${id}.teams`,
     );
-    for (const team of teams) associations.push({ id, teamKey: team.key });
+    for (const team of teams)
+      associations.push({ id, teamId: team.id, teamKey: team.key });
   }
   return Object.freeze(associations.map(Object.freeze));
+}
+
+function assertTeamReferences(teams, issues, collections) {
+  const teamById = new Map();
+  const teamByKey = new Map();
+  for (const team of teams) {
+    if (teamById.has(team.id))
+      throw new Error(`teams: identidade duplicada ${team.id}`);
+    if (teamByKey.has(team.key))
+      throw new Error(`teams: key duplicada ${team.key}`);
+    teamById.set(team.id, team);
+    teamByKey.set(team.key, team);
+  }
+
+  function resolve(teamId, teamKey, owner) {
+    const byId = teamById.get(teamId);
+    const byKey = teamByKey.get(teamKey);
+    if (!byId || byId !== byKey)
+      throw new Error(`${owner}: time nao resolve ${teamId}/${teamKey}`);
+  }
+
+  for (const issue of issues) {
+    resolve(issue.teamId, issue.teamKey, issue.identifier);
+  }
+  for (const [scope, entities] of Object.entries(collections)) {
+    for (const entity of entities) {
+      resolve(entity.teamId, entity.teamKey, `${scope}.${entity.id}`);
+    }
+  }
 }
 
 /** @returns {{readWorkspaceSnapshot(options:{capturedAt:string}):Promise<import('../domain/model.mjs').NormalizedLinearSnapshot>}} */
@@ -609,7 +827,7 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
       );
       const issuesRaw = await collectConnection(
         () => client.issues({ first: 50, includeArchived: true }),
-        normalizeIssue,
+        (issue) => normalizeIssue(issue, capturedAtMs),
         "issues",
       );
       const issues = finalizeIssueReferences(issuesRaw);
@@ -619,12 +837,23 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         normalizeTopology(client, "initiatives", "initiatives"),
         normalizeTopology(client, "documents", "documents"),
       ]);
+      assertTeamReferences(teamsDetailed, issues, {
+        cycles,
+        projects,
+        initiatives,
+        documents,
+      });
       return Object.freeze({
         complete: true,
         failures: Object.freeze([]),
+        capturedAtMs,
         teams: Object.freeze(
           teamsDetailed.map((team) =>
-            Object.freeze({ key: team.key, active: team.active }),
+            Object.freeze({
+              id: team.id,
+              key: team.key,
+              active: team.active,
+            }),
           ),
         ),
         issues,
@@ -637,6 +866,9 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
       return Object.freeze({
         complete: false,
         failures: Object.freeze([Object.freeze(failure(error))]),
+        capturedAtMs: Number.isFinite(Date.parse(capturedAt))
+          ? Date.parse(capturedAt)
+          : 0,
         teams: Object.freeze([]),
         issues: Object.freeze([]),
         cycles: Object.freeze([]),

@@ -22,18 +22,21 @@
  * @property {string|null} threadId
  * @property {boolean} connected
  * @property {number} createdAtMs Epoch milliseconds, decoded by the adapter.
+ * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
  *
  * @typedef {object} NormalizedRelease
  * @property {string} id
  * @property {string} pipelineId Stable Linear pipeline identity.
  * @property {'continuous'|'scheduled'} pipelineType
  * @property {string} commitSha Canonical lowercase opaque commit identity.
- * @property {number} completedAtMs
+ * @property {number|null} completedAtMs Null while the release is planned.
  *
  * @typedef {object} NormalizedLinearIssue
  * @property {string} id
  * @property {string} identifier
+ * @property {string} teamId Stable Linear team identity.
  * @property {string} teamKey
+ * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
  * @property {NormalizedStatus} status
  * @property {string[]} nativeCounterpartKeys GitHub Issues Sync counterparts.
  * @property {string[]} attachmentIssueKeys Explicit GitHub Issue attachments.
@@ -49,36 +52,41 @@
  * @typedef {object} NormalizedLinearSnapshot
  * @property {boolean} complete
  * @property {{source:string,code:string,scope:string}[]} failures
- * @property {{key:string,active:boolean}[]} teams
+ * @property {number} capturedAtMs Snapshot boundary in epoch milliseconds.
+ * @property {{id:string,key:string,active:boolean}[]} teams
  * @property {NormalizedLinearIssue[]} issues
- * @property {{id:string,teamKey:string}[]} cycles
- * @property {{id:string,teamKey:string}[]} projects
- * @property {{id:string,teamKey:string}[]} initiatives
- * @property {{id:string,teamKey:string}[]} documents
+ * @property {{id:string,teamId:string,teamKey:string}[]} cycles
+ * @property {{id:string,teamId:string,teamKey:string}[]} projects
+ * @property {{id:string,teamId:string,teamKey:string}[]} initiatives
+ * @property {{id:string,teamId:string,teamKey:string}[]} documents
  *
  * @typedef {object} GithubComment
  * @property {string} id
  * @property {string} threadId
  * @property {number} createdAtMs
+ * @property {number} updatedAtMs
  *
  * @typedef {object} NormalizedGithubIssue
  * @property {string} key Canonical lowercase owner/repository#number.
  * @property {string} repository
  * @property {number} number
  * @property {NormalizedStatus} status
+ * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
  * @property {GithubComment[]} comments
  *
  * @typedef {object} NormalizedGithubPull
  * @property {string} key
  * @property {string} repository
  * @property {number} number
+ * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
  * @property {number|null} mergedAtMs
  * @property {string|null} mergeCommitSha
  *
  * @typedef {object} NormalizedGithubSnapshot
  * @property {boolean} complete
  * @property {{source:string,code:string,scope:string}[]} failures
- * @property {{name:string,archived?:boolean}[]} repositories
+ * @property {number} capturedAtMs Snapshot boundary in epoch milliseconds.
+ * @property {{id:number,name:string,archived:false,issuesEnabled:boolean,fork:boolean}[]} repositories
  * @property {NormalizedGithubIssue[]} issues
  * @property {NormalizedGithubPull[]} pulls
  */

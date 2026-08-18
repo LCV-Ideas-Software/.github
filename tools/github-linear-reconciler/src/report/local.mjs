@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  chmod as nodeChmod,
   lstat as nodeLstat,
   mkdir,
   open,
@@ -10,8 +9,15 @@ import {
   stat,
   unlink,
 } from "node:fs/promises";
-import { homedir as readHomeDirectory } from "node:os";
 import path from "node:path";
+
+import {
+  assertOutsideGitWorktree,
+  assertOwnedLocalProfile,
+  assertPrivateDirectory,
+  assertPrivateFile,
+  resolveLocalProfileRoot,
+} from "../local-profile.mjs";
 
 const REPORT_PREFIX = "github-linear-reconciliation-";
 const REPORT_SUFFIX = ".json";
@@ -91,22 +97,13 @@ export function renderRedactedStatus(result) {
 
 export function resolveLocalReportDirectory({
   env = process.env,
-  homedir = readHomeDirectory(),
+  homedir,
   platform = process.platform,
 } = {}) {
-  const override = env.GITHUB_LINEAR_RECONCILER_PROFILE_DIR?.trim();
-  if (override) {
-    if (!path.isAbsolute(override))
-      throw new TypeError(
-        "GITHUB_LINEAR_RECONCILER_PROFILE_DIR deve ser absoluto",
-      );
-    return path.normalize(override);
-  }
-  const profileRoot =
-    platform === "win32"
-      ? env.LOCALAPPDATA?.trim() || path.join(homedir, "AppData", "Local")
-      : env.XDG_STATE_HOME?.trim() || path.join(homedir, ".local", "state");
-  return path.join(profileRoot, "github-linear-reconciler", "reports");
+  return path.join(
+    resolveLocalProfileRoot({ env, homedir, platform }),
+    "reports",
+  );
 }
 
 function isMissingPath(error) {
@@ -116,23 +113,6 @@ function isMissingPath(error) {
     "code" in error &&
     error.code === "ENOENT",
   );
-}
-
-async function assertOutsideGitWorktree(directory, lstatImpl) {
-  let current = path.resolve(directory);
-  for (;;) {
-    try {
-      await lstatImpl(path.join(current, ".git"));
-      throw new TypeError(
-        "diretório de relatório não pode estar dentro de worktree Git",
-      );
-    } catch (error) {
-      if (!isMissingPath(error)) throw error;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return;
-    current = parent;
-  }
 }
 
 async function pruneExpiredReports(directory, now, currentReportPath) {
@@ -165,27 +145,42 @@ export async function writeLocalReport({
   homedir,
   platform,
   idFactory = randomUUID,
-  chmodImpl = nodeChmod,
   lstatImpl = nodeLstat,
   realpathImpl = nodeRealpath,
 } = {}) {
   const timestamp = requireDate(now, "now");
   const runtimePlatform = platform ?? process.platform;
-  const configuredDirectory = path.resolve(
-    directory ??
-      resolveLocalReportDirectory({
-        env,
-        homedir,
-        platform: runtimePlatform,
-      }),
-  );
-  await assertOutsideGitWorktree(configuredDirectory, lstatImpl);
-  await mkdir(configuredDirectory, { recursive: true, mode: 0o700 });
-  const reportDirectory = await realpathImpl(configuredDirectory);
-  await assertOutsideGitWorktree(reportDirectory, lstatImpl);
-  if (runtimePlatform !== "win32") {
-    await chmodImpl(reportDirectory, 0o700);
+  const profile = await assertOwnedLocalProfile({
+    root: directory,
+    env,
+    homedir,
+    platform: runtimePlatform,
+    lstatImpl,
+    realpathImpl,
+  });
+  const configuredDirectory = profile.reportsPath;
+  try {
+    await lstatImpl(configuredDirectory);
+  } catch (error) {
+    if (!isMissingPath(error)) throw error;
+    await mkdir(configuredDirectory, { recursive: false, mode: 0o700 });
   }
+  assertPrivateDirectory(
+    await lstatImpl(configuredDirectory),
+    "diretório de relatórios",
+    runtimePlatform,
+  );
+  const reportDirectory = await realpathImpl(configuredDirectory);
+  if (path.relative(profile.reportsPath, reportDirectory) !== "") {
+    throw new TypeError(
+      "diretório de relatórios possui destino canônico inválido",
+    );
+  }
+  await assertOutsideGitWorktree(reportDirectory, {
+    candidateIsDirectory: true,
+    lstatImpl,
+    realpathImpl,
+  });
 
   const timestampForName = timestamp.toISOString().replace(/[:.]/gu, "-");
   const uniqueId = String(idFactory()).replace(/[^a-zA-Z0-9_-]/gu, "");
@@ -205,6 +200,11 @@ export async function writeLocalReport({
   let handle;
   try {
     handle = await open(temporaryPath, "wx", 0o600);
+    assertPrivateFile(
+      await handle.stat(),
+      "arquivo temporário de relatório",
+      runtimePlatform,
+    );
     await handle.writeFile(serialized, "utf8");
     await handle.sync();
     await handle.close();

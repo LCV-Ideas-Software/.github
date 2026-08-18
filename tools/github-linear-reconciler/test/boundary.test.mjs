@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -13,6 +15,7 @@ import {
 } from "../src/adapters/github.mjs";
 import { createLinearAdapter } from "../src/adapters/linear.mjs";
 import { loadRuntimeDependencies } from "../src/cli.mjs";
+import { ensureOwnedLocalProfile } from "../src/local-profile.mjs";
 
 const validConfig = {
   organization: "example-org",
@@ -142,22 +145,25 @@ test("config exige chaves e repositorios unicos e um unico umbrella", () => {
   );
 });
 
-test("loader exige caminho local absoluto sem default implicito", async () => {
+test("loader usa somente o config.json fixo do profile tool-owned", async (context) => {
   await assert.rejects(
     loadOperationalConfig("relative/config.json", {
       readFile: async () => JSON.stringify(validConfig),
     }),
     /absoluto/i,
   );
-  const loaded = await loadOperationalConfig(
-    path.resolve("synthetic-config.json"),
-    {
-      readFile: async (_path, encoding) => {
-        assert.equal(encoding, "utf8");
-        return JSON.stringify(validConfig);
-      },
-    },
-  );
+  const parent = await mkdtemp(path.join(tmpdir(), "reconciler-config-"));
+  context.after(() => rm(parent, { recursive: true, force: true }));
+  const profile = await ensureOwnedLocalProfile({
+    root: path.join(parent, "profile"),
+  });
+  await writeFile(profile.configPath, JSON.stringify(validConfig), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  const loaded = await loadOperationalConfig(profile.configPath, {
+    profileRoot: profile.root,
+  });
   assert.deepEqual(loaded, validConfig);
 });
 
@@ -277,7 +283,6 @@ test("Linear torna pagina ou node parcial inconclusivo", async () => {
 test("GitHub facade expoe somente GET, paginate e snapshot", async () => {
   const calls = [];
   const adapter = createGithubAdapter({
-    token: "github-test-token",
     request: async (route, parameters) => {
       calls.push({ route, parameters });
       return {
@@ -290,6 +295,7 @@ test("GitHub facade expoe somente GET, paginate e snapshot", async () => {
       };
     },
     paginateIterator: async function* () {},
+    repositoryInventory: [],
   });
   assert.deepEqual(Object.keys(adapter).sort(), [
     "get",
@@ -314,7 +320,6 @@ test("GitHub facade expoe somente GET, paginate e snapshot", async () => {
 
 test("GitHub pagina por iterator oficial e recusa identidade duplicada", async () => {
   const adapter = createGithubAdapter({
-    token: "github-test-token",
     request: async () => ({ data: {} }),
     paginateIterator: async function* () {
       yield {
@@ -324,6 +329,7 @@ test("GitHub pagina por iterator oficial e recusa identidade duplicada", async (
         data: [{ name: "one", archived: false, has_issues: true, fork: false }],
       };
     },
+    repositoryInventory: [],
   });
   await assert.rejects(
     adapter.paginate({
@@ -338,22 +344,8 @@ test("GitHub pagina por iterator oficial e recusa identidade duplicada", async (
 
 test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem suposicoes", async () => {
   const adapter = createGithubAdapter({
-    token: "github-test-token",
     request: async () => ({ data: {} }),
     paginateIterator: async function* (route) {
-      if (route === "GET /orgs/{org}/repos") {
-        yield {
-          data: [
-            {
-              name: "example-app",
-              archived: false,
-              has_issues: true,
-              fork: false,
-            },
-          ],
-        };
-        return;
-      }
       if (route === "GET /repos/{owner}/{repo}/issues") {
         yield {
           data: [
@@ -361,6 +353,8 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
               number: 7,
               state: "open",
               state_reason: null,
+              created_at: "2030-01-02T02:00:00.000Z",
+              updated_at: "2030-01-02T03:40:00.000Z",
             },
           ],
         };
@@ -377,6 +371,7 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
               body: "  <!-- linear-linkback -->\n<a>APP-7</a>",
               user: { login: "linear-code[bot]" },
               created_at: "2030-01-02T03:00:00.000Z",
+              updated_at: "2030-01-02T03:00:00.000Z",
             },
             {
               id: 2,
@@ -384,6 +379,7 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
               body: "<!-- linear-linkback -->\n<a>APP-7</a>",
               user: { login: "linear[bot]" },
               created_at: "2030-01-02T03:01:00.000Z",
+              updated_at: "2030-01-02T03:01:00.000Z",
             },
             {
               id: 3,
@@ -391,6 +387,7 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
               body: "<!-- linear-linkback --> user-authored text",
               user: { login: "human" },
               created_at: "2030-01-02T03:02:00.000Z",
+              updated_at: "2030-01-02T03:02:00.000Z",
             },
             {
               id: 4,
@@ -398,6 +395,7 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
               body: "ordinary bot comment",
               user: { login: "linear-code[bot]" },
               created_at: "2030-01-02T03:03:00.000Z",
+              updated_at: "2030-01-02T03:03:00.000Z",
             },
           ],
         };
@@ -408,6 +406,8 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
           data: [
             {
               number: 8,
+              created_at: "2030-01-02T02:00:00.000Z",
+              updated_at: "2030-01-02T03:40:00.000Z",
               merged_at: "2030-01-02T03:30:00.000Z",
               merge_commit_sha: "a".repeat(40),
             },
@@ -417,6 +417,15 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
       }
       throw new Error(`rota inesperada: ${route}`);
     },
+    repositoryInventory: [
+      {
+        id: 101,
+        name: "example-app",
+        archived: false,
+        has_issues: true,
+        fork: false,
+      },
+    ],
   });
 
   const snapshot = await adapter.readOrganizationSnapshot({
@@ -477,6 +486,7 @@ function syntheticIssue(overrides = {}) {
             id: "linear-comment-1",
             body: "Synthetic synchronized comment.",
             createdAt: "2030-01-02T03:05:00.000Z",
+            updatedAt: "2030-01-02T03:05:00.000Z",
             syncedWith: [{ service: "github", id: "github-comment-node-1" }],
             externalThread: {
               id: "provider-specific-thread-id",
@@ -488,6 +498,7 @@ function syntheticIssue(overrides = {}) {
             id: "linear-comment-2",
             body: "Synthetic local comment.",
             createdAt: "2030-01-02T03:06:00.000Z",
+            updatedAt: "2030-01-02T03:06:00.000Z",
             syncedWith: [],
             externalThread: {
               id: "jira-thread",
@@ -499,12 +510,22 @@ function syntheticIssue(overrides = {}) {
             id: "linear-comment-anchor",
             body: "This comment thread is synced to a corresponding [GitHub issue](https://github.com/example-org/example-app/issues/7). All replies are shared in both locations.",
             createdAt: "2030-01-02T03:07:00.000Z",
+            updatedAt: "2030-01-02T03:07:00.000Z",
             syncedWith: [],
             externalThread: {
               id: "github-anchor-thread",
+              type: "integration",
+              subType: "github",
               url: githubUrl,
               isConnected: true,
             },
+            botActor: {
+              id: "github-bot",
+              type: "integration",
+              subType: "github",
+            },
+            externalUser: null,
+            parentId: null,
           },
         ],
       ]),
@@ -558,6 +579,7 @@ test("Linear normaliza somente provenance GitHub e usa a chave do recurso como t
       threadId: "example-org/example-app#7",
       connected: true,
       createdAtMs: 1893553500000,
+      updatedAtMs: 1893553500000,
     },
     {
       id: "linear-comment-2",
@@ -567,6 +589,7 @@ test("Linear normaliza somente provenance GitHub e usa a chave do recurso como t
       threadId: null,
       connected: true,
       createdAtMs: 1893553560000,
+      updatedAtMs: 1893553560000,
     },
   ]);
 });
@@ -620,6 +643,11 @@ test("Linear separa evidencias nativas, attachments seguros, links inseguros e r
             id: "release-planned-with-sha",
             commitSha: "b".repeat(40),
             completedAt: null,
+            pipeline: {
+              id: "123e4567-e89b-42d3-a456-426614174000",
+              name: "Production",
+              type: "continuous",
+            },
           },
           {
             id: "release-completed-without-sha",
@@ -664,6 +692,13 @@ test("Linear separa evidencias nativas, attachments seguros, links inseguros e r
   assert.equal("counterpartKeys" in normalized, false);
   assert.equal("attachmentKeys" in normalized, false);
   assert.deepEqual(normalized.releases, [
+    {
+      id: "release-planned-with-sha",
+      pipelineId: "123e4567-e89b-42d3-a456-426614174000",
+      pipelineType: "continuous",
+      commitSha: "b".repeat(40),
+      completedAtMs: null,
+    },
     {
       id: "release-complete",
       pipelineId: "123e4567-e89b-42d3-a456-426614174000",
@@ -803,7 +838,9 @@ test("Linear preserva lifecycle dos times e duplicateOf autoritativo", async () 
     capturedAt: "2030-01-02T04:00:00.000Z",
   });
   assert.equal(snapshot.complete, true);
-  assert.deepEqual(snapshot.teams, [{ key: "APP", active: false }]);
+  assert.deepEqual(snapshot.teams, [
+    { id: "team-app", key: "APP", active: false },
+  ]);
   assert.equal(
     snapshot.issues.find((candidate) => candidate.identifier === "APP-7")
       .duplicateOf,
