@@ -378,6 +378,10 @@ function hasGithubSyncedEntity(comment) {
   );
 }
 
+function hasGithubSyncedComment(issue) {
+  return connectionNodes(issue.comments).some(hasGithubSyncedEntity);
+}
+
 function hasGithubExternalThread(issue) {
   return connectionNodes(issue.comments).some((comment) => {
     return isGithubExternalThread(comment.externalThread);
@@ -471,23 +475,25 @@ function integrationAnchorPairStatus(
 ) {
   const linearBody = normalizeBody(linearComment?.body);
   const githubBody = String(githubComment?.body ?? "");
+  const linearAnchor =
+    /^This comment thread is synced to a corresponding \[GitHub issue\]\((https:\/\/github\.com\/[^)\s]+)\)\. All replies are displayed in both locations\.$/iu.exec(
+      linearBody,
+    );
+  const githubLinkback =
+    /^\s*<!--\s*linear-linkback\s*-->\s*<p>\s*<a\s+href=["']([^"']+)["']\s*>([^<]+)<\/a>\s*<\/p>\s*$/iu.exec(
+      githubBody,
+    );
   const isPair =
     /This comment thread is synced to a corresponding \[GitHub (?:issue|pull request)\]/iu.test(
       linearBody,
     ) && /<!--\s*linear-linkback\s*-->/iu.test(githubBody);
   if (!isPair) return null;
-  const anchorTarget =
-    /This comment thread is synced to a corresponding \[GitHub (?:issue|pull request)\]\((https:\/\/github\.com\/[^)\s]+)\)/iu.exec(
-      linearBody,
-    )?.[1];
+  const anchorTarget = linearAnchor?.[1];
   const anchorLink = githubLinkFromUrl(anchorTarget ?? "", organization);
-  const linkback = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/iu.exec(
-    githubBody,
-  );
   let linearTargetMatches = false;
-  if (linkback) {
+  if (githubLinkback) {
     try {
-      const parsed = new URL(linkback[1]);
+      const parsed = new URL(githubLinkback[1]);
       const expected = new URL(linearIssueUrl);
       const segments = parsed.pathname.split("/").filter(Boolean);
       const expectedSegments = expected.pathname.split("/").filter(Boolean);
@@ -516,7 +522,7 @@ function integrationAnchorPairStatus(
         sameWorkspace &&
         segments[issueIndex + 1]?.toLocaleLowerCase("en-US") ===
           linearIdentifier.toLocaleLowerCase("en-US") &&
-        normalizeBody(linkback[2]).toLocaleLowerCase("en-US") ===
+        normalizeBody(githubLinkback[2]).toLocaleLowerCase("en-US") ===
           linearIdentifier.toLocaleLowerCase("en-US");
     } catch {
       linearTargetMatches = false;
@@ -524,6 +530,8 @@ function integrationAnchorPairStatus(
   }
   return {
     valid:
+      Boolean(linearAnchor) &&
+      Boolean(githubLinkback) &&
       anchorLink?.kind === "issue" &&
       githubUrlKey(anchorLink.url) === githubUrlKey(githubIssueUrl) &&
       linearTargetMatches,
@@ -860,6 +868,99 @@ function collectExternalThreadIssueLinks(issue, organization) {
   return [...links.values()];
 }
 
+function mappedRepositoryForIssue(
+  issue,
+  teamRepositories = DEFAULT_TEAM_REPOSITORIES,
+) {
+  return (
+    teamRepositories[issue.team?.key] ??
+    (issue.team?.name === ".github-org" ? ".github" : issue.team?.name)
+  );
+}
+
+function resolveEffectiveTeamRepositories({
+  teamRepositories = DEFAULT_TEAM_REPOSITORIES,
+  linearTopology,
+  linearIssues = [],
+  repositoryInventory,
+  linearOnlyTeamKeys = [],
+}) {
+  const linearOnlyTeams =
+    linearOnlyTeamKeys instanceof Set
+      ? linearOnlyTeamKeys
+      : new Set(linearOnlyTeamKeys);
+  const activeRepositories = new Map(
+    (repositoryInventory?.active ?? []).map((repo) => [
+      githubUrlKey(repo),
+      repo,
+    ]),
+  );
+  const effective = { ...teamRepositories };
+  for (const key of linearOnlyTeams) delete effective[key];
+  for (const team of linearTopology?.teams ?? []) {
+    if (linearOnlyTeams.has(team.key)) continue;
+    const candidateRepository =
+      team.name === ".github-org" ? ".github" : team.name;
+    if (activeRepositories.has(githubUrlKey(candidateRepository))) {
+      effective[team.key] = activeRepositories.get(
+        githubUrlKey(candidateRepository),
+      );
+    }
+  }
+  for (const issue of linearIssues) {
+    if (linearOnlyTeams.has(issue.team?.key)) continue;
+    if (activeRepositories.has(githubUrlKey(issue.team?.name))) {
+      effective[issue.team.key] = activeRepositories.get(
+        githubUrlKey(issue.team.name),
+      );
+    }
+  }
+  return effective;
+}
+
+function collectGithubCommentAuditUrls(
+  issue,
+  organization,
+  {
+    teamRepositories = DEFAULT_TEAM_REPOSITORIES,
+    linearOnlyTeamKeys = [],
+  } = {},
+) {
+  if (new Set(linearOnlyTeamKeys).has(issue.team?.key)) return new Set();
+  const urls = new Set(
+    collectExternalThreadIssueLinks(issue, organization).map((link) =>
+      githubUrlKey(link.url),
+    ),
+  );
+  if (
+    !hasNativeGithubSync(issue) &&
+    !hasGithubExternalThread(issue) &&
+    !hasGithubSyncedComment(issue)
+  )
+    return urls;
+
+  const mappedRepository = mappedRepositoryForIssue(issue, teamRepositories);
+  if (!mappedRepository) return urls;
+  const mappedNativeIssueLinks = collectNativeGithubIssueLinks(
+    issue,
+    organization,
+  ).filter((link) => sameGithubRepository(link.repo, mappedRepository));
+  const mappedAttachmentIssueLinks = collectAttachmentIssueLinks(
+    issue,
+    organization,
+  ).filter((link) => sameGithubRepository(link.repo, mappedRepository));
+  const canonicalCandidates = new Map(
+    (mappedNativeIssueLinks.length > 0
+      ? mappedNativeIssueLinks
+      : mappedAttachmentIssueLinks
+    ).map((link) => [githubUrlKey(link.url), link]),
+  );
+  if (canonicalCandidates.size === 1) {
+    urls.add(canonicalCandidates.keys().next().value);
+  }
+  return urls;
+}
+
 function commentsForGithubLink(issue, link, organization, isCanonical) {
   const comments = connectionNodes(issue.comments);
   const target = githubUrlKey(link.url);
@@ -1084,18 +1185,37 @@ function findStrongDuplicateCandidates(
   return findings;
 }
 
-function githubFailureFinding(issue, link, record, repositoryInventory) {
+function githubIssueInventoryComplete(link, repositoryInventory) {
   const inventoryFailure = Object.entries(
     repositoryInventory?.issueAuditFailures ?? {},
   ).find(([repo]) => sameGithubRepository(repo, link.repo))?.[1];
-  const inventoryComplete =
+  return Boolean(
     link.kind === "issue" &&
     !repositoryInventory?.auditFailure &&
     Array.isArray(repositoryInventory?.issues) &&
     (repositoryInventory.active ?? []).some((repo) =>
       sameGithubRepository(repo, link.repo),
     ) &&
-    !inventoryFailure;
+    (repositoryInventory.issuesEnabled ?? []).some((repo) =>
+      sameGithubRepository(repo, link.repo),
+    ) &&
+    !inventoryFailure,
+  );
+}
+
+function githubFailureFinding(issue, link, record, repositoryInventory) {
+  if (record?.auditFailure === "resource_kind_mismatch") {
+    return {
+      severity: "error",
+      code: "github_resource_kind_mismatch",
+      issue: issue.identifier,
+      message: `${link.url} foi declarado como Issue, mas a API o identificou como Pull Request`,
+    };
+  }
+  const inventoryComplete = githubIssueInventoryComplete(
+    link,
+    repositoryInventory,
+  );
   const absentFromInventory =
     inventoryComplete &&
     !repositoryInventory.issues.some(
@@ -1145,32 +1265,13 @@ export function reconcileSnapshots({
     throw new Error("o time guarda-chuva não pode ser Linear-only");
   let auditedGithubLinks = 0;
   const canonicalGithubTwins = new Map();
-  const activeRepositories = new Map(
-    (repositoryInventory?.active ?? []).map((repo) => [
-      githubUrlKey(repo),
-      repo,
-    ]),
-  );
-  const effectiveTeamRepositories = { ...teamRepositories };
-  for (const key of linearOnlyTeams) delete effectiveTeamRepositories[key];
-  for (const team of linearTopology?.teams ?? []) {
-    if (linearOnlyTeams.has(team.key)) continue;
-    const candidateRepository =
-      team.name === ".github-org" ? ".github" : team.name;
-    if (activeRepositories.has(githubUrlKey(candidateRepository))) {
-      effectiveTeamRepositories[team.key] = activeRepositories.get(
-        githubUrlKey(candidateRepository),
-      );
-    }
-  }
-  for (const issue of linearIssues) {
-    if (linearOnlyTeams.has(issue.team?.key)) continue;
-    if (activeRepositories.has(githubUrlKey(issue.team?.name))) {
-      effectiveTeamRepositories[issue.team.key] = activeRepositories.get(
-        githubUrlKey(issue.team.name),
-      );
-    }
-  }
+  const effectiveTeamRepositories = resolveEffectiveTeamRepositories({
+    teamRepositories,
+    linearTopology,
+    linearIssues,
+    repositoryInventory,
+    linearOnlyTeamKeys: linearOnlyTeams,
+  });
   if (linearTopology?.auditFailure) {
     findings.push({
       severity: "incomplete",
@@ -1465,7 +1566,10 @@ export function reconcileSnapshots({
             issue: issue.identifier,
             message: `time Linear-only referencia recurso GitHub vivo ${link.url}`,
           });
-        } else if (github?.status !== 410) {
+        } else if (
+          github?.status !== 410 ||
+          !githubIssueInventoryComplete(link, repositoryInventory)
+        ) {
           const failure = githubFailureFinding(
             issue,
             link,
@@ -1500,7 +1604,9 @@ export function reconcileSnapshots({
       if (
         link.kind === "issue" &&
         (isCanonicalIssue || externalThreadIssueUrls.has(linkUrlKey)) &&
-        (hasNativeGithubSync(issue) || hasGithubExternalThread(issue))
+        (hasNativeGithubSync(issue) ||
+          hasGithubExternalThread(issue) ||
+          hasGithubSyncedComment(issue))
       ) {
         const linearComments = commentsForGithubLink(
           issue,
@@ -2326,12 +2432,30 @@ export async function readGithubRecords({
   issues,
   organization,
   token,
+  teamRepositories = DEFAULT_TEAM_REPOSITORIES,
+  linearTopology,
+  repositoryInventory,
+  linearOnlyTeamKeys = [],
   fetchImpl = fetch,
 }) {
   const links = new Map();
+  const commentAuditUrls = new Set();
+  const effectiveTeamRepositories = resolveEffectiveTeamRepositories({
+    teamRepositories,
+    linearTopology,
+    linearIssues: issues,
+    repositoryInventory,
+    linearOnlyTeamKeys,
+  });
   for (const issue of issues) {
     for (const link of collectGithubLinks(issue, organization))
       links.set(link.url, link);
+    for (const url of collectGithubCommentAuditUrls(issue, organization, {
+      teamRepositories: effectiveTeamRepositories,
+      linearOnlyTeamKeys,
+    })) {
+      commentAuditUrls.add(url);
+    }
   }
   const records = new Map();
   const queue = [...links.values()];
@@ -2347,8 +2471,16 @@ export async function readGithubRecords({
               ? `/repos/${link.owner}/${link.repo}/pulls/${link.number}`
               : `/repos/${link.owner}/${link.repo}/issues/${link.number}`;
           const record = await githubGet(path, token, fetchImpl);
+          if (link.kind === "issue" && record?.pull_request) {
+            records.set(link.url, {
+              auditFailure: "resource_kind_mismatch",
+              status: 200,
+            });
+            continue;
+          }
           const comments =
-            link.kind === "issue"
+            link.kind === "issue" &&
+            commentAuditUrls.has(githubUrlKey(link.url))
               ? await readAllGithubComments({ ...link, token, fetchImpl })
               : [];
           records.set(link.url, {
@@ -2401,6 +2533,9 @@ export async function readGithubRepositoryInventory({
       auditFailure: error.kind,
       status: error.status,
       active,
+      issuesEnabled: repositories
+        .filter((repo) => repo.has_issues !== false)
+        .map((repo) => repo.name),
       issues: [],
       issueAuditFailures: {},
     };
@@ -2454,7 +2589,14 @@ export async function readGithubRepositoryInventory({
   );
   await Promise.all(workers);
   issues.sort((left, right) => left.url.localeCompare(right.url));
-  return { active, issues, issueAuditFailures };
+  return {
+    active,
+    issuesEnabled: repositories
+      .filter((repo) => repo.has_issues !== false)
+      .map((repo) => repo.name),
+    issues,
+    issueAuditFailures,
+  };
 }
 
 function requiredEnvironment(name) {
@@ -2493,10 +2635,25 @@ async function main() {
       umbrellaTeamKey,
     }),
   ]);
-  const [githubByUrl, repositoryInventory] = await Promise.all([
-    readGithubRecords({ issues, organization, token: githubToken }),
-    readGithubRepositoryInventory({ organization, token: githubToken }),
-  ]);
+  const repositoryInventory = await readGithubRepositoryInventory({
+    organization,
+    token: githubToken,
+  });
+  const effectiveTeamRepositories = resolveEffectiveTeamRepositories({
+    linearTopology,
+    linearIssues: issues,
+    repositoryInventory,
+    linearOnlyTeamKeys,
+  });
+  const githubByUrl = await readGithubRecords({
+    issues,
+    organization,
+    token: githubToken,
+    teamRepositories: effectiveTeamRepositories,
+    linearTopology,
+    repositoryInventory,
+    linearOnlyTeamKeys,
+  });
   const result = reconcileSnapshots({
     linearIssues: issues,
     githubByUrl,
@@ -2505,6 +2662,7 @@ async function main() {
     organization,
     umbrellaTeamKey,
     linearOnlyTeamKeys,
+    teamRepositories: effectiveTeamRepositories,
     commentGraceMs: commentGraceMinutes * 60_000,
     releaseRequiredAfter,
   });

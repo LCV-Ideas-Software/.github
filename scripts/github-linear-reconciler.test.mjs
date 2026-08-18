@@ -13,6 +13,7 @@ import {
   parseLinearOnlyTeamKeys,
   publishTerminalResult,
   readGithubRepositoryInventory,
+  readGithubRecords,
   readLinearIssues,
   readLinearTopology,
   reconcileSnapshots,
@@ -1056,6 +1057,53 @@ test("detecta release ausente para PR mergeado após o corte", () => {
   );
 });
 
+test("grandfathering de release anterior à pipeline é explícito no contrato", async () => {
+  const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/200";
+  const issue = linearIssue({
+    attachments: {
+      nodes: [
+        { url: "https://github.com/LCV-Ideas-Software/.github/issues/199" },
+        { url: pullUrl },
+      ],
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        "https://github.com/LCV-Ideas-Software/.github/issues/199",
+        githubIssue({
+          url: "https://github.com/LCV-Ideas-Software/.github/issues/199",
+        }),
+      ],
+      [
+        pullUrl,
+        {
+          kind: "pull",
+          url: pullUrl,
+          merged: true,
+          merged_at: "2026-08-17T11:59:59Z",
+          merge_commit_sha: "0123456789abcdef0123456789abcdef01234567",
+          comments: [],
+        },
+      ],
+    ]),
+    now: NOW,
+    releaseRequiredAfter: new Date("2026-08-17T12:00:00Z"),
+  });
+  const documentation = await readFile(
+    new URL("../docs/GITHUB_LINEAR_RECONCILIATION.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(
+    result.findings.some((finding) => finding.code === "missing_release"),
+    false,
+  );
+  assert.match(documentation, /17\/08\/2026 09:00/u);
+  assert.match(documentation, /anteriores.+attachment.+release/isu);
+});
+
 test("link suplementar de PR não é tratado como carrier de release", () => {
   const issueUrl = "https://github.com/LCV-Ideas-Software/.github/issues/259";
   const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
@@ -1499,7 +1547,7 @@ test("âncora Linear e linkback GitHub não são tratados como conteúdo diverge
     comments: {
       nodes: [
         {
-          body: "This comment thread is synced to a corresponding [GitHub issue](https://github.com/LCV-Ideas-Software/.github/issues/249). All replies are synchronized.",
+          body: "This comment thread is synced to a corresponding [GitHub issue](https://github.com/LCV-Ideas-Software/.github/issues/249). All replies are displayed in both locations.",
           createdAt: "2026-08-18T01:00:00.000Z",
           updatedAt: "2026-08-18T01:00:00.000Z",
           syncedWith: [],
@@ -1551,6 +1599,114 @@ test("âncora Linear e linkback GitHub não são tratados como conteúdo diverge
       (finding) => finding.code === "integration_linkback_mismatch",
     ),
     false,
+  );
+
+  const editedAnchor = reconcileSnapshots({
+    linearIssues: [
+      {
+        ...issue,
+        comments: {
+          nodes: [
+            {
+              ...issue.comments.nodes[0],
+              body: `${issue.comments.nodes[0].body} texto acrescentado`,
+            },
+          ],
+        },
+      },
+    ],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_linear_linkback",
+              body: '<!-- linear-linkback --><p><a href="https://linear.app/lcv-ideas-software/issue/GITHORG-70">GITHORG-70</a></p>',
+              created_at: "2026-08-18T01:00:00.500Z",
+              updated_at: "2026-08-18T01:00:00.500Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+  assert.equal(
+    editedAnchor.findings.some(
+      (finding) => finding.code === "integration_linkback_mismatch",
+    ),
+    true,
+  );
+
+  const wrongResourceLabel = reconcileSnapshots({
+    linearIssues: [
+      {
+        ...issue,
+        comments: {
+          nodes: [
+            {
+              ...issue.comments.nodes[0],
+              body: issue.comments.nodes[0].body.replace(
+                "[GitHub issue]",
+                "[GitHub pull request]",
+              ),
+            },
+          ],
+        },
+      },
+    ],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_linear_linkback",
+              body: '<!-- linear-linkback --><p><a href="https://linear.app/lcv-ideas-software/issue/GITHORG-70">GITHORG-70</a></p>',
+              created_at: "2026-08-18T01:00:00.500Z",
+              updated_at: "2026-08-18T01:00:00.500Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+  assert.equal(
+    wrongResourceLabel.findings.some(
+      (finding) => finding.code === "integration_linkback_mismatch",
+    ),
+    true,
+  );
+
+  const editedLinkback = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: new Map([
+      [
+        url,
+        githubIssue({
+          url,
+          comments: [
+            {
+              node_id: "IC_linear_linkback",
+              body: '<!-- linear-linkback --><p><a data-extra="edited" href="https://linear.app/lcv-ideas-software/issue/GITHORG-70">GITHORG-70</a></p>',
+              created_at: "2026-08-18T01:00:00.500Z",
+              updated_at: "2026-08-18T01:00:00.500Z",
+            },
+          ],
+        }),
+      ],
+    ]),
+    now: NOW,
+  });
+  assert.equal(
+    editedLinkback.findings.some(
+      (finding) => finding.code === "integration_linkback_mismatch",
+    ),
+    true,
   );
 });
 
@@ -2928,6 +3084,7 @@ test("time Linear-only declarado não exige repositório, mas aparece no resulta
     },
     repositoryInventory: {
       active: [".github"],
+      issuesEnabled: [".github"],
       issues: [],
       issueAuditFailures: {},
     },
@@ -3058,6 +3215,7 @@ test("410 confirmado é aceito como tombstone em time Linear-only", () => {
     },
     repositoryInventory: {
       active: [".github", "ultrabrain-mcp"],
+      issuesEnabled: [".github", "ultrabrain-mcp"],
       issues: [],
       issueAuditFailures: {},
     },
@@ -3067,6 +3225,51 @@ test("410 confirmado é aceito como tombstone em time Linear-only", () => {
   });
 
   assert.deepEqual(result.findings, []);
+});
+
+test("410 sem inventário de Issues habilitado permanece inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/ultrabrain-mcp/issues/119";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        identifier: "PANDROID-1",
+        team: { key: "PANDROID", name: "programa-android" },
+        attachments: { nodes: [{ url }] },
+      }),
+    ],
+    githubByUrl: new Map([[url, { auditFailure: "gone", status: 410 }]]),
+    linearTopology: {
+      teams: [
+        { key: "GITHORG", name: ".github-org", archivedAt: null },
+        { key: "ULTRABR", name: "ultrabrain-mcp", archivedAt: null },
+        { key: "PANDROID", name: "programa-android", archivedAt: null },
+      ],
+      cycles: [],
+      projects: [],
+      initiatives: [],
+      documents: [],
+      subteams: [],
+    },
+    repositoryInventory: {
+      active: [".github", "ultrabrain-mcp"],
+      issuesEnabled: [".github"],
+      issues: [],
+      issueAuditFailures: {},
+    },
+    teamRepositories: {},
+    linearOnlyTeamKeys: ["PANDROID"],
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "github_link_unreadable" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(determineExitCode(result), 2);
 });
 
 test("exceção Linear-only desconhecida falha", () => {
@@ -3269,6 +3472,32 @@ test("404 permanece inconclusivo quando o inventário de Issues também falhou",
   );
 });
 
+test("404 em repositório com Issues desabilitados permanece inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/repo-ativo/issues/41";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        team: { key: "REPO", name: "repo-ativo" },
+        attachments: { nodes: [{ url }] },
+      }),
+    ],
+    githubByUrl: new Map([[url, { auditFailure: "not_found", status: 404 }]]),
+    repositoryInventory: {
+      active: ["repo-ativo"],
+      issuesEnabled: [],
+      issues: [],
+      issueAuditFailures: {},
+    },
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) => finding.code === "github_link_missing"),
+    false,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
 test("404 permanece inconclusivo quando o inventário organizacional falhou", () => {
   const url = "https://github.com/LCV-Ideas-Software/.github/issues/999";
   const issue = linearIssue({ attachments: { nodes: [{ url }] } });
@@ -3300,6 +3529,7 @@ test("404 é link removido quando o inventário completo prova ausência", () =>
     githubByUrl: new Map([[url, { auditFailure: "not_found", status: 404 }]]),
     repositoryInventory: {
       active: [".github"],
+      issuesEnabled: [".github"],
       issues: [],
       issueAuditFailures: {},
     },
@@ -3374,6 +3604,176 @@ test("cliente GitHub recusa qualquer método diferente de GET", async () => {
   );
 });
 
+test("carrega comentários somente para links efetivamente sincronizados", async () => {
+  const canonical = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const historical = "https://github.com/LCV-Ideas-Software/.github/issues/261";
+  const calls = [];
+  const records = await readGithubRecords({
+    issues: [
+      linearIssue({
+        description: `Referência histórica: ${historical}`,
+        syncedWith: [
+          {
+            id: "I_native",
+            service: "github",
+            metadata: {
+              owner: "LCV-Ideas-Software",
+              repo: ".github",
+              number: 260,
+            },
+          },
+        ],
+        attachments: { nodes: [{ url: canonical }] },
+      }),
+    ],
+    organization: "LCV-Ideas-Software",
+    token: "read-only",
+    fetchImpl: async (url) => {
+      calls.push(url);
+      if (url.includes("/comments"))
+        return new Response(JSON.stringify([]), { status: 200 });
+      return new Response(JSON.stringify({ state: "open" }), { status: 200 });
+    },
+  });
+
+  assert.equal(records.size, 2);
+  assert.equal(
+    calls.filter((url) => url.includes("/issues/260/comments")).length,
+    1,
+  );
+  assert.equal(
+    calls.filter((url) => url.includes("/issues/261/comments")).length,
+    0,
+  );
+});
+
+test("comment.syncedWith GitHub ativa a leitura e reconciliação bidirecional", async () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const issue = linearIssue({
+    attachments: { nodes: [{ url }] },
+    comments: {
+      nodes: [
+        {
+          id: "linear-comment-deleted-on-github",
+          body: "Comentário cujo original não está mais no GitHub",
+          createdAt: "2026-08-18T01:00:00Z",
+          updatedAt: "2026-08-18T01:00:00Z",
+          syncedWith: [{ id: "IC_deleted", service: "github" }],
+          externalThread: null,
+        },
+      ],
+    },
+  });
+  const calls = [];
+  const records = await readGithubRecords({
+    issues: [issue],
+    organization: "LCV-Ideas-Software",
+    token: "read-only",
+    fetchImpl: async (requestUrl) => {
+      calls.push(requestUrl);
+      if (requestUrl.includes("/comments"))
+        return new Response(JSON.stringify([]), { status: 200 });
+      return new Response(JSON.stringify({ state: "open" }), { status: 200 });
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: [issue],
+    githubByUrl: records,
+    now: NOW,
+  });
+
+  assert.equal(
+    calls.filter((requestUrl) => requestUrl.includes("/comments")).length,
+    1,
+  );
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "comment_sync_gap_to_github",
+    ),
+    true,
+  );
+});
+
+test("loader e reconciliador usam o mesmo mapeamento dinâmico de time", async () => {
+  const url = "https://github.com/LCV-Ideas-Software/renamed-repo/issues/22";
+  const calls = [];
+  await readGithubRecords({
+    issues: [
+      linearIssue({
+        team: { key: "GITHORG", name: "renamed-repo" },
+        syncedWith: [
+          {
+            id: "I_native",
+            service: "github",
+            metadata: {
+              owner: "LCV-Ideas-Software",
+              repo: "renamed-repo",
+              number: 22,
+            },
+          },
+        ],
+        attachments: { nodes: [{ url }] },
+      }),
+    ],
+    organization: "LCV-Ideas-Software",
+    token: "read-only",
+    linearTopology: {
+      teams: [{ key: "GITHORG", name: "renamed-repo" }],
+    },
+    repositoryInventory: {
+      active: ["renamed-repo"],
+      issuesEnabled: ["renamed-repo"],
+      issues: [],
+      issueAuditFailures: {},
+    },
+    fetchImpl: async (requestUrl) => {
+      calls.push(requestUrl);
+      if (requestUrl.includes("/comments"))
+        return new Response(JSON.stringify([]), { status: 200 });
+      return new Response(JSON.stringify({ state: "open" }), { status: 200 });
+    },
+  });
+
+  assert.equal(
+    calls.filter((requestUrl) => requestUrl.includes("/comments")).length,
+    1,
+  );
+});
+
+test("rejeita pull request devolvido pelo endpoint de Issue", async () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const calls = [];
+  const records = await readGithubRecords({
+    issues: [linearIssue({ attachments: { nodes: [{ url }] } })],
+    organization: "LCV-Ideas-Software",
+    token: "read-only",
+    fetchImpl: async (requestUrl) => {
+      calls.push(requestUrl);
+      return new Response(
+        JSON.stringify({ state: "closed", pull_request: { url: "pull" } }),
+        { status: 200 },
+      );
+    },
+  });
+
+  assert.equal(records.get(url).auditFailure, "resource_kind_mismatch");
+  assert.equal(
+    calls.some((requestUrl) => requestUrl.includes("/comments")),
+    false,
+  );
+  const result = reconcileSnapshots({
+    linearIssues: [linearIssue({ attachments: { nodes: [{ url }] } })],
+    githubByUrl: records,
+    now: NOW,
+  });
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "github_resource_kind_mismatch",
+    ),
+    true,
+  );
+});
+
 test("inventário GitHub inclui fork ativo e exclui somente arquivado", async () => {
   const inventory = await readGithubRepositoryInventory({
     organization: "LCV-Ideas-Software",
@@ -3416,6 +3816,7 @@ test("inventário GitHub inclui fork ativo e exclui somente arquivado", async ()
   });
 
   assert.deepEqual(inventory.active, ["fork-ativo", "repo-ativo"]);
+  assert.deepEqual(inventory.issuesEnabled, ["fork-ativo"]);
   assert.deepEqual(
     inventory.issues.map((issue) => issue.url),
     ["https://github.com/LCV-Ideas-Software/fork-ativo/issues/1"],

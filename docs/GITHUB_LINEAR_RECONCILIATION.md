@@ -41,8 +41,10 @@ realiza a migração.
 - cardinalidade exatamente 1:1 dos gêmeos e Issue presente em apenas um dos
   inventários;
 - ausência do attachment GitHub no repositório exato do time;
-- release `completed` de pipeline `continuous` ausente para cada PR mergeado,
-  com SHA e pipeline correspondentes;
+- release `completed` de pipeline `continuous` ausente para cada PR mergeado a
+  partir de 17/08/2026 09:00, com SHA e pipeline correspondentes; carriers
+  anteriores à implantação da pipeline continuam obrigatórios como attachment,
+  mas são explicitamente dispensados de release histórica;
 - comentário ausente em qualquer direção, desatualizado ou com thread
   desconectada, inválida ou fora da organização configurada;
 - duplicata ou item semelhante sem relação explícita, inclusive dentro do mesmo
