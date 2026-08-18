@@ -4,10 +4,12 @@ Scope of this inventory: every **direct** dependency declared by a manifest comm
 repository, plus every third-party script loaded at runtime by a page this repository publishes.
 
 Transitive dependencies are not listed individually; they are pinned by the committed lockfiles.
-Dependabot covers each declared ecosystem, while the repository workflows run the applicable native
-package-manager audits. GitHub Actions are not listed here: they are pinned by full commit SHA and
-updated through Dependabot. The repository intentionally has no parallel scanner, pin auditor,
-containerized Zizmor runtime, or policy wrapper of its own.
+Dependabot covers each declared ecosystem, and the official GitHub Dependency Review action evaluates
+manifest and lockfile changes. The reconciler workflow installs the committed npm lockfile with
+lifecycle scripts disabled; this document does not claim a separate native `npm audit` CI gate. GitHub
+Actions are not listed here: they are pinned by full commit SHA and updated through Dependabot. The
+repository intentionally has no parallel scanner, pin auditor, containerized Zizmor runtime, or policy
+wrapper of its own.
 
 Versions and licenses below were read from each package's own published manifest or from its
 upstream repository, not inferred. Versions are the ones actually resolved by the committed
@@ -17,11 +19,19 @@ exact `yaml@2.9.0` parser.
 
 ## Repository root — `package.json`
 
-| Component | Version | License           | Scope       | Source                                 |
-| --------- | ------- | ----------------- | ----------- | -------------------------------------- |
-| prettier  | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier |
-| wrangler  | 4.120.1 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler |
-| yaml      | 2.9.0   | ISC               | development | https://www.npmjs.com/package/yaml     |
+| Component                     | Version | License           | Scope       | Source                                                      |
+| ----------------------------- | ------- | ----------------- | ----------- | ----------------------------------------------------------- |
+| @linear/sdk                   | 90.0.0  | MIT               | runtime     | https://www.npmjs.com/package/@linear/sdk                   |
+| @octokit/auth-app             | 8.3.0   | MIT               | runtime     | https://www.npmjs.com/package/@octokit/auth-app             |
+| @octokit/core                 | 7.0.7   | MIT               | runtime     | https://www.npmjs.com/package/@octokit/core                 |
+| @octokit/plugin-paginate-rest | 15.0.0  | MIT               | runtime     | https://www.npmjs.com/package/@octokit/plugin-paginate-rest |
+| zod                           | 4.4.3   | MIT               | runtime     | https://www.npmjs.com/package/zod                           |
+| prettier                      | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier                      |
+| wrangler                      | 4.120.1 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler                      |
+| yaml                          | 2.9.0   | ISC               | development | https://www.npmjs.com/package/yaml                          |
+
+`@linear/sdk` is Linear's official TypeScript SDK. The three `@octokit` packages are official GitHub
+client components. `zod` is the exact-pinned third-party schema validator used at provider boundaries.
 
 ## GitHub-to-Slack relay — `workers/github-slack-relay/package.json`
 
