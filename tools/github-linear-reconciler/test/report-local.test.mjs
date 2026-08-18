@@ -207,8 +207,8 @@ test("grava atomicamente no perfil local e retém somente 14 dias", async (conte
   );
   const unrelated = path.join(directory, "unrelated-old.json");
   await Promise.all([
-    writeFile(oldReport, "{}\n", "utf8"),
-    writeFile(recentReport, "{}\n", "utf8"),
+    writeFile(oldReport, "{}\n", { encoding: "utf8", mode: 0o600 }),
+    writeFile(recentReport, "{}\n", { encoding: "utf8", mode: 0o600 }),
     writeFile(unrelated, "{}\n", "utf8"),
   ]);
   await utimes(

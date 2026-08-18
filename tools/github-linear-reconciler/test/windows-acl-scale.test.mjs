@@ -4,6 +4,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -413,7 +414,7 @@ test(
       "profile com env mínima",
       "directory",
     );
-    assert.equal(profile.root, path.join(parent, "profile"));
+    assert.equal(profile.root, await realpath(path.join(parent, "profile")));
     assert.equal(
       JSON.parse(
         await readFile(path.join(profile.root, PROFILE_MARKER_NAME), "utf8"),

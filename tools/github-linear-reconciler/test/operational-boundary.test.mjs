@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rm,
   stat,
   symlink,
@@ -303,10 +304,14 @@ test("init do profile cria raiz, marker e credentials versionados", async (conte
   context.after(() => rm(parent, { recursive: true, force: true }));
   const root = path.join(parent, "profile");
   const profile = await ensureOwnedLocalProfile({ root });
-  assert.equal(profile.root, root);
-  assert.equal(profile.configPath, path.join(root, "config.json"));
-  assert.equal(profile.reportsPath, path.join(root, "reports"));
-  assert.equal(profile.credentialsPath, path.join(root, "credentials"));
+  const canonicalRoot = await realpath(root);
+  assert.equal(profile.root, canonicalRoot);
+  assert.equal(profile.configPath, path.join(canonicalRoot, "config.json"));
+  assert.equal(profile.reportsPath, path.join(canonicalRoot, "reports"));
+  assert.equal(
+    profile.credentialsPath,
+    path.join(canonicalRoot, "credentials"),
+  );
   assert.deepEqual(
     JSON.parse(await readFile(path.join(root, PROFILE_MARKER_NAME), "utf8")),
     { schemaVersion: 1, application: "github-linear-reconciler" },
