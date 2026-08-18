@@ -2451,6 +2451,7 @@ test("âncora ou linkback apontando outro gêmeo falha explicitamente", () => {
   const validAnchorIssue = {
     ...issue,
     comments: {
+      pageInfo: issue.comments.pageInfo,
       nodes: [
         {
           ...issue.comments.nodes[0],
