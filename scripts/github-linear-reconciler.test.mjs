@@ -34,20 +34,45 @@ const GITHUB_INTEGRATION = Object.freeze({
 const GITHUB_INTEGRATION_ATTESTATION = `${GITHUB_INTEGRATION.id}@${GITHUB_INTEGRATION.updatedAt}`;
 
 function linearIssue(overrides = {}) {
+  const emptyConnection = () => ({
+    nodes: [],
+    pageInfo: { hasNextPage: false, endCursor: null },
+  });
   const issue = {
+    id: "linear-githorg-70",
     identifier: "GITHORG-70",
     title: "Reconciliar GitHub e Linear",
     description: "",
-    team: { key: "GITHORG", name: ".github-org" },
-    state: { type: "started", name: "Em andamento" },
+    url: "https://linear.app/lcv-ideas-software/issue/GITHORG-70/reconciliar-github-e-linear",
+    updatedAt: "2026-08-18T02:00:00.000Z",
+    completedAt: null,
+    canceledAt: null,
+    team: { id: "team-githorg", key: "GITHORG", name: ".github-org" },
+    state: { id: "state-started", type: "started", name: "Em andamento" },
     syncedWith: [],
-    attachments: { nodes: [] },
-    comments: { nodes: [] },
-    relations: { nodes: [] },
-    inverseRelations: { nodes: [] },
-    releases: { nodes: [] },
+    attachments: emptyConnection(),
+    comments: emptyConnection(),
+    relations: emptyConnection(),
+    inverseRelations: emptyConnection(),
+    releases: emptyConnection(),
     ...overrides,
   };
+  if (
+    issue.team &&
+    typeof issue.team === "object" &&
+    typeof issue.team.key === "string" &&
+    typeof issue.team.name === "string"
+  ) {
+    issue.team = { id: "team-githorg", ...issue.team };
+  }
+  if (
+    issue.state &&
+    typeof issue.state === "object" &&
+    typeof issue.state.type === "string" &&
+    typeof issue.state.name === "string"
+  ) {
+    issue.state = { id: "state-started", ...issue.state };
+  }
   if (issue.comments?.nodes) {
     issue.comments = {
       ...issue.comments,
@@ -1140,6 +1165,42 @@ test("metadado de estado Linear parcial ou inválido torna o snapshot inconclusi
       true,
     );
     assert.equal(determineExitCode(result), 2);
+  }
+});
+
+test("Issue Linear parcial nunca é aceita como snapshot limpo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/270";
+  const variants = [
+    ["id", (issue) => delete issue.id],
+    ["identifier", (issue) => delete issue.identifier],
+    ["team", (issue) => delete issue.team],
+    ["team.id", (issue) => delete issue.team.id],
+    ["attachments", (issue) => delete issue.attachments],
+    ["relations", (issue) => delete issue.relations],
+    ["inverseRelations", (issue) => delete issue.inverseRelations],
+    ["releases", (issue) => delete issue.releases],
+    ["comments", (issue) => delete issue.comments],
+  ];
+
+  for (const [field, makePartial] of variants) {
+    const issue = linearIssue({ attachments: { nodes: [{ url }] } });
+    makePartial(issue);
+    const result = reconcileSnapshots({
+      linearIssues: [issue],
+      githubByUrl: new Map([[url, githubIssue({ url })]]),
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "linear_issue_metadata_invalid" &&
+          finding.severity === "incomplete",
+      ),
+      true,
+      `${field} ausente deve tornar o snapshot inconclusivo`,
+    );
+    assert.equal(determineExitCode(result), 2, field);
   }
 });
 

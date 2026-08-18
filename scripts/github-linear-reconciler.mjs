@@ -460,16 +460,50 @@ function linearIssueState(issue) {
   return "active";
 }
 
+function isNonemptyTrimmedString(value) {
+  return (
+    typeof value === "string" && value.length > 0 && value === value.trim()
+  );
+}
+
 function linearIssueMetadataIsValid(issue) {
-  return [
-    "triage",
-    "backlog",
-    "unstarted",
-    "started",
-    "completed",
-    "canceled",
-    "duplicate",
-  ].includes(issue?.state?.type);
+  const connectionNames = [
+    "attachments",
+    "relations",
+    "inverseRelations",
+    "releases",
+    "comments",
+  ];
+  return (
+    issue &&
+    isNonemptyTrimmedString(issue.id) &&
+    isNonemptyTrimmedString(issue.identifier) &&
+    isNonemptyTrimmedString(issue.title) &&
+    isNonemptyTrimmedString(issue.url) &&
+    timestampIsValid(issue.updatedAt) &&
+    isNonemptyTrimmedString(issue.team?.id) &&
+    isNonemptyTrimmedString(issue.team?.key) &&
+    isNonemptyTrimmedString(issue.team?.name) &&
+    isNonemptyTrimmedString(issue.state?.id) &&
+    isNonemptyTrimmedString(issue.state?.name) &&
+    [
+      "triage",
+      "backlog",
+      "unstarted",
+      "started",
+      "completed",
+      "canceled",
+      "duplicate",
+    ].includes(issue.state.type) &&
+    Array.isArray(issue.syncedWith) &&
+    connectionNames.every(
+      (name) =>
+        issue[name] &&
+        typeof issue[name] === "object" &&
+        !Array.isArray(issue[name]) &&
+        Array.isArray(issue[name].nodes),
+    )
+  );
 }
 
 function linearReleaseMetadataIsValid(release, now) {
@@ -1654,6 +1688,20 @@ export function reconcileSnapshots({
   }
 
   for (const issue of linearIssues) {
+    if (!linearIssueMetadataIsValid(issue)) {
+      findings.push({
+        severity: "incomplete",
+        code: "linear_issue_metadata_invalid",
+        issue:
+          (isNonemptyTrimmedString(issue?.identifier) && issue.identifier) ||
+          (isNonemptyTrimmedString(issue?.id) && issue.id) ||
+          "issue Linear sem identificador",
+        message:
+          "a Issue Linear retornou identidade, time, estado ou conexão obrigatória ausente/inválida; " +
+          "o snapshot parcial não pode ser reconciliado com segurança",
+      });
+      continue;
+    }
     const isLinearOnly = linearOnlyTeams.has(issue.team?.key);
     const links = collectGithubLinks(issue, organization);
     const externalThreadIssueUrls = new Set(
@@ -1874,18 +1922,7 @@ export function reconcileSnapshots({
       const isCanonicalIssue =
         link.kind === "issue" && canonicalIssueUrls.has(linkUrlKey);
       if (isCanonicalIssue) {
-        const linearMetadataIsValid = linearIssueMetadataIsValid(issue);
         const githubMetadataIsValid = githubIssueMetadataIsValid(github);
-        if (!linearMetadataIsValid) {
-          findings.push({
-            severity: "incomplete",
-            code: "linear_issue_metadata_invalid",
-            issue: issue.identifier,
-            message:
-              "o state.type do Linear está ausente ou fora do enum oficial; " +
-              "o estado não pode ser reconciliado com segurança",
-          });
-        }
         if (!githubMetadataIsValid) {
           findings.push({
             severity: "incomplete",
@@ -1896,7 +1933,7 @@ export function reconcileSnapshots({
               "da API; o estado não pode ser reconciliado com segurança",
           });
         }
-        if (linearMetadataIsValid && githubMetadataIsValid) {
+        if (githubMetadataIsValid) {
           const linearState = linearIssueState(issue);
           const githubState = githubIssueState(github);
           if (linearState !== githubState) {
