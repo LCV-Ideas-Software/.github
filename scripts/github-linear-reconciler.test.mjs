@@ -90,7 +90,8 @@ function linearIssue(overrides = {}) {
   if (issue.comments?.nodes) {
     issue.comments = {
       ...issue.comments,
-      nodes: issue.comments.nodes.map((comment) => ({
+      nodes: issue.comments.nodes.map((comment, index) => ({
+        id: `linear-comment-${index + 1}`,
         updatedAt: comment.createdAt,
         ...comment,
       })),
@@ -555,6 +556,71 @@ test("pagina somente comments truncados a partir do lote inline", async () => {
   assert.deepEqual(
     issues[0].comments.nodes.map((comment) => comment.id),
     ["comment-1", "comment-2"],
+  );
+});
+
+test("comments Linear exigem id único inclusive entre páginas", async () => {
+  async function readWithPagedComments(inlineNodes, pagedNodes) {
+    return readLinearIssues({
+      token: "linear-read-only",
+      fetchImpl: async (_url, options) => {
+        const request = JSON.parse(options.body);
+        if (request.query.includes("GitHubLinearReconciliation")) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                issues: {
+                  nodes: [
+                    linearIssue({
+                      id: "linear-comments-invalid",
+                      comments: {
+                        nodes: inlineNodes,
+                        pageInfo: {
+                          hasNextPage: true,
+                          endCursor: "comments-cursor",
+                        },
+                      },
+                    }),
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            data: {
+              issue: {
+                comments: {
+                  nodes: pagedNodes,
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          }),
+          { status: 200 },
+        );
+      },
+    });
+  }
+
+  await assert.rejects(
+    () =>
+      readWithPagedComments(
+        [{ id: "comment-1", body: "primeiro" }],
+        [{ body: "sem identidade" }],
+      ),
+    /comments.*id ausente ou inválido/iu,
+  );
+  await assert.rejects(
+    () =>
+      readWithPagedComments(
+        [{ id: "comment-1", body: "primeiro" }],
+        [{ id: "comment-1", body: "duplicado" }],
+      ),
+    /comments.*id duplicado/iu,
   );
 });
 
@@ -1026,6 +1092,7 @@ test("extrai links da organização configurada sem aceitar prefixos inválidos"
         "(https://github.com/Example-Org/service-api/issues/42), " +
         "https://github.com/LCV-Ideas-Software/service-api/issues/43 e " +
         "https://github.com/Example-Org/service-api/issues/44abc e " +
+        "https://github.com/Example-Org/service-api/issues/9007199254740993 e " +
         "https://github.com:444/Example-Org/service-api/issues/45",
       attachments: { nodes: [] },
       comments: { nodes: [] },
@@ -2221,6 +2288,21 @@ test("canonicalização preserva destino genérico e identidade cross-repo", () 
       { organization: "LCV-Ideas-Software", repository: ".github" },
     ),
     "#250",
+  );
+});
+
+test("canonicalização preserva whitespace semântico dentro de código Markdown", () => {
+  assert.notEqual(
+    canonicalizeCommentBody("```python\nif True:\n    executar()\n```"),
+    canonicalizeCommentBody("```python\nif True:\n executar()\n```"),
+  );
+  assert.notEqual(
+    canonicalizeCommentBody("Use `valor  com  espaços` aqui"),
+    canonicalizeCommentBody("Use `valor com espaços` aqui"),
+  );
+  assert.equal(
+    canonicalizeCommentBody("Texto   fora   do código"),
+    canonicalizeCommentBody("Texto fora do código"),
   );
 });
 
@@ -4067,6 +4149,55 @@ test("time Linear-only não pode colidir com repo nem manter sync GitHub", () =>
   assert.ok(codes.includes("linear_only_team_repository_collision"));
   assert.ok(codes.includes("linear_only_team_github_sync"));
   assert.ok(codes.includes("linear_only_team_live_github_link"));
+});
+
+test("time Linear-only rejeita sync GitHub declarado somente em comentário", () => {
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        identifier: "PANDROID-2",
+        team: { key: "PANDROID", name: "programa-android" },
+        comments: {
+          nodes: [
+            {
+              id: "linear-comment-github-sync",
+              body: "Comentário ainda sincronizado com GitHub",
+              createdAt: "2026-08-18T01:00:00.000Z",
+              syncedWith: [{ id: "github-comment", service: "github" }],
+            },
+          ],
+        },
+      }),
+    ],
+    githubByUrl: new Map(),
+    linearTopology: {
+      teams: [{ key: "PANDROID", name: "programa-android", archivedAt: null }],
+      cycles: [],
+      projects: [],
+      initiatives: [],
+      documents: [],
+      subteams: [],
+      integrations: [GITHUB_INTEGRATION],
+    },
+    repositoryInventory: {
+      active: [],
+      issuesEnabled: [],
+      issues: [],
+      issueAuditFailures: {},
+    },
+    teamRepositories: {},
+    linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "linear_only_team_github_sync",
+    ),
+    true,
+  );
 });
 
 test("404 de repo privado ausente do inventário não é aceito como tombstone Linear-only", () => {

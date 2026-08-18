@@ -155,11 +155,31 @@ function canonicalizeCrossReferenceLinks(value, context) {
   );
 }
 
+function transformMarkdownProse(value, transform) {
+  const protectedCode = [];
+  const protect = (match) => {
+    const index = protectedCode.push(match) - 1;
+    return `\uE000${index}\uE001`;
+  };
+  let source = String(value ?? "").replace(/\r\n/g, "\n");
+  source = source.replace(
+    /(^|\n)([ \t]{0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)/gu,
+    protect,
+  );
+  source = source.replace(/(`+)([^`\n]*?)\1/gu, protect);
+  return transform(source).replace(
+    /\uE000(\d+)\uE001/gu,
+    (_match, index) => protectedCode[Number(index)],
+  );
+}
+
 export function canonicalizeCommentBody(value, context) {
-  return normalizeBody(canonicalizeCrossReferenceLinks(value, context))
-    .replace(/<(https?:\/\/[^>\s]+)>/gu, "$1")
-    .replace(/^\s*[+*]\s+/gmu, "- ")
-    .replace(/^\s*-\s+/gmu, "- ");
+  return transformMarkdownProse(value, (prose) =>
+    normalizeBody(canonicalizeCrossReferenceLinks(prose, context))
+      .replace(/<(https?:\/\/[^>\s]+)>/gu, "$1")
+      .replace(/^\s*[+*]\s+/gmu, "- ")
+      .replace(/^\s*-\s+/gmu, "- "),
+  );
 }
 
 function foldLatinDiacritics(value) {
@@ -451,10 +471,39 @@ function githubCommentStableIdentity(comment) {
   return null;
 }
 
+function linearCommentStableIdentity(comment) {
+  return isNonemptyTrimmedString(comment?.id) ? comment.id : null;
+}
+
+function linearCommentIdentitiesAreUnique(comments) {
+  const seen = new Set();
+  for (const comment of comments) {
+    const id = linearCommentStableIdentity(comment);
+    if (id === null || seen.has(id)) return false;
+    seen.add(id);
+  }
+  return true;
+}
+
+function assertUniqueLinearCommentIdentities(
+  comments,
+  label,
+  seen = new Set(),
+) {
+  for (const comment of comments) {
+    const id = linearCommentStableIdentity(comment);
+    if (id === null) throw new Error(`${label}: id ausente ou inválido`);
+    if (seen.has(id)) throw new Error(`${label}: id duplicado ${id}`);
+    seen.add(id);
+  }
+  return seen;
+}
+
 function linearCommentMetadataIsValid(comment, now) {
   const createdAt = comment?.createdAt ?? comment?.created_at;
   const updatedAt = comment?.updatedAt ?? comment?.updated_at;
   return (
+    linearCommentStableIdentity(comment) !== null &&
     typeof comment?.body === "string" &&
     normalizeBody(comment.body).length > 0 &&
     timestampsAreChronological(createdAt, updatedAt) &&
@@ -514,7 +563,8 @@ function linearIssueMetadataIsValid(issue) {
         typeof issue[name].pageInfo === "object" &&
         issue[name].pageInfo.hasNextPage === false &&
         issue[name].pageInfo.endCursor === null,
-    )
+    ) &&
+    linearCommentIdentitiesAreUnique(issue.comments.nodes)
   );
 }
 
@@ -978,6 +1028,7 @@ function githubLinkFromUrl(raw, organization) {
   const kind =
     resource.toLocaleLowerCase("en-US") === "pull" ? "pull" : "issue";
   const number = Number(numberText);
+  if (!Number.isSafeInteger(number)) return null;
   const normalizedResource = kind === "pull" ? "pull" : "issues";
   return {
     kind,
@@ -1833,7 +1884,9 @@ export function reconcileSnapshots({
     }
     if (
       isLinearOnly &&
-      (hasNativeGithubSync(issue) || hasConnectedGithubExternalThread(issue))
+      (hasNativeGithubSync(issue) ||
+        hasGithubSyncedComment(issue) ||
+        hasConnectedGithubExternalThread(issue))
     ) {
       findings.push({
         severity: "error",
@@ -2646,6 +2699,13 @@ async function completeLinearConnection({
       `Linear ${issue.identifier}.${connection}: nodes ausente ou inválido`,
     );
   const nodes = [...issue[connection].nodes];
+  const seenCommentIds =
+    connection === "comments"
+      ? assertUniqueLinearCommentIdentities(
+          nodes,
+          `Linear ${issue.identifier}.comments`,
+        )
+      : null;
   const seenCursors = new Set();
   let pageCount = 0;
   let pageInfo = issue[connection].pageInfo;
@@ -2673,6 +2733,12 @@ async function completeLinearConnection({
     if (!next || !Array.isArray(next.nodes))
       throw new Error(
         `Linear ${issue.identifier}.${connection}: nodes ausente ou inválido`,
+      );
+    if (seenCommentIds)
+      assertUniqueLinearCommentIdentities(
+        next.nodes,
+        `Linear ${issue.identifier}.comments`,
+        seenCommentIds,
       );
     nodes.push(...next.nodes);
     pageInfo = next.pageInfo;
@@ -2712,6 +2778,11 @@ export async function readLinearIssues({ token, fetchImpl = fetch }) {
       if (!issue[connection] || !Array.isArray(issue[connection].nodes))
         throw new Error(
           `Linear ${issue.identifier ?? issue.id ?? "sem id"}.${connection}: nodes ausente ou inválido`,
+        );
+      if (connection === "comments")
+        assertUniqueLinearCommentIdentities(
+          issue[connection].nodes,
+          `Linear ${issue.identifier ?? issue.id ?? "sem id"}.comments`,
         );
       const after = nextLinearCursor(
         issue[connection].pageInfo,
