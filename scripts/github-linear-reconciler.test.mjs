@@ -11,10 +11,12 @@ import {
   githubGet,
   isGithubSyncedComment,
   parseLinearOnlyTeamKeys,
+  publishTerminalResult,
   readGithubRepositoryInventory,
   readLinearIssues,
   readLinearTopology,
   reconcileSnapshots,
+  renderJson,
   renderMarkdown,
   writeIncompleteSummary,
 } from "./github-linear-reconciler.mjs";
@@ -61,6 +63,69 @@ test("recusa qualquer operação GraphQL mutadora", () => {
       ),
     /somente consultas GraphQL/i,
   );
+  assert.throws(
+    () =>
+      assertReadOnlyGraphql(
+        'query Audit { search(contains: "#") } mutation Hidden { issueDelete(id: "x") { success } }',
+      ),
+    /mutation foi recusada/u,
+  );
+  const escapedTripleQuotes = (backslashes) => `${"\\".repeat(backslashes)}"""`;
+  const blockString = (content) => `"""${content}"""`;
+  assert.throws(
+    () =>
+      assertReadOnlyGraphql(
+        `query Q { q(a: ${blockString(escapedTripleQuotes(2))}) } ` +
+          `mutation M { m(a: ${blockString(escapedTripleQuotes(1))}) }`,
+      ),
+    /mutation foi recusada/u,
+  );
+  assert.throws(
+    () => assertReadOnlyGraphql("subscription Events { issueUpdated { id } }"),
+    /subscription foi recusada/u,
+  );
+  assert.throws(
+    () => assertReadOnlyGraphql("fragment Fields on Issue { id }"),
+    /contenham uma consulta/u,
+  );
+  assert.doesNotThrow(() =>
+    assertReadOnlyGraphql(`
+      # mutation Ignored { issueDelete(id: "x") { success } }
+      query mutation($filter: Filter = { text: "# mutation" }) {
+        mutation
+        search(filter: $filter, block: """mutation # dentro do bloco""")
+      }
+      fragment mutation on Issue { id }
+    `),
+  );
+  assert.throws(
+    () =>
+      assertReadOnlyGraphql({
+        toString: () => "query Safe { viewer { id } }",
+        toJSON: () => 'mutation Escaped { issueDelete(id: "x") { success } }',
+      }),
+    /deve ser fornecida como string/u,
+  );
+});
+
+test("cliente GraphQL não valida e envia representações diferentes", async () => {
+  let fetched = false;
+  await assert.rejects(
+    () =>
+      graphqlQuery({
+        token: "linear-read-only",
+        query: {
+          toString: () => "query Safe { viewer { id } }",
+          toJSON: () => 'mutation Escaped { issueDelete(id: "x") { success } }',
+        },
+        fetchImpl: async () => {
+          fetched = true;
+          return new Response(JSON.stringify({ data: {} }), { status: 200 });
+        },
+      }),
+    /deve ser fornecida como string/u,
+  );
+  assert.equal(fetched, false);
 });
 
 test("recusa configurações temporais fail-open", () => {
@@ -720,6 +785,102 @@ test("ignora syncedWith GitHub sem número positivo", () => {
   });
 
   assert.deepEqual(links, []);
+});
+
+test("metadado nativo GitHub inválido torna o snapshot inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        syncedWith: [
+          {
+            id: "sem-numero",
+            service: "github",
+            metadata: {
+              owner: "LCV-Ideas-Software",
+              repo: ".github",
+              number: null,
+            },
+          },
+          { id: "sem-metadata", service: "github", metadata: null },
+          {
+            id: "numero-booleano",
+            service: "github",
+            metadata: {
+              owner: "LCV-Ideas-Software",
+              repo: ".github",
+              number: true,
+            },
+          },
+          {
+            id: "numero-nao-canonico",
+            service: "github",
+            metadata: {
+              owner: "LCV-Ideas-Software",
+              repo: ".github",
+              number: "0260",
+            },
+          },
+          {
+            id: "repo-com-caminho",
+            service: "github",
+            metadata: {
+              owner: "LCV-Ideas-Software",
+              repo: ".github/../evil",
+              number: 260,
+            },
+          },
+          {
+            id: "owner-externo",
+            service: "github",
+            metadata: { owner: "Other-Org", repo: ".github", number: 260 },
+          },
+        ],
+        attachments: { nodes: [{ url }] },
+      }),
+    ],
+    githubByUrl: new Map([[url, githubIssue({ url })]]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.filter(
+      (finding) => finding.code === "native_github_sync_metadata_invalid",
+    ).length,
+    6,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
+test("metadado nativo GitHub válido não gera finding inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        syncedWith: [
+          {
+            id: "I_native",
+            service: "github",
+            metadata: {
+              owner: "LCV-Ideas-Software",
+              repo: ".github",
+              number: 260,
+            },
+          },
+        ],
+        attachments: { nodes: [{ url }] },
+      }),
+    ],
+    githubByUrl: new Map([[url, githubIssue({ url })]]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "native_github_sync_metadata_invalid",
+    ),
+    false,
+  );
 });
 
 test("detecta divergência de estado e ausência de attachment GitHub", () => {
@@ -3277,6 +3438,8 @@ test("workflow agendado não concede permissões de escrita", async () => {
   );
   assert.doesNotMatch(workflow, /\|\|\s*github\.token/u);
   assert.match(workflow, /node scripts\/github-linear-reconciler\.mjs/u);
+  assert.match(workflow, /RECONCILIATION_JSON_STDOUT:\s*"true"/u);
+  assert.match(workflow, /> github-linear-reconciliation\.json/u);
   assert.match(
     workflow,
     /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u,
@@ -3327,15 +3490,10 @@ test("relatório Markdown trunca detalhes deterministicamente abaixo do limite",
 
 test("falha fatal escreve finding inconclusivo no step summary", async () => {
   let appended = null;
-  let written = null;
   const output = await writeIncompleteSummary(new Error("complexity limit"), {
     summaryPath: "step-summary.md",
-    jsonPath: "github-linear-reconciliation.json",
     appendFileImpl: async (path, content, encoding) => {
       appended = { path, content, encoding };
-    },
-    writeFileImpl: async (path, content, encoding) => {
-      written = { path, content, encoding };
     },
   });
 
@@ -3345,7 +3503,51 @@ test("falha fatal escreve finding inconclusivo no step summary", async () => {
   assert.equal(appended.encoding, "utf8");
   assert.match(appended.content, /reconciliation_aborted/u);
   assert.match(appended.content, /complexity limit/u);
-  assert.equal(written.path, "github-linear-reconciliation.json");
-  assert.equal(written.encoding, "utf8");
-  assert.match(written.content, /reconciliation_aborted/u);
+  const json = renderJson(output.result);
+  assert.equal(JSON.parse(json).findings[0].code, "reconciliation_aborted");
+});
+
+test("publicação emite exatamente um JSON terminal se o summary falhar", async () => {
+  const clean = {
+    auditedIssues: 1,
+    auditedGithubLinks: 1,
+    linearOnlyTeamKeys: [],
+    findings: [],
+  };
+  const strictOutput = [];
+  await assert.rejects(
+    () =>
+      publishTerminalResult(clean, {
+        summaryPath: "step-summary.md",
+        jsonStdout: true,
+        appendFileImpl: async () => {
+          throw new Error("summary indisponível");
+        },
+        writeOutputImpl: (content) => strictOutput.push(content),
+      }),
+    /summary indisponível/u,
+  );
+  assert.deepEqual(strictOutput, []);
+
+  const { result: aborted } = await writeIncompleteSummary(
+    new Error("summary indisponível"),
+    { summaryPath: "" },
+  );
+  const terminalOutput = [];
+  const published = await publishTerminalResult(aborted, {
+    summaryPath: "step-summary.md",
+    jsonStdout: true,
+    bestEffortSummary: true,
+    appendFileImpl: async () => {
+      throw new Error("summary ainda indisponível");
+    },
+    writeOutputImpl: (content) => terminalOutput.push(content),
+  });
+
+  assert.equal(terminalOutput.length, 1);
+  assert.equal(
+    JSON.parse(terminalOutput[0]).findings[0].code,
+    "reconciliation_aborted",
+  );
+  assert.match(published.summaryError.message, /ainda indisponível/u);
 });

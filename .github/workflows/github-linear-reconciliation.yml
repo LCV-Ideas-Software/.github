@@ -86,10 +86,15 @@ jobs:
           # Organization-wide access is required because github.token silently
           # omits Internal and Private repositories outside this repository.
           GH_TOKEN: ${{ secrets.LINEAR_GITHUB_READ_TOKEN }}
-          RECONCILIATION_JSON: github-linear-reconciliation.json
+          RECONCILIATION_JSON_STDOUT: "true"
           STRICT_WARNINGS: "true"
           LINEAR_ONLY_TEAM_KEYS: ${{ vars.LINEAR_ONLY_TEAM_KEYS }}
-        run: node scripts/github-linear-reconciler.mjs
+        shell: bash
+        run: |
+          set +e
+          node scripts/github-linear-reconciler.mjs > github-linear-reconciliation.json
+          status=$?
+          exit "$status"
 
       - name: Preserve complete reconciliation result
         if: always()

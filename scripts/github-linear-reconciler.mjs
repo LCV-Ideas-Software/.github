@@ -1,4 +1,4 @@
-import { appendFile, writeFile } from "node:fs/promises";
+import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_ORGANIZATION = "LCV-Ideas-Software";
@@ -567,18 +567,138 @@ function pairSyncedComments(linearComments, githubComments) {
   return { pairs, usedLinear };
 }
 
-export function assertReadOnlyGraphql(query) {
-  const withoutComments = String(query)
-    .replace(/#[^\n]*/g, "")
-    .trim();
-  if (/\bmutation\b/i.test(withoutComments)) {
-    throw new Error(
-      "O reconciliador aceita somente consultas GraphQL; mutation foi recusada.",
-    );
+function graphqlTokens(document) {
+  const source = String(document);
+  const tokens = [];
+  let index = 0;
+  while (index < source.length) {
+    const character = source[index];
+    if (/[,\s\uFEFF]/u.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === "#") {
+      while (index < source.length && !/[\r\n]/u.test(source[index]))
+        index += 1;
+      continue;
+    }
+    if (source.startsWith('"""', index)) {
+      index += 3;
+      let closed = false;
+      while (index < source.length) {
+        if (source.startsWith('\\"""', index)) {
+          index += 4;
+          continue;
+        }
+        if (source.startsWith('"""', index)) {
+          index += 3;
+          closed = true;
+          break;
+        }
+        index += 1;
+      }
+      if (!closed)
+        throw new Error("String de bloco GraphQL não foi encerrada.");
+      continue;
+    }
+    if (character === '"') {
+      index += 1;
+      let closed = false;
+      while (index < source.length) {
+        if (source[index] === "\\") {
+          index += 2;
+          continue;
+        }
+        if (source[index] === '"') {
+          index += 1;
+          closed = true;
+          break;
+        }
+        index += 1;
+      }
+      if (!closed) throw new Error("String GraphQL não foi encerrada.");
+      continue;
+    }
+    const name = source.slice(index).match(/^[_A-Za-z][_0-9A-Za-z]*/u)?.[0];
+    if (name) {
+      tokens.push({ kind: "name", value: name.toLocaleLowerCase("en-US") });
+      index += name.length;
+      continue;
+    }
+    if (source.startsWith("...", index)) {
+      tokens.push({ kind: "punctuator", value: "..." });
+      index += 3;
+      continue;
+    }
+    tokens.push({ kind: "punctuator", value: character });
+    index += 1;
   }
-  if (!(withoutComments.startsWith("{") || /^query\b/i.test(withoutComments))) {
+  return tokens;
+}
+
+function selectionEnd(tokens, selectionStart) {
+  let depth = 0;
+  for (let index = selectionStart; index < tokens.length; index += 1) {
+    if (tokens[index].value === "{") depth += 1;
+    if (tokens[index].value === "}") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+      if (depth < 0) break;
+    }
+  }
+  throw new Error("Seleção GraphQL não foi encerrada.");
+}
+
+function definitionSelectionStart(tokens, definitionStart) {
+  let parentheses = 0;
+  let brackets = 0;
+  for (let index = definitionStart; index < tokens.length; index += 1) {
+    const value = tokens[index].value;
+    if (value === "(") parentheses += 1;
+    else if (value === ")") parentheses -= 1;
+    else if (value === "[") brackets += 1;
+    else if (value === "]") brackets -= 1;
+    else if (value === "{" && parentheses === 0 && brackets === 0) return index;
+    if (parentheses < 0 || brackets < 0)
+      throw new Error("Preâmbulo GraphQL tem delimitadores inválidos.");
+  }
+  throw new Error("Definição GraphQL não contém seleção.");
+}
+
+export function assertReadOnlyGraphql(query) {
+  if (typeof query !== "string") {
+    throw new TypeError("A consulta GraphQL deve ser fornecida como string.");
+  }
+  const tokens = graphqlTokens(query);
+  let index = 0;
+  let queryDefinitions = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token.value === "{") {
+      queryDefinitions += 1;
+      index = selectionEnd(tokens, index);
+      continue;
+    }
+    if (token.kind !== "name") {
+      throw new Error("Documento GraphQL contém uma definição inválida.");
+    }
+    if (token.value === "mutation" || token.value === "subscription") {
+      throw new Error(
+        `O reconciliador aceita somente consultas GraphQL; ${token.value} foi recusada.`,
+      );
+    }
+    if (token.value !== "query" && token.value !== "fragment") {
+      throw new Error(
+        "Documento GraphQL contém uma definição não reconhecida.",
+      );
+    }
+    if (token.value === "query") queryDefinitions += 1;
+    const selectionStart = definitionSelectionStart(tokens, index + 1);
+    index = selectionEnd(tokens, selectionStart);
+  }
+  if (queryDefinitions === 0) {
     throw new Error(
-      "O reconciliador aceita somente consultas GraphQL nomeadas ou abreviadas.",
+      "O reconciliador aceita somente documentos GraphQL que contenham uma consulta.",
     );
   }
 }
@@ -586,27 +706,43 @@ export function assertReadOnlyGraphql(query) {
 function githubLinkFromSyncedEntity(entity, organization) {
   if (!isGithubService(entity?.service)) return null;
   const metadata = entity.metadata;
+  const canonicalNumber =
+    typeof metadata?.number === "number"
+      ? Number.isSafeInteger(metadata.number) && metadata.number > 0
+        ? metadata.number
+        : null
+      : typeof metadata?.number === "string" &&
+          /^[1-9]\d*$/u.test(metadata.number) &&
+          Number.isSafeInteger(Number(metadata.number))
+        ? Number(metadata.number)
+        : null;
   if (
-    !metadata?.repo ||
-    metadata.number === null ||
-    metadata.number === undefined ||
-    !Number.isInteger(Number(metadata.number)) ||
-    Number(metadata.number) <= 0
+    typeof metadata?.owner !== "string" ||
+    metadata.owner.trim() === "" ||
+    metadata.owner !== metadata.owner.trim() ||
+    typeof metadata?.repo !== "string" ||
+    metadata.repo.trim() === "" ||
+    metadata.repo !== metadata.repo.trim() ||
+    !/^[A-Za-z0-9_.-]{1,100}$/u.test(metadata.repo) ||
+    metadata.repo === "." ||
+    metadata.repo === ".." ||
+    canonicalNumber === null
   ) {
     return null;
   }
-  const owner = metadata.owner || organization;
+  const owner = metadata.owner.trim();
   if (
     owner.toLocaleLowerCase("en-US") !== organization.toLocaleLowerCase("en-US")
   )
     return null;
-  const number = Number(metadata.number);
+  const number = canonicalNumber;
+  const repo = metadata.repo;
   return {
     kind: "issue",
     number,
     owner: organization,
-    repo: metadata.repo,
-    url: `https://github.com/${organization}/${metadata.repo}/issues/${number}`,
+    repo,
+    url: `https://github.com/${organization}/${repo}/issues/${number}`,
   };
 }
 
@@ -703,6 +839,14 @@ function collectNativeGithubIssueLinks(issue, organization) {
   return (issue.syncedWith ?? [])
     .map((entity) => githubLinkFromSyncedEntity(entity, organization))
     .filter(Boolean);
+}
+
+function collectInvalidNativeGithubSyncs(issue, organization) {
+  return (issue.syncedWith ?? []).filter(
+    (entity) =>
+      isGithubService(entity?.service) &&
+      !githubLinkFromSyncedEntity(entity, organization),
+  );
 }
 
 function collectExternalThreadIssueLinks(issue, organization) {
@@ -1159,6 +1303,20 @@ export function reconcileSnapshots({
           sameGithubRepository(link.repo, mappedRepository),
         )
       : [];
+    const invalidNativeGithubSyncs = collectInvalidNativeGithubSyncs(
+      issue,
+      organization,
+    );
+    for (const entity of invalidNativeGithubSyncs) {
+      findings.push({
+        severity: "incomplete",
+        code: "native_github_sync_metadata_invalid",
+        issue: issue.identifier,
+        message:
+          `syncedWith GitHub ${entity?.id || "sem id"} não identifica ` +
+          "owner, repositório e número positivos dentro da organização auditada",
+      });
+    }
     const nativeIssueLinks = collectNativeGithubIssueLinks(issue, organization);
     const mappedNativeIssueLinks = mappedRepository
       ? nativeIssueLinks.filter((link) =>
@@ -1675,13 +1833,40 @@ export function renderMarkdown(result) {
   return `${lines.join("\n")}\n`;
 }
 
+export function renderJson(result) {
+  return `${JSON.stringify(result, null, 2)}\n`;
+}
+
+export async function publishTerminalResult(
+  result,
+  {
+    summaryPath = process.env.GITHUB_STEP_SUMMARY,
+    jsonStdout = process.env.RECONCILIATION_JSON_STDOUT === "true",
+    bestEffortSummary = false,
+    appendFileImpl = appendFile,
+    writeOutputImpl = (content) => process.stdout.write(content),
+  } = {},
+) {
+  const markdown = renderMarkdown(result);
+  if (summaryPath && !bestEffortSummary)
+    await appendFileImpl(summaryPath, markdown, "utf8");
+  writeOutputImpl(jsonStdout ? renderJson(result) : markdown);
+  let summaryError = null;
+  if (summaryPath && bestEffortSummary) {
+    try {
+      await appendFileImpl(summaryPath, markdown, "utf8");
+    } catch (error) {
+      summaryError = error;
+    }
+  }
+  return { markdown, summaryError };
+}
+
 export async function writeIncompleteSummary(
   error,
   {
     summaryPath = process.env.GITHUB_STEP_SUMMARY,
-    jsonPath = process.env.RECONCILIATION_JSON,
     appendFileImpl = appendFile,
-    writeFileImpl = writeFile,
   } = {},
 ) {
   const message = error instanceof Error ? error.message : String(error);
@@ -1699,12 +1884,6 @@ export async function writeIncompleteSummary(
     ],
   };
   const markdown = renderMarkdown(result);
-  if (jsonPath)
-    await writeFileImpl(
-      jsonPath,
-      `${JSON.stringify(result, null, 2)}\n`,
-      "utf8",
-    );
   if (summaryPath) await appendFileImpl(summaryPath, markdown, "utf8");
   return { result, markdown };
 }
@@ -2329,17 +2508,7 @@ async function main() {
     commentGraceMs: commentGraceMinutes * 60_000,
     releaseRequiredAfter,
   });
-  const markdown = renderMarkdown(result);
-  process.stdout.write(markdown);
-  if (process.env.GITHUB_STEP_SUMMARY)
-    await appendFile(process.env.GITHUB_STEP_SUMMARY, markdown, "utf8");
-  if (process.env.RECONCILIATION_JSON) {
-    await writeFile(
-      process.env.RECONCILIATION_JSON,
-      `${JSON.stringify(result, null, 2)}\n`,
-      "utf8",
-    );
-  }
+  await publishTerminalResult(result);
   process.exitCode = determineExitCode(result, {
     strictWarnings: process.env.STRICT_WARNINGS === "true",
   });
@@ -2354,10 +2523,13 @@ if (
     console.error(
       `::error::${error instanceof Error ? error.message : String(error)}`,
     );
-    try {
-      const { markdown } = await writeIncompleteSummary(error);
-      process.stdout.write(markdown);
-    } catch (summaryError) {
+    const { result } = await writeIncompleteSummary(error, {
+      summaryPath: "",
+    });
+    const { summaryError } = await publishTerminalResult(result, {
+      bestEffortSummary: true,
+    });
+    if (summaryError) {
       console.error(
         `::error::falha ao escrever GITHUB_STEP_SUMMARY: ${
           summaryError instanceof Error
