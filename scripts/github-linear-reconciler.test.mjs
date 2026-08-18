@@ -673,6 +673,35 @@ test("issues Linear exigem id único entre páginas", async () => {
   assert.equal(calls, 2);
 });
 
+test("conexão Linear terminal aceita endCursor final não vazio", () => {
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        comments: {
+          nodes: [
+            {
+              body: "Comentário da página terminal",
+              createdAt: "2026-08-18T01:00:00Z",
+              syncedWith: [],
+            },
+          ],
+          pageInfo: { hasNextPage: false, endCursor: "cursor-final" },
+        },
+      }),
+    ],
+    githubByUrl: new Map(),
+    requireGithubIssueAttachment: false,
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "linear_issue_metadata_invalid",
+    ),
+    false,
+  );
+});
+
 test("200 issues sem comments usam somente as páginas principais", async () => {
   const requests = [];
   const fetchImpl = async (_url, options) => {

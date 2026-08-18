@@ -622,7 +622,9 @@ function linearIssueMetadataIsValid(issue) {
         issue[name].pageInfo &&
         typeof issue[name].pageInfo === "object" &&
         issue[name].pageInfo.hasNextPage === false &&
-        issue[name].pageInfo.endCursor === null,
+        Object.hasOwn(issue[name].pageInfo, "endCursor") &&
+        (issue[name].pageInfo.endCursor === null ||
+          isNonemptyTrimmedString(issue[name].pageInfo.endCursor)),
     ) &&
     linearCommentIdentitiesAreUnique(issue.comments.nodes)
   );
