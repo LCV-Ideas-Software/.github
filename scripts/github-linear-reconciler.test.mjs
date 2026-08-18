@@ -93,6 +93,7 @@ function linearIssue(overrides = {}) {
       nodes: issue.comments.nodes.map((comment, index) => ({
         id: `linear-comment-${index + 1}`,
         updatedAt: comment.createdAt,
+        syncedWith: [],
         ...comment,
       })),
     };
@@ -262,6 +263,25 @@ test("GraphQL HTTP 200 com errors nunca é aceito como snapshot", async () => {
           ),
       }),
     /complexity limit/u,
+  );
+});
+
+test("GraphQL rejeita errors presente que não seja array", async () => {
+  await assert.rejects(
+    () =>
+      graphqlQuery({
+        token: "linear-read-only",
+        query: "query ReadOnly { viewer { id } }",
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              data: { viewer: { id: "não-deve-ser-aceito" } },
+              errors: { message: "forma inválida" },
+            }),
+            { status: 200 },
+          ),
+      }),
+    /errors.*inválido/iu,
   );
 });
 
@@ -624,6 +644,35 @@ test("comments Linear exigem id único inclusive entre páginas", async () => {
   );
 });
 
+test("issues Linear exigem id único entre páginas", async () => {
+  let calls = 0;
+  await assert.rejects(
+    () =>
+      readLinearIssues({
+        token: "linear-read-only",
+        fetchImpl: async (_url, options) => {
+          calls += 1;
+          const { variables } = JSON.parse(options.body);
+          return new Response(
+            JSON.stringify({
+              data: {
+                issues: {
+                  nodes: [linearIssue({ id: "issue-repetida" })],
+                  pageInfo: variables.after
+                    ? { hasNextPage: false, endCursor: null }
+                    : { hasNextPage: true, endCursor: "pagina-2" },
+                },
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      }),
+    /Linear issues.*id duplicado issue-repetida/iu,
+  );
+  assert.equal(calls, 2);
+});
+
 test("200 issues sem comments usam somente as páginas principais", async () => {
   const requests = [];
   const fetchImpl = async (_url, options) => {
@@ -795,11 +844,19 @@ test("inventaria topologia completa do time LCV", async () => {
           data: {
             teams: {
               nodes: [
-                { id: "team-lcv", key: "LCV", name: "LCV" },
+                {
+                  id: "team-lcv",
+                  key: "LCV",
+                  name: "LCV",
+                  archivedAt: null,
+                  retiredAt: null,
+                },
                 {
                   id: "team-child",
                   key: "CHILD",
                   name: "child",
+                  archivedAt: null,
+                  retiredAt: null,
                   parent: { id: "team-lcv", key: "LCV", name: "LCV" },
                 },
               ],
@@ -907,6 +964,55 @@ test("inventaria topologia completa do time LCV", async () => {
   assert.deepEqual(topology.integrations, [GITHUB_INTEGRATION]);
 });
 
+test("topologia rejeita time com identidade ou lifecycle parcial", async () => {
+  const valid = {
+    id: "team-lcv",
+    key: "LCV",
+    name: "LCV",
+    archivedAt: null,
+    retiredAt: null,
+    parent: null,
+  };
+  const { id: _id, ...withoutId } = valid;
+  const { key: _key, ...withoutKey } = valid;
+  const { name: _name, ...withoutName } = valid;
+  const { archivedAt: _archivedAt, ...withoutArchivedAt } = valid;
+  const { retiredAt: _retiredAt, ...withoutRetiredAt } = valid;
+  for (const invalidTeam of [
+    withoutId,
+    withoutKey,
+    withoutName,
+    withoutArchivedAt,
+    withoutRetiredAt,
+    { ...valid, retiredAt: "data-inválida" },
+  ]) {
+    await assert.rejects(
+      () =>
+        readLinearTopology({
+          token: "linear-read-only",
+          fetchImpl: async (_url, options) => {
+            const { query } = JSON.parse(options.body);
+            const [root, nodes] = query.includes("GitHubLinearTeams")
+              ? ["teams", [invalidTeam]]
+              : ["integrations", [GITHUB_INTEGRATION]];
+            return new Response(
+              JSON.stringify({
+                data: {
+                  [root]: {
+                    nodes,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              }),
+              { status: 200 },
+            );
+          },
+        }),
+      /time.*(?:identidade|lifecycle).*inválido/iu,
+    );
+  }
+});
+
 test("topologia falha fechada quando o LCV inexiste ou está inativo", async () => {
   for (const teams of [
     [],
@@ -915,6 +1021,7 @@ test("topologia falha fechada quando o LCV inexiste ou está inativo", async () 
         id: "team-lcv",
         key: "LCV",
         name: "LCV",
+        archivedAt: null,
         retiredAt: "2026-08-18T00:00:00Z",
       },
     ],
@@ -1030,7 +1137,15 @@ test("topologia recusa pageInfo ausente em teams ou integrations", async () => {
             : "integrations";
           const nodes =
             root === "teams"
-              ? [{ id: "team-lcv", key: "LCV", name: "LCV" }]
+              ? [
+                  {
+                    id: "team-lcv",
+                    key: "LCV",
+                    name: "LCV",
+                    archivedAt: null,
+                    retiredAt: null,
+                  },
+                ]
               : [GITHUB_INTEGRATION];
           return new Response(
             JSON.stringify({
@@ -1731,6 +1846,67 @@ test("aceita release associada pelo commit exato ou versão curta", () => {
   );
 });
 
+test("release com commit explícito contraditório é inconclusiva", () => {
+  const issueUrl = "https://github.com/LCV-Ideas-Software/.github/issues/259";
+  const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        state: { type: "completed", name: "Concluido" },
+        attachments: { nodes: [{ url: issueUrl }, { url: pullUrl }] },
+        releases: {
+          nodes: [
+            {
+              version: commit.slice(0, 7),
+              commitSha: "fedcba9876543210fedcba9876543210fedcba98",
+              completedAt: "2026-08-18T01:01:00Z",
+              pipeline: { name: ".github-org", type: "continuous" },
+            },
+          ],
+        },
+      }),
+    ],
+    githubByUrl: new Map([
+      [
+        issueUrl,
+        githubIssue({
+          url: issueUrl,
+          state: "closed",
+          state_reason: "completed",
+        }),
+      ],
+      [
+        pullUrl,
+        {
+          kind: "pull",
+          url: pullUrl,
+          merged: true,
+          merged_at: "2026-08-18T01:00:00Z",
+          merge_commit_sha: commit,
+          comments: [],
+        },
+      ],
+    ]),
+    now: NOW,
+    releaseRequiredAfter: new Date("2026-08-17T12:00:00Z"),
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_release_commit_conflict" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(
+    result.findings.some((finding) => finding.code === "missing_release"),
+    false,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
 test("release incompleta ou de pipeline scheduled não satisfaz o PR", () => {
   const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
   const commit = "0123456789abcdef0123456789abcdef01234567";
@@ -2091,6 +2267,48 @@ test("comentário Linear com proveniência GitHub e timestamps inválidos é inc
   }
 });
 
+test("comentário Linear com sync GitHub sem external id é inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        attachments: { nodes: [{ url }] },
+        syncedWith: [{ id: "I_issue", service: "github" }],
+        comments: {
+          nodes: [
+            {
+              id: "linear-comment-sem-external-id",
+              body: "Comentário com proveniência parcial",
+              createdAt: "2026-08-18T01:00:00Z",
+              updatedAt: "2026-08-18T01:00:00Z",
+              syncedWith: [{ service: "github" }],
+              externalThread: null,
+            },
+          ],
+        },
+      }),
+    ],
+    githubByUrl: new Map([[url, githubIssue({ url, comments: [] })]]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_comment_metadata_invalid" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(
+    result.findings.some(
+      (finding) => finding.code === "comment_sync_gap_to_github",
+    ),
+    false,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
 test("pareamento de comentários é um para um", () => {
   const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
   const createdAt = "2026-08-18T01:00:00Z";
@@ -2299,6 +2517,10 @@ test("canonicalização preserva whitespace semântico dentro de código Markdow
   assert.notEqual(
     canonicalizeCommentBody("Use `valor  com  espaços` aqui"),
     canonicalizeCommentBody("Use `valor com espaços` aqui"),
+  );
+  assert.notEqual(
+    canonicalizeCommentBody("Antes\n\n    if True:\n        executar()"),
+    canonicalizeCommentBody("Antes\n\n    if True:\n     executar()"),
   );
   assert.equal(
     canonicalizeCommentBody("Texto   fora   do código"),

@@ -166,6 +166,10 @@ function transformMarkdownProse(value, transform) {
     /(^|\n)([ \t]{0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\2\3[ \t]*(?=\n|$)/gu,
     protect,
   );
+  source = source.replace(
+    /^(?: {4}|\t)[^\n]*(?:\n(?:[ \t]*\n)*(?: {4}|\t)[^\n]*)*/gmu,
+    protect,
+  );
   source = source.replace(/(`+)([^`\n]*?)\1/gu, protect);
   return transform(source).replace(
     /\uE000(\d+)\uE001/gu,
@@ -357,9 +361,25 @@ function releaseTargetsCommit(release, commit, repo) {
   const exact = String(release.commitSha ?? "").toLowerCase();
   const version = String(release.version ?? release.name ?? "").toLowerCase();
   const candidate = commit.toLowerCase();
+  if (release.commitSha !== null && release.commitSha !== undefined)
+    return exact === candidate;
+  return version.length >= 7 && candidate.startsWith(version);
+}
+
+function releaseCommitEvidenceConflicts(release, commit, repo) {
+  if (
+    githubUrlKey(release.pipeline?.name) !==
+      githubUrlKey(expectedPipelineForRepository(repo)) ||
+    release.pipeline?.type !== "continuous" ||
+    release.commitSha === null ||
+    release.commitSha === undefined
+  )
+    return false;
+  const exact = String(release.commitSha).toLowerCase();
+  const version = String(release.version ?? release.name ?? "").toLowerCase();
+  const candidate = commit.toLowerCase();
   return (
-    exact === candidate ||
-    (version.length >= 7 && candidate.startsWith(version))
+    exact !== candidate && version.length >= 7 && candidate.startsWith(version)
   );
 }
 
@@ -475,6 +495,20 @@ function linearCommentStableIdentity(comment) {
   return isNonemptyTrimmedString(comment?.id) ? comment.id : null;
 }
 
+function linearIssueStableIdentity(issue) {
+  return isNonemptyTrimmedString(issue?.id) ? issue.id : null;
+}
+
+function assertUniqueLinearIssueIdentities(issues, label, seen = new Set()) {
+  for (const issue of issues) {
+    const id = linearIssueStableIdentity(issue);
+    if (id === null) throw new Error(`${label}: id ausente ou inválido`);
+    if (seen.has(id)) throw new Error(`${label}: id duplicado ${id}`);
+    seen.add(id);
+  }
+  return seen;
+}
+
 function linearCommentIdentitiesAreUnique(comments) {
   const seen = new Set();
   for (const comment of comments) {
@@ -506,6 +540,12 @@ function linearCommentMetadataIsValid(comment, now) {
     linearCommentStableIdentity(comment) !== null &&
     typeof comment?.body === "string" &&
     normalizeBody(comment.body).length > 0 &&
+    Array.isArray(comment.syncedWith) &&
+    comment.syncedWith.every(
+      (entity) =>
+        !isGithubService(entity?.service) ||
+        isNonemptyTrimmedString(entity?.id),
+    ) &&
     timestampsAreChronological(createdAt, updatedAt) &&
     timestampIsNotAfter(updatedAt, now)
   );
@@ -520,6 +560,26 @@ function linearIssueState(issue) {
 function isNonemptyTrimmedString(value) {
   return (
     typeof value === "string" && value.length > 0 && value === value.trim()
+  );
+}
+
+function nullableLinearTimestampFieldIsValid(record, field) {
+  return (
+    Object.hasOwn(record, field) &&
+    (record[field] === null || timestampIsValid(record[field]))
+  );
+}
+
+function linearTeamMetadataIsValid(team) {
+  return (
+    team &&
+    typeof team === "object" &&
+    !Array.isArray(team) &&
+    isNonemptyTrimmedString(team.id) &&
+    isNonemptyTrimmedString(team.key) &&
+    isNonemptyTrimmedString(team.name) &&
+    nullableLinearTimestampFieldIsValid(team, "archivedAt") &&
+    nullableLinearTimestampFieldIsValid(team, "retiredAt")
   );
 }
 
@@ -2261,6 +2321,13 @@ export function reconcileSnapshots({
               timestampIsValid(release.completedAt) &&
               Date.parse(release.completedAt) < mergedAt,
           );
+          const conflictingReleases = releases.filter((release) =>
+            releaseCommitEvidenceConflicts(
+              release,
+              github.merge_commit_sha,
+              link.repo,
+            ),
+          );
           if (invalidReleases.length > 0) {
             findings.push({
               severity: "incomplete",
@@ -2269,6 +2336,15 @@ export function reconcileSnapshots({
               message:
                 `${invalidReleases.length} release(s) Linear possuem completedAt ` +
                 "ausente ou inválido; a prova do carrier é inconclusiva",
+            });
+          } else if (conflictingReleases.length > 0) {
+            findings.push({
+              severity: "incomplete",
+              code: "linear_release_commit_conflict",
+              issue: issue.identifier,
+              message:
+                `${conflictingReleases.length} release(s) Linear possuem commitSha explícito ` +
+                "incompatível com a versão curta do carrier; a prova é contraditória",
             });
           } else if (chronologicallyInvalidReleases.length > 0) {
             findings.push({
@@ -2514,7 +2590,13 @@ export async function graphqlQuery({
   } catch {
     // A resposta HTTP ainda é autoritativa mesmo sem um corpo JSON legível.
   }
-  const graphqlErrors = Array.isArray(payload?.errors) ? payload.errors : [];
+  const hasGraphqlErrors =
+    payload !== null &&
+    typeof payload === "object" &&
+    Object.hasOwn(payload, "errors");
+  if (hasGraphqlErrors && !Array.isArray(payload.errors))
+    throw new Error("Linear API retornou campo errors inválido");
+  const graphqlErrors = hasGraphqlErrors ? payload.errors : [];
   const errorSummary = graphqlErrors
     .slice(0, 3)
     .map((error) => {
@@ -2751,6 +2833,7 @@ async function completeLinearConnection({
 
 export async function readLinearIssues({ token, fetchImpl = fetch }) {
   const issues = [];
+  const seenIssueIds = new Set();
   let after = null;
   const seenCursors = new Set();
   let pageCount = 0;
@@ -2764,6 +2847,13 @@ export async function readLinearIssues({ token, fetchImpl = fetch }) {
       variables: { after },
       fetchImpl,
     });
+    if (!data.issues || !Array.isArray(data.issues.nodes))
+      throw new Error("Linear issues: nodes ausente ou inválido");
+    assertUniqueLinearIssueIdentities(
+      data.issues.nodes,
+      "Linear issues",
+      seenIssueIds,
+    );
     issues.push(...data.issues.nodes);
     after = nextLinearCursor(
       data.issues.pageInfo,
@@ -2861,6 +2951,10 @@ export async function readLinearTopology({
       fetchImpl,
     }),
   ]);
+  if (teams.some((team) => !linearTeamMetadataIsValid(team)))
+    throw new Error(
+      "Linear topology retornou time com identidade ou lifecycle ausente/inválido",
+    );
   const matches = teams.filter((team) => team.key === umbrellaTeamKey);
   if (matches.length === 0)
     return {
