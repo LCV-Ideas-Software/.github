@@ -23,9 +23,18 @@ import {
 } from "./github-linear-reconciler.mjs";
 
 const NOW = new Date("2026-08-18T03:00:00.000Z");
+const GITHUB_INTEGRATION = Object.freeze({
+  id: "11111111-2222-4333-8444-555555555555",
+  service: "github",
+  createdAt: "2026-08-01T00:00:00.000Z",
+  updatedAt: "2026-08-18T02:30:00.000Z",
+  archivedAt: null,
+  team: null,
+});
+const GITHUB_INTEGRATION_ATTESTATION = `${GITHUB_INTEGRATION.id}@${GITHUB_INTEGRATION.updatedAt}`;
 
 function linearIssue(overrides = {}) {
-  return {
+  const issue = {
     identifier: "GITHORG-70",
     title: "Reconciliar GitHub e Linear",
     description: "",
@@ -39,10 +48,36 @@ function linearIssue(overrides = {}) {
     releases: { nodes: [] },
     ...overrides,
   };
+  if (issue.comments?.nodes) {
+    issue.comments = {
+      ...issue.comments,
+      nodes: issue.comments.nodes.map((comment) => ({
+        updatedAt: comment.createdAt,
+        ...comment,
+      })),
+    };
+  }
+  if (issue.releases?.nodes) {
+    issue.releases = {
+      ...issue.releases,
+      nodes: issue.releases.nodes.map((release, index) => ({
+        id: `release-${index + 1}`,
+        name: `Release ${index + 1}`,
+        ...release,
+        pipeline: release.pipeline
+          ? {
+              id: `pipeline-${index + 1}`,
+              ...release.pipeline,
+            }
+          : release.pipeline,
+      })),
+    };
+  }
+  return issue;
 }
 
 function githubIssue(overrides = {}) {
-  return {
+  const issue = {
     kind: "issue",
     url: "https://github.com/LCV-Ideas-Software/.github/issues/260",
     state: "open",
@@ -50,6 +85,11 @@ function githubIssue(overrides = {}) {
     comments: [],
     ...overrides,
   };
+  issue.comments = (issue.comments ?? []).map((comment) => ({
+    updated_at: comment.created_at,
+    ...comment,
+  }));
+  return issue;
 }
 
 test("recusa qualquer operação GraphQL mutadora", () => {
@@ -558,6 +598,19 @@ test("inventaria topologia completa do time LCV", async () => {
         { status: 200 },
       );
     }
+    if (query.includes("GitHubLinearIntegrations")) {
+      return new Response(
+        JSON.stringify({
+          data: {
+            integrations: {
+              nodes: [GITHUB_INTEGRATION],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }
     if (query.includes("GitHubLinearUmbrellaCycles")) {
       return new Response(
         JSON.stringify({
@@ -639,6 +692,7 @@ test("inventaria topologia completa do time LCV", async () => {
   assert.equal(topology.initiatives.length, 1);
   assert.equal(topology.documents.length, 1);
   assert.equal(topology.subteams.length, 1);
+  assert.deepEqual(topology.integrations, [GITHUB_INTEGRATION]);
 });
 
 test("topologia falha fechada quando o LCV inexiste ou está inativo", async () => {
@@ -657,6 +711,19 @@ test("topologia falha fechada quando o LCV inexiste ou está inativo", async () 
       token: "linear-read-only",
       fetchImpl: async (_url, options) => {
         const { query } = JSON.parse(options.body);
+        if (query.includes("GitHubLinearIntegrations")) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                integrations: {
+                  nodes: [GITHUB_INTEGRATION],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            }),
+            { status: 200 },
+          );
+        }
         assert.match(query, /GitHubLinearTeams/u);
         return new Response(
           JSON.stringify({
@@ -680,6 +747,97 @@ test("topologia falha fechada quando o LCV inexiste ou está inativo", async () 
     });
     assert.match(topology.auditFailure, /^umbrella_team_/u);
     assert.equal(determineExitCode(result), 2);
+  }
+});
+
+test("topologia recusa pageInfo ausente em teams ou integrations", async () => {
+  for (const malformedRoot of ["teams", "integrations"]) {
+    await assert.rejects(
+      readLinearTopology({
+        token: "linear-read-only",
+        fetchImpl: async (_url, options) => {
+          const { query } = JSON.parse(options.body);
+          if (query.includes("GitHubLinearUmbrellaCycles")) {
+            return new Response(
+              JSON.stringify({
+                data: {
+                  team: {
+                    cycles: {
+                      nodes: [],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              }),
+              { status: 200 },
+            );
+          }
+          if (query.includes("GitHubLinearUmbrellaProjects")) {
+            return new Response(
+              JSON.stringify({
+                data: {
+                  team: {
+                    projects: {
+                      nodes: [],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              }),
+              { status: 200 },
+            );
+          }
+          if (query.includes("GitHubLinearUmbrellaInitiatives")) {
+            return new Response(
+              JSON.stringify({
+                data: {
+                  initiatives: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              }),
+              { status: 200 },
+            );
+          }
+          if (query.includes("GitHubLinearUmbrellaDocuments")) {
+            return new Response(
+              JSON.stringify({
+                data: {
+                  documents: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              }),
+              { status: 200 },
+            );
+          }
+          const root = query.includes("GitHubLinearTeams")
+            ? "teams"
+            : "integrations";
+          const nodes =
+            root === "teams"
+              ? [{ id: "team-lcv", key: "LCV", name: "LCV" }]
+              : [GITHUB_INTEGRATION];
+          return new Response(
+            JSON.stringify({
+              data: {
+                [root]:
+                  root === malformedRoot
+                    ? { nodes }
+                    : {
+                        nodes,
+                        pageInfo: { hasNextPage: false, endCursor: null },
+                      },
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      }),
+      /pageInfo/u,
+    );
   }
 });
 
@@ -928,6 +1086,63 @@ test("estado Linear duplicate corresponde a GitHub fechado not_planned", () => {
   );
 });
 
+test("metadado de estado GitHub parcial ou inválido torna o snapshot inconclusivo", () => {
+  const variants = [
+    { state: "bogus", state_reason: null },
+    { state: "closed", state_reason: "motivo-desconhecido" },
+    { state: "open", state_reason: "completed" },
+    { state: "open", state_reason: "not_planned" },
+    { state: "closed", state_reason: null },
+    { state: "closed", state_reason: "reopened" },
+  ];
+
+  for (const [index, metadata] of variants.entries()) {
+    const url = `https://github.com/LCV-Ideas-Software/.github/issues/${270 + index}`;
+    const result = reconcileSnapshots({
+      linearIssues: [
+        linearIssue({
+          identifier: `GITHORG-${80 + index}`,
+          state: { type: "completed", name: "Concluido" },
+          attachments: { nodes: [{ url }] },
+        }),
+      ],
+      githubByUrl: new Map([[url, githubIssue({ url, ...metadata })]]),
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "github_issue_metadata_invalid" &&
+          finding.severity === "incomplete",
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 2);
+  }
+});
+
+test("metadado de estado Linear parcial ou inválido torna o snapshot inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/270";
+  for (const state of [null, {}, { type: "bogus", name: "Desconhecido" }]) {
+    const result = reconcileSnapshots({
+      linearIssues: [linearIssue({ state, attachments: { nodes: [{ url }] } })],
+      githubByUrl: new Map([[url, githubIssue({ url })]]),
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "linear_issue_metadata_invalid" &&
+          finding.severity === "incomplete",
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 2);
+  }
+});
+
 test("attachment de outro repositório não satisfaz o gêmeo do time", () => {
   const foreignUrl =
     "https://github.com/LCV-Ideas-Software/admin-app/issues/501";
@@ -1104,6 +1319,78 @@ test("grandfathering de release anterior à pipeline é explícito no contrato",
   assert.match(documentation, /anteriores.+attachment.+release/isu);
 });
 
+test("metadado parcial de carrier PR nunca escapa do gate de release", () => {
+  const issueUrl = "https://github.com/LCV-Ideas-Software/.github/issues/259";
+  const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
+  const valid = {
+    kind: "pull",
+    url: pullUrl,
+    merged: true,
+    merged_at: "2026-08-18T01:00:00Z",
+    merge_commit_sha: "0123456789abcdef0123456789abcdef01234567",
+    comments: [],
+  };
+  const invalidVariants = [
+    { ...valid, merged: undefined },
+    { ...valid, merged: null },
+    { ...valid, merged: "true" },
+    { ...valid, merged_at: undefined },
+    { ...valid, merged_at: null },
+    { ...valid, merged_at: "data-invalida" },
+    { ...valid, merged_at: "0" },
+    { ...valid, merged_at: "2026-08-18" },
+    { ...valid, merged_at: "2026-02-30T01:00:00Z" },
+    { ...valid, merged_at: "2026-08-18T04:00:00Z" },
+    { ...valid, merge_commit_sha: undefined },
+    { ...valid, merge_commit_sha: null },
+    { ...valid, merge_commit_sha: "0123456" },
+  ];
+
+  for (const githubPull of invalidVariants) {
+    const result = reconcileSnapshots({
+      linearIssues: [
+        linearIssue({
+          attachments: { nodes: [{ url: issueUrl }, { url: pullUrl }] },
+        }),
+      ],
+      githubByUrl: new Map([
+        [issueUrl, githubIssue({ url: issueUrl })],
+        [pullUrl, githubPull],
+      ]),
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "github_pull_metadata_invalid" &&
+          finding.severity === "incomplete",
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 2);
+  }
+
+  const unmerged = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        attachments: { nodes: [{ url: issueUrl }, { url: pullUrl }] },
+      }),
+    ],
+    githubByUrl: new Map([
+      [issueUrl, githubIssue({ url: issueUrl })],
+      [pullUrl, { kind: "pull", url: pullUrl, merged: false, comments: [] }],
+    ]),
+    now: NOW,
+  });
+  assert.equal(
+    unmerged.findings.some(
+      (finding) => finding.code === "github_pull_metadata_invalid",
+    ),
+    false,
+  );
+});
+
 test("link suplementar de PR não é tratado como carrier de release", () => {
   const issueUrl = "https://github.com/LCV-Ideas-Software/.github/issues/259";
   const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
@@ -1254,6 +1541,113 @@ test("release incompleta ou de pipeline scheduled não satisfaz o PR", () => {
   );
 });
 
+test("timestamp inválido de release torna a prova inconclusiva", () => {
+  const issueUrl = "https://github.com/LCV-Ideas-Software/.github/issues/259";
+  const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  for (const completedAt of [
+    "data-invalida",
+    "2026-08-18T04:00:00Z",
+    "2026-08-18T00:00:00Z",
+  ]) {
+    const result = reconcileSnapshots({
+      linearIssues: [
+        linearIssue({
+          attachments: { nodes: [{ url: issueUrl }, { url: pullUrl }] },
+          releases: {
+            nodes: [
+              {
+                commitSha: commit,
+                completedAt,
+                pipeline: { name: ".github-org", type: "continuous" },
+              },
+            ],
+          },
+        }),
+      ],
+      githubByUrl: new Map([
+        [issueUrl, githubIssue({ url: issueUrl })],
+        [
+          pullUrl,
+          {
+            kind: "pull",
+            url: pullUrl,
+            merged: true,
+            merged_at: "2026-08-18T01:00:00Z",
+            merge_commit_sha: commit,
+            comments: [],
+          },
+        ],
+      ]),
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "linear_release_metadata_invalid" &&
+          finding.severity === "incomplete",
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 2);
+  }
+});
+
+test("metadata non-null ausente na release torna a prova inconclusiva", () => {
+  const issueUrl = "https://github.com/LCV-Ideas-Software/.github/issues/259";
+  const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        attachments: { nodes: [{ url: issueUrl }, { url: pullUrl }] },
+        releases: {
+          nodes: [
+            {
+              id: null,
+              name: null,
+              version: "0123456",
+              commitSha: commit,
+              completedAt: "2026-08-18T02:00:00Z",
+              pipeline: {
+                id: null,
+                name: ".github-org",
+                type: "continuous",
+              },
+            },
+          ],
+        },
+      }),
+    ],
+    githubByUrl: new Map([
+      [issueUrl, githubIssue({ url: issueUrl })],
+      [
+        pullUrl,
+        {
+          kind: "pull",
+          url: pullUrl,
+          merged: true,
+          merged_at: "2026-08-18T01:00:00Z",
+          merge_commit_sha: commit,
+          comments: [],
+        },
+      ],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_release_metadata_invalid" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
 test("release de outra pipeline não satisfaz o PR", () => {
   const pullUrl = "https://github.com/LCV-Ideas-Software/.github/pull/260";
   const issue = linearIssue({
@@ -1268,7 +1662,8 @@ test("release de outra pipeline não satisfaz o PR", () => {
       nodes: [
         {
           commitSha: "0123456789abcdef0123456789abcdef01234567",
-          pipeline: { name: "admin-app" },
+          completedAt: "2026-08-18T01:01:00Z",
+          pipeline: { name: "admin-app", type: "continuous" },
         },
       ],
     },
@@ -1337,6 +1732,113 @@ test("detecta comentário GitHub não sincronizado após a tolerância", () => {
       .message,
     /17\/08\/2026 23:00:00/,
   );
+});
+
+test("comentário GitHub auditável com timestamps inválidos é inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const variants = [
+    { created_at: null, updated_at: "2026-08-18T01:00:00Z" },
+    { created_at: "data-invalida", updated_at: "2026-08-18T01:00:00Z" },
+    { created_at: "2026-08-18T01:00:00Z", updated_at: null },
+    { created_at: "2026-08-18T01:00:00Z", updated_at: "data-invalida" },
+    {
+      created_at: "2026-08-18T02:00:00Z",
+      updated_at: "2026-08-18T01:00:00Z",
+    },
+    {
+      created_at: "2026-08-18T04:00:00Z",
+      updated_at: "2026-08-18T04:00:00Z",
+    },
+  ];
+
+  for (const timestamps of variants) {
+    const result = reconcileSnapshots({
+      linearIssues: [
+        linearIssue({
+          attachments: { nodes: [{ url }] },
+          syncedWith: [{ id: "I_issue", service: "github" }],
+        }),
+      ],
+      githubByUrl: new Map([
+        [
+          url,
+          githubIssue({
+            url,
+            comments: [
+              {
+                node_id: "IC_invalid_github_time",
+                body: "Comentário GitHub auditável",
+                ...timestamps,
+              },
+            ],
+          }),
+        ],
+      ]),
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "github_comment_metadata_invalid" &&
+          finding.severity === "incomplete",
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 2);
+  }
+});
+
+test("comentário Linear com proveniência GitHub e timestamps inválidos é inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  const variants = [
+    { createdAt: null, updatedAt: "2026-08-18T01:00:00Z" },
+    { createdAt: "data-invalida", updatedAt: "2026-08-18T01:00:00Z" },
+    { createdAt: "2026-08-18T01:00:00Z", updatedAt: null },
+    { createdAt: "2026-08-18T01:00:00Z", updatedAt: "data-invalida" },
+    {
+      createdAt: "2026-08-18T02:00:00Z",
+      updatedAt: "2026-08-18T01:00:00Z",
+    },
+    {
+      createdAt: "2026-08-18T04:00:00Z",
+      updatedAt: "2026-08-18T04:00:00Z",
+    },
+  ];
+
+  for (const timestamps of variants) {
+    const result = reconcileSnapshots({
+      linearIssues: [
+        linearIssue({
+          attachments: { nodes: [{ url }] },
+          syncedWith: [{ id: "I_issue", service: "github" }],
+          comments: {
+            nodes: [
+              {
+                id: "linear-invalid-time",
+                body: "Comentário Linear auditável",
+                syncedWith: [{ id: "IC_missing", service: "github" }],
+                externalThread: null,
+                ...timestamps,
+              },
+            ],
+          },
+        }),
+      ],
+      githubByUrl: new Map([[url, githubIssue({ url, comments: [] })]]),
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.code === "linear_comment_metadata_invalid" &&
+          finding.severity === "incomplete",
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 2);
+  }
 });
 
 test("pareamento de comentários é um para um", () => {
@@ -3028,6 +3530,7 @@ test("comparação de time e repositório ignora caixa", () => {
       initiatives: [],
       documents: [],
       subteams: [],
+      integrations: [GITHUB_INTEGRATION],
     },
     repositoryInventory: {
       active: ["astrologo-app"],
@@ -3081,6 +3584,7 @@ test("time Linear-only declarado não exige repositório, mas aparece no resulta
       initiatives: [],
       documents: [],
       subteams: [],
+      integrations: [GITHUB_INTEGRATION],
     },
     repositoryInventory: {
       active: [".github"],
@@ -3090,6 +3594,8 @@ test("time Linear-only declarado não exige repositório, mas aparece no resulta
     },
     teamRepositories: { GITHORG: ".github" },
     linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
     now: NOW,
   });
 
@@ -3100,6 +3606,190 @@ test("time Linear-only declarado não exige repositório, mas aparece no resulta
     false,
   );
   assert.deepEqual(result.linearOnlyTeamKeys, ["PANDROID"]);
+  assert.deepEqual(result.linearOnlyNoGithubSyncAttestedTeamKeys, ["PANDROID"]);
+  assert.equal(
+    result.linearGithubIntegrationObservedAnchor,
+    GITHUB_INTEGRATION_ATTESTATION,
+  );
+});
+
+test("time Linear-only sem atestação explícita de Issues Sync é inconclusivo", () => {
+  const result = reconcileSnapshots({
+    linearIssues: [],
+    githubByUrl: new Map(),
+    linearTopology: {
+      teams: [
+        { key: "GITHORG", name: ".github-org", archivedAt: null },
+        { key: "PANDROID", name: "programa-android", archivedAt: null },
+      ],
+      cycles: [],
+      projects: [],
+      initiatives: [],
+      documents: [],
+      subteams: [],
+      integrations: [GITHUB_INTEGRATION],
+    },
+    repositoryInventory: {
+      active: [".github"],
+      issuesEnabled: [".github"],
+      issues: [],
+      issueAuditFailures: {},
+    },
+    teamRepositories: { GITHORG: ".github" },
+    linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: [],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_only_github_sync_configuration_unattested" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
+test("mudança da integração GitHub invalida a atestação Linear-only", () => {
+  const result = reconcileSnapshots({
+    linearIssues: [],
+    githubByUrl: new Map(),
+    linearTopology: {
+      teams: [
+        { key: "GITHORG", name: ".github-org", archivedAt: null },
+        { key: "PANDROID", name: "programa-android", archivedAt: null },
+      ],
+      cycles: [],
+      projects: [],
+      initiatives: [],
+      documents: [],
+      subteams: [],
+      integrations: [
+        { ...GITHUB_INTEGRATION, updatedAt: "2026-08-18T02:31:00.000Z" },
+      ],
+    },
+    repositoryInventory: {
+      active: [".github"],
+      issuesEnabled: [".github"],
+      issues: [],
+      issueAuditFailures: {},
+    },
+    teamRepositories: { GITHORG: ".github" },
+    linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_github_integration_attestation_stale" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(determineExitCode(result), 2);
+});
+
+test("inventário ausente, ambíguo ou inválido da integração GitHub falha fechado", () => {
+  const { archivedAt: _archivedAt, ...withoutArchivedAt } = GITHUB_INTEGRATION;
+  for (const integrations of [
+    undefined,
+    [],
+    [GITHUB_INTEGRATION, { ...GITHUB_INTEGRATION, id: "integration-2" }],
+    [{ ...GITHUB_INTEGRATION, updatedAt: "2099-01-01T00:00:00.000Z" }],
+    [withoutArchivedAt],
+    [{ ...GITHUB_INTEGRATION, archivedAt: "" }],
+    [{ ...GITHUB_INTEGRATION, archivedAt: 0 }],
+    [GITHUB_INTEGRATION, { id: "unknown", service: null }],
+    [GITHUB_INTEGRATION, { ...GITHUB_INTEGRATION, service: "slack" }],
+    [
+      GITHUB_INTEGRATION,
+      { ...GITHUB_INTEGRATION, archivedAt: "2026-08-18T02:45:00.000Z" },
+    ],
+    [{ ...GITHUB_INTEGRATION, service: " github " }],
+    [{ ...GITHUB_INTEGRATION, id: ` ${GITHUB_INTEGRATION.id} ` }],
+  ]) {
+    const topology = {
+      teams: [
+        { key: "GITHORG", name: ".github-org", archivedAt: null },
+        { key: "PANDROID", name: "programa-android", archivedAt: null },
+      ],
+      cycles: [],
+      projects: [],
+      initiatives: [],
+      documents: [],
+      subteams: [],
+    };
+    if (integrations !== undefined) topology.integrations = integrations;
+    const result = reconcileSnapshots({
+      linearIssues: [],
+      githubByUrl: new Map(),
+      linearTopology: topology,
+      repositoryInventory: {
+        active: [".github"],
+        issuesEnabled: [".github"],
+        issues: [],
+        issueAuditFailures: {},
+      },
+      teamRepositories: { GITHORG: ".github" },
+      linearOnlyTeamKeys: ["PANDROID"],
+      linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+      linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+      now: NOW,
+    });
+
+    assert.equal(
+      result.findings.some(
+        (finding) =>
+          finding.severity === "incomplete" &&
+          finding.code.startsWith("linear_github_integration_"),
+      ),
+      true,
+    );
+    assert.equal(determineExitCode(result), 2);
+  }
+});
+
+test("atestação de Issues Sync para time não declarado falha fechado", () => {
+  const result = reconcileSnapshots({
+    linearIssues: [],
+    githubByUrl: new Map(),
+    linearTopology: {
+      teams: [{ key: "GITHORG", name: ".github-org", archivedAt: null }],
+      cycles: [],
+      projects: [],
+      initiatives: [],
+      documents: [],
+      subteams: [],
+      integrations: [GITHUB_INTEGRATION],
+    },
+    repositoryInventory: {
+      active: [".github"],
+      issuesEnabled: [".github"],
+      issues: [],
+      issueAuditFailures: {},
+    },
+    teamRepositories: { GITHORG: ".github" },
+    linearOnlyTeamKeys: [],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_only_github_sync_attestation_unknown" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(determineExitCode(result), 2);
 });
 
 test("time Linear-only não pode colidir com repo nem manter sync GitHub", () => {
@@ -3130,6 +3820,7 @@ test("time Linear-only não pode colidir com repo nem manter sync GitHub", () =>
       initiatives: [],
       documents: [],
       subteams: [],
+      integrations: [GITHUB_INTEGRATION],
     },
     repositoryInventory: {
       active: ["programa-android"],
@@ -3138,6 +3829,8 @@ test("time Linear-only não pode colidir com repo nem manter sync GitHub", () =>
     },
     teamRepositories: {},
     linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
     now: NOW,
   });
 
@@ -3168,6 +3861,7 @@ test("404 de repo privado ausente do inventário não é aceito como tombstone L
       initiatives: [],
       documents: [],
       subteams: [],
+      integrations: [GITHUB_INTEGRATION],
     },
     repositoryInventory: {
       active: [".github"],
@@ -3176,6 +3870,8 @@ test("404 de repo privado ausente do inventário não é aceito como tombstone L
     },
     teamRepositories: {},
     linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
     now: NOW,
   });
 
@@ -3212,6 +3908,7 @@ test("410 confirmado é aceito como tombstone em time Linear-only", () => {
       initiatives: [],
       documents: [],
       subteams: [],
+      integrations: [GITHUB_INTEGRATION],
     },
     repositoryInventory: {
       active: [".github", "ultrabrain-mcp"],
@@ -3221,10 +3918,60 @@ test("410 confirmado é aceito como tombstone em time Linear-only", () => {
     },
     teamRepositories: {},
     linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
     now: NOW,
   });
 
   assert.deepEqual(result.findings, []);
+});
+
+test("410 contraditório com URL ainda inventariada é inconclusivo", () => {
+  const url = "https://github.com/LCV-Ideas-Software/ultrabrain-mcp/issues/119";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        identifier: "PANDROID-1",
+        team: { key: "PANDROID", name: "programa-android" },
+        attachments: { nodes: [{ url }] },
+      }),
+    ],
+    githubByUrl: new Map([[url, { auditFailure: "gone", status: 410 }]]),
+    linearTopology: {
+      teams: [
+        { key: "GITHORG", name: ".github-org", archivedAt: null },
+        { key: "ULTRABR", name: "ultrabrain-mcp", archivedAt: null },
+        { key: "PANDROID", name: "programa-android", archivedAt: null },
+      ],
+      cycles: [],
+      projects: [],
+      initiatives: [],
+      documents: [],
+      subteams: [],
+      integrations: [GITHUB_INTEGRATION],
+    },
+    repositoryInventory: {
+      active: [".github", "ultrabrain-mcp"],
+      issuesEnabled: [".github", "ultrabrain-mcp"],
+      issues: [{ repo: "ultrabrain-mcp", number: 119, url }],
+      issueAuditFailures: {},
+    },
+    teamRepositories: {},
+    linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some(
+      (finding) =>
+        finding.code === "linear_only_tombstone_inventory_conflict" &&
+        finding.severity === "incomplete",
+    ),
+    true,
+  );
+  assert.equal(determineExitCode(result), 2);
 });
 
 test("410 sem inventário de Issues habilitado permanece inconclusivo", () => {
@@ -3249,6 +3996,7 @@ test("410 sem inventário de Issues habilitado permanece inconclusivo", () => {
       initiatives: [],
       documents: [],
       subteams: [],
+      integrations: [GITHUB_INTEGRATION],
     },
     repositoryInventory: {
       active: [".github", "ultrabrain-mcp"],
@@ -3258,6 +4006,8 @@ test("410 sem inventário de Issues habilitado permanece inconclusivo", () => {
     },
     teamRepositories: {},
     linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
     now: NOW,
   });
 
@@ -3283,6 +4033,7 @@ test("exceção Linear-only desconhecida falha", () => {
       initiatives: [],
       documents: [],
       subteams: [],
+      integrations: [GITHUB_INTEGRATION],
     },
     repositoryInventory: {
       active: [".github"],
@@ -3291,6 +4042,8 @@ test("exceção Linear-only desconhecida falha", () => {
     },
     teamRepositories: { GITHORG: ".github" },
     linearOnlyTeamKeys: ["PANDROID"],
+    linearOnlyNoGithubSyncAttestedTeamKeys: ["PANDROID"],
+    linearGithubIntegrationAttestation: GITHUB_INTEGRATION_ATTESTATION,
     now: NOW,
   });
 
@@ -3823,7 +4576,7 @@ test("inventário GitHub inclui fork ativo e exclui somente arquivado", async ()
   );
 });
 
-test("workflow agendado não concede permissões de escrita", async () => {
+test("workflow público apenas verifica o reconciliador sem acessar dados live", async () => {
   const workflow = await readFile(
     new URL(
       "../.github/workflows/github-linear-reconciliation.yml",
@@ -3835,17 +4588,13 @@ test("workflow agendado não concede permissões de escrita", async () => {
   assert.doesNotMatch(workflow, /^\s+[a-z-]+:\s*write\s*$/gmu);
   assert.match(
     workflow,
-    /GH_TOKEN: \$\{\{ secrets\.LINEAR_GITHUB_READ_TOKEN \}\}/u,
+    /node --test scripts\/github-linear-reconciler\.test\.mjs/u,
   );
-  assert.doesNotMatch(workflow, /\|\|\s*github\.token/u);
-  assert.match(workflow, /node scripts\/github-linear-reconciler\.mjs/u);
-  assert.match(workflow, /RECONCILIATION_JSON_STDOUT:\s*"true"/u);
-  assert.match(workflow, /> github-linear-reconciliation\.json/u);
-  assert.match(
-    workflow,
-    /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u,
-  );
-  assert.match(workflow, /if:\s*always\(\)/u);
+  assert.doesNotMatch(workflow, /^\s*schedule:/mu);
+  assert.doesNotMatch(workflow, /^\s*audit:/mu);
+  assert.doesNotMatch(workflow, /linear-observability/u);
+  assert.doesNotMatch(workflow, /LINEAR_READ_KEY|LINEAR_GITHUB_READ_TOKEN/u);
+  assert.doesNotMatch(workflow, /upload-artifact|GITHUB_STEP_SUMMARY/u);
 });
 
 test("relatório Markdown contém contagens e detalhes acionáveis", () => {

@@ -1,9 +1,11 @@
 # Reconciliação GitHub ↔ Linear
 
-O workflow `GitHub Linear Reconciliation` executa uma auditoria **somente
-leitura** a cada 12 horas. O cliente GitHub aceita apenas `GET`; o cliente
-Linear aceita apenas operações GraphQL `query` e recusa qualquer `mutation`
-antes do acesso à rede.
+O workflow público `GitHub Linear Reconciliation` apenas verifica por testes que
+o reconciliador é **somente leitura**. A execução live a cada 12 horas ocorre no
+repositório interno `.github-private`, onde Summary, logs e artifact detalhados
+não expõem o inventário Linear privado. O cliente GitHub aceita apenas `GET`;
+o cliente Linear aceita apenas operações GraphQL `query` e recusa qualquer
+`mutation` antes do acesso à rede.
 
 ## Escopo
 
@@ -23,6 +25,21 @@ variável `LINEAR_ONLY_TEAM_KEYS`, usando **chaves estáveis** separadas por
 vírgula. A lista é estrita: entradas vazias, repetidas, desconhecidas ou a chave
 `LCV` falham. As exceções aparecem no sumário e não reduzem o inventário
 GitHub→Linear.
+
+A API GraphQL pública do Linear não expõe a configuração do GitHub Issues
+Sync. Por isso, cada chave Linear-only também deve constar separadamente em
+`LINEAR_ONLY_NO_GITHUB_SYNC_ATTESTED_TEAM_KEYS`, como atestação humana
+versionada no workflow de que o sync foi desabilitado na UI. A ausência ou
+divergência entre as duas listas torna a execução inconclusiva.
+
+Para impedir que essa declaração manual permaneça válida depois de uma mudança
+na integração, `LINEAR_GITHUB_INTEGRATION_ATTESTATION` deve conter
+`<integration-id>@<updatedAt>` exatamente como observado pelo próprio audit. O
+auditor exige uma única integração GitHub ativa e torna a execução inconclusiva
+quando o id, o timestamp, a cardinalidade ou a metadata mudam. A configuração
+interna de repositórios continua sendo uma inspeção humana porque a API pública
+não a expõe. O auditor também rejeita qualquer evidência material de sync ou
+vínculo GitHub nos times Linear-only.
 
 O time guarda-chuva `LCV` permanece como contêiner de hierarquia, mas seu
 estado-alvo de trabalho é **vazio**, inclusive no histórico arquivado: nenhum
@@ -47,6 +64,7 @@ realiza a migração.
   mas são explicitamente dispensados de release histórica;
 - comentário ausente em qualquer direção, desatualizado ou com thread
   desconectada, inválida ou fora da organização configurada;
+- metadata obrigatória ausente ou inválida em Issue, carrier PR ou comentário;
 - duplicata ou item semelhante sem relação explícita, inclusive dentro do mesmo
   time;
 - qualquer entidade de trabalho ainda pertencente ao time `LCV`;
@@ -57,13 +75,17 @@ O processo retorna `0` quando está limpo, `1` para drift acionável e `2` quand
 a auditoria é inconclusiva. Uma leitura parcial nunca é classificada como limpa.
 O Step Summary preserva as contagens completas e limita os detalhes para ficar
 abaixo do teto do GitHub Actions. O resultado JSON integral é publicado por 14
-dias no artifact `github-linear-reconciliation-<run>-<attempt>`, inclusive
-quando o audit termina com drift ou de forma inconclusiva.
+dias somente no repositório interno, no artifact
+`github-linear-reconciliation-<run>-<attempt>`, inclusive quando o audit termina
+com drift ou de forma inconclusiva. O workflow público não recebe credenciais,
+não executa o audit live e não publica Summary ou artifact com dados
+operacionais.
 
 ## Credenciais
 
-O environment `linear-observability` contém `LINEAR_READ_KEY`, uma chave Linear
-somente leitura, e deve conter `LINEAR_GITHUB_READ_TOKEN`, com acesso
+O environment `linear-observability` do repositório interno `.github-private`
+contém `LINEAR_READ_KEY`, uma chave Linear somente leitura, e deve conter
+`LINEAR_GITHUB_READ_TOKEN`, com acesso
 organizacional somente leitura a Metadata, Issues e Pull requests em todos os
 repositórios. A preferência durável é um GitHub App com permissões equivalentes
 e token de curta duração.

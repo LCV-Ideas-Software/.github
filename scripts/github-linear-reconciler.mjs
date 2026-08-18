@@ -45,6 +45,17 @@ function connectionNodes(value) {
 }
 
 function nextLinearCursor(pageInfo, label, seenCursors) {
+  if (!pageInfo || typeof pageInfo !== "object" || Array.isArray(pageInfo))
+    throw new Error(`${label}: pageInfo ausente ou inválido`);
+  if (typeof pageInfo.hasNextPage !== "boolean")
+    throw new Error(`${label}: hasNextPage ausente ou inválido`);
+  if (!Object.hasOwn(pageInfo, "endCursor"))
+    throw new Error(`${label}: endCursor ausente`);
+  if (
+    pageInfo.endCursor !== null &&
+    (typeof pageInfo.endCursor !== "string" || !pageInfo.endCursor)
+  )
+    throw new Error(`${label}: endCursor inválido`);
   if (!pageInfo?.hasNextPage) return null;
   const cursor = pageInfo.endCursor;
   if (typeof cursor !== "string" || !cursor)
@@ -316,14 +327,13 @@ export function parseLinearOnlyTeamKeys(
   return keys;
 }
 
-function releaseMatchesCommit(release, commit, repo) {
+function releaseTargetsCommit(release, commit, repo) {
   if (
     githubUrlKey(release.pipeline?.name) !==
     githubUrlKey(expectedPipelineForRepository(repo))
   )
     return false;
-  if (release.pipeline?.type !== "continuous" || !release.completedAt)
-    return false;
+  if (release.pipeline?.type !== "continuous") return false;
   const exact = String(release.commitSha ?? "").toLowerCase();
   const version = String(release.version ?? release.name ?? "").toLowerCase();
   const candidate = commit.toLowerCase();
@@ -333,16 +343,156 @@ function releaseMatchesCommit(release, commit, repo) {
   );
 }
 
+function releaseMatchesCommit(release, commit, repo) {
+  return (
+    releaseTargetsCommit(release, commit, repo) &&
+    timestampIsValid(release.completedAt)
+  );
+}
+
 function githubIssueState(record) {
   if (record.state === "open") return "active";
   if (record.state_reason === "not_planned") return "canceled";
   return "completed";
 }
 
+function githubIssueMetadataIsValid(record) {
+  if (record?.state === "open")
+    return [null, "reopened"].includes(record.state_reason);
+  if (record?.state === "closed")
+    return ["completed", "not_planned"].includes(record.state_reason);
+  return false;
+}
+
+function timestampIsValid(value) {
+  if (typeof value !== "string" || value !== value.trim()) return false;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-](\d{2}):(\d{2}))$/u.exec(
+      value,
+    );
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] =
+    match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = Number(match[7] ?? 0);
+  const offsetMinute = Number(match[8] ?? 0);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth[month - 1] &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59 &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function timestampsAreChronological(createdAt, updatedAt) {
+  return (
+    timestampIsValid(createdAt) &&
+    timestampIsValid(updatedAt) &&
+    Date.parse(updatedAt) >= Date.parse(createdAt)
+  );
+}
+
+function timestampIsNotAfter(value, upperBound) {
+  return timestampIsValid(value) && Date.parse(value) <= upperBound.getTime();
+}
+
+function githubPullMetadataIsValid(record, now) {
+  if (typeof record?.merged !== "boolean") return false;
+  if (!record.merged) return true;
+  return (
+    timestampIsNotAfter(record.merged_at, now) &&
+    typeof record.merge_commit_sha === "string" &&
+    /^[0-9a-f]{40}$/iu.test(record.merge_commit_sha)
+  );
+}
+
+function githubCommentMetadataIsValid(comment, now) {
+  const createdAt = comment?.created_at ?? comment?.createdAt;
+  const updatedAt = comment?.updated_at ?? comment?.updatedAt;
+  return (
+    typeof comment?.body === "string" &&
+    normalizeBody(comment.body).length > 0 &&
+    timestampsAreChronological(createdAt, updatedAt) &&
+    timestampIsNotAfter(updatedAt, now)
+  );
+}
+
+function linearCommentMetadataIsValid(comment, now) {
+  const createdAt = comment?.createdAt ?? comment?.created_at;
+  const updatedAt = comment?.updatedAt ?? comment?.updated_at;
+  return (
+    typeof comment?.body === "string" &&
+    normalizeBody(comment.body).length > 0 &&
+    timestampsAreChronological(createdAt, updatedAt) &&
+    timestampIsNotAfter(updatedAt, now)
+  );
+}
+
 function linearIssueState(issue) {
   if (["canceled", "duplicate"].includes(issue.state?.type)) return "canceled";
   if (issue.state?.type === "completed") return "completed";
   return "active";
+}
+
+function linearIssueMetadataIsValid(issue) {
+  return [
+    "triage",
+    "backlog",
+    "unstarted",
+    "started",
+    "completed",
+    "canceled",
+    "duplicate",
+  ].includes(issue?.state?.type);
+}
+
+function linearReleaseMetadataIsValid(release, now) {
+  return (
+    release &&
+    typeof release.id === "string" &&
+    release.id.trim() === release.id &&
+    release.id.length > 0 &&
+    typeof release.name === "string" &&
+    release.name.trim() === release.name &&
+    release.name.length > 0 &&
+    release.pipeline &&
+    typeof release.pipeline.id === "string" &&
+    release.pipeline.id.trim() === release.pipeline.id &&
+    release.pipeline.id.length > 0 &&
+    typeof release.pipeline.name === "string" &&
+    release.pipeline.name.trim() === release.pipeline.name &&
+    release.pipeline.name.length > 0 &&
+    ["continuous", "scheduled"].includes(release.pipeline.type) &&
+    Object.hasOwn(release, "completedAt") &&
+    (release.completedAt === null ||
+      timestampIsNotAfter(release.completedAt, now))
+  );
 }
 
 function isGithubService(value) {
@@ -1203,6 +1353,15 @@ function githubIssueInventoryComplete(link, repositoryInventory) {
   );
 }
 
+function githubIssueInventoryContains(link, repositoryInventory) {
+  return Boolean(
+    githubIssueInventoryComplete(link, repositoryInventory) &&
+    repositoryInventory.issues.some(
+      (candidate) => githubUrlKey(candidate.url) === githubUrlKey(link.url),
+    ),
+  );
+}
+
 function githubFailureFinding(issue, link, record, repositoryInventory) {
   if (record?.auditFailure === "resource_kind_mismatch") {
     return {
@@ -1218,9 +1377,7 @@ function githubFailureFinding(issue, link, record, repositoryInventory) {
   );
   const absentFromInventory =
     inventoryComplete &&
-    !repositoryInventory.issues.some(
-      (candidate) => githubUrlKey(candidate.url) === githubUrlKey(link.url),
-    );
+    !githubIssueInventoryContains(link, repositoryInventory);
   if (record?.status === 404 && absentFromInventory) {
     return {
       severity: "error",
@@ -1250,6 +1407,8 @@ export function reconcileSnapshots({
   requireGithubIssueAttachment = true,
   teamRepositories = DEFAULT_TEAM_REPOSITORIES,
   linearOnlyTeamKeys = [],
+  linearOnlyNoGithubSyncAttestedTeamKeys = [],
+  linearGithubIntegrationAttestation = "",
 }) {
   if (!Number.isFinite(now?.getTime?.()))
     throw new Error("now deve ser uma data válida");
@@ -1259,10 +1418,123 @@ export function reconcileSnapshots({
     throw new Error("releaseRequiredAfter deve ser uma data válida");
   const findings = [];
   const linearOnlyTeams = new Set(linearOnlyTeamKeys);
+  const noGithubSyncAttestedTeams = new Set(
+    linearOnlyNoGithubSyncAttestedTeamKeys,
+  );
   if (linearOnlyTeams.size !== linearOnlyTeamKeys.length)
     throw new Error("linearOnlyTeamKeys contém duplicata");
+  if (
+    noGithubSyncAttestedTeams.size !==
+    linearOnlyNoGithubSyncAttestedTeamKeys.length
+  )
+    throw new Error("linearOnlyNoGithubSyncAttestedTeamKeys contém duplicata");
   if (linearOnlyTeams.has(umbrellaTeamKey))
     throw new Error("o time guarda-chuva não pode ser Linear-only");
+  if (typeof linearGithubIntegrationAttestation !== "string")
+    throw new Error("linearGithubIntegrationAttestation deve ser string");
+  let linearGithubIntegrationObservedAnchor = "";
+  if (linearOnlyTeams.size > 0) {
+    const integrations = linearTopology?.integrations;
+    if (!Array.isArray(integrations)) {
+      findings.push({
+        severity: "incomplete",
+        code: "linear_github_integration_inventory_incomplete",
+        issue: "GitHub Issues Sync",
+        message:
+          "a integração GitHub do Linear não foi inventariada; a atestação humana não pode ser validada",
+      });
+    } else if (
+      new Set(integrations.map((integration) => integration?.id)).size !==
+        integrations.length ||
+      integrations.some(
+        (integration) =>
+          typeof integration?.id !== "string" ||
+          !integration.id.trim() ||
+          integration.id !== integration.id.trim() ||
+          typeof integration?.service !== "string" ||
+          !integration.service.trim() ||
+          integration.service !== integration.service.trim(),
+      ) ||
+      integrations
+        .filter((integration) => isGithubService(integration.service))
+        .some(
+          (integration) =>
+            !Object.hasOwn(integration, "archivedAt") ||
+            !timestampsAreChronological(
+              integration.createdAt,
+              integration.updatedAt,
+            ) ||
+            !timestampIsNotAfter(integration.updatedAt, now) ||
+            (integration.archivedAt !== null &&
+              (!timestampIsNotAfter(integration.archivedAt, now) ||
+                Date.parse(integration.archivedAt) <
+                  Date.parse(integration.createdAt))),
+        )
+    ) {
+      findings.push({
+        severity: "incomplete",
+        code: "linear_github_integration_metadata_invalid",
+        issue: "GitHub Issues Sync",
+        message:
+          "o inventário de integrações retornou id/service/lifecycle ausente, inválido ou cronologicamente impossível",
+      });
+    } else {
+      const activeGithubIntegrations = integrations.filter(
+        (integration) =>
+          integration.archivedAt === null &&
+          isGithubService(integration.service),
+      );
+      if (activeGithubIntegrations.length !== 1) {
+        findings.push({
+          severity: "incomplete",
+          code: "linear_github_integration_inventory_ambiguous",
+          issue: "GitHub Issues Sync",
+          message:
+            `${activeGithubIntegrations.length} integrações GitHub ativas foram encontradas no Linear; ` +
+            "é necessário exatamente um controle observável para validar a atestação",
+        });
+      } else {
+        const integration = activeGithubIntegrations[0];
+        linearGithubIntegrationObservedAnchor = `${integration.id.trim()}@${integration.updatedAt}`;
+        if (
+          linearGithubIntegrationAttestation.trim() !==
+          linearGithubIntegrationObservedAnchor
+        ) {
+          findings.push({
+            severity: "incomplete",
+            code: "linear_github_integration_attestation_stale",
+            issue: "GitHub Issues Sync",
+            message:
+              "a integração GitHub do Linear mudou ou ainda não possui atestação id@updatedAt correspondente; " +
+              `âncora observada: ${linearGithubIntegrationObservedAnchor}`,
+          });
+        }
+      }
+    }
+  }
+  for (const key of linearOnlyTeams) {
+    if (!noGithubSyncAttestedTeams.has(key)) {
+      findings.push({
+        severity: "incomplete",
+        code: "linear_only_github_sync_configuration_unattested",
+        issue: key,
+        message:
+          "a API pública do Linear não expõe a configuração GitHub Issues Sync; " +
+          "falta a atestação humana versionada de que ela está desabilitada",
+      });
+    }
+  }
+  for (const key of noGithubSyncAttestedTeams) {
+    if (!linearOnlyTeams.has(key)) {
+      findings.push({
+        severity: "incomplete",
+        code: "linear_only_github_sync_attestation_unknown",
+        issue: key,
+        message:
+          "atestação de GitHub Issues Sync desabilitado não corresponde a um time Linear-only declarado",
+      });
+    }
+  }
   let auditedGithubLinks = 0;
   const canonicalGithubTwins = new Map();
   const effectiveTeamRepositories = resolveEffectiveTeamRepositories({
@@ -1567,6 +1839,18 @@ export function reconcileSnapshots({
             message: `time Linear-only referencia recurso GitHub vivo ${link.url}`,
           });
         } else if (
+          github?.status === 410 &&
+          githubIssueInventoryContains(link, repositoryInventory)
+        ) {
+          findings.push({
+            severity: "incomplete",
+            code: "linear_only_tombstone_inventory_conflict",
+            issue: issue.identifier,
+            message:
+              `${link.url} retornou HTTP 410, mas ainda consta no inventário completo ` +
+              "do repositório; a auditoria se recusa a aceitar o tombstone contraditório",
+          });
+        } else if (
           github?.status !== 410 ||
           !githubIssueInventoryComplete(link, repositoryInventory)
         ) {
@@ -1590,15 +1874,39 @@ export function reconcileSnapshots({
       const isCanonicalIssue =
         link.kind === "issue" && canonicalIssueUrls.has(linkUrlKey);
       if (isCanonicalIssue) {
-        const linearState = linearIssueState(issue);
-        const githubState = githubIssueState(github);
-        if (linearState !== githubState) {
+        const linearMetadataIsValid = linearIssueMetadataIsValid(issue);
+        const githubMetadataIsValid = githubIssueMetadataIsValid(github);
+        if (!linearMetadataIsValid) {
           findings.push({
-            severity: "error",
-            code: "status_divergence",
+            severity: "incomplete",
+            code: "linear_issue_metadata_invalid",
             issue: issue.identifier,
-            message: `Linear=${linearState}; GitHub=${githubState} em ${link.url}`,
+            message:
+              "o state.type do Linear está ausente ou fora do enum oficial; " +
+              "o estado não pode ser reconciliado com segurança",
           });
+        }
+        if (!githubMetadataIsValid) {
+          findings.push({
+            severity: "incomplete",
+            code: "github_issue_metadata_invalid",
+            issue: issue.identifier,
+            message:
+              `${link.url} retornou state/state_reason ausente ou fora do contrato ` +
+              "da API; o estado não pode ser reconciliado com segurança",
+          });
+        }
+        if (linearMetadataIsValid && githubMetadataIsValid) {
+          const linearState = linearIssueState(issue);
+          const githubState = githubIssueState(github);
+          if (linearState !== githubState) {
+            findings.push({
+              severity: "error",
+              code: "status_divergence",
+              issue: issue.identifier,
+              message: `Linear=${linearState}; GitHub=${githubState} em ${link.url}`,
+            });
+          }
         }
       }
       if (
@@ -1615,6 +1923,38 @@ export function reconcileSnapshots({
           isCanonicalIssue,
         );
         const githubComments = github.comments ?? [];
+        const invalidGithubComments = githubComments.filter(
+          (comment) => !githubCommentMetadataIsValid(comment, now),
+        );
+        const invalidLinearComments = linearComments.filter(
+          (comment) => !linearCommentMetadataIsValid(comment, now),
+        );
+        if (invalidGithubComments.length > 0) {
+          findings.push({
+            severity: "incomplete",
+            code: "github_comment_metadata_invalid",
+            issue: issue.identifier,
+            message:
+              `${invalidGithubComments.length} comentário(s) GitHub em ${link.url} ` +
+              "possuem corpo ou timestamps obrigatórios ausentes/inválidos",
+          });
+        }
+        if (invalidLinearComments.length > 0) {
+          findings.push({
+            severity: "incomplete",
+            code: "linear_comment_metadata_invalid",
+            issue: issue.identifier,
+            message:
+              `${invalidLinearComments.length} comentário(s) Linear do thread ${link.url} ` +
+              "possuem corpo ou timestamps obrigatórios ausentes/inválidos",
+          });
+        }
+        if (
+          invalidGithubComments.length > 0 ||
+          invalidLinearComments.length > 0
+        ) {
+          continue;
+        }
         const { pairs: commentPairs, usedLinear } = pairSyncedComments(
           linearComments,
           githubComments,
@@ -1784,26 +2124,69 @@ export function reconcileSnapshots({
       }
       if (
         link.kind === "pull" &&
-        attachmentPullUrls.has(githubUrlKey(link.url)) &&
-        github.merged === true &&
-        github.merge_commit_sha &&
-        Date.parse(github.merged_at) >= releaseRequiredAfter.getTime()
+        attachmentPullUrls.has(githubUrlKey(link.url))
       ) {
-        const releases = connectionNodes(issue.releases);
-        if (
-          !releases.some((release) =>
-            releaseMatchesCommit(release, github.merge_commit_sha, link.repo),
-          )
-        ) {
+        if (!githubPullMetadataIsValid(github, now)) {
           findings.push({
-            severity: "error",
-            code: "missing_release",
+            severity: "incomplete",
+            code: "github_pull_metadata_invalid",
             issue: issue.identifier,
             message:
-              `PR mergeado ${link.url} não possui release da pipeline ` +
-              `${expectedPipelineForRepository(link.repo)} associada ao commit ` +
-              github.merge_commit_sha.slice(0, 7),
+              `${link.url} retornou metadata merged/merged_at/merge_commit_sha ` +
+              "ausente ou inválida; o carrier não pode ser reconciliado com segurança",
           });
+        } else if (
+          github.merged &&
+          Date.parse(github.merged_at) >= releaseRequiredAfter.getTime()
+        ) {
+          const releases = connectionNodes(issue.releases);
+          const invalidReleases = releases.filter(
+            (release) => !linearReleaseMetadataIsValid(release, now),
+          );
+          const mergedAt = Date.parse(github.merged_at);
+          const chronologicallyInvalidReleases = releases.filter(
+            (release) =>
+              releaseTargetsCommit(
+                release,
+                github.merge_commit_sha,
+                link.repo,
+              ) &&
+              timestampIsValid(release.completedAt) &&
+              Date.parse(release.completedAt) < mergedAt,
+          );
+          if (invalidReleases.length > 0) {
+            findings.push({
+              severity: "incomplete",
+              code: "linear_release_metadata_invalid",
+              issue: issue.identifier,
+              message:
+                `${invalidReleases.length} release(s) Linear possuem completedAt ` +
+                "ausente ou inválido; a prova do carrier é inconclusiva",
+            });
+          } else if (chronologicallyInvalidReleases.length > 0) {
+            findings.push({
+              severity: "incomplete",
+              code: "linear_release_metadata_invalid",
+              issue: issue.identifier,
+              message:
+                `${chronologicallyInvalidReleases.length} release(s) Linear associadas ao carrier ` +
+                "foram concluídas antes do merge; a cronologia é inconclusiva",
+            });
+          } else if (
+            !releases.some((release) =>
+              releaseMatchesCommit(release, github.merge_commit_sha, link.repo),
+            )
+          ) {
+            findings.push({
+              severity: "error",
+              code: "missing_release",
+              issue: issue.identifier,
+              message:
+                `PR mergeado ${link.url} não possui release da pipeline ` +
+                `${expectedPipelineForRepository(link.repo)} associada ao commit ` +
+                github.merge_commit_sha.slice(0, 7),
+            });
+          }
         }
       }
     }
@@ -1865,6 +2248,10 @@ export function reconcileSnapshots({
     auditedIssues: linearIssues.length,
     auditedGithubLinks,
     linearOnlyTeamKeys: [...linearOnlyTeams].sort(),
+    linearOnlyNoGithubSyncAttestedTeamKeys: [
+      ...noGithubSyncAttestedTeams,
+    ].sort(),
+    linearGithubIntegrationObservedAnchor,
     findings,
   };
 }
@@ -1894,6 +2281,8 @@ export function renderMarkdown(result) {
     `- ${result.auditedIssues} issues Linear auditadas`,
     `- ${result.auditedGithubLinks} links GitHub verificados`,
     `- Times Linear-only declarados: ${result.linearOnlyTeamKeys?.length ? result.linearOnlyTeamKeys.join(", ") : "nenhum"}`,
+    `- GitHub Issues Sync manualmente atestado como desabilitado: ${result.linearOnlyNoGithubSyncAttestedTeamKeys?.length ? result.linearOnlyNoGithubSyncAttestedTeamKeys.join(", ") : "nenhum"}`,
+    `- Âncora observada da integração GitHub no Linear: ${result.linearGithubIntegrationObservedAnchor || "não aplicável"}`,
     `- ${counts.error} erros; ${counts.warning} avisos; ${counts.incomplete} inconclusivos`,
     "",
   ];
@@ -2093,6 +2482,20 @@ const TEAMS_QUERY = `
   }
 `;
 
+const INTEGRATIONS_QUERY = `
+  query GitHubLinearIntegrations($after: String) {
+    integrations(
+      first: 50
+      after: $after
+      includeArchived: true
+      orderBy: updatedAt
+    ) {
+      nodes { id service createdAt updatedAt archivedAt team { id key name } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
 const TEAM_CYCLES_QUERY = `
   query GitHubLinearUmbrellaCycles($id: String!, $after: String) {
     team(id: $id) {
@@ -2281,8 +2684,8 @@ async function readLinearConnectionPages({
       fetchImpl,
     });
     const connection = root(data);
-    if (!connection)
-      throw new Error("Linear topology retornou conexão ausente");
+    if (!connection || !Array.isArray(connection.nodes))
+      throw new Error("Linear topology retornou nodes ausentes ou inválidos");
     nodes.push(...connection.nodes);
     after = nextLinearCursor(
       connection.pageInfo,
@@ -2298,22 +2701,32 @@ export async function readLinearTopology({
   umbrellaTeamKey = DEFAULT_UMBRELLA_TEAM_KEY,
   fetchImpl = fetch,
 }) {
-  const teams = await readLinearConnectionPages({
-    token,
-    query: TEAMS_QUERY,
-    root: (data) => data.teams,
-    fetchImpl,
-  });
+  const [teams, integrations] = await Promise.all([
+    readLinearConnectionPages({
+      token,
+      query: TEAMS_QUERY,
+      root: (data) => data.teams,
+      fetchImpl,
+    }),
+    readLinearConnectionPages({
+      token,
+      query: INTEGRATIONS_QUERY,
+      root: (data) => data.integrations,
+      fetchImpl,
+    }),
+  ]);
   const matches = teams.filter((team) => team.key === umbrellaTeamKey);
   if (matches.length === 0)
     return {
       teams,
+      integrations,
       auditFailure: "umbrella_team_missing",
       message: `o time guarda-chuva ${umbrellaTeamKey} não existe ou não pôde ser lido`,
     };
   if (matches.length !== 1) {
     return {
       teams,
+      integrations,
       auditFailure: "ambiguous_umbrella_team",
       message: `${matches.length} times usam a chave ${umbrellaTeamKey}`,
     };
@@ -2323,6 +2736,7 @@ export async function readLinearTopology({
     return {
       team,
       teams,
+      integrations,
       auditFailure: "umbrella_team_inactive",
       message: `o time guarda-chuva ${umbrellaTeamKey} deve permanecer ativo`,
     };
@@ -2360,7 +2774,16 @@ export async function readLinearTopology({
   const subteams = teams.filter(
     (candidate) => candidate.parent?.id === team.id,
   );
-  return { team, teams, cycles, projects, initiatives, documents, subteams };
+  return {
+    team,
+    teams,
+    integrations,
+    cycles,
+    projects,
+    initiatives,
+    documents,
+    subteams,
+  };
 }
 
 class GithubRequestError extends Error {
@@ -2628,6 +3051,12 @@ async function main() {
     process.env.LINEAR_ONLY_TEAM_KEYS,
     umbrellaTeamKey,
   );
+  const linearOnlyNoGithubSyncAttestedTeamKeys = parseLinearOnlyTeamKeys(
+    process.env.LINEAR_ONLY_NO_GITHUB_SYNC_ATTESTED_TEAM_KEYS,
+    umbrellaTeamKey,
+  );
+  const linearGithubIntegrationAttestation =
+    process.env.LINEAR_GITHUB_INTEGRATION_ATTESTATION?.trim() || "";
   const [issues, linearTopology] = await Promise.all([
     readLinearIssues({ token: linearToken }),
     readLinearTopology({
@@ -2662,6 +3091,8 @@ async function main() {
     organization,
     umbrellaTeamKey,
     linearOnlyTeamKeys,
+    linearOnlyNoGithubSyncAttestedTeamKeys,
+    linearGithubIntegrationAttestation,
     teamRepositories: effectiveTeamRepositories,
     commentGraceMs: commentGraceMinutes * 60_000,
     releaseRequiredAfter,

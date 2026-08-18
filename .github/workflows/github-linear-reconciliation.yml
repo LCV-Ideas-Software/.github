@@ -17,9 +17,6 @@ on:
       - "scripts/github-linear-reconciler.test.mjs"
   merge_group:
     types: [checks_requested]
-  schedule:
-    # 00:15 e 12:15 no horário de Brasília (UTC-03:00).
-    - cron: "15 3,15 * * *"
   workflow_dispatch:
 
 permissions: {}
@@ -53,54 +50,3 @@ jobs:
 
       - name: Prove query-only Linear and GET-only GitHub behavior
         run: node --test scripts/github-linear-reconciler.test.mjs
-
-  audit:
-    name: Reconcile GitHub and Linear read-only
-    if: >-
-      github.event_name == 'push' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch'
-    needs: verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: linear-observability
-    permissions:
-      contents: read
-      issues: read # Inventory all issues and compare synchronized comments.
-      pull-requests: read # Verify merged carrier commits and Linear releases.
-    steps:
-      - name: Checkout without persisted credentials
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup latest Node.js 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          check-latest: true
-
-      - name: Audit both GitHub and Linear inventories
-        env:
-          LINEAR_READ_KEY: ${{ secrets.LINEAR_READ_KEY }}
-          # Organization-wide access is required because github.token silently
-          # omits Internal and Private repositories outside this repository.
-          GH_TOKEN: ${{ secrets.LINEAR_GITHUB_READ_TOKEN }}
-          RECONCILIATION_JSON_STDOUT: "true"
-          STRICT_WARNINGS: "true"
-          LINEAR_ONLY_TEAM_KEYS: ${{ vars.LINEAR_ONLY_TEAM_KEYS }}
-        shell: bash
-        run: |
-          set +e
-          node scripts/github-linear-reconciler.mjs > github-linear-reconciliation.json
-          status=$?
-          exit "$status"
-
-      - name: Preserve complete reconciliation result
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: github-linear-reconciliation-${{ github.run_id }}-${{ github.run_attempt }}
-          path: github-linear-reconciliation.json
-          if-no-files-found: error
-          retention-days: 14
