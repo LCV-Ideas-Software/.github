@@ -298,6 +298,45 @@ test("Linear usa SDK oficial, pagina integralmente e normaliza epoch", async () 
   assert.deepEqual(snapshot.issues[0].insecureGithubResourceKeys, []);
 });
 
+test("Linear normaliza lifecycle nullable omitido pelo SDK como ativo", async () => {
+  const client = {
+    teams: async () =>
+      pagedConnection([
+        [
+          {
+            id: "team-1",
+            key: "ROOT",
+            name: "Root",
+            updatedAt: "2030-01-02T03:00:00.000Z",
+          },
+        ],
+      ]),
+    issues: async () => emptyConnection(),
+    cycles: async () => emptyConnection(),
+    projects: async () => emptyConnection(),
+    initiatives: async () => emptyConnection(),
+    documents: async () => emptyConnection(),
+    releasePipelines: async () => emptyConnection(),
+    releases: async () => emptyConnection(),
+    issueToReleases: async () => emptyConnection(),
+  };
+  const snapshot = await createLinearAdapter({
+    apiKey: "linear-test-token",
+    clientFactory: () => client,
+  }).readWorkspaceSnapshot({ capturedAt: "2030-01-02T04:00:00.000Z" });
+
+  assert.equal(snapshot.complete, true);
+  assert.deepEqual(snapshot.failures, []);
+  assert.deepEqual(snapshot.teams, [
+    {
+      id: "team-1",
+      key: "ROOT",
+      active: true,
+      updatedAtMs: 1893553200000,
+    },
+  ]);
+});
+
 test("Linear torna pagina ou node parcial inconclusivo", async () => {
   const adapter = createLinearAdapter({
     apiKey: "linear-test-token",
@@ -543,8 +582,12 @@ function syntheticIssue(overrides = {}) {
             syncedWith: [{ service: "github", id: "github-comment-node-1" }],
             externalThread: {
               id: "provider-specific-thread-id",
+              type: "integration",
+              subType: "github",
               url: githubUrl,
               isConnected: true,
+              isPersonalIntegrationRequired: true,
+              isPersonalIntegrationConnected: true,
             },
           },
           {
@@ -555,8 +598,12 @@ function syntheticIssue(overrides = {}) {
             syncedWith: [],
             externalThread: {
               id: "jira-thread",
+              type: "integration",
+              subType: "jira",
               url: "https://example.invalid/tickets/8",
               isConnected: true,
+              isPersonalIntegrationRequired: true,
+              isPersonalIntegrationConnected: true,
             },
           },
           {
@@ -571,11 +618,14 @@ function syntheticIssue(overrides = {}) {
               subType: "github",
               url: githubUrl,
               isConnected: true,
+              isPersonalIntegrationRequired: true,
+              isPersonalIntegrationConnected: true,
             },
             botActor: {
               id: "github-bot",
               type: "integration",
               subType: "github",
+              userDisplayName: null,
             },
             externalUser: null,
             parentId: null,

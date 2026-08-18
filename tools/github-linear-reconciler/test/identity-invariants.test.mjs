@@ -28,7 +28,7 @@ function team(overrides = {}) {
 }
 
 function comment(overrides = {}) {
-  return {
+  const value = {
     id: "linear-comment-1",
     body: "Comentario sincronizado.",
     createdAt: "2030-01-02T03:05:00.000Z",
@@ -40,6 +40,17 @@ function comment(overrides = {}) {
     parentId: null,
     ...overrides,
   };
+  if (value.externalThread !== null) {
+    value.externalThread = {
+      isPersonalIntegrationRequired: true,
+      isPersonalIntegrationConnected: true,
+      ...value.externalThread,
+    };
+  }
+  if (value.botActor !== null) {
+    value.botActor = { userDisplayName: null, ...value.botActor };
+  }
+  return value;
 }
 
 function issue(overrides = {}) {
@@ -130,9 +141,20 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
     externalUser: null,
     parentId: null,
   });
+  const sdkNullAnchor = {
+    ...structuredAnchor,
+    id: "comment-sdk-null-anchor",
+    externalThread: {
+      ...structuredAnchor.externalThread,
+      id: "thread-sdk-null-anchor",
+    },
+  };
+  delete sdkNullAnchor.externalUser;
+  delete sdkNullAnchor.parentId;
   const externalUserComment = {
     ...structuredAnchor,
     id: "comment-external-user",
+    externalUserId: "external-user-1",
     externalUser: { id: "external-user-1" },
   };
   const replyComment = {
@@ -155,6 +177,7 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
           connection([
             spoof,
             structuredAnchor,
+            sdkNullAnchor,
             externalUserComment,
             replyComment,
             disconnectedComment,
@@ -166,12 +189,13 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
   assert.equal(result.complete, true);
   assert.deepEqual(
     result.issues[0].comments.map(({ id }) => id),
-    [
-      "comment-spoof",
-      "comment-external-user",
-      "comment-reply",
-      "comment-disconnected",
-    ],
+    ["comment-spoof", "comment-external-user", "comment-reply"],
+  );
+  assert.deepEqual(
+    result.issues[0].githubThreadControls.map(
+      ({ linearCommentId }) => linearCommentId,
+    ),
+    ["comment-anchor", "comment-sdk-null-anchor", "comment-disconnected"],
   );
   assert.equal(result.issues[0].comments[0].updatedAtMs, 1_893_553_560_000);
 
@@ -192,7 +216,83 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
       }),
     ],
   });
-  assert.equal(partialAnchor.complete, false);
+  assert.equal(partialAnchor.complete, true);
+  assert.equal(partialAnchor.issues[0].comments[0].provenance, "linear");
+});
+
+test("cycle sem time obrigatorio torna o snapshot inconclusivo", async () => {
+  const result = await snapshot({ cycles: [{ id: "cycle-without-team" }] });
+
+  assert.equal(result.complete, false);
+  assert.equal(result.failures[0].code, "boundary_invalid");
+});
+
+test("comment Linear canonicaliza somente inversao subsegundo comprovada pelo SDK", async () => {
+  const createdAt = "2030-01-02T03:05:00.000Z";
+  for (const skewMs of [643, 1_000]) {
+    const result = await snapshot({
+      issues: [
+        issue({
+          comments: async () =>
+            connection([
+              comment({
+                createdAt,
+                updatedAt: new Date(
+                  Date.parse(createdAt) - skewMs,
+                ).toISOString(),
+              }),
+            ]),
+        }),
+      ],
+    });
+
+    assert.equal(result.complete, true, `skew ${skewMs} ms`);
+    assert.equal(
+      result.issues[0].comments[0].createdAtMs,
+      Date.parse(createdAt),
+    );
+    assert.equal(
+      result.issues[0].comments[0].updatedAtMs,
+      Date.parse(createdAt),
+    );
+  }
+
+  const outsideTolerance = await snapshot({
+    issues: [
+      issue({
+        comments: async () =>
+          connection([
+            comment({
+              createdAt,
+              updatedAt: new Date(Date.parse(createdAt) - 1_001).toISOString(),
+            }),
+          ]),
+      }),
+    ],
+  });
+  assert.equal(outsideTolerance.complete, false);
+  assert.equal(outsideTolerance.failures[0].code, "boundary_invalid");
+
+  for (const timestamps of [
+    {
+      createdAt: "2030-01-02T04:00:00.001Z",
+      updatedAt: "2030-01-02T04:00:00.000Z",
+    },
+    {
+      createdAt: "2030-01-02T04:00:00.000Z",
+      updatedAt: "2030-01-02T04:00:00.001Z",
+    },
+  ]) {
+    const futureTimestamp = await snapshot({
+      issues: [
+        issue({
+          comments: async () => connection([comment(timestamps)]),
+        }),
+      ],
+    });
+    assert.equal(futureTimestamp.complete, false);
+    assert.equal(futureTimestamp.failures[0].code, "boundary_invalid");
+  }
 });
 
 test("anchor recusa tupla contraditória e seus IDs continuam globais", async () => {
@@ -268,7 +368,7 @@ test("anchor recusa tupla contraditória e seus IDs continuam globais", async ()
   assert.match(duplicatedId.failures[0].message, /id Linear duplicado/u);
 });
 
-test("externalThread GitHub recusa qualquer URL nao canonica", async () => {
+test("externalThread sem Comment.syncedWith nunca cria provenance", async () => {
   const invalidUrls = [
     "http://github.com/example-org/example-app/issues/7",
     "https://github.com:444/example-org/example-app/issues/7",
@@ -296,8 +396,9 @@ test("externalThread GitHub recusa qualquer URL nao canonica", async () => {
         }),
       ],
     });
-    assert.equal(result.complete, false, url);
-    assert.match(result.failures[0].message, /externalThread|GitHub|canonic/u);
+    assert.equal(result.complete, true, url);
+    assert.equal(result.issues[0].comments[0].provenance, "linear", url);
+    assert.equal(result.issues[0].comments[0].resourceKey, null, url);
   }
 });
 
@@ -308,7 +409,7 @@ test("capturedAt fecha a janela temporal de issue, comment e release", async () 
       issues: [
         issue({
           comments: async () =>
-            connection([comment({ updatedAt: "2030-01-02T03:04:59.999Z" })]),
+            connection([comment({ updatedAt: "2030-01-02T03:04:58.999Z" })]),
         }),
       ],
     },

@@ -22,7 +22,13 @@
  * @property {string|null} threadId
  * @property {boolean} connected
  * @property {number} createdAtMs Epoch milliseconds, decoded by the adapter.
- * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
+ * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs; a Linear-provider inversion of at most 1,000 ms is canonicalized to createdAtMs by the adapter.
+ *
+ * @typedef {object} GithubThreadControl
+ * @property {string} linearCommentId Stable Linear comment identity; globally disjoint from content-comment IDs.
+ * @property {boolean} connected Current external-thread connection state.
+ * @property {string|null} observedResourceKey Corroborative GitHub Issue key, never an authoritative counterpart.
+ * @property {'resource'|'unparseable'|'absent'} urlState Allowlisted URL observation without retaining the provider URL.
  *
  * @typedef {object} NormalizedRelease
  * @property {string} id
@@ -47,6 +53,7 @@
  * @property {string[]} insecureGithubResourceKeys Noncanonical or unencrypted GitHub resources, never fetched.
  * @property {string[]} carrierPullKeys
  * @property {LinearComment[]} comments
+ * @property {GithubThreadControl[]} githubThreadControls Provider controls excluded from content-comment reconciliation.
  * @property {NormalizedRelease[]} releases
  * @property {string|null} duplicateOf
  * @property {string[]} relatedIdentifiers

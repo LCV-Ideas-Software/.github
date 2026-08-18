@@ -12,19 +12,22 @@ import {
   assertOwnedLocalProfile,
   assertPrivateFilePath,
 } from "./local-profile.mjs";
+import {
+  parseGithubOwner,
+  parseGithubRepository,
+} from "./domain/github-resource.mjs";
 
 const MAX_CONFIG_BYTES = 64 * 1_024;
 
 const teamKeySchema = z.string().regex(/^[A-Z][A-Z0-9]{0,19}$/u);
 const repositorySchema = z
   .string()
-  .regex(/^[A-Za-z0-9_.-]{1,100}$/u)
-  .refine((value) => value !== "." && value !== "..")
-  .transform((value) => value.toLowerCase());
+  .refine((value) => parseGithubRepository(value) !== null)
+  .transform((value) => parseGithubRepository(value));
 const organizationSchema = z
   .string()
-  .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)
-  .transform((value) => value.toLowerCase());
+  .refine((value) => parseGithubOwner(value) !== null)
+  .transform((value) => parseGithubOwner(value));
 const linearUuidSchema = z.uuid().transform((value) => value.toLowerCase());
 
 const mappingSchema = z.discriminatedUnion("mode", [

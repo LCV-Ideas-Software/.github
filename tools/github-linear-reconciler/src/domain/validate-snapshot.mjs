@@ -1,5 +1,10 @@
 import { finding } from "./findings.mjs";
 import { findDuplicateOfCycles } from "./duplicate-graph.mjs";
+import {
+  parseGithubOwner,
+  parseGithubRepository,
+  parseGithubResourceKey,
+} from "./github-resource.mjs";
 import { NORMALIZED_STATUSES } from "./model.mjs";
 
 function nonempty(value) {
@@ -13,12 +18,7 @@ function canonical(value) {
 }
 
 function githubResourceKey(value) {
-  if (!canonical(value)) return false;
-  const match =
-    /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9][a-z0-9_.-]{0,99}#([1-9]\d*)$/u.exec(
-      value,
-    );
-  return match !== null && Number.isSafeInteger(Number(match[1]));
+  return parseGithubResourceKey(value)?.key === value;
 }
 
 function sha40(value) {
@@ -113,6 +113,22 @@ function validNativeCounterpart(counterpart) {
   );
 }
 
+function validGithubThreadControl(control) {
+  if (
+    !control ||
+    typeof control !== "object" ||
+    Array.isArray(control) ||
+    !nonempty(control.linearCommentId) ||
+    typeof control.connected !== "boolean" ||
+    !["resource", "unparseable", "absent"].includes(control.urlState)
+  ) {
+    return false;
+  }
+  return control.urlState === "resource"
+    ? githubResourceKey(control.observedResourceKey)
+    : control.observedResourceKey === null;
+}
+
 function validRelease(release, capturedAtMs) {
   return (
     release &&
@@ -167,6 +183,11 @@ function validLinearIssue(issue, teamById, teamByKey, capturedAtMs) {
     ) &&
     new Set(issue.comments.map((comment) => comment.id)).size ===
       issue.comments.length &&
+    Array.isArray(issue.githubThreadControls) &&
+    issue.githubThreadControls.every(validGithubThreadControl) &&
+    new Set(
+      issue.githubThreadControls.map((control) => control.linearCommentId),
+    ).size === issue.githubThreadControls.length &&
     Array.isArray(issue.releases) &&
     issue.releases.every((release) => validRelease(release, capturedAtMs)) &&
     new Set(issue.releases.map((release) => release.id)).size ===
@@ -396,6 +417,24 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   ) {
     problems.push("linear comment identities are not globally unique");
   }
+  const githubThreadControls = issues.flatMap(
+    (issue) => issue?.githubThreadControls ?? [],
+  );
+  const linearCommentIds = new Set(
+    linearComments.map((comment) => comment?.id),
+  );
+  if (
+    duplicateValues(
+      githubThreadControls.map((control) => control?.linearCommentId),
+    ) ||
+    githubThreadControls.some((control) =>
+      linearCommentIds.has(control?.linearCommentId),
+    )
+  ) {
+    problems.push(
+      "linear GitHub thread control identities are repeated or collide with comments",
+    );
+  }
 
   const releasePipelines = Array.isArray(linear?.releasePipelines)
     ? linear.releasePipelines
@@ -533,12 +572,13 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   );
   if (
     github?.organization !== organization ||
+    parseGithubOwner(github?.organization) !== github?.organization ||
     !Array.isArray(github?.repositories) ||
     repositories.some(
       (repository) =>
         !Number.isSafeInteger(repository?.id) ||
         repository.id <= 0 ||
-        !canonical(repository?.name) ||
+        parseGithubRepository(repository?.name) !== repository?.name ||
         repository.archived !== false ||
         typeof repository.issuesEnabled !== "boolean" ||
         typeof repository.fork !== "boolean",

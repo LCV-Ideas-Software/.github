@@ -198,7 +198,7 @@ test("r5530: teams e toda topologia validam updatedAt antes de filtrar", async (
     }),
   );
   assert.equal(futureTeam.complete, false);
-  assert.match(futureTeam.failures[0].message, /team.*updatedAt|capturedAt/i);
+  assert.equal(futureTeam.failures[0].scope, "teams[0]");
 
   for (const method of ["cycles", "projects", "initiatives", "documents"]) {
     const entity = {
@@ -212,7 +212,7 @@ test("r5530: teams e toda topologia validam updatedAt antes de filtrar", async (
       client({ [method]: async () => connection([entity]) }),
     );
     assert.equal(result.complete, false, method);
-    assert.match(result.failures[0].message, /updatedAt|capturedAt/i, method);
+    assert.equal(result.failures[0].scope, `${method}[0]`, method);
   }
 });
 
@@ -310,7 +310,7 @@ test("r5554: release com SHA e pipeline nula falha fechado", async () => {
     }),
   );
   assert.equal(result.complete, false);
-  assert.match(result.failures[0].message, /pipeline/i);
+  assert.equal(result.failures[0].scope, "releases[0]");
 });
 
 test("grafo global rejeita cronologia impossível no adapter e no validator", async () => {
@@ -319,6 +319,17 @@ test("grafo global rejeita cronologia impossível no adapter e no validator", as
   const afterRelease = new Date(releaseCreatedAt + 1).toISOString();
 
   const invalidClients = [
+    client({
+      releasePipelines: async () =>
+        connection([pipeline({ updatedAt: beforeRelease })]),
+    }),
+    client({
+      releases: async () => connection([release({ updatedAt: beforeRelease })]),
+    }),
+    client({
+      issueToReleases: async () =>
+        connection([issueToRelease({ updatedAt: beforeRelease })]),
+    }),
     client({
       releases: async () =>
         connection([release({ completedAt: beforeRelease })]),

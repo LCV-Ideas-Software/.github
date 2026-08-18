@@ -25,18 +25,31 @@ pelos mappings locais. A avaliação detecta, sem efetuar qualquer alteração:
 - attachments e releases ausentes;
 - comentários sem proveniência estável ou sem contraparte;
 - duplicatas e itens semelhantes sem relação explícita;
-- Issues, Cycles, Projects, Initiatives ou Documents vinculados diretamente ao
-  time configurado no modo `umbrella`.
+- Issues, Projects, Initiatives ou Documents vinculados diretamente ao time
+  configurado no modo `umbrella`.
 
 O time `umbrella` permanece apenas como contêiner hierárquico. O reconciliador
 não escolhe destinos, não migra entidades, não cria relações e não corrige
 findings. Times sem repositório correspondente são declarados explicitamente no
 modo `linear-only`.
 
+Cycles continuam inventariados e validados no snapshot. Sua presença no time
+`umbrella` representa cadência hierárquica herdável e, por si só, não constitui
+trabalho residual nem gera `umbrella_work_item_present`. Um Cycle malformado ou
+com referência de time inconsistente ainda torna o snapshot inconclusivo.
+
 Snapshots incompletos, paginação inconclusiva, credenciais insuficientes e
 respostas inválidas nunca são classificados como limpos. Comentários são
 correlacionados apenas por identidade externa ou thread estável, não por
 similaridade do corpo Markdown.
+
+O boundary de comentários Linear admite somente a imprecisão de relógio
+comprovada nessa entidade: se o `updatedAt` reportado anteceder o `createdAt` em
+no máximo 1.000 ms, ambos ainda são validados individualmente contra
+`capturedAt` e o `updatedAt` normalizado é elevado a `createdAt`. Uma inversão
+maior torna o snapshot inconclusivo. Essa exceção não se aplica ao GitHub, a
+outras entidades Linear, a `capturedAt`, nem às cronologias entre pipeline,
+release, associação, merge e conclusão.
 
 A identidade canônica vem exclusivamente do GitHub Issues Sync nativo. O
 attachment dessa contraparte é obrigatório, mas attachments suplementares
@@ -45,6 +58,22 @@ não participam de estado, comentários, releases ou cardinalidade.
 `syncedWith.id` deve coincidir exatamente, com comparação case-sensitive, com o
 `node_id` do GitHub Issue. A resource key é derivada somente depois dessa prova;
 URL ou attachment não substitui a identidade nativa.
+
+Owner, repositório, número, resource key e URL usam uma única gramática em toda
+a fronteira. Ela inclui nomes oficiais de repositório iniciados por ponto, como
+`.github`, e rejeita ambiguidades de path, números não seguros e URLs sem a
+autoridade HTTPS esperada. Fragmentos de navegação de uma `externalThread` não
+entram na identidade; fragments em attachments continuam inseguros.
+
+Comentários de controle emitidos pela integração são preservados em um eixo
+próprio e nunca entram no pareamento de conteúdo. A classificação depende da
+tupla estruturada exposta pelo SDK — inclusive da ausência de usuário,
+external user, parent e `userDisplayName` —, nunca do corpo ou da URL. Um
+controle histórico desconectado sem contradição é aceito; evidência histórica
+ambígua gera `advisory`. Um controle conectado precisa concordar com uma única
+contraparte nativa, caso contrário o snapshot é `incomplete`. Para comentários
+de conteúdo, somente `Comment.syncedWith` fornece identidade externa; uma URL
+ou attachment isolado não promove comentário Linear a comentário GitHub.
 
 ## Configuração local
 
@@ -247,6 +276,11 @@ ser sincronizado para armazenamento público.
 Um finding produzido pela execução local deve ser analisado contra o panorama
 global antes de qualquer write operacional no GitHub ou Linear. A ferramenta é
 e permanece somente leitura para ambos os provedores.
+
+Uma primeira execução completa pode retornar `drift` em um workspace
+operacional: isso é a lista de reconciliação a tratar, não uma falha da captura.
+Somente `incomplete` indica que o inventário ou a prova de identidade não foi
+concluído e impede qualquer conclusão sobre ausência de divergências.
 
 ## Verificação pública
 

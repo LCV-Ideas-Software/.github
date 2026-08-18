@@ -15,6 +15,11 @@ import {
   assertPrivateDirectoryPath,
   assertPrivateFilePath,
 } from "../local-profile.mjs";
+import {
+  buildGithubResourceKey,
+  parseGithubOwner,
+  parseGithubRepository,
+} from "../domain/github-resource.mjs";
 
 const PaginatingOctokit = Octokit.plugin(paginateRest);
 const MAX_PAGES = 1_000;
@@ -149,15 +154,12 @@ export function validateGithubAppInstallation({
   app,
   installation,
 }) {
-  const parsedOrganization = z
-    .string()
-    .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)
-    .safeParse(organization);
+  const parsedOrganization = parseGithubOwner(organization);
   const parsedApp = githubAppResponseSchema.safeParse(app);
   const parsedInstallation =
     githubInstallationResponseSchema.safeParse(installation);
   if (
-    !parsedOrganization.success ||
+    parsedOrganization === null ||
     !parsedApp.success ||
     !parsedInstallation.success
   ) {
@@ -168,11 +170,9 @@ export function validateGithubAppInstallation({
     value.app_id !== parsedApp.data.id ||
     (expectedAppId !== undefined && value.app_id !== expectedAppId) ||
     parsedApp.data.owner.id !== value.account.id ||
-    parsedApp.data.owner.login.toLowerCase() !==
-      parsedOrganization.data.toLowerCase() ||
+    parsedApp.data.owner.login.toLowerCase() !== parsedOrganization ||
     value.target_id !== value.account.id ||
-    value.account.login.toLowerCase() !==
-      parsedOrganization.data.toLowerCase() ||
+    value.account.login.toLowerCase() !== parsedOrganization ||
     value.suspended_at !== null
   ) {
     invalidInstallation();
@@ -188,8 +188,8 @@ export async function collectInstallationRepositories({
   if (typeof request !== "function") {
     throw new TypeError("request GitHub App obrigatória");
   }
-  const normalizedOrganization = String(organization ?? "").toLowerCase();
-  if (!normalizedOrganization) {
+  const normalizedOrganization = parseGithubOwner(organization);
+  if (normalizedOrganization === null) {
     throw new TypeError("organização GitHub App obrigatória");
   }
   let expectedTotal = null;
@@ -218,8 +218,12 @@ export async function collectInstallationRepositories({
       ) {
         throw new Error("repositório fora da organização GitHub App");
       }
-      const normalizedName = repository.name.toLowerCase();
-      if (ids.has(repository.id) || names.has(normalizedName)) {
+      const normalizedName = parseGithubRepository(repository.name);
+      if (
+        normalizedName === null ||
+        ids.has(repository.id) ||
+        names.has(normalizedName)
+      ) {
         throw new Error("identidade de repositório GitHub App duplicada");
       }
       ids.add(repository.id);
@@ -471,7 +475,13 @@ function validateTemporalEntity(
 }
 
 function resourceKey(organization, repository, number) {
-  return `${organization}/${repository}#${number}`.toLowerCase();
+  const key = buildGithubResourceKey({
+    owner: organization,
+    repository,
+    number,
+  });
+  if (key === null) throw new Error("identidade de recurso GitHub inválida");
+  return key;
 }
 
 function isLinearLinkbackControl(comment) {
@@ -560,6 +570,9 @@ export function createGithubAdapter({
 
   async function readOrganizationSnapshot({ organization, capturedAt }) {
     try {
+      const canonicalOrganization = parseGithubOwner(organization);
+      if (canonicalOrganization === null)
+        throw new Error("organização GitHub inválida");
       const capturedAtMs = Date.parse(capturedAt);
       if (!Number.isFinite(capturedAtMs))
         throw new Error("capturedAt invalido");
@@ -570,7 +583,7 @@ export function createGithubAdapter({
       const repositoryIds = new Set();
       const repositoryNames = new Set();
       for (const repository of repositoriesRaw) {
-        const name = String(repository?.name ?? "").toLowerCase();
+        const name = parseGithubRepository(repository?.name);
         if (!name || repositoryNames.has(name)) {
           throw new Error("identidade de repositório GitHub duplicada");
         }
@@ -588,7 +601,7 @@ export function createGithubAdapter({
         .filter((repository) => !repository.archived)
         .map((repository) => ({
           id: repository.id,
-          name: repository.name.toLowerCase(),
+          name: parseGithubRepository(repository.name),
           archived: false,
           issuesEnabled: repository.has_issues,
           fork: repository.fork,
@@ -600,7 +613,7 @@ export function createGithubAdapter({
           const rawIssues = await paginate({
             path: "/repos/{owner}/{repo}/issues",
             parameters: {
-              owner: organization,
+              owner: canonicalOrganization,
               repo: repository.name,
               state: "all",
               per_page: 100,
@@ -617,7 +630,7 @@ export function createGithubAdapter({
             const comments = await paginate({
               path: "/repos/{owner}/{repo}/issues/{issue_number}/comments",
               parameters: {
-                owner: organization,
+                owner: canonicalOrganization,
                 repo: repository.name,
                 issue_number: issue.number,
                 per_page: 100,
@@ -626,7 +639,7 @@ export function createGithubAdapter({
               identity: (comment) => comment.node_id,
             });
             const key = resourceKey(
-              organization,
+              canonicalOrganization,
               repository.name,
               issue.number,
             );
@@ -660,7 +673,7 @@ export function createGithubAdapter({
         const rawPulls = await paginate({
           path: "/repos/{owner}/{repo}/pulls",
           parameters: {
-            owner: organization,
+            owner: canonicalOrganization,
             repo: repository.name,
             state: "all",
             per_page: 100,
@@ -676,7 +689,11 @@ export function createGithubAdapter({
             { requireMerged: true },
           );
           pulls.push({
-            key: resourceKey(organization, repository.name, pull.number),
+            key: resourceKey(
+              canonicalOrganization,
+              repository.name,
+              pull.number,
+            ),
             repository: repository.name,
             number: pull.number,
             mergedAtMs: pull.merged_at ? Date.parse(pull.merged_at) : null,
@@ -690,7 +707,7 @@ export function createGithubAdapter({
         complete: true,
         failures: [],
         capturedAtMs,
-        organization: organization.toLowerCase(),
+        organization: canonicalOrganization,
         repositories,
         issues,
         pulls,

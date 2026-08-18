@@ -9,6 +9,7 @@ import { evaluateAttachments } from "./rules/attachments.mjs";
 import { evaluateComments } from "./rules/comments.mjs";
 import { evaluateCounterparts } from "./rules/counterparts.mjs";
 import { evaluateDuplicates } from "./rules/duplicates.mjs";
+import { evaluateGithubThreadControls } from "./rules/github-thread-controls.mjs";
 import { evaluateReleases } from "./rules/releases.mjs";
 import { evaluateStatus } from "./rules/status.mjs";
 import { evaluateUmbrella } from "./rules/umbrella.mjs";
@@ -18,6 +19,7 @@ const RULES = Object.freeze([
   evaluateUmbrella,
   evaluateStatus,
   evaluateAttachments,
+  evaluateGithubThreadControls,
   evaluateComments,
   evaluateReleases,
   evaluateDuplicates,

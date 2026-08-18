@@ -138,6 +138,7 @@ function baseline() {
           insecureGithubResourceKeys: [],
           carrierPullKeys: [],
           comments: [],
+          githubThreadControls: [],
           releases: [],
           duplicateOf: null,
           relatedIdentifiers: [],
@@ -411,6 +412,21 @@ test("fronteira normalizada fecha relogio, identidade composta e ciclos duplicat
     "normalized_snapshot_invalid",
   ]);
 
+  const invertedNormalizedComment = baseline();
+  invertedNormalizedComment.linear.issues[0].comments.push({
+    id: "linear-comment-inverted",
+    provenance: "linear",
+    resourceKey: null,
+    externalId: null,
+    threadId: null,
+    connected: true,
+    createdAtMs: 2_000,
+    updatedAtMs: 1_999,
+  });
+  assert.deepEqual(codes(evaluate(invertedNormalizedComment)), [
+    "normalized_snapshot_invalid",
+  ]);
+
   const mismatchedTeam = baseline();
   mismatchedTeam.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
   assert.deepEqual(codes(evaluate(mismatchedTeam)), [
@@ -517,10 +533,10 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
   assert.equal(evaluate(archivedRepository).state, "incomplete");
 });
 
-test("umbrella vazio cobre todas as classes finitas de work item", () => {
+test("umbrella vazio cobre as classes residuais de work item", () => {
   const input = baseline();
   addLinearIssue(input, { teamKey: "TEAM_ROOT" });
-  for (const collection of ["cycles", "projects", "initiatives", "documents"]) {
+  for (const collection of ["projects", "initiatives", "documents"]) {
     input.linear[collection].push({
       id: `${collection}-1`,
       teamId: TEAM_IDS.TEAM_ROOT,
@@ -534,7 +550,7 @@ test("umbrella vazio cobre todas as classes finitas de work item", () => {
     result.findings.filter(
       (finding) => finding.code === "umbrella_work_item_present",
     ).length,
-    5,
+    4,
   );
   assert.equal(result.state, "drift");
 });
@@ -809,6 +825,7 @@ test("scan global agrupa milhares de candidatos sem materializar findings por pa
       insecureGithubResourceKeys: [],
       carrierPullKeys: [],
       comments: [],
+      githubThreadControls: [],
       releases: [],
       duplicateOf: null,
       relatedIdentifiers: [],

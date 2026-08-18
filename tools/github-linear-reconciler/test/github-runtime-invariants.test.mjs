@@ -118,7 +118,7 @@ test("boundary recusa zero, multiplas ou contagem contraditoria de instalacoes",
   }
 });
 
-function githubAdapter({ issue, pulls }) {
+function githubAdapter({ issue, comments = [], pulls }) {
   return createGithubAdapter({
     request: async () => ({ data: {} }),
     paginateIterator: async function* (route) {
@@ -129,7 +129,7 @@ function githubAdapter({ issue, pulls }) {
       if (
         route === "GET /repos/{owner}/{repo}/issues/{issue_number}/comments"
       ) {
-        yield { data: [] };
+        yield { data: comments };
         return;
       }
       if (route === "GET /repos/{owner}/{repo}/pulls") {
@@ -169,6 +169,18 @@ function pull(number, overrides = {}) {
     updated_at: "2030-01-02T03:40:00.000Z",
     merged_at: null,
     merge_commit_sha: null,
+    ...overrides,
+  };
+}
+
+function comment(overrides = {}) {
+  return {
+    id: 1,
+    node_id: "IC_kwDOCommentNode1",
+    body: "Synthetic comment",
+    user: { login: "example-user" },
+    created_at: "2030-01-02T03:00:00.000Z",
+    updated_at: "2030-01-02T03:00:00.000Z",
     ...overrides,
   };
 }
@@ -221,6 +233,40 @@ test("PR mesclado exige merge_commit_sha SHA-40", async () => {
   });
 
   assert.equal(snapshot.complete, false);
+});
+
+test("GitHub mantem estrita toda inversao temporal, inclusive de 1 ms", async () => {
+  const createdAt = "2030-01-02T03:00:00.000Z";
+  const oneMillisecondEarlier = "2030-01-02T02:59:59.999Z";
+  for (const adapter of [
+    githubAdapter({
+      issue: issue({
+        created_at: createdAt,
+        updated_at: oneMillisecondEarlier,
+      }),
+      pulls: [],
+    }),
+    githubAdapter({
+      issue: issue(),
+      comments: [
+        comment({ created_at: createdAt, updated_at: oneMillisecondEarlier }),
+      ],
+      pulls: [],
+    }),
+    githubAdapter({
+      issue: issue(),
+      pulls: [
+        pull(8, { created_at: createdAt, updated_at: oneMillisecondEarlier }),
+      ],
+    }),
+  ]) {
+    const snapshot = await adapter.readOrganizationSnapshot({
+      organization: "example-org",
+      capturedAt: CAPTURED_AT,
+    });
+    assert.equal(snapshot.complete, false);
+    assert.equal(snapshot.failures[0].code, "boundary_invalid");
+  }
 });
 
 test("workflow usa runner Ubuntu versionado sem alegar imagem imutavel", () => {
