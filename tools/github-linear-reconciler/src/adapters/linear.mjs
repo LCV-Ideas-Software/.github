@@ -22,6 +22,7 @@ const teamIdentitySchema = z.object({
 const teamSchema = teamIdentitySchema.extend({
   archivedAt: z.union([z.date(), z.iso.datetime({ offset: true })]).nullable(),
   retiredAt: z.union([z.date(), z.iso.datetime({ offset: true })]).nullable(),
+  updatedAt: z.union([z.date(), z.iso.datetime({ offset: true })]),
 });
 const stateSchema = z.object({
   id: idSchema,
@@ -224,7 +225,7 @@ function canonicalExternalNumber(value) {
   return null;
 }
 
-function githubSyncedKey(entity) {
+function githubSyncedCounterpart(entity) {
   if (String(entity?.service ?? "").toLowerCase() !== "github") return null;
   const metadata = entity?.metadata;
   const number = canonicalExternalNumber(metadata?.number);
@@ -239,7 +240,16 @@ function githubSyncedKey(entity) {
     number === null
   )
     throw new Error("syncedWith GitHub invalido");
-  return `${metadata.owner}/${metadata.repo}#${number}`.toLowerCase();
+  return {
+    resourceKey: `${metadata.owner}/${metadata.repo}#${number}`.toLowerCase(),
+    externalId: entity.id,
+  };
+}
+
+function compareOpaque(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function normalizedText(value) {
@@ -335,11 +345,20 @@ async function normalizeIssue(issue, capturedAtMs) {
   const nativeGithubEntities = (base.syncedWith ?? []).filter(
     (entity) => String(entity?.service ?? "").toLowerCase() === "github",
   );
-  const nativeCounterparts = nativeGithubEntities.map(githubSyncedKey);
+  const nativeCounterparts = nativeGithubEntities
+    .map(githubSyncedCounterpart)
+    .sort(
+      (left, right) =>
+        compareOpaque(left.resourceKey, right.resourceKey) ||
+        compareOpaque(left.externalId, right.externalId),
+    );
+  const nativeCounterpartKeys = nativeCounterparts.map(
+    (counterpart) => counterpart.resourceKey,
+  );
   if (
-    new Set(nativeGithubEntities.map((entity) => entity.id)).size !==
-      nativeGithubEntities.length ||
-    new Set(nativeCounterparts).size !== nativeCounterparts.length
+    new Set(nativeCounterparts.map((counterpart) => counterpart.externalId))
+      .size !== nativeCounterparts.length ||
+    new Set(nativeCounterpartKeys).size !== nativeCounterpartKeys.length
   ) {
     throw new Error(`${base.identifier}: sync GitHub nativo duplicado`);
   }
@@ -352,7 +371,6 @@ async function normalizeIssue(issue, capturedAtMs) {
     "comments",
     "relations",
     "inverseRelations",
-    "releases",
   ]) {
     if (typeof issue[method] !== "function")
       throw new Error(`${base.identifier}.${method}: SDK reader ausente`);
@@ -462,7 +480,7 @@ async function normalizeIssue(issue, capturedAtMs) {
         externalThread,
         externalUser,
         expectedCounterpartKey:
-          nativeCounterparts.length === 1 ? nativeCounterparts[0] : null,
+          nativeCounterpartKeys.length === 1 ? nativeCounterpartKeys[0] : null,
         parentId: parsed.parentId,
         threadResource,
       });
@@ -470,8 +488,8 @@ async function normalizeIssue(issue, capturedAtMs) {
       const resourceKey =
         threadResource?.kind === "issue"
           ? threadResource.key
-          : githubEntity && nativeCounterparts.length === 1
-            ? nativeCounterparts[0]
+          : githubEntity && nativeCounterpartKeys.length === 1
+            ? nativeCounterpartKeys[0]
             : null;
       const githubProvenance = Boolean(githubEntity || threadResource);
       if (githubProvenance && resourceKey === null)
@@ -524,45 +542,6 @@ async function normalizeIssue(issue, capturedAtMs) {
       )),
     );
   }
-  const releases = await collectConnection(
-    () => issue.releases({ first: 50 }),
-    async (release) => {
-      const parsed = z
-        .object({
-          id: idSchema,
-          commitSha: z
-            .string()
-            .regex(/^[0-9a-f]{40}$/iu)
-            .nullish(),
-          completedAt: z.union([z.date(), z.string()]).nullish(),
-        })
-        .parse(release);
-      if (!parsed.commitSha) return { id: parsed.id, ignored: true };
-      const pipelineValue = await Promise.resolve(release.pipeline);
-      if (pipelineValue == null) return { id: parsed.id, ignored: true };
-      const pipeline = z
-        .object({
-          id: uuidSchema,
-          type: releasePipelineTypeSchema,
-        })
-        .parse(pipelineValue);
-      return {
-        id: parsed.id,
-        pipelineId: pipeline.id,
-        pipelineType: pipeline.type,
-        commitSha: parsed.commitSha.toLowerCase(),
-        completedAtMs:
-          parsed.completedAt == null
-            ? null
-            : boundedTimestampMs(
-                parsed.completedAt,
-                `${base.identifier}.release.completedAt`,
-                capturedAtMs,
-              ),
-      };
-    },
-    `${base.identifier}.releases`,
-  );
   const attachmentResources = attachments
     .map((attachment) => parseGithubResource(attachment.url))
     .filter(Boolean);
@@ -605,8 +584,11 @@ async function normalizeIssue(issue, capturedAtMs) {
     teamKey: team.key,
     updatedAtMs,
     status: normalizeStatus(state.type),
-    nativeCounterpartKeys: [...new Set(nativeCounterparts)].sort(),
-    _nativeGithubExternalIds: nativeGithubEntities.map((entity) => entity.id),
+    nativeCounterparts,
+    nativeCounterpartKeys,
+    _nativeGithubExternalIds: nativeCounterparts.map(
+      (counterpart) => counterpart.externalId,
+    ),
     attachmentIssueKeys: [
       ...new Set(
         attachmentResources
@@ -630,7 +612,7 @@ async function normalizeIssue(issue, capturedAtMs) {
     ].sort(),
     comments: comments.filter((comment) => !comment.ignored),
     _commentIds: comments.map((comment) => comment.id),
-    releases: releases.filter((release) => !release.ignored),
+    releases: [],
     duplicateOf:
       duplicateOf?.identifier ?? duplicateTargets[0]?.identifier ?? null,
     relatedIdentifiers,
@@ -717,21 +699,230 @@ function finalizeIssueReferences(issues) {
   );
 }
 
-async function normalizeTopology(client, method, scope) {
+function boundedEntityTimes(entity, scope, capturedAtMs) {
+  const parsed = z
+    .object({
+      createdAt: z.union([z.date(), z.string()]),
+      updatedAt: z.union([z.date(), z.string()]),
+    })
+    .parse(entity);
+  const createdAtMs = boundedTimestampMs(
+    parsed.createdAt,
+    `${scope}.createdAt`,
+    capturedAtMs,
+  );
+  const updatedAtMs = boundedTimestampMs(
+    parsed.updatedAt,
+    `${scope}.updatedAt`,
+    capturedAtMs,
+  );
+  if (createdAtMs > updatedAtMs)
+    throw new Error(`${scope}: createdAt posterior a updatedAt`);
+  return { createdAtMs, updatedAtMs };
+}
+
+async function normalizeReleaseGraph(client, capturedAtMs, issues) {
+  for (const method of ["releasePipelines", "releases", "issueToReleases"]) {
+    if (typeof client[method] !== "function")
+      throw new Error(`${method}: SDK reader ausente`);
+  }
+
+  const releasePipelines = await collectConnection(
+    () => client.releasePipelines({ first: 50 }),
+    async (pipeline) => {
+      const parsed = z
+        .object({ id: uuidSchema, type: releasePipelineTypeSchema })
+        .parse(pipeline);
+      const times = boundedEntityTimes(
+        pipeline,
+        `releasePipelines.${parsed.id}`,
+        capturedAtMs,
+      );
+      return { id: parsed.id, type: parsed.type, ...times };
+    },
+    "releasePipelines",
+  );
+
+  const releases = await collectConnection(
+    () => client.releases({ first: 50 }),
+    async (release) => {
+      const parsed = z
+        .object({
+          id: idSchema,
+          pipelineId: uuidSchema,
+          commitSha: z
+            .string()
+            .regex(/^[0-9a-f]{40}$/iu)
+            .nullish(),
+          completedAt: z.union([z.date(), z.string()]).nullish(),
+        })
+        .parse(release);
+      const times = boundedEntityTimes(
+        release,
+        `releases.${parsed.id}`,
+        capturedAtMs,
+      );
+      const completedAtMs =
+        parsed.completedAt == null
+          ? null
+          : boundedTimestampMs(
+              parsed.completedAt,
+              `releases.${parsed.id}.completedAt`,
+              capturedAtMs,
+            );
+      if (completedAtMs !== null && completedAtMs > times.updatedAtMs)
+        throw new Error(
+          `releases.${parsed.id}: completedAt posterior a updatedAt`,
+        );
+      if (completedAtMs !== null && completedAtMs < times.createdAtMs)
+        throw new Error(
+          `releases.${parsed.id}: completedAt anterior a createdAt`,
+        );
+      return {
+        id: parsed.id,
+        pipelineId: parsed.pipelineId,
+        commitSha: parsed.commitSha?.toLowerCase() ?? null,
+        completedAtMs,
+        ...times,
+      };
+    },
+    "releases",
+  );
+
+  const issueToReleases = await collectConnection(
+    () => client.issueToReleases({ first: 50 }),
+    async (association) => {
+      const parsed = z
+        .object({
+          id: idSchema,
+          issueId: idSchema,
+          releaseId: idSchema,
+        })
+        .parse(association);
+      return {
+        id: parsed.id,
+        issueId: parsed.issueId,
+        releaseId: parsed.releaseId,
+        ...boundedEntityTimes(
+          association,
+          `issueToReleases.${parsed.id}`,
+          capturedAtMs,
+        ),
+      };
+    },
+    "issueToReleases",
+  );
+
+  const pipelineById = new Map(
+    releasePipelines.map((pipeline) => [pipeline.id, pipeline]),
+  );
+  const releaseById = new Map(releases.map((release) => [release.id, release]));
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  for (const release of releases) {
+    const pipeline = pipelineById.get(release.pipelineId);
+    if (!pipeline)
+      throw new Error(
+        `releases.${release.id}: pipeline nao resolve ${release.pipelineId}`,
+      );
+    if (pipeline.createdAtMs > release.createdAtMs)
+      throw new Error(`releases.${release.id}: createdAt anterior ao pipeline`);
+  }
+  const associationPairs = new Set();
+  for (const association of issueToReleases) {
+    if (!issueById.has(association.issueId))
+      throw new Error(
+        `issueToReleases.${association.id}: issue nao resolve ${association.issueId}`,
+      );
+    const release = releaseById.get(association.releaseId);
+    if (!release)
+      throw new Error(
+        `issueToReleases.${association.id}: release nao resolve ${association.releaseId}`,
+      );
+    if (release.createdAtMs > association.createdAtMs)
+      throw new Error(
+        `issueToReleases.${association.id}: createdAt anterior a release`,
+      );
+    const pair = `${association.issueId}\0${association.releaseId}`;
+    if (associationPairs.has(pair))
+      throw new Error(
+        `issueToReleases.${association.id}: associacao duplicada ${association.issueId}/${association.releaseId}`,
+      );
+    associationPairs.add(pair);
+  }
+
+  const associationsByIssueId = new Map();
+  for (const association of issueToReleases) {
+    const associations = associationsByIssueId.get(association.issueId) ?? [];
+    associations.push(association);
+    associationsByIssueId.set(association.issueId, associations);
+  }
+  const issuesWithReleases = Object.freeze(
+    issues.map((issue) => {
+      const issueReleases = (associationsByIssueId.get(issue.id) ?? [])
+        .map((association) => {
+          const release = releaseById.get(association.releaseId);
+          if (release.commitSha === null) return null;
+          const pipeline = pipelineById.get(release.pipelineId);
+          return {
+            id: release.id,
+            pipelineId: pipeline.id,
+            pipelineType: pipeline.type,
+            commitSha: release.commitSha,
+            completedAtMs: release.completedAtMs,
+            updatedAtMs: release.updatedAtMs,
+            issueToReleaseId: association.id,
+            issueToReleaseUpdatedAtMs: association.updatedAtMs,
+          };
+        })
+        .filter(Boolean)
+        .sort((left, right) => compareOpaque(left.id, right.id));
+      return Object.freeze({
+        ...issue,
+        releases: Object.freeze(issueReleases),
+      });
+    }),
+  );
+
+  return {
+    issues: issuesWithReleases,
+    releasePipelines: Object.freeze(releasePipelines.map(Object.freeze)),
+    releases: Object.freeze(releases.map(Object.freeze)),
+    issueToReleases: Object.freeze(issueToReleases.map(Object.freeze)),
+  };
+}
+
+async function normalizeTopology(client, method, scope, capturedAtMs) {
   if (typeof client[method] !== "function")
     throw new Error(`${scope}: SDK reader ausente`);
   return collectConnection(
     () => client[method]({ first: 50, includeArchived: true }),
     async (entity) => {
-      const parsed = z.object({ id: idSchema }).parse(entity);
+      const parsed = z
+        .object({
+          id: idSchema,
+          updatedAt: z.union([z.date(), z.string()]),
+        })
+        .parse(entity);
+      const updatedAtMs = boundedTimestampMs(
+        parsed.updatedAt,
+        `${scope}.${parsed.id}.updatedAt`,
+        capturedAtMs,
+      );
       let team = entity.team ?? entity.leadTeam;
       if (team) team = await Promise.resolve(team);
-      if (team == null) return { id: parsed.id, teamId: null, teamKey: null };
+      if (team == null)
+        return {
+          id: parsed.id,
+          teamId: null,
+          teamKey: null,
+          updatedAtMs,
+        };
       const parsedTeam = teamIdentitySchema.parse(team);
       return {
         id: parsed.id,
         teamId: parsedTeam.id,
         teamKey: parsedTeam.key,
+        updatedAtMs,
       };
     },
     scope,
@@ -740,28 +931,43 @@ async function normalizeTopology(client, method, scope) {
   );
 }
 
-async function normalizeProjects(client) {
+async function normalizeProjects(client, capturedAtMs) {
   if (typeof client.projects !== "function")
     throw new Error("projects: SDK reader ausente");
   const projects = await collectConnection(
     () => client.projects({ first: 50, includeArchived: true }),
     async (project) => {
-      const parsed = z.object({ id: idSchema }).parse(project);
+      const parsed = z
+        .object({
+          id: idSchema,
+          updatedAt: z.union([z.date(), z.string()]),
+        })
+        .parse(project);
+      const updatedAtMs = boundedTimestampMs(
+        parsed.updatedAt,
+        `projects.${parsed.id}.updatedAt`,
+        capturedAtMs,
+      );
       if (typeof project.teams !== "function")
         throw new Error(`projects.${parsed.id}: teams reader ausente`);
-      return { id: parsed.id, project };
+      return { id: parsed.id, project, updatedAtMs };
     },
     "projects",
   );
   const associations = [];
-  for (const { id, project } of projects) {
+  for (const { id, project, updatedAtMs } of projects) {
     const teams = await collectConnection(
       () => project.teams({ first: 50 }),
       async (team) => teamIdentitySchema.parse(team),
       `projects.${id}.teams`,
     );
     for (const team of teams)
-      associations.push({ id, teamId: team.id, teamKey: team.key });
+      associations.push({
+        id,
+        teamId: team.id,
+        teamKey: team.key,
+        updatedAtMs,
+      });
   }
   return Object.freeze(associations.map(Object.freeze));
 }
@@ -810,17 +1016,23 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         () => client.teams({ first: 50, includeArchived: true }),
         async (team) => {
           const parsed = teamSchema.parse(team);
+          const updatedAtMs = boundedTimestampMs(
+            parsed.updatedAt,
+            `team.${parsed.key}.updatedAt`,
+            capturedAtMs,
+          );
           for (const field of ["archivedAt", "retiredAt"]) {
-            if (
-              parsed[field] != null &&
-              timestampMs(parsed[field], `team.${parsed.key}.${field}`) >
-                capturedAtMs
-            )
-              throw new Error(`team.${parsed.key}.${field}: timestamp futuro`);
+            if (parsed[field] != null)
+              boundedTimestampMs(
+                parsed[field],
+                `team.${parsed.key}.${field}`,
+                capturedAtMs,
+              );
           }
           return {
             ...parsed,
             active: parsed.archivedAt === null && parsed.retiredAt === null,
+            updatedAtMs,
           };
         },
         "teams",
@@ -830,13 +1042,16 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         (issue) => normalizeIssue(issue, capturedAtMs),
         "issues",
       );
-      const issues = finalizeIssueReferences(issuesRaw);
-      const [cycles, projects, initiatives, documents] = await Promise.all([
-        normalizeTopology(client, "cycles", "cycles"),
-        normalizeProjects(client),
-        normalizeTopology(client, "initiatives", "initiatives"),
-        normalizeTopology(client, "documents", "documents"),
-      ]);
+      const issuesWithoutReleases = finalizeIssueReferences(issuesRaw);
+      const [releaseGraph, cycles, projects, initiatives, documents] =
+        await Promise.all([
+          normalizeReleaseGraph(client, capturedAtMs, issuesWithoutReleases),
+          normalizeTopology(client, "cycles", "cycles", capturedAtMs),
+          normalizeProjects(client, capturedAtMs),
+          normalizeTopology(client, "initiatives", "initiatives", capturedAtMs),
+          normalizeTopology(client, "documents", "documents", capturedAtMs),
+        ]);
+      const issues = releaseGraph.issues;
       assertTeamReferences(teamsDetailed, issues, {
         cycles,
         projects,
@@ -853,6 +1068,7 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
               id: team.id,
               key: team.key,
               active: team.active,
+              updatedAtMs: team.updatedAtMs,
             }),
           ),
         ),
@@ -861,6 +1077,9 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         projects,
         initiatives,
         documents,
+        releasePipelines: releaseGraph.releasePipelines,
+        releases: releaseGraph.releases,
+        issueToReleases: releaseGraph.issueToReleases,
       });
     } catch (error) {
       return Object.freeze({
@@ -875,6 +1094,9 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         projects: Object.freeze([]),
         initiatives: Object.freeze([]),
         documents: Object.freeze([]),
+        releasePipelines: Object.freeze([]),
+        releases: Object.freeze([]),
+        issueToReleases: Object.freeze([]),
       });
     }
   }

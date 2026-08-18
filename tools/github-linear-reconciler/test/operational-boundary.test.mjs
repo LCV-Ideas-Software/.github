@@ -26,6 +26,7 @@ import { loadOperationalConfig } from "../src/config.mjs";
 import { parseCliArgs, runCli } from "../src/cli.mjs";
 import {
   ensureOwnedLocalProfile,
+  hardenCreatedPrivatePath,
   PROFILE_MARKER_NAME,
 } from "../src/local-profile.mjs";
 import { writeLocalReport } from "../src/report/local.mjs";
@@ -54,6 +55,7 @@ function installation(overrides = {}) {
 function app(overrides = {}) {
   return {
     id: 456,
+    installations_count: 1,
     owner: { id: 789, login: "example-org", type: "Organization" },
     permissions: {
       metadata: "read",
@@ -177,8 +179,8 @@ test("boundary oficial separa autenticação App da autenticação da instalaç�
 
     async request(route) {
       if (route === "GET /app") return { data: app() };
-      if (route === "GET /orgs/{org}/installation") {
-        return { data: installation() };
+      if (route === "GET /app/installations") {
+        return { data: [installation()] };
       }
       if (route === "GET /installation/repositories") {
         return { data: { total_count: 0, repositories: [] } };
@@ -232,30 +234,55 @@ test("facade converte falha de autenticação em snapshot incompleto redigido", 
 });
 
 test("chave GitHub App deve ser PEM RSA regular, canônica e privada", async (context) => {
-  const root = await mkdtemp(path.join(tmpdir(), "reconciler-key-"));
-  context.after(() => rm(root, { recursive: true, force: true }));
-  const keyPath = path.join(root, "app.pem");
+  const parent = await mkdtemp(path.join(tmpdir(), "reconciler-key-"));
+  context.after(() => rm(parent, { recursive: true, force: true }));
+  const profile = await ensureOwnedLocalProfile({
+    root: path.join(parent, "profile"),
+  });
+  const keyPath = path.join(profile.credentialsPath, "app.pem");
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
   await writeFile(keyPath, privateKey, { mode: 0o600 });
-  await chmod(keyPath, 0o600);
-  assert.match(await loadGithubAppPrivateKey(keyPath), /BEGIN PRIVATE KEY/u);
+  if (process.platform === "win32") {
+    await hardenCreatedPrivatePath(keyPath, {
+      kind: "file",
+      label: "chave de teste",
+    });
+  } else {
+    await chmod(keyPath, 0o600);
+  }
+  assert.match(
+    await loadGithubAppPrivateKey(keyPath, { profileRoot: profile.root }),
+    /BEGIN PRIVATE KEY/u,
+  );
+  await assert.rejects(
+    loadGithubAppPrivateKey(path.join(parent, "outside.pem"), {
+      profileRoot: profile.root,
+    }),
+    /filha direta de credentials/u,
+  );
 
   if (process.platform !== "win32") {
     await chmod(keyPath, 0o640);
     await assert.rejects(
-      loadGithubAppPrivateKey(keyPath, { platform: "linux" }),
-      /permissões privadas/u,
+      loadGithubAppPrivateKey(keyPath, {
+        platform: "linux",
+        profileRoot: profile.root,
+      }),
+      /modo 0600/u,
     );
     await chmod(keyPath, 0o600);
   }
   if (process.platform !== "win32") {
-    const link = path.join(root, "link.pem");
+    const link = path.join(profile.credentialsPath, "link.pem");
     await symlink(keyPath, link);
-    await assert.rejects(loadGithubAppPrivateKey(link), /link simbólico/u);
+    await assert.rejects(
+      loadGithubAppPrivateKey(link, { profileRoot: profile.root }),
+      /link simbólico/u,
+    );
   }
 });
 
@@ -271,7 +298,7 @@ test("config recusa caminho lexical ou canônico dentro de worktree Git", async 
   );
 });
 
-test("init do profile cria somente a raiz-leaf e o marker versionado", async (context) => {
+test("init do profile cria raiz, marker e credentials versionados", async (context) => {
   const parent = await mkdtemp(path.join(tmpdir(), "reconciler-profile-"));
   context.after(() => rm(parent, { recursive: true, force: true }));
   const root = path.join(parent, "profile");
@@ -279,11 +306,17 @@ test("init do profile cria somente a raiz-leaf e o marker versionado", async (co
   assert.equal(profile.root, root);
   assert.equal(profile.configPath, path.join(root, "config.json"));
   assert.equal(profile.reportsPath, path.join(root, "reports"));
+  assert.equal(profile.credentialsPath, path.join(root, "credentials"));
   assert.deepEqual(
     JSON.parse(await readFile(path.join(root, PROFILE_MARKER_NAME), "utf8")),
     { schemaVersion: 1, application: "github-linear-reconciler" },
   );
+  assert.equal((await stat(profile.credentialsPath)).isDirectory(), true);
   assert.equal(await stat(profile.reportsPath).catch(() => null), null);
+
+  await rm(profile.credentialsPath, { recursive: true, force: true });
+  const migrated = await ensureOwnedLocalProfile({ root });
+  assert.equal((await stat(migrated.credentialsPath)).isDirectory(), true);
 
   const missingParent = path.join(parent, "missing", "profile");
   await assert.rejects(ensureOwnedLocalProfile({ root: missingParent }), {
@@ -325,6 +358,7 @@ test("snapshot GitHub falha fechado para timestamps posteriores à captura", asy
           data: [
             {
               number: 1,
+              node_id: "I_kwDOFutureIssue",
               state: "open",
               state_reason: null,
               created_at: "2030-01-02T03:00:00.000Z",

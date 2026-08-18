@@ -1,15 +1,29 @@
 import { finding } from "../domain/findings.mjs";
 
-function createDuplicateComponents(issues) {
+export function createDuplicateComponents(issues) {
   const parent = new Map(
     issues.map((issue) => [issue.identifier, issue.identifier]),
   );
 
   function find(identifier) {
-    const current = parent.get(identifier);
-    if (current === identifier) return identifier;
-    const root = find(current);
-    parent.set(identifier, root);
+    let root = identifier;
+    for (;;) {
+      const next = parent.get(root);
+      if (next === undefined) {
+        throw new TypeError(
+          `duplicateOf referencia issue inexistente: ${root}`,
+        );
+      }
+      if (next === root) break;
+      root = next;
+    }
+
+    let current = identifier;
+    while (current !== root) {
+      const next = parent.get(current);
+      parent.set(current, root);
+      current = next;
+    }
     return root;
   }
 

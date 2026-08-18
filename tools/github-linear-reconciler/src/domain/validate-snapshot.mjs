@@ -46,6 +46,12 @@ function uniqueStrings(values) {
   );
 }
 
+function compareOpaque(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function validFailure(value) {
   return (
     value &&
@@ -99,6 +105,14 @@ function validLinearComment(comment, capturedAtMs) {
   );
 }
 
+function validNativeCounterpart(counterpart) {
+  return (
+    counterpart &&
+    githubResourceKey(counterpart.resourceKey) &&
+    nonempty(counterpart.externalId)
+  );
+}
+
 function validRelease(release, capturedAtMs) {
   return (
     release &&
@@ -107,7 +121,12 @@ function validRelease(release, capturedAtMs) {
     ["continuous", "scheduled"].includes(release.pipelineType) &&
     sha40(release.commitSha) &&
     (release.completedAtMs === null ||
-      instant(release.completedAtMs, capturedAtMs))
+      instant(release.completedAtMs, capturedAtMs)) &&
+    instant(release.updatedAtMs, capturedAtMs) &&
+    (release.completedAtMs === null ||
+      release.completedAtMs <= release.updatedAtMs) &&
+    nonempty(release.issueToReleaseId) &&
+    instant(release.issueToReleaseUpdatedAtMs, capturedAtMs)
   );
 }
 
@@ -122,8 +141,20 @@ function validLinearIssue(issue, teamById, teamByKey, capturedAtMs) {
     teamByStableId === teamByStableKey &&
     instant(issue.updatedAtMs, capturedAtMs) &&
     NORMALIZED_STATUSES.includes(issue.status) &&
+    Array.isArray(issue.nativeCounterparts) &&
+    issue.nativeCounterparts.every(validNativeCounterpart) &&
+    new Set(
+      issue.nativeCounterparts.map((counterpart) => counterpart.resourceKey),
+    ).size === issue.nativeCounterparts.length &&
+    new Set(
+      issue.nativeCounterparts.map((counterpart) => counterpart.externalId),
+    ).size === issue.nativeCounterparts.length &&
     uniqueStrings(issue.nativeCounterpartKeys) &&
     issue.nativeCounterpartKeys.every(githubResourceKey) &&
+    issue.nativeCounterpartKeys.length === issue.nativeCounterparts.length &&
+    issue.nativeCounterpartKeys.every(
+      (key, index) => key === issue.nativeCounterparts[index].resourceKey,
+    ) &&
     uniqueStrings(issue.attachmentIssueKeys) &&
     issue.attachmentIssueKeys.every(githubResourceKey) &&
     uniqueStrings(issue.insecureGithubResourceKeys) &&
@@ -162,6 +193,7 @@ function validGithubIssue(issue, repositoryNames, organization, capturedAtMs) {
   return (
     issue &&
     githubResourceKey(issue.key) &&
+    nonempty(issue.nodeId) &&
     repositoryNames.has(issue.repository) &&
     Number.isSafeInteger(issue.number) &&
     issue.number > 0 &&
@@ -173,6 +205,59 @@ function validGithubIssue(issue, repositoryNames, organization, capturedAtMs) {
       validGithubComment(comment, issue.key, capturedAtMs),
     )
   );
+}
+
+function validReleasePipeline(pipeline, capturedAtMs) {
+  return (
+    pipeline &&
+    stableUuid(pipeline.id) &&
+    ["continuous", "scheduled"].includes(pipeline.type) &&
+    instant(pipeline.createdAtMs, capturedAtMs) &&
+    instant(pipeline.updatedAtMs, capturedAtMs) &&
+    pipeline.createdAtMs <= pipeline.updatedAtMs
+  );
+}
+
+function validWorkspaceRelease(release, capturedAtMs) {
+  return (
+    release &&
+    nonempty(release.id) &&
+    stableUuid(release.pipelineId) &&
+    (release.commitSha === null || sha40(release.commitSha)) &&
+    (release.completedAtMs === null ||
+      instant(release.completedAtMs, capturedAtMs)) &&
+    instant(release.createdAtMs, capturedAtMs) &&
+    instant(release.updatedAtMs, capturedAtMs) &&
+    release.createdAtMs <= release.updatedAtMs &&
+    (release.completedAtMs === null ||
+      (release.createdAtMs <= release.completedAtMs &&
+        release.completedAtMs <= release.updatedAtMs))
+  );
+}
+
+function validIssueToRelease(association, capturedAtMs) {
+  return (
+    association &&
+    nonempty(association.id) &&
+    nonempty(association.issueId) &&
+    nonempty(association.releaseId) &&
+    instant(association.createdAtMs, capturedAtMs) &&
+    instant(association.updatedAtMs, capturedAtMs) &&
+    association.createdAtMs <= association.updatedAtMs
+  );
+}
+
+function releaseProjectionTuple(release) {
+  return [
+    release?.id,
+    release?.pipelineId,
+    release?.pipelineType,
+    release?.commitSha,
+    release?.completedAtMs,
+    release?.updatedAtMs,
+    release?.issueToReleaseId,
+    release?.issueToReleaseUpdatedAtMs,
+  ];
 }
 
 function validGithubPull(pull, repositoryNames, organization, capturedAtMs) {
@@ -188,7 +273,9 @@ function validGithubPull(pull, repositoryNames, organization, capturedAtMs) {
     (!merged ||
       (instant(pull.mergedAtMs, capturedAtMs) &&
         pull.mergedAtMs <= pull.updatedAtMs)) &&
-    (merged ? sha40(pull.mergeCommitSha) : pull.mergeCommitSha === null)
+    (merged
+      ? sha40(pull.mergeCommitSha)
+      : pull.mergeCommitSha === null || sha40(pull.mergeCommitSha))
   );
 }
 
@@ -248,7 +335,8 @@ export function validateSnapshots(linear, github, organization, nowMs) {
       (team) =>
         !nonempty(team?.id) ||
         !nonempty(team?.key) ||
-        typeof team?.active !== "boolean",
+        typeof team?.active !== "boolean" ||
+        !instant(team?.updatedAtMs, capturedAtMs),
     ) ||
     teamById.size !== teams.length ||
     teamByKey.size !== teams.length
@@ -258,12 +346,13 @@ export function validateSnapshots(linear, github, organization, nowMs) {
 
   const issues = Array.isArray(linear?.issues) ? linear.issues : [];
   const issueIdentifiers = new Set(issues.map((issue) => issue?.identifier));
+  const issueById = new Map(issues.map((issue) => [issue?.id, issue]));
   if (
     !Array.isArray(linear?.issues) ||
     issues.some(
       (issue) => !validLinearIssue(issue, teamById, teamByKey, capturedAtMs),
     ) ||
-    duplicateValues(issues.map((issue) => issue?.id)) ||
+    issueById.size !== issues.length ||
     duplicateValues(issues.map((issue) => issue?.identifier))
   ) {
     problems.push("linear issues are invalid or repeated");
@@ -307,6 +396,111 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   ) {
     problems.push("linear comment identities are not globally unique");
   }
+
+  const releasePipelines = Array.isArray(linear?.releasePipelines)
+    ? linear.releasePipelines
+    : [];
+  const pipelineById = new Map(
+    releasePipelines.map((pipeline) => [pipeline?.id, pipeline]),
+  );
+  if (
+    !Array.isArray(linear?.releasePipelines) ||
+    releasePipelines.some(
+      (pipeline) => !validReleasePipeline(pipeline, capturedAtMs),
+    ) ||
+    pipelineById.size !== releasePipelines.length
+  ) {
+    problems.push("linear release pipelines are invalid or repeated");
+  }
+
+  const workspaceReleases = Array.isArray(linear?.releases)
+    ? linear.releases
+    : [];
+  const releaseById = new Map(
+    workspaceReleases.map((release) => [release?.id, release]),
+  );
+  if (
+    !Array.isArray(linear?.releases) ||
+    workspaceReleases.some((release) => {
+      const pipeline = pipelineById.get(release?.pipelineId);
+      return (
+        !validWorkspaceRelease(release, capturedAtMs) ||
+        !pipeline ||
+        pipeline.createdAtMs > release.createdAtMs
+      );
+    }) ||
+    releaseById.size !== workspaceReleases.length
+  ) {
+    problems.push("linear releases are invalid, repeated, or unresolved");
+  }
+
+  const issueToReleases = Array.isArray(linear?.issueToReleases)
+    ? linear.issueToReleases
+    : [];
+  const associationPairs = issueToReleases.map(
+    (association) => `${association?.issueId}\0${association?.releaseId}`,
+  );
+  if (
+    !Array.isArray(linear?.issueToReleases) ||
+    issueToReleases.some((association) => {
+      const release = releaseById.get(association?.releaseId);
+      return (
+        !validIssueToRelease(association, capturedAtMs) ||
+        !issueById.has(association?.issueId) ||
+        !release ||
+        release.createdAtMs > association.createdAtMs
+      );
+    }) ||
+    duplicateValues(issueToReleases.map((association) => association?.id)) ||
+    duplicateValues(associationPairs)
+  ) {
+    problems.push(
+      "linear issue-to-release associations are invalid, repeated, or unresolved",
+    );
+  }
+
+  const associationsByIssueId = new Map();
+  for (const association of issueToReleases) {
+    const associations = associationsByIssueId.get(association.issueId) ?? [];
+    associations.push(association);
+    associationsByIssueId.set(association.issueId, associations);
+  }
+
+  if (
+    issues.some((issue) => {
+      if (!issue || !Array.isArray(issue.releases)) return false;
+      const expected = (associationsByIssueId.get(issue.id) ?? [])
+        .map((association) => {
+          const release = releaseById.get(association.releaseId);
+          const pipeline = release && pipelineById.get(release.pipelineId);
+          if (!release || !pipeline || release.commitSha === null) return null;
+          return {
+            id: release.id,
+            pipelineId: pipeline.id,
+            pipelineType: pipeline.type,
+            commitSha: release.commitSha,
+            completedAtMs: release.completedAtMs,
+            updatedAtMs: release.updatedAtMs,
+            issueToReleaseId: association.id,
+            issueToReleaseUpdatedAtMs: association.updatedAtMs,
+          };
+        })
+        .filter(Boolean)
+        .sort((left, right) => compareOpaque(left.id, right.id));
+      const actual = [...issue.releases].sort((left, right) =>
+        compareOpaque(String(left?.id), String(right?.id)),
+      );
+      return (
+        JSON.stringify(actual.map(releaseProjectionTuple)) !==
+        JSON.stringify(expected.map(releaseProjectionTuple))
+      );
+    })
+  ) {
+    problems.push(
+      "linear issue release evidence is not a strict graph projection",
+    );
+  }
+
   for (const collection of ["cycles", "projects", "initiatives", "documents"]) {
     const entities = linear?.[collection];
     if (
@@ -315,7 +509,8 @@ export function validateSnapshots(linear, github, organization, nowMs) {
         (entity) =>
           !nonempty(entity?.id) ||
           teamById.get(entity?.teamId) === undefined ||
-          teamById.get(entity?.teamId) !== teamByKey.get(entity?.teamKey),
+          teamById.get(entity?.teamId) !== teamByKey.get(entity?.teamKey) ||
+          !instant(entity?.updatedAtMs, capturedAtMs),
       ) ||
       duplicateValues(
         (entities ?? []).map(
@@ -368,6 +563,30 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     duplicateValues(githubIssues.map((issue) => issue?.key))
   ) {
     problems.push("github issues are invalid or repeated");
+  }
+  if (
+    duplicateValues(
+      githubIssues
+        .map((issue) => issue?.nodeId)
+        .filter((nodeId) => nonempty(nodeId)),
+    )
+  ) {
+    problems.push("github issue node identities are not globally unique");
+  }
+  const githubIssueByKey = new Map(
+    githubIssues.map((issue) => [issue?.key, issue]),
+  );
+  if (
+    issues.some((issue) =>
+      (issue?.nativeCounterparts ?? []).some((counterpart) => {
+        const githubIssue = githubIssueByKey.get(counterpart.resourceKey);
+        return !githubIssue || githubIssue.nodeId !== counterpart.externalId;
+      }),
+    )
+  ) {
+    problems.push(
+      "linear native counterpart does not resolve the exact github issue node",
+    );
   }
   const githubComments = githubIssues.flatMap((issue) => issue?.comments ?? []);
   if (duplicateValues(githubComments.map((comment) => comment?.id))) {

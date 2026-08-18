@@ -1,21 +1,22 @@
 import { randomUUID } from "node:crypto";
 import {
   lstat as nodeLstat,
-  mkdir,
-  open,
+  mkdir as nodeMkdir,
+  open as nodeOpen,
   readdir,
   realpath as nodeRealpath,
-  rename,
-  stat,
-  unlink,
+  rename as nodeRename,
+  rmdir as nodeRmdir,
+  unlink as nodeUnlink,
 } from "node:fs/promises";
 import path from "node:path";
 
 import {
   assertOutsideGitWorktree,
   assertOwnedLocalProfile,
-  assertPrivateDirectory,
-  assertPrivateFile,
+  assertPrivateDirectoryPath,
+  assertPrivateFilePath,
+  hardenCreatedPrivatePath,
   resolveLocalProfileRoot,
 } from "../local-profile.mjs";
 
@@ -115,13 +116,18 @@ function isMissingPath(error) {
   );
 }
 
-async function pruneExpiredReports(directory, now, currentReportPath) {
+async function pruneExpiredReports(
+  directory,
+  now,
+  currentReportPath,
+  { env, lstatImpl, platform, readWindowsAclImpl, unlinkImpl },
+) {
   const cutoff = now.getTime() - RETENTION_MS;
   const removed = [];
+  const candidates = [];
   const entries = await readdir(directory, { withFileTypes: true });
   for (const entry of entries) {
     if (
-      !entry.isFile() ||
       !entry.name.startsWith(REPORT_PREFIX) ||
       !entry.name.endsWith(REPORT_SUFFIX)
     ) {
@@ -129,9 +135,17 @@ async function pruneExpiredReports(directory, now, currentReportPath) {
     }
     const candidate = path.join(directory, entry.name);
     if (candidate === currentReportPath) continue;
-    const metadata = await stat(candidate);
+    const metadata = await lstatImpl(candidate);
+    await assertPrivateFilePath(candidate, metadata, "relatório preexistente", {
+      env,
+      platform,
+      readWindowsAclImpl,
+    });
+    candidates.push([candidate, metadata]);
+  }
+  for (const [candidate, metadata] of candidates) {
     if (metadata.mtimeMs >= cutoff) continue;
-    await unlink(candidate);
+    await unlinkImpl(candidate);
     removed.push(candidate);
   }
   return removed.sort();
@@ -146,7 +160,15 @@ export async function writeLocalReport({
   platform,
   idFactory = randomUUID,
   lstatImpl = nodeLstat,
+  mkdirImpl = nodeMkdir,
+  openImpl = nodeOpen,
+  readWindowsAclImpl,
   realpathImpl = nodeRealpath,
+  renameImpl = nodeRename,
+  rmdirImpl = nodeRmdir,
+  setWindowsAclImpl,
+  stagingIdFactory = randomUUID,
+  unlinkImpl = nodeUnlink,
 } = {}) {
   const timestamp = requireDate(now, "now");
   const runtimePlatform = platform ?? process.platform;
@@ -156,19 +178,66 @@ export async function writeLocalReport({
     homedir,
     platform: runtimePlatform,
     lstatImpl,
+    readWindowsAclImpl,
     realpathImpl,
   });
   const configuredDirectory = profile.reportsPath;
+  let reportsDirectoryMissing = false;
   try {
     await lstatImpl(configuredDirectory);
   } catch (error) {
     if (!isMissingPath(error)) throw error;
-    await mkdir(configuredDirectory, { recursive: false, mode: 0o700 });
+    reportsDirectoryMissing = true;
   }
-  assertPrivateDirectory(
+  if (reportsDirectoryMissing) {
+    const stagingId = String(stagingIdFactory()).replace(
+      /[^a-zA-Z0-9_-]/gu,
+      "",
+    );
+    if (!stagingId)
+      throw new TypeError("identificador de staging de relatórios inválido");
+    const stagingDirectory = path.join(
+      profile.root,
+      `.reports.${process.pid}.${stagingId}.tmp`,
+    );
+    let stagingCreated = false;
+    let movedToFinal = false;
+    try {
+      await mkdirImpl(stagingDirectory, { recursive: false, mode: 0o700 });
+      stagingCreated = true;
+      await hardenCreatedPrivatePath(stagingDirectory, {
+        env,
+        kind: "directory",
+        label: "staging do diretório de relatórios",
+        lstatImpl,
+        platform: runtimePlatform,
+        readWindowsAclImpl,
+        setWindowsAclImpl,
+      });
+      await renameImpl(stagingDirectory, configuredDirectory);
+      movedToFinal = true;
+      await assertPrivateDirectoryPath(
+        configuredDirectory,
+        await lstatImpl(configuredDirectory),
+        "diretório de relatórios",
+        { env, platform: runtimePlatform, readWindowsAclImpl },
+      );
+    } catch (error) {
+      if (stagingCreated) {
+        await rmdirImpl(
+          movedToFinal ? configuredDirectory : stagingDirectory,
+        ).catch((rmdirError) => {
+          if (!isMissingPath(rmdirError)) throw rmdirError;
+        });
+      }
+      throw error;
+    }
+  }
+  await assertPrivateDirectoryPath(
+    configuredDirectory,
     await lstatImpl(configuredDirectory),
     "diretório de relatórios",
-    runtimePlatform,
+    { env, platform: runtimePlatform, readWindowsAclImpl },
   );
   const reportDirectory = await realpathImpl(configuredDirectory);
   if (path.relative(profile.reportsPath, reportDirectory) !== "") {
@@ -198,29 +267,54 @@ export async function writeLocalReport({
   )}\n`;
 
   let handle;
+  let movedToFinal = false;
   try {
-    handle = await open(temporaryPath, "wx", 0o600);
-    assertPrivateFile(
-      await handle.stat(),
-      "arquivo temporário de relatório",
-      runtimePlatform,
-    );
+    handle = await openImpl(temporaryPath, "wx", 0o600);
+    await hardenCreatedPrivatePath(temporaryPath, {
+      env,
+      kind: "file",
+      label: "arquivo temporário de relatório",
+      lstatImpl,
+      platform: runtimePlatform,
+      readWindowsAclImpl,
+      setWindowsAclImpl,
+    });
     await handle.writeFile(serialized, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, reportPath);
+    await renameImpl(temporaryPath, reportPath);
+    movedToFinal = true;
+    await assertPrivateFilePath(
+      reportPath,
+      await lstatImpl(reportPath),
+      "arquivo final de relatório",
+      { env, platform: runtimePlatform, readWindowsAclImpl },
+    );
   } catch (error) {
     await handle?.close().catch(() => {});
-    await unlink(temporaryPath).catch(() => {});
+    await unlinkImpl(movedToFinal ? reportPath : temporaryPath).catch(() => {});
     throw error;
   }
 
-  const removed = await pruneExpiredReports(
-    reportDirectory,
-    timestamp,
-    reportPath,
-  );
+  let removed;
+  try {
+    removed = await pruneExpiredReports(
+      reportDirectory,
+      timestamp,
+      reportPath,
+      {
+        env,
+        lstatImpl,
+        platform: runtimePlatform,
+        readWindowsAclImpl,
+        unlinkImpl,
+      },
+    );
+  } catch (error) {
+    await unlinkImpl(reportPath).catch(() => {});
+    throw error;
+  }
   return { path: reportPath, removed };
 }
 

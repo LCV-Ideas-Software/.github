@@ -4,6 +4,37 @@ export function evaluateReleases(context) {
   const { linear, mappingByTeam, githubPullByKey, releaseRequiredAfterMs } =
     context;
   const findings = [];
+  const pipelineById = new Map(
+    linear.releasePipelines.map((pipeline) => [pipeline.id, pipeline]),
+  );
+  const invalidPipelineTeamKeys = new Set();
+  for (const [teamKey, mapping] of mappingByTeam) {
+    if (mapping.mode !== "github-backed") continue;
+    const pipeline = pipelineById.get(mapping.linearReleasePipelineId);
+    if (!pipeline) {
+      invalidPipelineTeamKeys.add(teamKey);
+      findings.push(
+        finding(
+          "incomplete",
+          "configured_release_pipeline_missing",
+          teamKey,
+          "configured release pipeline is absent from the complete Linear snapshot",
+          [mapping.linearReleasePipelineId],
+        ),
+      );
+    } else if (pipeline.type !== "continuous") {
+      invalidPipelineTeamKeys.add(teamKey);
+      findings.push(
+        finding(
+          "incomplete",
+          "configured_release_pipeline_not_continuous",
+          teamKey,
+          "configured release pipeline is not continuous",
+          [mapping.linearReleasePipelineId, pipeline.type],
+        ),
+      );
+    }
+  }
   for (const issue of linear.issues) {
     const teamMapping = mappingByTeam.get(issue.teamKey);
     const mode = teamMapping?.mode;
@@ -19,6 +50,7 @@ export function evaluateReleases(context) {
       );
     }
     if (mode !== "github-backed") continue;
+    if (invalidPipelineTeamKeys.has(issue.teamKey)) continue;
     for (const pullKey of issue.carrierPullKeys) {
       const pull = githubPullByKey.get(pullKey);
       if (!pull) {
@@ -60,7 +92,10 @@ export function evaluateReleases(context) {
           release.pipelineType === "continuous" &&
           Number.isSafeInteger(release.completedAtMs),
       );
-      if (matches.some((release) => release.completedAtMs < pull.mergedAtMs)) {
+      if (matches.some((release) => release.completedAtMs >= pull.mergedAtMs)) {
+        continue;
+      }
+      if (matches.length > 0) {
         findings.push(
           finding(
             "incomplete",
@@ -70,7 +105,7 @@ export function evaluateReleases(context) {
             [pullKey, ...matches.map((release) => release.id)],
           ),
         );
-      } else if (matches.length === 0) {
+      } else {
         findings.push(
           finding(
             "drift",

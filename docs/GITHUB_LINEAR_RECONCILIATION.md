@@ -14,8 +14,11 @@ normalizado.
 ## Contrato
 
 A reconciliação inventaria os repositórios GitHub ativos e não arquivados, seus
-Issues e pull requests, além dos times e Issues Linear definidos na configuração
-local. A avaliação detecta, sem efetuar qualquer alteração:
+Issues e pull requests. No Linear, ela coleta primeiro uma visão global paginada
+de Teams, Issues, Cycles, Projects, Initiatives, Documents, ReleasePipelines,
+Releases e IssueToRelease. Identidades, referências e todos os timestamps
+mutáveis são validados contra o mesmo `capturedAt` antes de qualquer filtragem
+pelos mappings locais. A avaliação detecta, sem efetuar qualquer alteração:
 
 - ausência ou cardinalidade diferente de 1:1 entre contrapartes;
 - divergência de estado;
@@ -39,6 +42,9 @@ A identidade canônica vem exclusivamente do GitHub Issues Sync nativo. O
 attachment dessa contraparte é obrigatório, mas attachments suplementares
 seguros para outros Issues existentes são permitidos: eles são referências e
 não participam de estado, comentários, releases ou cardinalidade.
+`syncedWith.id` deve coincidir exatamente, com comparação case-sensitive, com o
+`node_id` do GitHub Issue. A resource key é derivada somente depois dessa prova;
+URL ou attachment não substitui a identidade nativa.
 
 ## Configuração local
 
@@ -84,8 +90,8 @@ são truthy.
 Pré-requisitos:
 
 - Node.js `24.19.0`, conforme `.node-version`;
-- `LINEAR_READ_KEY`, criado no Linear com somente a permissão `Read` e acesso a
-  todos os times inventariados;
+- `LINEAR_READ_KEY`, criado no Linear com somente a permissão `Read`, sem
+  restrição por time e por uma conta que enxergue também os times privados;
 - uma GitHub App privada dedicada, instalada na organização em `All
 repositories`, sem webhooks ou eventos e com somente `Metadata: read`,
   `Issues: read` e `Pull requests: read`;
@@ -101,23 +107,27 @@ selecionados não fornece essa prova e não é aceito.
 ### Preparação oficial das credenciais
 
 No Linear, abra **Settings → Account → Security & Access → Personal API keys**,
-crie uma chave com somente `Read` e inclua todos os times mapeados, o time
-`umbrella` e os times `linear-only`. Para que times futuros também entrem no
-inventário, prefira leitura do workspace inteiro. Consulte a
+crie uma chave com somente `Read` e acesso completo aos dados do workspace — não
+limite a chave a times específicos. A conta proprietária deve possuir acesso
+aos times privados incluídos na auditoria. Consulte a
 [documentação oficial da API do Linear](https://linear.app/docs/api-and-webhooks)
 e a página oficial de
-[segurança e acesso](https://linear.app/docs/security-and-access).
+[segurança e acesso](https://linear.app/docs/security-and-access), além do
+contrato de [times privados](https://linear.app/docs/private-teams).
 
 No GitHub, em **Organization Settings → Developer settings → GitHub Apps**, crie
 uma App privada dedicada, desative autorização de usuário, Device Flow e
 webhooks, não selecione eventos e conceda somente as três permissões de leitura
-acima. Instale-a apenas na organização proprietária, escolhendo **All
-repositories**. Anote o **App ID**, gere uma private key e mova o `.pem` para um
-diretório privado fora de qualquer checkout. O GitHub mantém somente a parte
-pública da chave. Consulte as instruções oficiais para
+acima. Em **Where can this GitHub App be installed?**, selecione **Only on this
+account**. Em **Install App**, instale-a somente na organização proprietária e
+escolha **All repositories**. Anote o **App ID** — não o Client ID —, gere uma
+private key e mantenha o `.pem` no diretório `credentials` do profile local. O
+GitHub mantém somente a parte pública da chave. Consulte as instruções oficiais
+para
 [registrar uma GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app),
-[revisar a instalação](https://docs.github.com/en/apps/using-github-apps/reviewing-and-modifying-installed-github-apps)
-e [gerenciar private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps).
+[instalar a própria App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app),
+[gerenciar private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps)
+e [autenticar como App](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app).
 
 Inicialize uma vez o profile tool-owned:
 
@@ -125,27 +135,54 @@ Inicialize uma vez o profile tool-owned:
 node tools/github-linear-reconciler/src/cli.mjs --init-profile
 ```
 
-O inicializador cria somente a raiz e o marker. Crie então a pasta privada de
-credenciais, mova para ela o PEM baixado e restrinja a ACL ao operador e ao
-`SYSTEM` (substitua o caminho de origem):
+O inicializador cria a raiz, o marker e o diretório fixo `credentials` com
+permissões privadas. No Windows, a ferramenta exige owner igual ao operador
+atual, DACL protegida e somente ACEs explícitas `Allow` com `FullControl` para o
+SID do operador e `SYSTEM`. ACL herdada, outro principal ou `Deny` torna a
+execução inconclusiva. Objetos preexistentes são apenas verificados e nunca
+corrigidos automaticamente.
+
+Depois de criar o `config.json` e copiar o PEM para o diretório criado pela
+ferramenta, aplique a mesma policy aos dois arquivos com as APIs nativas de ACL
+do PowerShell:
 
 ```powershell
 $profileRoot = Join-Path $env:LOCALAPPDATA "github-linear-reconciler"
-$credentialsDir = Join-Path $profileRoot "credentials"
-$operator = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-New-Item -ItemType Directory -Path $credentialsDir -ErrorAction Stop
-icacls $credentialsDir /inheritance:r /grant:r "${operator}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
-$pemPath = Join-Path $credentialsDir "github-linear-reconciler.pem"
-Move-Item -LiteralPath "C:\caminho\baixado\app.private-key.pem" -Destination $pemPath
-icacls $pemPath /inheritance:r /grant:r "${operator}:R" "SYSTEM:R"
+$configPath = Join-Path $profileRoot "config.json"
+$pemPath = Join-Path $profileRoot "credentials\github-linear-reconciler.pem"
+
+Copy-Item -LiteralPath "C:\caminho\baixado\app.private-key.pem" -Destination $pemPath
+
+function Protect-ReconcilerFile([string] $LiteralPath) {
+  $operatorSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+  $systemSid = [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18")
+  $acl = [System.Security.AccessControl.FileSecurity]::new()
+  foreach ($sid in @($operatorSid, $systemSid)) {
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+      $sid,
+      [System.Security.AccessControl.FileSystemRights]::FullControl,
+      [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    [void] $acl.AddAccessRule($rule)
+  }
+  $acl.SetOwner($operatorSid)
+  $acl.SetAccessRuleProtection($true, $false)
+  Set-Acl -LiteralPath $LiteralPath -AclObject $acl
+}
+
+Protect-ReconcilerFile $configPath
+Protect-ReconcilerFile $pemPath
 ```
 
-Depois grave o JSON no caminho fixo
-`$env:LOCALAPPDATA\github-linear-reconciler\config.json`. Para escolher outra
-raiz absoluta e externa a worktrees, defina
+Grave antes o JSON sintaticamente válido no caminho `$configPath`; a função
+acima apenas protege um arquivo já existente. Para escolher outra raiz absoluta
+e externa a worktrees, defina
 `GITHUB_LINEAR_RECONCILER_PROFILE_DIR` antes da inicialização. Uma raiz já
 existente sem o marker versionado da ferramenta é recusada e nunca tem suas
-permissões alteradas.
+permissões alteradas. Ao executar novamente `--init-profile` sobre um profile
+tool-owned de uma versão anterior, a ferramenta pode criar o novo diretório
+`credentials` ausente; nenhum objeto preexistente é alterado. `Get-Acl` e
+`Set-Acl` são os cmdlets nativos usados para verificar e aplicar essa policy.
 
 Exemplo em PowerShell, carregando as credenciais somente no processo atual:
 
@@ -188,9 +225,10 @@ inclusive depois de resolver o caminho canônico, e recusa destinos dentro de
 worktrees Git.
 
 Em plataformas POSIX, a ferramenta exige owner atual, diretórios `0700` e
-arquivos `0600`. Ela nunca corrige com `chmod` um objeto preexistente: qualquer
-desvio de ownership ou modo torna a execução inconclusiva. No Windows, valem as
-ACLs herdadas do perfil do usuário; restrinja o PEM ao operador e `SYSTEM`.
+arquivos `0600`. No Windows, exige owner atual e a ACL explícita descrita acima
+para raiz, marker, credentials, config, reports, temporários e arquivos finais.
+Ela nunca corrige um objeto preexistente: qualquer desvio de ownership, modo ou
+ACL torna a execução inconclusiva.
 
 Somente arquivos com o prefixo próprio
 `github-linear-reconciliation-` participam da retenção. Relatórios com mais de
@@ -213,9 +251,11 @@ e permanece somente leitura para ambos os provedores.
 ## Verificação pública
 
 O workflow público usa apenas Actions oficiais fixadas por SHA, permissões
-mínimas e checkout sem credenciais persistidas. Ele instala exclusivamente o
-lockfile versionado, com lifecycle scripts desabilitados, e executa a suíte
-sintética:
+mínimas e checkout sem credenciais persistidas. Os jobs usam as famílias
+oficiais `ubuntu-24.04` e `windows-2025`; elas recebem atualizações do GitHub e
+não são descritas como imagens fisicamente imutáveis. Ambos instalam
+exclusivamente o lockfile versionado, com lifecycle scripts desabilitados, e
+executam a suíte sintética:
 
 ```sh
 npm ci --ignore-scripts

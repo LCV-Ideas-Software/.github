@@ -30,6 +30,9 @@
  * @property {'continuous'|'scheduled'} pipelineType
  * @property {string} commitSha Canonical lowercase opaque commit identity.
  * @property {number|null} completedAtMs Null while the release is planned.
+ * @property {number} updatedAtMs Release observation boundary.
+ * @property {string} issueToReleaseId Stable association identity.
+ * @property {number} issueToReleaseUpdatedAtMs Association observation boundary.
  *
  * @typedef {object} NormalizedLinearIssue
  * @property {string} id
@@ -38,7 +41,8 @@
  * @property {string} teamKey
  * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
  * @property {NormalizedStatus} status
- * @property {string[]} nativeCounterpartKeys GitHub Issues Sync counterparts.
+ * @property {NativeCounterpart[]} nativeCounterparts Canonical GitHub Issues Sync identities.
+ * @property {string[]} nativeCounterpartKeys Strict projection of nativeCounterparts.resourceKey for rule evaluation.
  * @property {string[]} attachmentIssueKeys Explicit GitHub Issue attachments.
  * @property {string[]} insecureGithubResourceKeys Noncanonical or unencrypted GitHub resources, never fetched.
  * @property {string[]} carrierPullKeys
@@ -49,16 +53,44 @@
  * @property {string|null} duplicateKey Precomputed exact candidate signal.
  * @property {string[]} similarityKeys Precomputed advisory-only signals.
  *
+ * @typedef {object} NativeCounterpart
+ * @property {string} resourceKey Canonical lowercase owner/repository#number.
+ * @property {string} externalId Opaque, case-sensitive GitHub node ID from Linear ExternalEntityInfo.id.
+ *
+ * @typedef {object} NormalizedReleasePipeline
+ * @property {string} id Stable Linear pipeline identity.
+ * @property {'continuous'|'scheduled'} type
+ * @property {number} createdAtMs
+ * @property {number} updatedAtMs
+ *
+ * @typedef {object} NormalizedWorkspaceRelease
+ * @property {string} id Stable Linear release identity.
+ * @property {string} pipelineId Stable Linear pipeline identity.
+ * @property {string|null} commitSha Null when the release carries no Git commit evidence.
+ * @property {number|null} completedAtMs Null while the release is planned.
+ * @property {number} createdAtMs
+ * @property {number} updatedAtMs
+ *
+ * @typedef {object} NormalizedIssueToRelease
+ * @property {string} id Stable Linear association identity.
+ * @property {string} issueId Stable Linear issue identity.
+ * @property {string} releaseId Stable Linear release identity.
+ * @property {number} createdAtMs
+ * @property {number} updatedAtMs
+ *
  * @typedef {object} NormalizedLinearSnapshot
  * @property {boolean} complete
  * @property {{source:string,code:string,scope:string}[]} failures
  * @property {number} capturedAtMs Snapshot boundary in epoch milliseconds.
- * @property {{id:string,key:string,active:boolean}[]} teams
+ * @property {{id:string,key:string,active:boolean,updatedAtMs:number}[]} teams
  * @property {NormalizedLinearIssue[]} issues
- * @property {{id:string,teamId:string,teamKey:string}[]} cycles
- * @property {{id:string,teamId:string,teamKey:string}[]} projects
- * @property {{id:string,teamId:string,teamKey:string}[]} initiatives
- * @property {{id:string,teamId:string,teamKey:string}[]} documents
+ * @property {{id:string,teamId:string,teamKey:string,updatedAtMs:number}[]} cycles
+ * @property {{id:string,teamId:string,teamKey:string,updatedAtMs:number}[]} projects
+ * @property {{id:string,teamId:string,teamKey:string,updatedAtMs:number}[]} initiatives
+ * @property {{id:string,teamId:string,teamKey:string,updatedAtMs:number}[]} documents
+ * @property {NormalizedReleasePipeline[]} releasePipelines
+ * @property {NormalizedWorkspaceRelease[]} releases
+ * @property {NormalizedIssueToRelease[]} issueToReleases
  *
  * @typedef {object} GithubComment
  * @property {string} id
@@ -68,6 +100,7 @@
  *
  * @typedef {object} NormalizedGithubIssue
  * @property {string} key Canonical lowercase owner/repository#number.
+ * @property {string} nodeId Opaque, case-sensitive GitHub node ID.
  * @property {string} repository
  * @property {number} number
  * @property {NormalizedStatus} status

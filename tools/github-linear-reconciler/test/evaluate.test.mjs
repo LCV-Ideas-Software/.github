@@ -13,6 +13,71 @@ const TEAM_IDS = Object.freeze({
   TEAM_ROOT: "team-root-id",
 });
 
+function nodeIdForKey(key) {
+  return `node:${key}`;
+}
+
+function setNativeCounterparts(issue, keys) {
+  issue.nativeCounterparts = keys.map((resourceKey) => ({
+    resourceKey,
+    externalId: nodeIdForKey(resourceKey),
+  }));
+  issue.nativeCounterpartKeys = [...keys];
+}
+
+function setReleaseEvidence(input, issue, releases) {
+  const previousAssociations = input.linear.issueToReleases.filter(
+    (association) => association.issueId === issue.id,
+  );
+  const previousReleaseIds = new Set(
+    previousAssociations.map((association) => association.releaseId),
+  );
+  input.linear.issueToReleases = input.linear.issueToReleases.filter(
+    (association) => association.issueId !== issue.id,
+  );
+  input.linear.releases = input.linear.releases.filter(
+    (release) => !previousReleaseIds.has(release.id),
+  );
+  issue.releases = releases.map((release, index) => {
+    const updatedAtMs =
+      release.updatedAtMs ?? Math.max(release.completedAtMs ?? 0, 5_000);
+    const issueToReleaseId = `${issue.id}-release-${index + 1}`;
+    if (
+      !input.linear.releasePipelines.some(
+        (pipeline) => pipeline.id === release.pipelineId,
+      )
+    ) {
+      input.linear.releasePipelines.push({
+        id: release.pipelineId,
+        type: release.pipelineType,
+        createdAtMs: 0,
+        updatedAtMs: 5_000,
+      });
+    }
+    input.linear.releases.push({
+      id: release.id,
+      pipelineId: release.pipelineId,
+      commitSha: release.commitSha,
+      completedAtMs: release.completedAtMs,
+      createdAtMs: 0,
+      updatedAtMs,
+    });
+    input.linear.issueToReleases.push({
+      id: issueToReleaseId,
+      issueId: issue.id,
+      releaseId: release.id,
+      createdAtMs: 0,
+      updatedAtMs: 5_000,
+    });
+    return {
+      ...release,
+      updatedAtMs,
+      issueToReleaseId,
+      issueToReleaseUpdatedAtMs: 5_000,
+    };
+  });
+}
+
 function baseline() {
   return {
     config: {
@@ -35,9 +100,24 @@ function baseline() {
       failures: [],
       capturedAtMs: NOW.getTime(),
       teams: [
-        { id: TEAM_IDS.TEAM_A, key: "TEAM_A", active: true },
-        { id: TEAM_IDS.TEAM_LOCAL, key: "TEAM_LOCAL", active: true },
-        { id: TEAM_IDS.TEAM_ROOT, key: "TEAM_ROOT", active: true },
+        {
+          id: TEAM_IDS.TEAM_A,
+          key: "TEAM_A",
+          active: true,
+          updatedAtMs: 5_000,
+        },
+        {
+          id: TEAM_IDS.TEAM_LOCAL,
+          key: "TEAM_LOCAL",
+          active: true,
+          updatedAtMs: 5_000,
+        },
+        {
+          id: TEAM_IDS.TEAM_ROOT,
+          key: "TEAM_ROOT",
+          active: true,
+          updatedAtMs: 5_000,
+        },
       ],
       issues: [
         {
@@ -47,6 +127,12 @@ function baseline() {
           teamKey: "TEAM_A",
           updatedAtMs: 5_000,
           status: "active",
+          nativeCounterparts: [
+            {
+              resourceKey: ISSUE_KEY,
+              externalId: nodeIdForKey(ISSUE_KEY),
+            },
+          ],
           nativeCounterpartKeys: [ISSUE_KEY],
           attachmentIssueKeys: [ISSUE_KEY],
           insecureGithubResourceKeys: [],
@@ -63,6 +149,16 @@ function baseline() {
       projects: [],
       initiatives: [],
       documents: [],
+      releasePipelines: [
+        {
+          id: PIPELINE_ID,
+          type: "continuous",
+          createdAtMs: 0,
+          updatedAtMs: 5_000,
+        },
+      ],
+      releases: [],
+      issueToReleases: [],
     },
     github: {
       complete: true,
@@ -81,6 +177,7 @@ function baseline() {
       issues: [
         {
           key: ISSUE_KEY,
+          nodeId: nodeIdForKey(ISSUE_KEY),
           repository: "repo-a",
           number: 1,
           status: "active",
@@ -108,10 +205,14 @@ function addLinearIssue(input, overrides) {
     id: "linear-2",
     identifier: "TEAM_A-2",
     nativeCounterpartKeys: [],
+    nativeCounterparts: [],
     attachmentIssueKeys: [],
     insecureGithubResourceKeys: [],
     ...overrides,
   });
+  if (overrides.nativeCounterparts === undefined) {
+    setNativeCounterparts(issue, issue.nativeCounterpartKeys);
+  }
   if (overrides.teamId === undefined) issue.teamId = TEAM_IDS[issue.teamKey];
   input.linear.issues.push(issue);
   return issue;
@@ -131,6 +232,24 @@ test("snapshot normalizado limpo produz resultado e exit determinísticos", () =
   caseVariant.config.organization = "Example-Org";
   caseVariant.config.mappings[0].repository = "Repo-A";
   assert.equal(evaluate(caseVariant).state, "clean");
+});
+
+test("mapping github-backed exige pipeline global continuous mesmo sem carrier", () => {
+  const missing = baseline();
+  missing.linear.releasePipelines = [];
+  const missingResult = evaluate(missing);
+  assert.equal(missingResult.state, "incomplete");
+  assert.deepEqual(codes(missingResult), [
+    "configured_release_pipeline_missing",
+  ]);
+
+  const scheduled = baseline();
+  scheduled.linear.releasePipelines[0].type = "scheduled";
+  const scheduledResult = evaluate(scheduled);
+  assert.equal(scheduledResult.state, "incomplete");
+  assert.deepEqual(codes(scheduledResult), [
+    "configured_release_pipeline_not_continuous",
+  ]);
 });
 
 test("configuração exige chaves/repos únicos e exatamente um umbrella", () => {
@@ -241,7 +360,7 @@ test("snapshot parcial ou fora do contrato nunca executa regras como se fosse co
 
 test("counterparts aplicam cardinalidade nos dois sentidos", () => {
   const missingFromLinear = baseline();
-  missingFromLinear.linear.issues[0].nativeCounterpartKeys = [];
+  setNativeCounterparts(missingFromLinear.linear.issues[0], []);
   missingFromLinear.linear.issues[0].attachmentIssueKeys = [];
   assert.deepEqual(
     new Set(codes(evaluate(missingFromLinear))),
@@ -253,10 +372,14 @@ test("counterparts aplicam cardinalidade nos dois sentidos", () => {
 
   const multipleFromLinear = baseline();
   const secondKey = "example-org/repo-a#2";
-  multipleFromLinear.linear.issues[0].nativeCounterpartKeys.push(secondKey);
+  setNativeCounterparts(multipleFromLinear.linear.issues[0], [
+    ISSUE_KEY,
+    secondKey,
+  ]);
   multipleFromLinear.linear.issues[0].attachmentIssueKeys.push(secondKey);
   multipleFromLinear.github.issues.push({
     key: secondKey,
+    nodeId: nodeIdForKey(secondKey),
     repository: "repo-a",
     number: 2,
     status: "active",
@@ -318,6 +441,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
   });
   linearOnly.github.issues.push({
     key: secondKey,
+    nodeId: nodeIdForKey(secondKey),
     repository: "repo-a",
     number: 2,
     status: "active",
@@ -329,7 +453,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
   assert.ok(linearOnlyCodes.includes("linear_only_github_attachment"));
 
   const linearOnlyEvidence = baseline();
-  addLinearIssue(linearOnlyEvidence, {
+  const localEvidenceIssue = addLinearIssue(linearOnlyEvidence, {
     teamKey: "TEAM_LOCAL",
     carrierPullKeys: [secondKey],
     comments: [
@@ -344,16 +468,16 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
         updatedAtMs: 1_000,
       },
     ],
-    releases: [
-      {
-        id: "release-local",
-        pipelineId: PIPELINE_ID,
-        pipelineType: "continuous",
-        commitSha: "b".repeat(40),
-        completedAtMs: 2_000,
-      },
-    ],
   });
+  setReleaseEvidence(linearOnlyEvidence, localEvidenceIssue, [
+    {
+      id: "release-local",
+      pipelineId: PIPELINE_ID,
+      pipelineType: "continuous",
+      commitSha: "b".repeat(40),
+      completedAtMs: 2_000,
+    },
+  ]);
   const evidenceCodes = codes(evaluate(linearOnlyEvidence));
   assert.ok(evidenceCodes.includes("linear_only_github_attachment"));
   assert.ok(evidenceCodes.includes("linear_only_github_comment"));
@@ -369,6 +493,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
   });
   unknownRepository.github.issues.push({
     key: "example-org/repo-b#1",
+    nodeId: nodeIdForKey("example-org/repo-b#1"),
     repository: "repo-b",
     number: 1,
     status: "active",
@@ -400,6 +525,7 @@ test("umbrella vazio cobre todas as classes finitas de work item", () => {
       id: `${collection}-1`,
       teamId: TEAM_IDS.TEAM_ROOT,
       teamKey: "TEAM_ROOT",
+      updatedAtMs: 5_000,
     });
   }
 
@@ -561,7 +687,7 @@ test("release exige commit e pipeline exatos depois do corte", () => {
   const commitSha = "a".repeat(40);
   const clean = baseline();
   clean.linear.issues[0].carrierPullKeys = [pullKey];
-  clean.linear.issues[0].releases = [
+  setReleaseEvidence(clean, clean.linear.issues[0], [
     {
       id: "release-1",
       pipelineId: PIPELINE_ID,
@@ -569,7 +695,7 @@ test("release exige commit e pipeline exatos depois do corte", () => {
       commitSha,
       completedAtMs: 3_000,
     },
-  ];
+  ]);
   clean.github.pulls.push({
     key: pullKey,
     repository: "repo-a",
@@ -581,11 +707,12 @@ test("release exige commit e pipeline exatos depois do corte", () => {
   assert.equal(evaluate(clean).state, "clean");
 
   const missing = clone(clean);
-  missing.linear.issues[0].releases = [];
+  setReleaseEvidence(missing, missing.linear.issues[0], []);
   assert.ok(codes(evaluate(missing)).includes("missing_release"));
 
   const early = clone(clean);
   early.linear.issues[0].releases[0].completedAtMs = 1_999;
+  early.linear.releases[0].completedAtMs = 1_999;
   const earlyResult = evaluate(early);
   assert.equal(earlyResult.state, "incomplete");
   assert.ok(codes(earlyResult).includes("release_chronology_invalid"));
@@ -602,7 +729,7 @@ test("duplicatas e similares são somente advisory e relações explícitas supr
   const duplicate = baseline();
   duplicate.linear.issues[0].teamKey = "TEAM_LOCAL";
   duplicate.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
-  duplicate.linear.issues[0].nativeCounterpartKeys = [];
+  setNativeCounterparts(duplicate.linear.issues[0], []);
   duplicate.linear.issues[0].attachmentIssueKeys = [];
   duplicate.github.issues = [];
   duplicate.linear.issues[0].duplicateKey = "scope-a:exact-a";
@@ -628,7 +755,7 @@ test("duplicatas e similares são somente advisory e relações explícitas supr
   const similar = baseline();
   similar.linear.issues[0].teamKey = "TEAM_LOCAL";
   similar.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
-  similar.linear.issues[0].nativeCounterpartKeys = [];
+  setNativeCounterparts(similar.linear.issues[0], []);
   similar.linear.issues[0].attachmentIssueKeys = [];
   similar.github.issues = [];
   similar.linear.issues[0].similarityKeys = ["scope-a:signal-a"];
@@ -647,7 +774,7 @@ test("grupo duplicateOf transitivo suprime siblings sem varredura por pares", ()
   const input = baseline();
   input.linear.issues[0].teamKey = "TEAM_LOCAL";
   input.linear.issues[0].teamId = TEAM_IDS.TEAM_LOCAL;
-  input.linear.issues[0].nativeCounterpartKeys = [];
+  setNativeCounterparts(input.linear.issues[0], []);
   input.linear.issues[0].attachmentIssueKeys = [];
   input.linear.issues[0].duplicateKey = "exact-group";
   input.github.issues = [];
@@ -676,6 +803,7 @@ test("scan global agrupa milhares de candidatos sem materializar findings por pa
       teamKey: "TEAM_LOCAL",
       updatedAtMs: 5_000,
       status: "active",
+      nativeCounterparts: [],
       nativeCounterpartKeys: [],
       attachmentIssueKeys: [],
       insecureGithubResourceKeys: [],
@@ -701,11 +829,12 @@ test("times históricos não exigem mapping e sync nativo não se confunde com a
     id: "historical-team-id",
     key: "HISTORICAL",
     active: false,
+    updatedAtMs: 5_000,
   });
   assert.equal(evaluate(historical).state, "clean");
 
   const attachmentOnly = baseline();
-  attachmentOnly.linear.issues[0].nativeCounterpartKeys = [];
+  setNativeCounterparts(attachmentOnly.linear.issues[0], []);
   attachmentOnly.github.issues[0].comments.push({
     id: "github-comment-without-sync",
     threadId: ISSUE_KEY,
@@ -721,16 +850,17 @@ test("pipeline usa ID estável e somente release continuous concluída prova car
   const input = baseline();
   const pullKey = "example-org/repo-a#2";
   const commitSha = "c".repeat(40);
+  const scheduledPipelineId = "00000000-0000-4000-8000-000000000002";
   input.linear.issues[0].carrierPullKeys = [pullKey];
-  input.linear.issues[0].releases = [
+  setReleaseEvidence(input, input.linear.issues[0], [
     {
       id: "release-scheduled",
-      pipelineId: PIPELINE_ID,
+      pipelineId: scheduledPipelineId,
       pipelineType: "scheduled",
       commitSha,
       completedAtMs: 3_000,
     },
-  ];
+  ]);
   input.github.pulls.push({
     key: pullKey,
     repository: "repo-a",

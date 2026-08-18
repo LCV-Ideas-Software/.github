@@ -18,6 +18,16 @@ function releaseContext({
   const pullKey = `example-org/${pullRepository}#7`;
   return {
     linear: {
+      releasePipelines: [
+        {
+          id: PIPELINE_A,
+          type: "continuous",
+        },
+        {
+          id: PIPELINE_B,
+          type: "continuous",
+        },
+      ],
       issues: [
         {
           identifier: "TEAM_A-1",
@@ -106,6 +116,17 @@ test("release sem completedAt nunca prova um carrier mesclado", () => {
   const findings = evaluateReleases(releaseContext({ completedAtMs: null }));
 
   assert.deepEqual(findingCodes(findings), ["missing_release"]);
+});
+
+test("release válida pós-merge prevalece sobre matches anteriores", () => {
+  const context = releaseContext();
+  context.linear.issues[0].releases.unshift({
+    ...context.linear.issues[0].releases[0],
+    id: "release-early",
+    completedAtMs: 1_999,
+  });
+
+  assert.deepEqual(evaluateReleases(context), []);
 });
 
 test("attachment adicional existente permanece permitido", () => {

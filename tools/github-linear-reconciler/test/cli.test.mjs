@@ -146,6 +146,7 @@ test("executa snapshots em paralelo, grava relatório local e redige stdout", as
     argv: [],
     env: {
       CI: "false",
+      SystemRoot: "C:\\Windows",
       LINEAR_READ_KEY: "linear-secret",
       LINEAR_GITHUB_APP_ID: "456",
       LINEAR_GITHUB_APP_PRIVATE_KEY_PATH: "C:\\private\\app.pem",
@@ -170,6 +171,8 @@ test("executa snapshots em paralelo, grava relatório local e redige stdout", as
   assert.equal(calls[0][1].token, "linear-secret");
   assert.equal(calls[1][1].appId, "456");
   assert.equal(calls[1][1].privateKeyPath, "C:\\private\\app.pem");
+  assert.equal(calls[1][1].profileRoot, "C:\\profile");
+  assert.deepEqual(calls[1][1].env, { SystemRoot: "C:\\Windows" });
   assert.equal(calls[2][0], "report");
   assert.equal(calls[2][1].directory, "C:\\profile");
   assert.equal(calls[2][1].now, NOW);

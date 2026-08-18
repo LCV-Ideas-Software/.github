@@ -15,7 +15,38 @@ import {
 } from "../src/adapters/github.mjs";
 import { createLinearAdapter } from "../src/adapters/linear.mjs";
 import { loadRuntimeDependencies } from "../src/cli.mjs";
-import { ensureOwnedLocalProfile } from "../src/local-profile.mjs";
+import {
+  ensureOwnedLocalProfile,
+  WINDOWS_FULL_CONTROL_MASK,
+} from "../src/local-profile.mjs";
+
+const TEST_OPERATOR_SID = "S-1-5-21-1000-1000-1000-1001";
+const readValidWindowsAcl = async (_candidate, { kind = "file" } = {}) => {
+  const inheritanceFlags = kind === "directory" ? 3 : 0;
+  return {
+    currentSid: TEST_OPERATOR_SID,
+    ownerSid: TEST_OPERATOR_SID,
+    accessRulesProtected: true,
+    accessRules: [
+      {
+        sid: TEST_OPERATOR_SID,
+        type: "Allow",
+        rights: WINDOWS_FULL_CONTROL_MASK,
+        inherited: false,
+        inheritanceFlags,
+        propagationFlags: 0,
+      },
+      {
+        sid: "S-1-5-18",
+        type: "Allow",
+        rights: WINDOWS_FULL_CONTROL_MASK,
+        inherited: false,
+        inheritanceFlags,
+        propagationFlags: 0,
+      },
+    ],
+  };
+};
 
 const validConfig = {
   organization: "example-org",
@@ -156,6 +187,8 @@ test("loader usa somente o config.json fixo do profile tool-owned", async (conte
   context.after(() => rm(parent, { recursive: true, force: true }));
   const profile = await ensureOwnedLocalProfile({
     root: path.join(parent, "profile"),
+    readWindowsAclImpl: readValidWindowsAcl,
+    setWindowsAclImpl: async () => {},
   });
   await writeFile(profile.configPath, JSON.stringify(validConfig), {
     encoding: "utf8",
@@ -163,6 +196,7 @@ test("loader usa somente o config.json fixo do profile tool-owned", async (conte
   });
   const loaded = await loadOperationalConfig(profile.configPath, {
     profileRoot: profile.root,
+    readWindowsAclImpl: readValidWindowsAcl,
   });
   assert.deepEqual(loaded, validConfig);
 });
@@ -202,6 +236,7 @@ test("Linear usa SDK oficial, pagina integralmente e normaliza epoch", async () 
             name: "Root",
             archivedAt: null,
             retiredAt: null,
+            updatedAt: "2030-01-02T03:00:00.000Z",
           },
         ],
         [
@@ -211,6 +246,7 @@ test("Linear usa SDK oficial, pagina integralmente e normaliza epoch", async () 
             name: "App",
             archivedAt: null,
             retiredAt: null,
+            updatedAt: "2030-01-02T03:00:00.000Z",
           },
         ],
       ]),
@@ -237,6 +273,9 @@ test("Linear usa SDK oficial, pagina integralmente e normaliza epoch", async () 
     projects: async () => emptyConnection(),
     initiatives: async () => emptyConnection(),
     documents: async () => emptyConnection(),
+    releasePipelines: async () => emptyConnection(),
+    releases: async () => emptyConnection(),
+    issueToReleases: async () => emptyConnection(),
   };
   const adapter = createLinearAdapter({
     apiKey: "linear-test-token",
@@ -351,6 +390,7 @@ test("GitHub exclui somente linkbacks nativos e normaliza comments e pulls sem s
           data: [
             {
               number: 7,
+              node_id: "I_kwDOBoundaryIssue7",
               state: "open",
               state_reason: null,
               created_at: "2030-01-02T02:00:00.000Z",
@@ -446,14 +486,27 @@ function syntheticLinearClient({
   issue,
   issues = [issue],
   projects = [],
+  releasePipelines = [],
+  releases = [],
+  issueToReleases = [],
 }) {
   return {
-    teams: async () => pagedConnection([[team]]),
+    teams: async () =>
+      pagedConnection([[{ updatedAt: "2030-01-02T03:00:00.000Z", ...team }]]),
     issues: async () => pagedConnection([issues]),
     cycles: async () => emptyConnection(),
-    projects: async () => pagedConnection([projects]),
+    projects: async () =>
+      pagedConnection([
+        projects.map((project) => ({
+          updatedAt: "2030-01-02T03:00:00.000Z",
+          ...project,
+        })),
+      ]),
     initiatives: async () => emptyConnection(),
     documents: async () => emptyConnection(),
+    releasePipelines: async () => pagedConnection([releasePipelines]),
+    releases: async () => pagedConnection([releases]),
+    issueToReleases: async () => pagedConnection([issueToReleases]),
   };
 }
 
@@ -636,40 +689,59 @@ test("Linear separa evidencias nativas, attachments seguros, links inseguros e r
           },
         ],
       ]),
-    releases: async () =>
-      pagedConnection([
-        [
-          {
-            id: "release-planned-with-sha",
-            commitSha: "b".repeat(40),
-            completedAt: null,
-            pipeline: {
-              id: "123e4567-e89b-42d3-a456-426614174000",
-              name: "Production",
-              type: "continuous",
-            },
-          },
-          {
-            id: "release-completed-without-sha",
-            commitSha: null,
-            completedAt: "2030-01-02T03:10:00.000Z",
-          },
-          {
-            id: "release-complete",
-            commitSha: "c".repeat(40),
-            completedAt: "2030-01-02T03:20:00.000Z",
-            pipeline: {
-              id: "123e4567-e89b-42d3-a456-426614174000",
-              name: "Production",
-              type: "continuous",
-            },
-          },
-        ],
-      ]),
   });
+  const pipelineId = "123e4567-e89b-42d3-a456-426614174000";
+  const releasePipelines = [
+    {
+      id: pipelineId,
+      type: "continuous",
+      createdAt: "2030-01-02T03:00:00.000Z",
+      updatedAt: "2030-01-02T03:00:00.000Z",
+    },
+  ];
+  const releases = [
+    {
+      id: "release-planned-with-sha",
+      pipelineId,
+      commitSha: "b".repeat(40),
+      completedAt: null,
+      createdAt: "2030-01-02T03:00:00.000Z",
+      updatedAt: "2030-01-02T03:00:00.000Z",
+    },
+    {
+      id: "release-completed-without-sha",
+      pipelineId,
+      commitSha: null,
+      completedAt: "2030-01-02T03:10:00.000Z",
+      createdAt: "2030-01-02T03:00:00.000Z",
+      updatedAt: "2030-01-02T03:10:00.000Z",
+    },
+    {
+      id: "release-complete",
+      pipelineId,
+      commitSha: "c".repeat(40),
+      completedAt: "2030-01-02T03:20:00.000Z",
+      createdAt: "2030-01-02T03:00:00.000Z",
+      updatedAt: "2030-01-02T03:20:00.000Z",
+    },
+  ];
+  const issueToReleases = releases.map((release, index) => ({
+    id: `issue-release-${index + 1}`,
+    issueId: "issue-7",
+    releaseId: release.id,
+    createdAt: "2030-01-02T03:00:00.000Z",
+    updatedAt: "2030-01-02T03:20:00.000Z",
+  }));
   const adapter = createLinearAdapter({
     apiKey: "linear-test-token",
-    clientFactory: () => syntheticLinearClient({ team, issue }),
+    clientFactory: () =>
+      syntheticLinearClient({
+        team,
+        issue,
+        releasePipelines,
+        releases,
+        issueToReleases,
+      }),
   });
 
   const snapshot = await adapter.readWorkspaceSnapshot({
@@ -693,18 +765,24 @@ test("Linear separa evidencias nativas, attachments seguros, links inseguros e r
   assert.equal("attachmentKeys" in normalized, false);
   assert.deepEqual(normalized.releases, [
     {
-      id: "release-planned-with-sha",
-      pipelineId: "123e4567-e89b-42d3-a456-426614174000",
-      pipelineType: "continuous",
-      commitSha: "b".repeat(40),
-      completedAtMs: null,
-    },
-    {
       id: "release-complete",
       pipelineId: "123e4567-e89b-42d3-a456-426614174000",
       pipelineType: "continuous",
       commitSha: "c".repeat(40),
       completedAtMs: 1893554400000,
+      updatedAtMs: 1893554400000,
+      issueToReleaseId: "issue-release-3",
+      issueToReleaseUpdatedAtMs: 1893554400000,
+    },
+    {
+      id: "release-planned-with-sha",
+      pipelineId: "123e4567-e89b-42d3-a456-426614174000",
+      pipelineType: "continuous",
+      commitSha: "b".repeat(40),
+      completedAtMs: null,
+      updatedAtMs: 1893553200000,
+      issueToReleaseId: "issue-release-1",
+      issueToReleaseUpdatedAtMs: 1893554400000,
     },
   ]);
   assert.match(normalized.duplicateKey, /^exact:[0-9a-f]{64}$/u);
@@ -839,7 +917,12 @@ test("Linear preserva lifecycle dos times e duplicateOf autoritativo", async () 
   });
   assert.equal(snapshot.complete, true);
   assert.deepEqual(snapshot.teams, [
-    { id: "team-app", key: "APP", active: false },
+    {
+      id: "team-app",
+      key: "APP",
+      active: false,
+      updatedAtMs: 1893553200000,
+    },
   ]);
   assert.equal(
     snapshot.issues.find((candidate) => candidate.identifier === "APP-7")

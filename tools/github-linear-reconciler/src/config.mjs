@@ -10,7 +10,7 @@ import { z } from "zod";
 import {
   assertOutsideGitWorktree,
   assertOwnedLocalProfile,
-  assertPrivateFile,
+  assertPrivateFilePath,
 } from "./local-profile.mjs";
 
 const MAX_CONFIG_BYTES = 64 * 1_024;
@@ -137,6 +137,7 @@ export async function loadOperationalConfig(
     env = process.env,
     homedir,
     platform = process.platform,
+    readWindowsAclImpl,
   } = {},
 ) {
   if (
@@ -154,6 +155,7 @@ export async function loadOperationalConfig(
     platform,
     lstatImpl,
     readFileImpl: readFile,
+    readWindowsAclImpl,
     realpathImpl,
   });
   const selectedPath = configPath ?? profile.configPath;
@@ -167,7 +169,11 @@ export async function loadOperationalConfig(
   let value;
   try {
     const metadata = await lstatImpl(absolutePath);
-    assertPrivateFile(metadata, "config operacional", platform);
+    await assertPrivateFilePath(absolutePath, metadata, "config operacional", {
+      env,
+      platform,
+      readWindowsAclImpl,
+    });
     if (metadata.size > MAX_CONFIG_BYTES) {
       throw new TypeError("config operacional excede 64 KiB");
     }

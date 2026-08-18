@@ -58,7 +58,13 @@ function isContinuousIntegration(env) {
 
 function localProfileEnvironment(env) {
   return Object.fromEntries(
-    ["GITHUB_LINEAR_RECONCILER_PROFILE_DIR", "LOCALAPPDATA", "XDG_STATE_HOME"]
+    [
+      "GITHUB_LINEAR_RECONCILER_PROFILE_DIR",
+      "LOCALAPPDATA",
+      "XDG_STATE_HOME",
+      "SystemRoot",
+      "SYSTEMROOT",
+    ]
       .filter((name) => typeof env[name] === "string")
       .map((name) => [name, env[name]]),
   );
@@ -149,6 +155,8 @@ export async function runCli({
       config,
       appId: githubAppId,
       privateKeyPath: githubPrivateKeyPath,
+      profileRoot: profile.root,
+      env: profileEnv,
       capturedAt,
     }),
   ]);

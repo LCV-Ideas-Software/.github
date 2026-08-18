@@ -22,6 +22,7 @@ function team(overrides = {}) {
     name: "App",
     archivedAt: null,
     retiredAt: null,
+    updatedAt: "2030-01-02T03:00:00.000Z",
     ...overrides,
   };
 }
@@ -68,14 +69,30 @@ function issue(overrides = {}) {
   };
 }
 
-function client({ teams = [team()], issues = [issue()], cycles = [] } = {}) {
+function client({
+  teams = [team()],
+  issues = [issue()],
+  cycles = [],
+  releasePipelines = [],
+  releases = [],
+  issueToReleases = [],
+} = {}) {
   return {
     teams: async () => connection(teams),
     issues: async () => connection(issues),
-    cycles: async () => connection(cycles),
+    cycles: async () =>
+      connection(
+        cycles.map((cycle) => ({
+          updatedAt: "2030-01-02T03:00:00.000Z",
+          ...cycle,
+        })),
+      ),
     projects: async () => connection(),
     initiatives: async () => connection(),
     documents: async () => connection(),
+    releasePipelines: async () => connection(releasePipelines),
+    releases: async () => connection(releases),
+    issueToReleases: async () => connection(issueToReleases),
   };
 }
 
@@ -286,53 +303,83 @@ test("externalThread GitHub recusa qualquer URL nao canonica", async () => {
 
 test("capturedAt fecha a janela temporal de issue, comment e release", async () => {
   const cases = [
-    issue({ updatedAt: "2030-01-02T04:00:00.001Z" }),
-    issue({
-      comments: async () =>
-        connection([comment({ updatedAt: "2030-01-02T03:04:59.999Z" })]),
-    }),
-    issue({
-      comments: async () =>
-        connection([comment({ updatedAt: "2030-01-02T04:00:00.001Z" })]),
-    }),
-    issue({
-      comments: async () =>
-        connection([
-          comment({
-            id: "future-anchor",
-            updatedAt: "2030-01-02T04:00:00.001Z",
-            botActor: {
-              id: "github-bot",
-              type: "integration",
-              subType: "github",
-            },
-            externalThread: {
-              id: "future-anchor-thread",
-              type: "integration",
-              subType: "github",
-              url: GITHUB_ISSUE_URL,
-              isConnected: true,
-            },
-            externalUser: null,
-            parentId: null,
-          }),
-        ]),
-    }),
-    issue({
-      releases: async () =>
-        connection([
-          {
-            id: "release-future",
-            commitSha: "a".repeat(40),
-            completedAt: "2030-01-02T04:00:00.001Z",
-            pipeline: { id: PIPELINE_ID, type: "continuous" },
-          },
-        ]),
-    }),
+    { issues: [issue({ updatedAt: "2030-01-02T04:00:00.001Z" })] },
+    {
+      issues: [
+        issue({
+          comments: async () =>
+            connection([comment({ updatedAt: "2030-01-02T03:04:59.999Z" })]),
+        }),
+      ],
+    },
+    {
+      issues: [
+        issue({
+          comments: async () =>
+            connection([comment({ updatedAt: "2030-01-02T04:00:00.001Z" })]),
+        }),
+      ],
+    },
+    {
+      issues: [
+        issue({
+          comments: async () =>
+            connection([
+              comment({
+                id: "future-anchor",
+                updatedAt: "2030-01-02T04:00:00.001Z",
+                botActor: {
+                  id: "github-bot",
+                  type: "integration",
+                  subType: "github",
+                },
+                externalThread: {
+                  id: "future-anchor-thread",
+                  type: "integration",
+                  subType: "github",
+                  url: GITHUB_ISSUE_URL,
+                  isConnected: true,
+                },
+                externalUser: null,
+                parentId: null,
+              }),
+            ]),
+        }),
+      ],
+    },
+    {
+      releasePipelines: [
+        {
+          id: PIPELINE_ID,
+          type: "continuous",
+          createdAt: "2030-01-02T03:00:00.000Z",
+          updatedAt: "2030-01-02T03:00:00.000Z",
+        },
+      ],
+      releases: [
+        {
+          id: "release-future",
+          pipelineId: PIPELINE_ID,
+          commitSha: "a".repeat(40),
+          completedAt: "2030-01-02T04:00:00.001Z",
+          createdAt: "2030-01-02T03:00:00.000Z",
+          updatedAt: "2030-01-02T04:00:00.001Z",
+        },
+      ],
+      issueToReleases: [
+        {
+          id: "issue-release-future",
+          issueId: "issue-7",
+          releaseId: "release-future",
+          createdAt: "2030-01-02T03:00:00.000Z",
+          updatedAt: "2030-01-02T03:00:00.000Z",
+        },
+      ],
+    },
   ];
 
-  for (const candidate of cases) {
-    const result = await snapshot({ issues: [candidate] });
+  for (const options of cases) {
+    const result = await snapshot(options);
     assert.equal(result.complete, false);
     assert.equal(result.failures[0].code, "boundary_invalid");
   }
@@ -341,30 +388,54 @@ test("capturedAt fecha a janela temporal de issue, comment e release", async () 
 test("snapshot preserva relogio, identidade composta dos times e release planejada", async () => {
   const result = await snapshot({
     cycles: [{ id: "cycle-1", team: team() }],
-    issues: [
-      issue({
-        releases: async () =>
-          connection([
-            {
-              id: "release-planned",
-              commitSha: "b".repeat(40),
-              completedAt: null,
-              pipeline: { id: PIPELINE_ID, type: "continuous" },
-            },
-          ]),
-      }),
+    releasePipelines: [
+      {
+        id: PIPELINE_ID,
+        type: "continuous",
+        createdAt: "2030-01-02T03:00:00.000Z",
+        updatedAt: "2030-01-02T03:00:00.000Z",
+      },
+    ],
+    releases: [
+      {
+        id: "release-planned",
+        pipelineId: PIPELINE_ID,
+        commitSha: "b".repeat(40),
+        completedAt: null,
+        createdAt: "2030-01-02T03:00:00.000Z",
+        updatedAt: "2030-01-02T03:00:00.000Z",
+      },
+    ],
+    issueToReleases: [
+      {
+        id: "issue-release-planned",
+        issueId: "issue-7",
+        releaseId: "release-planned",
+        createdAt: "2030-01-02T03:00:00.000Z",
+        updatedAt: "2030-01-02T03:00:00.000Z",
+      },
     ],
   });
 
   assert.equal(result.complete, true);
   assert.equal(result.capturedAtMs, CAPTURED_AT_MS);
   assert.deepEqual(result.teams, [
-    { id: "team-app", key: "APP", active: true },
+    {
+      id: "team-app",
+      key: "APP",
+      active: true,
+      updatedAtMs: 1_893_553_200_000,
+    },
   ]);
   assert.equal(result.issues[0].teamId, "team-app");
   assert.equal(result.issues[0].updatedAtMs, 1_893_553_440_000);
   assert.deepEqual(result.cycles, [
-    { id: "cycle-1", teamId: "team-app", teamKey: "APP" },
+    {
+      id: "cycle-1",
+      teamId: "team-app",
+      teamKey: "APP",
+      updatedAtMs: 1_893_553_200_000,
+    },
   ]);
   assert.deepEqual(result.issues[0].releases, [
     {
@@ -373,6 +444,9 @@ test("snapshot preserva relogio, identidade composta dos times e release planeja
       pipelineType: "continuous",
       commitSha: "b".repeat(40),
       completedAtMs: null,
+      updatedAtMs: 1_893_553_200_000,
+      issueToReleaseId: "issue-release-planned",
+      issueToReleaseUpdatedAtMs: 1_893_553_200_000,
     },
   ]);
 });

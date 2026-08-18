@@ -12,7 +12,8 @@ import { z } from "zod";
 
 import {
   assertOutsideGitWorktree,
-  assertOwnedByCurrentUser,
+  assertPrivateDirectoryPath,
+  assertPrivateFilePath,
 } from "../local-profile.mjs";
 
 const PaginatingOctokit = Octokit.plugin(paginateRest);
@@ -53,6 +54,14 @@ const githubAppResponseSchema = z.object({
   events: z.array(z.string()).length(0),
 });
 
+const githubAuthenticatedAppResponseSchema = githubAppResponseSchema.extend({
+  installations_count: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER),
+});
+
 const githubInstallationResponseSchema = z.object({
   id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   app_id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -73,6 +82,10 @@ const githubInstallationResponseSchema = z.object({
   events: z.array(z.string()).length(0),
 });
 
+const githubInstallationsResponseSchema = z
+  .array(githubInstallationResponseSchema)
+  .max(2);
+
 const githubInstallationRepositoriesResponseSchema = z.object({
   total_count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   repositories: z.array(githubInstallationRepositorySchema).max(100),
@@ -80,6 +93,7 @@ const githubInstallationRepositoriesResponseSchema = z.object({
 
 const githubIssueResponseSchema = z.object({
   number: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  node_id: z.string().min(1),
   state: z.enum(["open", "closed"]),
   state_reason: z.enum(["completed", "not_planned", "reopened"]).nullable(),
   pull_request: z.unknown().optional(),
@@ -96,16 +110,26 @@ const githubCommentResponseSchema = z.object({
   updated_at: z.iso.datetime({ offset: true }).optional(),
 });
 
-const githubPullResponseSchema = z.object({
-  number: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  merged_at: z.iso.datetime({ offset: true }).nullable(),
-  merge_commit_sha: z
-    .string()
-    .regex(/^[0-9a-f]{40}$/iu)
-    .nullable(),
-  created_at: z.iso.datetime({ offset: true }).optional(),
-  updated_at: z.iso.datetime({ offset: true }).optional(),
-});
+const githubPullResponseSchema = z
+  .object({
+    number: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    merged_at: z.iso.datetime({ offset: true }).nullable(),
+    merge_commit_sha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/iu)
+      .nullable(),
+    created_at: z.iso.datetime({ offset: true }).optional(),
+    updated_at: z.iso.datetime({ offset: true }).optional(),
+  })
+  .superRefine((pull, context) => {
+    if (pull.merged_at !== null && pull.merge_commit_sha === null) {
+      context.addIssue({
+        code: "custom",
+        message: "PR mesclado exige merge_commit_sha",
+        path: ["merge_commit_sha"],
+      });
+    }
+  });
 
 function decode(schema, value, scope) {
   if (!schema || typeof schema.safeParse !== "function")
@@ -225,9 +249,12 @@ export async function collectInstallationRepositories({
 export async function loadGithubAppPrivateKey(
   privateKeyPath,
   {
+    profileRoot,
+    env = process.env,
     platform = process.platform,
     lstatImpl = nodeLstat,
     readFileImpl = nodeReadFile,
+    readWindowsAclImpl,
     realpathImpl = nodeRealpath,
     createPrivateKeyImpl = createPrivateKey,
   } = {},
@@ -236,27 +263,60 @@ export async function loadGithubAppPrivateKey(
     throw new TypeError("caminho PEM da GitHub App deve ser absoluto");
   }
   const absolutePath = path.resolve(privateKeyPath);
-  const metadata = await lstatImpl(absolutePath);
-  if (metadata.isSymbolicLink() || !metadata.isFile()) {
-    throw new TypeError(
-      "chave privada GitHub App deve ser arquivo regular e não link simbólico",
-    );
+  if (typeof profileRoot !== "string" || !path.isAbsolute(profileRoot)) {
+    throw new TypeError("raiz do profile é obrigatória para validar a chave");
   }
+  const absoluteProfileRoot = path.resolve(profileRoot);
+  const profileMetadata = await lstatImpl(absoluteProfileRoot);
+  await assertPrivateDirectoryPath(
+    absoluteProfileRoot,
+    profileMetadata,
+    "raiz do profile",
+    { env, platform, readWindowsAclImpl },
+  );
+  const canonicalProfileRoot = await realpathImpl(absoluteProfileRoot);
+  const credentialsPath = path.join(canonicalProfileRoot, "credentials");
+  const credentialsMetadata = await lstatImpl(credentialsPath);
+  await assertPrivateDirectoryPath(
+    credentialsPath,
+    credentialsMetadata,
+    "diretório de credenciais",
+    { env, platform, readWindowsAclImpl },
+  );
+  const canonicalCredentialsPath = await realpathImpl(credentialsPath);
   if (
-    platform !== "win32" &&
-    ((metadata.mode & 0o077) !== 0 ||
-      (metadata.mode & 0o400) === 0 ||
-      (metadata.mode & 0o100) !== 0)
+    path.relative(canonicalProfileRoot, canonicalCredentialsPath) !==
+    "credentials"
+  ) {
+    throw new TypeError("diretório de credenciais possui destino inválido");
+  }
+  const lexicalRelativePath = path.relative(credentialsPath, absolutePath);
+  if (
+    lexicalRelativePath === "" ||
+    lexicalRelativePath.includes(path.sep) ||
+    path.isAbsolute(lexicalRelativePath) ||
+    lexicalRelativePath === ".."
   ) {
     throw new TypeError(
-      "chave privada GitHub App deve ter permissões privadas sem acesso de grupo/outros",
+      "chave privada GitHub App deve ser filha direta de credentials",
     );
   }
-  assertOwnedByCurrentUser(metadata, "chave privada GitHub App", platform);
+  const metadata = await lstatImpl(absolutePath);
+  await assertPrivateFilePath(
+    absolutePath,
+    metadata,
+    "chave privada GitHub App",
+    { env, platform, readWindowsAclImpl },
+  );
   if (metadata.size <= 0 || metadata.size > MAX_PRIVATE_KEY_BYTES) {
     throw new TypeError("chave privada GitHub App deve ter no máximo 64 KiB");
   }
   const canonicalPath = await realpathImpl(absolutePath);
+  if (path.dirname(canonicalPath) !== canonicalCredentialsPath) {
+    throw new TypeError(
+      "chave privada GitHub App possui destino canônico fora de credentials",
+    );
+  }
   await assertOutsideGitWorktree(canonicalPath, {
     lstatImpl,
     realpathImpl,
@@ -299,26 +359,43 @@ export async function createGithubAppBoundary({
   organization,
   appId,
   privateKeyPath,
+  profileRoot,
+  env = process.env,
   OctokitClass = PaginatingOctokit,
   authStrategy = createAppAuth,
   loadPrivateKey = loadGithubAppPrivateKey,
 } = {}) {
   const parsedAppId = parseAppId(String(appId ?? ""));
-  const privateKey = await loadPrivateKey(privateKeyPath);
+  const privateKey = await loadPrivateKey(privateKeyPath, {
+    profileRoot,
+    env,
+  });
   const appClient = new OctokitClass({
     authStrategy,
     auth: { appId: parsedAppId, privateKey },
   });
-  const [appResponse, installationResponse] = await Promise.all([
+  const [appResponse, installationsResponse] = await Promise.all([
     appClient.request("GET /app"),
-    appClient.request("GET /orgs/{org}/installation", { org: organization }),
+    appClient.request("GET /app/installations", { per_page: 2 }),
   ]);
-  const app = decode(githubAppResponseSchema, appResponse?.data, "GET /app");
+  const app = decode(
+    githubAuthenticatedAppResponseSchema,
+    appResponse?.data,
+    "GET /app",
+  );
+  const installations = decode(
+    githubInstallationsResponseSchema,
+    installationsResponse?.data,
+    "GET /app/installations",
+  );
+  if (installations.length !== 1 || app.installations_count !== 1) {
+    invalidInstallation();
+  }
   const installation = validateGithubAppInstallation({
     organization,
     expectedAppId: parsedAppId,
     app,
-    installation: installationResponse?.data,
+    installation: installations[0],
   });
   const installationClient = new OctokitClass({
     authStrategy,
@@ -425,7 +502,7 @@ function freezeSnapshot(snapshot) {
  * @property {number} capturedAtMs
  * @property {string} organization
  * @property {ReadonlyArray<{id:number,name:string,archived:boolean,issuesEnabled:boolean,fork:boolean}>} repositories
- * @property {ReadonlyArray<{key:string,repository:string,number:number,status:"active"|"completed"|"canceled",createdAtMs:number,updatedAtMs:number,comments:ReadonlyArray<object>}>} issues
+ * @property {ReadonlyArray<{key:string,nodeId:string,repository:string,number:number,status:"active"|"completed"|"canceled",createdAtMs:number,updatedAtMs:number,comments:ReadonlyArray<object>}>} issues
  * @property {ReadonlyArray<{key:string,repository:string,number:number,createdAtMs:number,updatedAtMs:number,mergedAtMs:number|null,mergeCommitSha:string|null}>} pulls
  */
 
@@ -563,6 +640,7 @@ export function createGithubAdapter({
             });
             issues.push({
               key,
+              nodeId: issue.node_id,
               repository: repository.name,
               number: issue.number,
               status: githubStatus(issue),
@@ -646,6 +724,8 @@ export async function readGithubSnapshot({
   config,
   appId,
   privateKeyPath,
+  profileRoot,
+  env = process.env,
   capturedAt = new Date().toISOString(),
   createBoundary = createGithubAppBoundary,
 } = {}) {
@@ -654,6 +734,8 @@ export async function readGithubSnapshot({
       organization: config?.organization,
       appId,
       privateKeyPath,
+      profileRoot,
+      env,
     });
     const client = boundary.installationClient;
     const adapter = createGithubAdapter({

@@ -20,9 +20,39 @@ import {
   resolveLocalReportDirectory,
   writeLocalReport,
 } from "../src/report/local.mjs";
-import { ensureOwnedLocalProfile } from "../src/local-profile.mjs";
+import {
+  ensureOwnedLocalProfile,
+  WINDOWS_FULL_CONTROL_MASK,
+} from "../src/local-profile.mjs";
 
 const NOW = new Date("2026-08-18T15:00:00.000Z");
+const TEST_OPERATOR_SID = "S-1-5-21-1000-1000-1000-1001";
+const readValidWindowsAcl = async (_candidate, { kind = "file" } = {}) => {
+  const inheritanceFlags = kind === "directory" ? 3 : 0;
+  return {
+    currentSid: TEST_OPERATOR_SID,
+    ownerSid: TEST_OPERATOR_SID,
+    accessRulesProtected: true,
+    accessRules: [
+      {
+        sid: TEST_OPERATOR_SID,
+        type: "Allow",
+        rights: WINDOWS_FULL_CONTROL_MASK,
+        inherited: false,
+        inheritanceFlags,
+        propagationFlags: 0,
+      },
+      {
+        sid: "S-1-5-18",
+        type: "Allow",
+        rights: WINDOWS_FULL_CONTROL_MASK,
+        inherited: false,
+        inheritanceFlags,
+        propagationFlags: 0,
+      },
+    ],
+  };
+};
 
 function resultFixture() {
   return {
@@ -162,6 +192,8 @@ test("grava atomicamente no perfil local e retém somente 14 dias", async (conte
   context.after(() => rm(parent, { recursive: true, force: true }));
   const profile = await ensureOwnedLocalProfile({
     root: path.join(parent, "profile"),
+    readWindowsAclImpl: readValidWindowsAcl,
+    setWindowsAclImpl: async () => {},
   });
   const directory = profile.reportsPath;
   await mkdir(directory, { mode: 0o700 });
@@ -200,6 +232,8 @@ test("grava atomicamente no perfil local e retém somente 14 dias", async (conte
     now: NOW,
     directory: profile.root,
     idFactory: () => "fixed-id",
+    readWindowsAclImpl: readValidWindowsAcl,
+    setWindowsAclImpl: async () => {},
   });
 
   const names = await readdir(directory);
