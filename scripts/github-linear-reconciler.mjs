@@ -509,16 +509,6 @@ function assertUniqueLinearIssueIdentities(issues, label, seen = new Set()) {
   return seen;
 }
 
-function linearCommentIdentitiesAreUnique(comments) {
-  const seen = new Set();
-  for (const comment of comments) {
-    const id = linearCommentStableIdentity(comment);
-    if (id === null || seen.has(id)) return false;
-    seen.add(id);
-  }
-  return true;
-}
-
 function assertUniqueLinearCommentIdentities(
   comments,
   label,
@@ -829,12 +819,6 @@ function hasGithubSyncedEntity(comment) {
 
 function hasGithubSyncedComment(issue) {
   return connectionNodes(issue.comments).some(hasGithubSyncedEntity);
-}
-
-function hasGithubExternalThread(issue) {
-  return connectionNodes(issue.comments).some((comment) => {
-    return isGithubExternalThread(comment.externalThread);
-  });
 }
 
 function hasConnectedGithubExternalThread(issue) {
