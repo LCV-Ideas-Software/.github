@@ -1,11 +1,12 @@
 # Reconciliação GitHub ↔ Linear
 
 O workflow público `GitHub Linear Reconciliation` apenas verifica por testes que
-o reconciliador é **somente leitura**. A execução live a cada 12 horas ocorre no
-repositório interno `.github-private`, onde Summary, logs e artifact detalhados
-não expõem o inventário Linear privado. O cliente GitHub aceita apenas `GET`;
-o cliente Linear aceita apenas operações GraphQL `query` e recusa qualquer
-`mutation` antes do acesso à rede.
+o reconciliador é **somente leitura**. O carrier interno obrigatório deve
+executar o audit live a cada 12 horas no repositório `.github-private`, onde
+Summary, logs e artifact detalhados não expõem o inventário Linear privado. Até
+esse carrier ser implantado e provar sua primeira execução, não há audit live
+agendado. O cliente GitHub aceita apenas `GET`; o cliente Linear aceita apenas
+operações GraphQL `query` e recusa qualquer `mutation` antes do acesso à rede.
 
 ## Escopo
 
@@ -74,8 +75,8 @@ realiza a migração.
 O processo retorna `0` quando está limpo, `1` para drift acionável e `2` quando
 a auditoria é inconclusiva. Uma leitura parcial nunca é classificada como limpa.
 O Step Summary preserva as contagens completas e limita os detalhes para ficar
-abaixo do teto do GitHub Actions. O resultado JSON integral é publicado por 14
-dias somente no repositório interno, no artifact
+abaixo do teto do GitHub Actions. O carrier interno deve publicar o resultado
+JSON integral por 14 dias somente no repositório interno, no artifact
 `github-linear-reconciliation-<run>-<attempt>`, inclusive quando o audit termina
 com drift ou de forma inconclusiva. O workflow público não recebe credenciais,
 não executa o audit live e não publica Summary ou artifact com dados
@@ -84,11 +85,10 @@ operacionais.
 ## Credenciais
 
 O environment `linear-observability` do repositório interno `.github-private`
-contém `LINEAR_READ_KEY`, uma chave Linear somente leitura, e deve conter
-`LINEAR_GITHUB_READ_TOKEN`, com acesso
-organizacional somente leitura a Metadata, Issues e Pull requests em todos os
-repositórios. A preferência durável é um GitHub App com permissões equivalentes
-e token de curta duração.
+deve conter `LINEAR_READ_KEY`, uma chave Linear somente leitura, e
+`LINEAR_GITHUB_READ_TOKEN`, com acesso organizacional somente leitura a
+Metadata, Issues e Pull requests em todos os repositórios. A preferência durável
+é um GitHub App com permissões equivalentes e token de curta duração.
 
 `LINEAR_GITHUB_READ_TOKEN` é obrigatório. O workflow não usa o `GITHUB_TOKEN`
 local como fallback, pois esse token pode omitir silenciosamente repositórios

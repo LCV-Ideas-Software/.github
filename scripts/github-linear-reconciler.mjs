@@ -436,11 +436,19 @@ function githubCommentMetadataIsValid(comment, now) {
   const createdAt = comment?.created_at ?? comment?.createdAt;
   const updatedAt = comment?.updated_at ?? comment?.updatedAt;
   return (
+    githubCommentStableIdentity(comment) !== null &&
     typeof comment?.body === "string" &&
     normalizeBody(comment.body).length > 0 &&
     timestampsAreChronological(createdAt, updatedAt) &&
     timestampIsNotAfter(updatedAt, now)
   );
+}
+
+function githubCommentStableIdentity(comment) {
+  if (isNonemptyTrimmedString(comment?.node_id)) return comment.node_id;
+  if (Number.isSafeInteger(comment?.id) && comment.id > 0)
+    return String(comment.id);
+  return null;
 }
 
 function linearCommentMetadataIsValid(comment, now) {
@@ -501,7 +509,11 @@ function linearIssueMetadataIsValid(issue) {
         issue[name] &&
         typeof issue[name] === "object" &&
         !Array.isArray(issue[name]) &&
-        Array.isArray(issue[name].nodes),
+        Array.isArray(issue[name].nodes) &&
+        issue[name].pageInfo &&
+        typeof issue[name].pageInfo === "object" &&
+        issue[name].pageInfo.hasNextPage === false &&
+        issue[name].pageInfo.endCursor === null,
     )
   );
 }
@@ -1179,14 +1191,18 @@ function collectBucketIndexes(buckets, key, right, candidateIndexes) {
   }
 }
 
-function duplicateIssueFeatures(issue, index, organization) {
+function duplicateIssueFeatures(issue, index, organization, linearOnlyTeams) {
+  const repositories = linkedRepositories(issue, organization);
+  if (repositories.size === 0 && linearOnlyTeams.has(issue.team?.key)) {
+    repositories.add(`linear-only-team:${githubUrlKey(issue.team.key)}`);
+  }
   return {
     index,
     issue,
     normalizedTitle: normalizeTitle(issue.title),
     titleWords: titleWordSet(issue.title),
     descriptionWords: wordSet(issue.description),
-    repositories: linkedRepositories(issue, organization),
+    repositories,
     relatedIdentifiers: issueRelationIdentifiers(issue),
     duplicateIdentifiers: duplicateRelationIdentifiers(issue),
   };
@@ -1310,10 +1326,11 @@ function duplicateFinding(left, right) {
 function findStrongDuplicateCandidates(
   linearIssues,
   organization = DEFAULT_ORGANIZATION,
+  linearOnlyTeams = new Set(),
 ) {
   const findings = [];
   const features = linearIssues.map((issue, index) =>
-    duplicateIssueFeatures(issue, index, organization),
+    duplicateIssueFeatures(issue, index, organization, linearOnlyTeams),
   );
   assignExplicitRelationComponents(features);
   const exactTitleBuckets = new Map();
@@ -2275,7 +2292,13 @@ export function reconcileSnapshots({
       message: `Issues do repositório não puderam ser inventariados (HTTP ${failure.status ?? "desconhecido"})`,
     });
   }
-  findings.push(...findStrongDuplicateCandidates(linearIssues, organization));
+  findings.push(
+    ...findStrongDuplicateCandidates(
+      linearIssues,
+      organization,
+      linearOnlyTeams,
+    ),
+  );
   findings.sort((left, right) =>
     `${left.severity}:${left.code}:${left.issue}`.localeCompare(
       `${right.severity}:${right.code}:${right.issue}`,
@@ -2466,6 +2489,7 @@ export async function graphqlQuery({
 
 const ISSUE_FIELDS = `
   id identifier title description url updatedAt completedAt canceledAt
+  duplicateOf { id identifier }
   team { id key name }
   state { id name type }
   syncedWith {
@@ -2617,24 +2641,26 @@ async function completeLinearConnection({
 }) {
   const fields = LINEAR_CONNECTION_FIELDS[connection];
   if (!fields) throw new Error(`Conexão Linear não permitida: ${connection}`);
-  const nodes = [...connectionNodes(issue[connection])];
+  if (!issue[connection] || !Array.isArray(issue[connection].nodes))
+    throw new Error(
+      `Linear ${issue.identifier}.${connection}: nodes ausente ou inválido`,
+    );
+  const nodes = [...issue[connection].nodes];
   const seenCursors = new Set();
   let pageCount = 0;
-  let pageInfo = issue[connection]?.pageInfo ?? {
-    hasNextPage: false,
-    endCursor: null,
-  };
-  while (pageInfo.hasNextPage) {
-    pageCount += 1;
-    if (pageCount > MAX_LINEAR_PAGES)
-      throw new Error(
-        `Linear ${issue.identifier}.${connection}: paginação excedeu o limite`,
-      );
+  let pageInfo = issue[connection].pageInfo;
+  for (;;) {
     const after = nextLinearCursor(
       pageInfo,
       `Linear ${issue.identifier}.${connection}`,
       seenCursors,
     );
+    if (!after) break;
+    pageCount += 1;
+    if (pageCount > MAX_LINEAR_PAGES)
+      throw new Error(
+        `Linear ${issue.identifier}.${connection}: paginação excedeu o limite`,
+      );
     const data = await graphqlQuery({
       token,
       query: linearConnectionQuery(connection, fields),
@@ -2644,6 +2670,10 @@ async function completeLinearConnection({
     if (!data.issue)
       throw new Error(`Linear issue ${issue.id} não pôde ser relida`);
     const next = data.issue[connection];
+    if (!next || !Array.isArray(next.nodes))
+      throw new Error(
+        `Linear ${issue.identifier}.${connection}: nodes ausente ou inválido`,
+      );
     nodes.push(...next.nodes);
     pageInfo = next.pageInfo;
   }
@@ -2679,8 +2709,16 @@ export async function readLinearIssues({ token, fetchImpl = fetch }) {
   const connectionQueue = [];
   for (const issue of issues) {
     for (const connection of Object.keys(LINEAR_CONNECTION_FIELDS)) {
-      if (issue[connection]?.pageInfo?.hasNextPage)
-        connectionQueue.push({ issue, connection });
+      if (!issue[connection] || !Array.isArray(issue[connection].nodes))
+        throw new Error(
+          `Linear ${issue.identifier ?? issue.id ?? "sem id"}.${connection}: nodes ausente ou inválido`,
+        );
+      const after = nextLinearCursor(
+        issue[connection].pageInfo,
+        `Linear ${issue.identifier ?? issue.id ?? "sem id"}.${connection}`,
+        new Set(),
+      );
+      if (after) connectionQueue.push({ issue, connection });
     }
   }
   const connectionWorkers = Array.from(
@@ -2874,10 +2912,14 @@ async function readAllGithubComments({
       fetchImpl,
     );
     for (const comment of batch) {
-      const key = comment.node_id ?? comment.id;
-      if (key !== undefined && seen.has(String(key)))
+      const key = githubCommentStableIdentity(comment);
+      if (key === null)
+        throw new Error(
+          `${repo}#${number}: comentário GitHub sem identidade estável`,
+        );
+      if (seen.has(key))
         throw new Error(`${repo}#${number}: comentário GitHub repetido ${key}`);
-      if (key !== undefined) seen.add(String(key));
+      seen.add(key);
       comments.push(comment);
     }
     if (batch.length < 100) return comments;

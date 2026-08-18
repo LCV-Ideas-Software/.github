@@ -73,6 +73,20 @@ function linearIssue(overrides = {}) {
   ) {
     issue.state = { id: "state-started", ...issue.state };
   }
+  for (const connection of [
+    "attachments",
+    "comments",
+    "relations",
+    "inverseRelations",
+    "releases",
+  ]) {
+    if (issue[connection] && Array.isArray(issue[connection].nodes)) {
+      issue[connection] = {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        ...issue[connection],
+      };
+    }
+  }
   if (issue.comments?.nodes) {
     issue.comments = {
       ...issue.comments,
@@ -110,7 +124,8 @@ function githubIssue(overrides = {}) {
     comments: [],
     ...overrides,
   };
-  issue.comments = (issue.comments ?? []).map((comment) => ({
+  issue.comments = (issue.comments ?? []).map((comment, index) => ({
+    node_id: `IC_test_${index + 1}`,
     updated_at: comment.created_at,
     ...comment,
   }));
@@ -315,13 +330,22 @@ test("pagina conexão Linear aninhada antes de concluir", async () => {
                     ],
                     pageInfo: { hasNextPage: true, endCursor: "cursor-a" },
                   },
-                  relations: { nodes: [], pageInfo: { hasNextPage: false } },
+                  relations: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
                   inverseRelations: {
                     nodes: [],
-                    pageInfo: { hasNextPage: false },
+                    pageInfo: { hasNextPage: false, endCursor: null },
                   },
-                  releases: { nodes: [], pageInfo: { hasNextPage: false } },
-                  comments: { nodes: [], pageInfo: { hasNextPage: false } },
+                  releases: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  comments: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
                 },
               ],
               pageInfo: { hasNextPage: false, endCursor: null },
@@ -357,6 +381,31 @@ test("pagina conexão Linear aninhada antes de concluir", async () => {
   assert.equal(
     requests.every((request) => !/\bmutation\b/iu.test(request.query)),
     true,
+  );
+});
+
+test("recusa conexão Linear aninhada sem pageInfo", async () => {
+  const issue = linearIssue({ id: "linear-partial-connection" });
+  delete issue.attachments.pageInfo;
+
+  await assert.rejects(
+    () =>
+      readLinearIssues({
+        token: "linear-read-only",
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              data: {
+                issues: {
+                  nodes: [issue],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            }),
+            { status: 200 },
+          ),
+      }),
+    /attachments.*pageInfo/u,
   );
 });
 
@@ -596,6 +645,78 @@ test("paginação Linear recusa cursor repetido", async () => {
     /cursor repetido/u,
   );
   assert.equal(calls, 2);
+});
+
+test("carrega duplicateOf antes de reconciliar duplicatas explícitas", async () => {
+  const description =
+    "Mesmo escopo funcional, mesmo repositório, mesma entrega e mesmo resultado.";
+  const canonicalUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/410";
+  const duplicateUrl =
+    "https://github.com/LCV-Ideas-Software/astrologo-app/issues/411";
+  const issues = await readLinearIssues({
+    token: "linear-read-only",
+    fetchImpl: async (_url, options) => {
+      const { query } = JSON.parse(options.body);
+      const duplicateOfWasRequested =
+        /duplicateOf\s*\{\s*id\s+identifier\s*\}/u.test(query);
+      return new Response(
+        JSON.stringify({
+          data: {
+            issues: {
+              nodes: [
+                linearIssue({
+                  id: "canonical-issue",
+                  identifier: "ASTROLO-410",
+                  title: "Corrigir o mesmo comportamento",
+                  description,
+                  attachments: {
+                    nodes: [{ url: canonicalUrl }],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                }),
+                linearIssue({
+                  id: "duplicate-issue",
+                  identifier: "ASTROLO-411",
+                  title: "Corrigir o mesmo comportamento",
+                  description,
+                  attachments: {
+                    nodes: [{ url: duplicateUrl }],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                  ...(duplicateOfWasRequested
+                    ? {
+                        duplicateOf: {
+                          id: "canonical-issue",
+                          identifier: "ASTROLO-410",
+                        },
+                      }
+                    : {}),
+                }),
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    },
+  });
+  const result = reconcileSnapshots({
+    linearIssues: issues,
+    githubByUrl: new Map([
+      [canonicalUrl, githubIssue({ url: canonicalUrl })],
+      [duplicateUrl, githubIssue({ url: duplicateUrl })],
+    ]),
+    now: NOW,
+  });
+
+  assert.equal(
+    result.findings.some((finding) =>
+      ["duplicate_candidate", "similar_issue_unlinked"].includes(finding.code),
+    ),
+    false,
+  );
 });
 
 test("inventaria topologia completa do time LCV", async () => {
@@ -1176,6 +1297,7 @@ test("Issue Linear parcial nunca é aceita como snapshot limpo", () => {
     ["team", (issue) => delete issue.team],
     ["team.id", (issue) => delete issue.team.id],
     ["attachments", (issue) => delete issue.attachments],
+    ["attachments.pageInfo", (issue) => delete issue.attachments.pageInfo],
     ["relations", (issue) => delete issue.relations],
     ["inverseRelations", (issue) => delete issue.inverseRelations],
     ["releases", (issue) => delete issue.releases],
@@ -2169,6 +2291,7 @@ test("âncora Linear e linkback GitHub não são tratados como conteúdo diverge
       {
         ...issue,
         comments: {
+          pageInfo: issue.comments.pageInfo,
           nodes: [
             {
               ...issue.comments.nodes[0],
@@ -2208,6 +2331,7 @@ test("âncora Linear e linkback GitHub não são tratados como conteúdo diverge
       {
         ...issue,
         comments: {
+          pageInfo: issue.comments.pageInfo,
           nodes: [
             {
               ...issue.comments.nodes[0],
@@ -3050,6 +3174,49 @@ test("detecta títulos parafraseados com descrição equivalente no mesmo reposi
   assert.equal(
     result.findings.some((finding) => finding.code === "duplicate_candidate"),
     false,
+  );
+});
+
+test("detecta paráfrases no mesmo time Linear-only sem links GitHub", () => {
+  const description =
+    "O login rejeita credenciais válidas depois que a sessão expira no aplicativo.";
+  const result = reconcileSnapshots({
+    linearIssues: [
+      linearIssue({
+        id: "pandroid-18",
+        identifier: "PANDROID-18",
+        title: "Corrigir autenticação no login",
+        description,
+        team: {
+          id: "team-pandroid",
+          key: "PANDROID",
+          name: "programa-android",
+        },
+      }),
+      linearIssue({
+        id: "pandroid-19",
+        identifier: "PANDROID-19",
+        title: "Erro de autenticação ao fazer login",
+        description:
+          "Depois que a sessão expira no aplicativo, o login rejeita credenciais válidas.",
+        team: {
+          id: "team-pandroid",
+          key: "PANDROID",
+          name: "programa-android",
+        },
+      }),
+    ],
+    githubByUrl: new Map(),
+    linearOnlyTeamKeys: ["PANDROID"],
+    requireGithubIssueAttachment: false,
+    now: NOW,
+  });
+
+  assert.deepEqual(
+    result.findings
+      .filter((finding) => finding.code === "similar_issue_unlinked")
+      .map((finding) => finding.issue),
+    ["PANDROID-18, PANDROID-19"],
   );
 });
 
@@ -4505,6 +4672,51 @@ test("comment.syncedWith GitHub ativa a leitura e reconciliação bidirecional",
       (finding) => finding.code === "comment_sync_gap_to_github",
     ),
     true,
+  );
+});
+
+test("comentário GitHub sem identidade estável torna a leitura inconclusiva", async () => {
+  const url = "https://github.com/LCV-Ideas-Software/.github/issues/260";
+  await assert.rejects(
+    () =>
+      readGithubRecords({
+        issues: [
+          linearIssue({
+            attachments: { nodes: [{ url }] },
+            syncedWith: [
+              {
+                id: "I_native",
+                service: "github",
+                metadata: {
+                  owner: "LCV-Ideas-Software",
+                  repo: ".github",
+                  number: 260,
+                },
+              },
+            ],
+          }),
+        ],
+        organization: "LCV-Ideas-Software",
+        token: "read-only",
+        fetchImpl: async (requestUrl) => {
+          if (requestUrl.includes("/comments")) {
+            return new Response(
+              JSON.stringify([
+                {
+                  body: "Comentário parcial",
+                  created_at: "2026-08-18T01:00:00Z",
+                  updated_at: "2026-08-18T01:00:00Z",
+                },
+              ]),
+              { status: 200 },
+            );
+          }
+          return new Response(JSON.stringify({ state: "open" }), {
+            status: 200,
+          });
+        },
+      }),
+    /identidade estável/u,
   );
 });
 
