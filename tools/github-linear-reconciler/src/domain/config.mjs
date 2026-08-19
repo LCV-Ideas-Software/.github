@@ -1,4 +1,5 @@
 import { finding } from "./findings.mjs";
+import { parseGithubOwner, parseGithubRepository } from "./github-resource.mjs";
 import { TEAM_MODES } from "./model.mjs";
 
 function nonempty(value) {
@@ -30,8 +31,9 @@ export function validateConfig(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) {
     reasons.push("config must be an object");
   }
-  const organization = config?.organization;
-  if (!nonempty(organization)) reasons.push("organization must be a string");
+  const organization = parseGithubOwner(config?.organization);
+  if (organization === null)
+    reasons.push("organization must be a valid GitHub owner");
   if (
     !Number.isFinite(config?.commentGraceMinutes) ||
     config.commentGraceMinutes < 0
@@ -68,9 +70,10 @@ export function validateConfig(config) {
       reasons.push("each mapping needs a team key and supported mode");
       continue;
     }
+    const repository = parseGithubRepository(mapping.repository);
     const normalizedMapping =
-      mapping.mode === "github-backed" && nonempty(mapping.repository)
-        ? { ...mapping, repository: mapping.repository.toLowerCase() }
+      mapping.mode === "github-backed" && repository !== null
+        ? { ...mapping, repository }
         : mapping;
     if (mappingByTeam.has(mapping.linearTeamKey)) {
       reasons.push(`duplicate team mapping: ${mapping.linearTeamKey}`);
@@ -79,15 +82,10 @@ export function validateConfig(config) {
     }
     if (mapping.mode === "umbrella") umbrellas.push(mapping.linearTeamKey);
     if (mapping.mode === "github-backed") {
-      if (
-        !nonempty(mapping.repository) ||
-        !stableUuid(mapping.linearReleasePipelineId)
-      ) {
+      if (repository === null || !stableUuid(mapping.linearReleasePipelineId)) {
         reasons.push(`invalid repository mapping: ${mapping.linearTeamKey}`);
-      } else if (mappingByRepository.has(mapping.repository.toLowerCase())) {
-        reasons.push(
-          `duplicate repository mapping: ${mapping.repository.toLowerCase()}`,
-        );
+      } else if (mappingByRepository.has(repository)) {
+        reasons.push(`duplicate repository mapping: ${repository}`);
       } else {
         if (pipelineIds.has(mapping.linearReleasePipelineId)) {
           reasons.push(
@@ -95,10 +93,7 @@ export function validateConfig(config) {
           );
         }
         pipelineIds.add(mapping.linearReleasePipelineId);
-        mappingByRepository.set(
-          mapping.repository.toLowerCase(),
-          normalizedMapping,
-        );
+        mappingByRepository.set(repository, normalizedMapping);
       }
     } else if (nonempty(mapping.repository)) {
       reasons.push(`repository is not allowed for mode ${mapping.mode}`);
@@ -116,6 +111,6 @@ export function validateConfig(config) {
     umbrellaTeamKey: umbrellas.length === 1 ? umbrellas[0] : null,
     releaseRequiredAfterMs,
     commentGraceMs,
-    organization: nonempty(organization) ? organization.toLowerCase() : "",
+    organization: organization ?? "",
   };
 }

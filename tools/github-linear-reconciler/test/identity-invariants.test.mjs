@@ -28,7 +28,7 @@ function team(overrides = {}) {
 }
 
 function comment(overrides = {}) {
-  return {
+  const value = {
     id: "linear-comment-1",
     body: "Comentario sincronizado.",
     createdAt: "2030-01-02T03:05:00.000Z",
@@ -40,6 +40,17 @@ function comment(overrides = {}) {
     parentId: null,
     ...overrides,
   };
+  if (value.externalThread !== null) {
+    value.externalThread = {
+      isPersonalIntegrationRequired: true,
+      isPersonalIntegrationConnected: true,
+      ...value.externalThread,
+    };
+  }
+  if (value.botActor !== null) {
+    value.botActor = { userDisplayName: null, ...value.botActor };
+  }
+  return value;
 }
 
 function issue(overrides = {}) {
@@ -130,9 +141,20 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
     externalUser: null,
     parentId: null,
   });
+  const sdkNullAnchor = {
+    ...structuredAnchor,
+    id: "comment-sdk-null-anchor",
+    externalThread: {
+      ...structuredAnchor.externalThread,
+      id: "thread-sdk-null-anchor",
+    },
+  };
+  delete sdkNullAnchor.externalUser;
+  delete sdkNullAnchor.parentId;
   const externalUserComment = {
     ...structuredAnchor,
     id: "comment-external-user",
+    externalUserId: "external-user-1",
     externalUser: { id: "external-user-1" },
   };
   const replyComment = {
@@ -155,6 +177,7 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
           connection([
             spoof,
             structuredAnchor,
+            sdkNullAnchor,
             externalUserComment,
             replyComment,
             disconnectedComment,
@@ -166,12 +189,13 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
   assert.equal(result.complete, true);
   assert.deepEqual(
     result.issues[0].comments.map(({ id }) => id),
-    [
-      "comment-spoof",
-      "comment-external-user",
-      "comment-reply",
-      "comment-disconnected",
-    ],
+    ["comment-spoof", "comment-external-user", "comment-reply"],
+  );
+  assert.deepEqual(
+    result.issues[0].githubThreadControls.map(
+      ({ linearCommentId }) => linearCommentId,
+    ),
+    ["comment-anchor", "comment-sdk-null-anchor", "comment-disconnected"],
   );
   assert.equal(result.issues[0].comments[0].updatedAtMs, 1_893_553_560_000);
 
@@ -192,7 +216,110 @@ test("anchor depende somente da tupla estruturada do SDK, nunca do body", async 
       }),
     ],
   });
-  assert.equal(partialAnchor.complete, false);
+  assert.equal(partialAnchor.complete, true);
+  assert.equal(partialAnchor.issues[0].comments[0].provenance, "linear");
+});
+
+test("cycle sem time obrigatorio torna o snapshot inconclusivo", async () => {
+  const result = await snapshot({ cycles: [{ id: "cycle-without-team" }] });
+
+  assert.equal(result.complete, false);
+  assert.equal(result.failures[0].code, "node_invalid");
+  assert.deepEqual(result.failures[0].reasonCodes, ["topology_team_missing"]);
+});
+
+test("comment Linear canonicaliza toda inversao entre timestamps validos", async () => {
+  const createdAt = "2030-01-02T03:05:00.000Z";
+  for (const skewMs of [643, 1_000, 1_001, 60_000, 60_001, 120_000]) {
+    const result = await snapshot({
+      issues: [
+        issue({
+          comments: async () =>
+            connection([
+              comment({
+                createdAt,
+                updatedAt: new Date(
+                  Date.parse(createdAt) - skewMs,
+                ).toISOString(),
+              }),
+            ]),
+        }),
+      ],
+    });
+
+    assert.equal(result.complete, true, `skew ${skewMs} ms`);
+    assert.equal(
+      result.issues[0].comments[0].createdAtMs,
+      Date.parse(createdAt),
+    );
+    assert.equal(
+      result.issues[0].comments[0].updatedAtMs,
+      Date.parse(createdAt),
+    );
+  }
+
+  const nearCapturedAt = new Date(CAPTURED_AT_MS - 1).toISOString();
+  const fullWindowInversion = await snapshot({
+    issues: [
+      issue({
+        comments: async () =>
+          connection([
+            comment({
+              createdAt: nearCapturedAt,
+              updatedAt: "1970-01-01T00:00:00.000Z",
+            }),
+          ]),
+      }),
+    ],
+  });
+  assert.equal(fullWindowInversion.complete, true);
+  assert.equal(
+    fullWindowInversion.issues[0].comments[0].createdAtMs,
+    Date.parse(nearCapturedAt),
+  );
+  assert.equal(
+    fullWindowInversion.issues[0].comments[0].updatedAtMs,
+    Date.parse(nearCapturedAt),
+  );
+
+  for (const timestamps of [
+    {
+      createdAt: "timestamp-invalido",
+      updatedAt: "2030-01-02T03:05:00.000Z",
+    },
+    {
+      createdAt: "2030-01-02T03:05:00.000Z",
+      updatedAt: "timestamp-invalido",
+    },
+    {
+      createdAt: "2030-01-02T03:05:00.000Z",
+      updatedAt: "1969-12-31T23:59:59.999Z",
+    },
+    {
+      createdAt: "2030-01-02T04:00:00.001Z",
+      updatedAt: "2030-01-02T04:00:00.000Z",
+    },
+    {
+      createdAt: "2030-01-02T04:00:00.000Z",
+      updatedAt: "2030-01-02T04:00:00.001Z",
+    },
+  ]) {
+    const invalidTimestamp = await snapshot({
+      issues: [
+        issue({
+          comments: async () => connection([comment(timestamps)]),
+        }),
+      ],
+    });
+    assert.equal(invalidTimestamp.complete, false);
+    assert.equal(invalidTimestamp.failures[0].code, "node_invalid");
+    assert.equal(
+      ["timestamp_invalid", "timestamp_outside_capture_window"].includes(
+        invalidTimestamp.failures[0].reasonCodes[0],
+      ),
+      true,
+    );
+  }
 });
 
 test("anchor recusa tupla contraditória e seus IDs continuam globais", async () => {
@@ -265,10 +392,13 @@ test("anchor recusa tupla contraditória e seus IDs continuam globais", async ()
     ],
   });
   assert.equal(duplicatedId.complete, false);
-  assert.match(duplicatedId.failures[0].message, /id Linear duplicado/u);
+  assert.equal(duplicatedId.failures[0].code, "boundary_invalid");
+  assert.deepEqual(duplicatedId.failures[0].reasonCodes, [
+    "linear_comment_identity_duplicate",
+  ]);
 });
 
-test("externalThread GitHub recusa qualquer URL nao canonica", async () => {
+test("externalThread sem Comment.syncedWith nunca cria provenance", async () => {
   const invalidUrls = [
     "http://github.com/example-org/example-app/issues/7",
     "https://github.com:444/example-org/example-app/issues/7",
@@ -296,22 +426,15 @@ test("externalThread GitHub recusa qualquer URL nao canonica", async () => {
         }),
       ],
     });
-    assert.equal(result.complete, false, url);
-    assert.match(result.failures[0].message, /externalThread|GitHub|canonic/u);
+    assert.equal(result.complete, true, url);
+    assert.equal(result.issues[0].comments[0].provenance, "linear", url);
+    assert.equal(result.issues[0].comments[0].resourceKey, null, url);
   }
 });
 
 test("capturedAt fecha a janela temporal de issue, comment e release", async () => {
   const cases = [
     { issues: [issue({ updatedAt: "2030-01-02T04:00:00.001Z" })] },
-    {
-      issues: [
-        issue({
-          comments: async () =>
-            connection([comment({ updatedAt: "2030-01-02T03:04:59.999Z" })]),
-        }),
-      ],
-    },
     {
       issues: [
         issue({
@@ -381,7 +504,10 @@ test("capturedAt fecha a janela temporal de issue, comment e release", async () 
   for (const options of cases) {
     const result = await snapshot(options);
     assert.equal(result.complete, false);
-    assert.equal(result.failures[0].code, "boundary_invalid");
+    assert.equal(result.failures[0].code, "node_invalid");
+    assert.deepEqual(result.failures[0].reasonCodes, [
+      "timestamp_outside_capture_window",
+    ]);
   }
 });
 
@@ -464,7 +590,7 @@ test("team id e key devem resolver juntos contra o inventario global", async () 
 });
 
 test("externalId de comment GitHub e unico em todo o snapshot", async () => {
-  const githubComment = (id) =>
+  const githubComment = (id, url = GITHUB_ISSUE_URL) =>
     comment({
       id,
       syncedWith: [{ service: "github", id: "github-comment-node-1" }],
@@ -472,7 +598,7 @@ test("externalId de comment GitHub e unico em todo o snapshot", async () => {
         id: `thread-${id}`,
         type: "integration",
         subType: "github",
-        url: GITHUB_ISSUE_URL,
+        url,
         isConnected: true,
       },
     });
@@ -495,11 +621,20 @@ test("externalId de comment GitHub e unico em todo o snapshot", async () => {
             },
           },
         ],
-        comments: async () => connection([githubComment("comment-b")]),
+        comments: async () =>
+          connection([
+            githubComment(
+              "comment-b",
+              "https://github.com/example-org/example-app/issues/8",
+            ),
+          ]),
       }),
     ],
   });
 
   assert.equal(result.complete, false);
-  assert.match(result.failures[0].message, /externalId|comment/u);
+  assert.equal(result.failures[0].code, "boundary_invalid");
+  assert.deepEqual(result.failures[0].reasonCodes, [
+    "github_comment_identity_duplicate",
+  ]);
 });

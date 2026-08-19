@@ -118,18 +118,20 @@ test("boundary recusa zero, multiplas ou contagem contraditoria de instalacoes",
   }
 });
 
-function githubAdapter({ issue, pulls }) {
+function githubAdapter({ issue, comments = [], pulls, clock, onIssuesPage }) {
   return createGithubAdapter({
+    clock,
     request: async () => ({ data: {} }),
     paginateIterator: async function* (route) {
       if (route === "GET /repos/{owner}/{repo}/issues") {
+        onIssuesPage?.();
         yield { data: [issue] };
         return;
       }
       if (
         route === "GET /repos/{owner}/{repo}/issues/{issue_number}/comments"
       ) {
-        yield { data: [] };
+        yield { data: comments };
         return;
       }
       if (route === "GET /repos/{owner}/{repo}/pulls") {
@@ -173,6 +175,18 @@ function pull(number, overrides = {}) {
   };
 }
 
+function comment(overrides = {}) {
+  return {
+    id: 1,
+    node_id: "IC_kwDOCommentNode1",
+    body: "Synthetic comment",
+    user: { login: "example-user" },
+    created_at: "2030-01-02T03:00:00.000Z",
+    updated_at: "2030-01-02T03:00:00.000Z",
+    ...overrides,
+  };
+}
+
 test("snapshot exige e preserva node_id da issue e SHA de PR nao mesclado", async () => {
   const snapshot = await githubAdapter({
     issue: issue(),
@@ -206,6 +220,126 @@ test("snapshot exige e preserva node_id da issue e SHA de PR nao mesclado", asyn
   assert.equal(missingNode.complete, false);
 });
 
+test("captura GitHub live avança até a observação e mantém o modo direto fixo", async () => {
+  const duringCapture = "2030-01-02T04:00:00.001Z";
+  const captureEndedAt = "2030-01-02T04:00:00.002Z";
+  let clockMs = Date.parse(CAPTURED_AT);
+  const live = await githubAdapter({
+    issue: issue({ updated_at: duringCapture }),
+    pulls: [],
+    clock: () => clockMs,
+    onIssuesPage: () => {
+      clockMs = Date.parse(captureEndedAt);
+    },
+  }).readOrganizationSnapshot({
+    organization: "example-org",
+    capturedAt: CAPTURED_AT,
+  });
+
+  assert.equal(live.complete, true);
+  assert.equal(live.captureStartedAtMs, Date.parse(CAPTURED_AT));
+  assert.equal(live.capturedAtMs, Date.parse(captureEndedAt));
+  assert.equal(live.issues[0].updatedAtMs, Date.parse(duringCapture));
+
+  const fixed = await githubAdapter({
+    issue: issue({ updated_at: duringCapture }),
+    pulls: [],
+  }).readOrganizationSnapshot({
+    organization: "example-org",
+    capturedAt: CAPTURED_AT,
+  });
+  assert.equal(fixed.complete, false);
+  assert.equal(fixed.captureStartedAtMs, Date.parse(CAPTURED_AT));
+  assert.equal(fixed.capturedAtMs, Date.parse(CAPTURED_AT));
+
+  const outside = await githubAdapter({
+    issue: issue({
+      updated_at: new Date(Date.parse(captureEndedAt) + 1).toISOString(),
+    }),
+    pulls: [],
+    clock: () => clockMs,
+  }).readOrganizationSnapshot({
+    organization: "example-org",
+    capturedAt: CAPTURED_AT,
+  });
+  assert.equal(outside.complete, false);
+  assert.equal(outside.captureStartedAtMs, Date.parse(CAPTURED_AT));
+  assert.equal(outside.capturedAtMs, Date.parse(captureEndedAt));
+  assert.deepEqual(outside.issues, []);
+  assert.equal(outside.failures[0].code, "boundary_invalid");
+});
+
+test("snapshot GitHub incompleto preserva o término observado da fonte", async () => {
+  const captureEndedAt = "2030-01-02T04:00:05.000Z";
+  let clockMs = Date.parse(CAPTURED_AT);
+  const adapter = createGithubAdapter({
+    clock: () => clockMs,
+    request: async () => ({ data: {} }),
+    paginateIterator: async function* (route) {
+      if (route === "GET /repos/{owner}/{repo}/issues") {
+        clockMs = Date.parse(captureEndedAt);
+        throw new Error("synthetic-page-failure");
+      }
+      yield { data: [] };
+    },
+    repositoryInventory: [
+      {
+        id: 101,
+        name: "example-app",
+        archived: false,
+        has_issues: true,
+        fork: false,
+      },
+    ],
+  });
+
+  const snapshot = await adapter.readOrganizationSnapshot({
+    organization: "example-org",
+    capturedAt: CAPTURED_AT,
+  });
+
+  assert.equal(snapshot.complete, false);
+  assert.equal(snapshot.captureStartedAtMs, Date.parse(CAPTURED_AT));
+  assert.equal(snapshot.capturedAtMs, Date.parse(captureEndedAt));
+  assert.deepEqual(snapshot.repositories, []);
+  assert.deepEqual(snapshot.issues, []);
+  assert.deepEqual(snapshot.pulls, []);
+
+  let closingRegressed = false;
+  const regression = createGithubAdapter({
+    clock: () => Date.parse(captureEndedAt) - (closingRegressed ? 1_000 : 0),
+    request: async () => ({ data: {} }),
+    paginateIterator: async function* (route) {
+      if (route === "GET /repos/{owner}/{repo}/issues") {
+        yield { data: [issue()] };
+        return;
+      }
+      if (
+        route === "GET /repos/{owner}/{repo}/issues/{issue_number}/comments"
+      ) {
+        closingRegressed = true;
+        throw new Error("synthetic-comment-page-failure");
+      }
+      yield { data: [] };
+    },
+    repositoryInventory: [
+      {
+        id: 101,
+        name: "example-app",
+        archived: false,
+        has_issues: true,
+        fork: false,
+      },
+    ],
+  });
+  const regressionSnapshot = await regression.readOrganizationSnapshot({
+    organization: "example-org",
+    capturedAt: CAPTURED_AT,
+  });
+  assert.equal(regressionSnapshot.complete, false);
+  assert.equal(regressionSnapshot.capturedAtMs, Date.parse(captureEndedAt));
+});
+
 test("PR mesclado exige merge_commit_sha SHA-40", async () => {
   const snapshot = await githubAdapter({
     issue: issue(),
@@ -221,6 +355,40 @@ test("PR mesclado exige merge_commit_sha SHA-40", async () => {
   });
 
   assert.equal(snapshot.complete, false);
+});
+
+test("GitHub mantem estrita toda inversao temporal, inclusive de 1 ms", async () => {
+  const createdAt = "2030-01-02T03:00:00.000Z";
+  const oneMillisecondEarlier = "2030-01-02T02:59:59.999Z";
+  for (const adapter of [
+    githubAdapter({
+      issue: issue({
+        created_at: createdAt,
+        updated_at: oneMillisecondEarlier,
+      }),
+      pulls: [],
+    }),
+    githubAdapter({
+      issue: issue(),
+      comments: [
+        comment({ created_at: createdAt, updated_at: oneMillisecondEarlier }),
+      ],
+      pulls: [],
+    }),
+    githubAdapter({
+      issue: issue(),
+      pulls: [
+        pull(8, { created_at: createdAt, updated_at: oneMillisecondEarlier }),
+      ],
+    }),
+  ]) {
+    const snapshot = await adapter.readOrganizationSnapshot({
+      organization: "example-org",
+      capturedAt: CAPTURED_AT,
+    });
+    assert.equal(snapshot.complete, false);
+    assert.equal(snapshot.failures[0].code, "boundary_invalid");
+  }
 });
 
 test("workflow usa runner Ubuntu versionado sem alegar imagem imutavel", () => {

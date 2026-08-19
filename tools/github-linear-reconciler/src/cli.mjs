@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 
+import { createCaptureWindow } from "./domain/capture-window.mjs";
 import { renderRedactedStatus, writeLocalReport } from "./report/local.mjs";
 
 const CI_ENVIRONMENT_MARKERS = Object.freeze([
@@ -70,6 +71,14 @@ function localProfileEnvironment(env) {
   );
 }
 
+function runtimeDate(value, label) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new TypeError(`${label} inválido`);
+  }
+  return date;
+}
+
 export async function loadRuntimeDependencies() {
   const [
     configModule,
@@ -116,7 +125,8 @@ export async function runCli({
   env = process.env,
   stdout = process.stdout,
   dependencies,
-  now = new Date(),
+  now,
+  clock,
 } = {}) {
   const { mode } = parseCliArgs(argv);
   if (isContinuousIntegration(env))
@@ -148,9 +158,24 @@ export async function runCli({
     profileRoot: profile.root,
     env: profileEnv,
   });
-  const capturedAt = now.toISOString();
+  const rawClock = clock ?? (now === undefined ? () => new Date() : () => now);
+  if (typeof rawClock !== "function") {
+    throw new TypeError("relógio runtime inválido");
+  }
+  const captureStartedAt = runtimeDate(now ?? rawClock(), "início da captura");
+  const captureWindow = createCaptureWindow({
+    startedAt: captureStartedAt,
+    clock: rawClock,
+  });
+  const observationClock = () => captureWindow.currentCeilingMs();
+  const capturedAt = captureStartedAt.toISOString();
   const [linear, github] = await Promise.all([
-    runtime.readLinearSnapshot({ config, token: linearToken, capturedAt }),
+    runtime.readLinearSnapshot({
+      config,
+      token: linearToken,
+      capturedAt,
+      clock: observationClock,
+    }),
     runtime.readGithubSnapshot({
       config,
       appId: githubAppId,
@@ -158,16 +183,23 @@ export async function runCli({
       profileRoot: profile.root,
       env: profileEnv,
       capturedAt,
+      clock: observationClock,
     }),
   ]);
-  const result = await runtime.evaluate({ config, linear, github, now });
+  const evaluationAt = runtimeDate(captureWindow.closeMs(), "fim da captura");
+  const result = await runtime.evaluate({
+    config,
+    linear,
+    github,
+    now: evaluationAt,
+  });
   const exitCode = runtime.determineExitCode(result);
   if (![0, 1, 2].includes(exitCode))
     throw new TypeError("determineExitCode retornou código inválido");
 
   await runtime.writeLocalReport({
     result,
-    now,
+    now: evaluationAt,
     env: profileEnv,
     directory: profile.root,
   });

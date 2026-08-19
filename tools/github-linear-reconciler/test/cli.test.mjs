@@ -175,7 +175,112 @@ test("executa snapshots em paralelo, grava relatório local e redige stdout", as
   assert.deepEqual(calls[1][1].env, { SystemRoot: "C:\\Windows" });
   assert.equal(calls[2][0], "report");
   assert.equal(calls[2][1].directory, "C:\\profile");
-  assert.equal(calls[2][1].now, NOW);
+  assert.equal(calls[2][1].now.getTime(), NOW.getTime());
+});
+
+test("CLI usa início comum e tick local posterior sem rebasear fins das fontes", async () => {
+  const startedAt = new Date("2026-08-18T15:00:00.000Z");
+  const evaluationAt = new Date("2026-08-18T15:00:03.000Z");
+  const linearEnd = startedAt.getTime() + 1_000;
+  const githubEnd = startedAt.getTime() + 2_000;
+  const observed = { readersCompleted: 0, clockCalls: 0 };
+  let evaluated;
+  let reported;
+  const deps = dependencies({
+    readLinearSnapshot: async (input) => {
+      assert.equal(input.capturedAt, startedAt.toISOString());
+      assert.equal(typeof input.clock, "function");
+      observed.readersCompleted += 1;
+      return Object.freeze({
+        complete: true,
+        captureStartedAtMs: startedAt.getTime(),
+        capturedAtMs: linearEnd,
+      });
+    },
+    readGithubSnapshot: async (input) => {
+      assert.equal(input.capturedAt, startedAt.toISOString());
+      assert.equal(typeof input.clock, "function");
+      observed.readersCompleted += 1;
+      return Object.freeze({
+        complete: true,
+        captureStartedAtMs: startedAt.getTime(),
+        capturedAtMs: githubEnd,
+      });
+    },
+    evaluate: (input) => {
+      evaluated = input;
+      return {
+        state: "clean",
+        counts: { drift: 0, advisory: 0, incomplete: 0 },
+        findings: [],
+      };
+    },
+    determineExitCode: () => 0,
+    writeLocalReport: async (input) => {
+      reported = input;
+      return { path: "local-report.json", removed: [] };
+    },
+  });
+
+  const exitCode = await runCli({
+    argv: [],
+    env: {
+      LINEAR_READ_KEY: "linear-secret",
+      LINEAR_GITHUB_APP_ID: "456",
+      LINEAR_GITHUB_APP_PRIVATE_KEY_PATH: "C:\\private\\app.pem",
+    },
+    stdout: outputSink(),
+    dependencies: deps,
+    now: startedAt,
+    clock: () => {
+      observed.clockCalls += 1;
+      assert.equal(observed.readersCompleted, 2);
+      return evaluationAt;
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(observed.clockCalls, 1);
+  assert.equal(evaluated.now.getTime(), evaluationAt.getTime());
+  assert.equal(reported.now.getTime(), evaluationAt.getTime());
+  assert.equal(evaluated.linear.capturedAtMs, linearEnd);
+  assert.equal(evaluated.github.capturedAtMs, githubEnd);
+});
+
+test("CLI compartilha uma única guarda monotônica entre os provedores", async () => {
+  const startedAt = new Date("2026-08-18T15:00:00.000Z");
+  for (const tickOffsets of [
+    [2_000, 1_000],
+    [1_000, 2_000, 1_000],
+  ]) {
+    const ticks = tickOffsets.map((offset) => startedAt.getTime() + offset);
+    const deps = dependencies({
+      readLinearSnapshot: async (input) => {
+        input.clock();
+        return { complete: true };
+      },
+      readGithubSnapshot: async (input) => {
+        input.clock();
+        return { complete: true };
+      },
+    });
+
+    await assert.rejects(
+      runCli({
+        argv: [],
+        env: {
+          LINEAR_READ_KEY: "linear-secret",
+          LINEAR_GITHUB_APP_ID: "456",
+          LINEAR_GITHUB_APP_PRIVATE_KEY_PATH: "C:\\private\\app.pem",
+        },
+        stdout: outputSink(),
+        dependencies: deps,
+        now: startedAt,
+        clock: () => ticks.shift(),
+      }),
+      /relógio.*regressivo/iu,
+    );
+  }
 });
 
 test("falha terminal também mantém stdout redigido e não ecoa segredo", async () => {

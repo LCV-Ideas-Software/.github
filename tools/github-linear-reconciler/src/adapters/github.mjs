@@ -15,6 +15,12 @@ import {
   assertPrivateDirectoryPath,
   assertPrivateFilePath,
 } from "../local-profile.mjs";
+import { createCaptureWindow } from "../domain/capture-window.mjs";
+import {
+  buildGithubResourceKey,
+  parseGithubOwner,
+  parseGithubRepository,
+} from "../domain/github-resource.mjs";
 
 const PaginatingOctokit = Octokit.plugin(paginateRest);
 const MAX_PAGES = 1_000;
@@ -149,15 +155,12 @@ export function validateGithubAppInstallation({
   app,
   installation,
 }) {
-  const parsedOrganization = z
-    .string()
-    .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u)
-    .safeParse(organization);
+  const parsedOrganization = parseGithubOwner(organization);
   const parsedApp = githubAppResponseSchema.safeParse(app);
   const parsedInstallation =
     githubInstallationResponseSchema.safeParse(installation);
   if (
-    !parsedOrganization.success ||
+    parsedOrganization === null ||
     !parsedApp.success ||
     !parsedInstallation.success
   ) {
@@ -168,11 +171,9 @@ export function validateGithubAppInstallation({
     value.app_id !== parsedApp.data.id ||
     (expectedAppId !== undefined && value.app_id !== expectedAppId) ||
     parsedApp.data.owner.id !== value.account.id ||
-    parsedApp.data.owner.login.toLowerCase() !==
-      parsedOrganization.data.toLowerCase() ||
+    parsedApp.data.owner.login.toLowerCase() !== parsedOrganization ||
     value.target_id !== value.account.id ||
-    value.account.login.toLowerCase() !==
-      parsedOrganization.data.toLowerCase() ||
+    value.account.login.toLowerCase() !== parsedOrganization ||
     value.suspended_at !== null
   ) {
     invalidInstallation();
@@ -188,8 +189,8 @@ export async function collectInstallationRepositories({
   if (typeof request !== "function") {
     throw new TypeError("request GitHub App obrigatória");
   }
-  const normalizedOrganization = String(organization ?? "").toLowerCase();
-  if (!normalizedOrganization) {
+  const normalizedOrganization = parseGithubOwner(organization);
+  if (normalizedOrganization === null) {
     throw new TypeError("organização GitHub App obrigatória");
   }
   let expectedTotal = null;
@@ -218,8 +219,12 @@ export async function collectInstallationRepositories({
       ) {
         throw new Error("repositório fora da organização GitHub App");
       }
-      const normalizedName = repository.name.toLowerCase();
-      if (ids.has(repository.id) || names.has(normalizedName)) {
+      const normalizedName = parseGithubRepository(repository.name);
+      if (
+        normalizedName === null ||
+        ids.has(repository.id) ||
+        names.has(normalizedName)
+      ) {
         throw new Error("identidade de repositório GitHub App duplicada");
       }
       ids.add(repository.id);
@@ -425,9 +430,24 @@ function githubStatus(issue) {
   return issue.state_reason === "not_planned" ? "canceled" : "completed";
 }
 
-function boundedTimestamp(value, capturedAtMs, label) {
+function captureCeilingMs(captureBoundary) {
+  return typeof captureBoundary?.currentCeilingMs === "function"
+    ? captureBoundary.currentCeilingMs()
+    : captureBoundary;
+}
+
+function closeCaptureWindowSafely(captureWindow, fallbackMs) {
+  if (typeof captureWindow?.closeMs !== "function") return fallbackMs;
+  try {
+    return captureWindow.closeMs();
+  } catch {
+    return captureWindow.lastCeilingMs();
+  }
+}
+
+function boundedTimestamp(value, captureBoundary, label) {
   const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed) || parsed > capturedAtMs) {
+  if (!Number.isFinite(parsed) || parsed > captureCeilingMs(captureBoundary)) {
     throw new Error(`${label} posterior a capturedAt`);
   }
   return parsed;
@@ -471,7 +491,13 @@ function validateTemporalEntity(
 }
 
 function resourceKey(organization, repository, number) {
-  return `${organization}/${repository}#${number}`.toLowerCase();
+  const key = buildGithubResourceKey({
+    owner: organization,
+    repository,
+    number,
+  });
+  if (key === null) throw new Error("identidade de recurso GitHub inválida");
+  return key;
 }
 
 function isLinearLinkbackControl(comment) {
@@ -499,6 +525,7 @@ function freezeSnapshot(snapshot) {
  * @typedef {object} GithubBoundarySnapshot
  * @property {boolean} complete
  * @property {ReadonlyArray<{source:"github",code:string,scope:string,message:string}>} failures
+ * @property {number} captureStartedAtMs
  * @property {number} capturedAtMs
  * @property {string} organization
  * @property {ReadonlyArray<{id:number,name:string,archived:boolean,issuesEnabled:boolean,fork:boolean}>} repositories
@@ -510,6 +537,7 @@ export function createGithubAdapter({
   request,
   paginateIterator,
   repositoryInventory,
+  clock,
 } = {}) {
   if (typeof request !== "function" || typeof paginateIterator !== "function") {
     throw new Error("cliente de instalação GitHub App obrigatório");
@@ -559,10 +587,13 @@ export function createGithubAdapter({
   }
 
   async function readOrganizationSnapshot({ organization, capturedAt }) {
+    let captureWindow;
     try {
-      const capturedAtMs = Date.parse(capturedAt);
-      if (!Number.isFinite(capturedAtMs))
-        throw new Error("capturedAt invalido");
+      const canonicalOrganization = parseGithubOwner(organization);
+      if (canonicalOrganization === null)
+        throw new Error("organização GitHub inválida");
+      captureWindow = createCaptureWindow({ startedAt: capturedAt, clock });
+      const capturedAtMs = captureWindow;
       const repositoriesRaw = repositoryInventory;
       if (!Array.isArray(repositoriesRaw)) {
         throw new Error("inventário GitHub App inválido");
@@ -570,7 +601,7 @@ export function createGithubAdapter({
       const repositoryIds = new Set();
       const repositoryNames = new Set();
       for (const repository of repositoriesRaw) {
-        const name = String(repository?.name ?? "").toLowerCase();
+        const name = parseGithubRepository(repository?.name);
         if (!name || repositoryNames.has(name)) {
           throw new Error("identidade de repositório GitHub duplicada");
         }
@@ -588,7 +619,7 @@ export function createGithubAdapter({
         .filter((repository) => !repository.archived)
         .map((repository) => ({
           id: repository.id,
-          name: repository.name.toLowerCase(),
+          name: parseGithubRepository(repository.name),
           archived: false,
           issuesEnabled: repository.has_issues,
           fork: repository.fork,
@@ -600,7 +631,7 @@ export function createGithubAdapter({
           const rawIssues = await paginate({
             path: "/repos/{owner}/{repo}/issues",
             parameters: {
-              owner: organization,
+              owner: canonicalOrganization,
               repo: repository.name,
               state: "all",
               per_page: 100,
@@ -617,7 +648,7 @@ export function createGithubAdapter({
             const comments = await paginate({
               path: "/repos/{owner}/{repo}/issues/{issue_number}/comments",
               parameters: {
-                owner: organization,
+                owner: canonicalOrganization,
                 repo: repository.name,
                 issue_number: issue.number,
                 per_page: 100,
@@ -626,7 +657,7 @@ export function createGithubAdapter({
               identity: (comment) => comment.node_id,
             });
             const key = resourceKey(
-              organization,
+              canonicalOrganization,
               repository.name,
               issue.number,
             );
@@ -660,7 +691,7 @@ export function createGithubAdapter({
         const rawPulls = await paginate({
           path: "/repos/{owner}/{repo}/pulls",
           parameters: {
-            owner: organization,
+            owner: canonicalOrganization,
             repo: repository.name,
             state: "all",
             per_page: 100,
@@ -676,7 +707,11 @@ export function createGithubAdapter({
             { requireMerged: true },
           );
           pulls.push({
-            key: resourceKey(organization, repository.name, pull.number),
+            key: resourceKey(
+              canonicalOrganization,
+              repository.name,
+              pull.number,
+            ),
             repository: repository.name,
             number: pull.number,
             mergedAtMs: pull.merged_at ? Date.parse(pull.merged_at) : null,
@@ -689,13 +724,17 @@ export function createGithubAdapter({
       return freezeSnapshot({
         complete: true,
         failures: [],
-        capturedAtMs,
-        organization: organization.toLowerCase(),
+        captureStartedAtMs: captureWindow.captureStartedAtMs,
+        capturedAtMs: captureWindow.closeMs(),
+        organization: canonicalOrganization,
         repositories,
         issues,
         pulls,
       });
     } catch (error) {
+      const fallbackCapturedAtMs = Number.isFinite(Date.parse(capturedAt))
+        ? Date.parse(capturedAt)
+        : 0;
       return freezeSnapshot({
         complete: false,
         failures: [
@@ -706,9 +745,12 @@ export function createGithubAdapter({
             message: error instanceof Error ? error.message : String(error),
           },
         ],
-        capturedAtMs: Number.isFinite(Date.parse(capturedAt))
-          ? Date.parse(capturedAt)
-          : 0,
+        captureStartedAtMs:
+          captureWindow?.captureStartedAtMs ?? fallbackCapturedAtMs,
+        capturedAtMs: closeCaptureWindowSafely(
+          captureWindow,
+          fallbackCapturedAtMs,
+        ),
         organization: String(organization ?? "").toLowerCase(),
         repositories: [],
         issues: [],
@@ -727,9 +769,12 @@ export async function readGithubSnapshot({
   profileRoot,
   env = process.env,
   capturedAt = new Date().toISOString(),
+  clock,
   createBoundary = createGithubAppBoundary,
 } = {}) {
+  let captureWindow;
   try {
+    captureWindow = createCaptureWindow({ startedAt: capturedAt, clock });
     const boundary = await createBoundary({
       organization: config?.organization,
       appId,
@@ -743,12 +788,16 @@ export async function readGithubSnapshot({
       paginateIterator: (route, parameters) =>
         client.paginate.iterator(route, parameters),
       repositoryInventory: boundary.repositories,
+      clock: () => captureWindow.currentCeilingMs(),
     });
     return adapter.readOrganizationSnapshot({
       organization: config?.organization,
       capturedAt,
     });
   } catch {
+    const fallbackCapturedAtMs = Number.isFinite(Date.parse(capturedAt))
+      ? Date.parse(capturedAt)
+      : 0;
     return freezeSnapshot({
       complete: false,
       failures: [
@@ -759,9 +808,12 @@ export async function readGithubSnapshot({
           message: "autenticação ou instalação GitHub App inválida",
         },
       ],
-      capturedAtMs: Number.isFinite(Date.parse(capturedAt))
-        ? Date.parse(capturedAt)
-        : 0,
+      captureStartedAtMs:
+        captureWindow?.captureStartedAtMs ?? fallbackCapturedAtMs,
+      capturedAtMs: closeCaptureWindowSafely(
+        captureWindow,
+        fallbackCapturedAtMs,
+      ),
       organization: String(config?.organization ?? "").toLowerCase(),
       repositories: [],
       issues: [],

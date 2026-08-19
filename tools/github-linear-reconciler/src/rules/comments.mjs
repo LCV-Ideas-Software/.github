@@ -5,10 +5,11 @@ function repeated(values) {
 }
 
 export function evaluateComments(context) {
-  const { linear, mappingByTeam, githubIssueByKey, nowMs, commentGraceMs } =
+  const { linear, github, mappingByTeam, githubIssueByKey, commentGraceMs } =
     context;
   const findings = [];
-  const cutoff = nowMs - commentGraceMs;
+  const linearCutoff = linear.captureStartedAtMs - commentGraceMs;
+  const githubCutoff = github.captureStartedAtMs - commentGraceMs;
   for (const issue of linear.issues) {
     const mode = mappingByTeam.get(issue.teamKey)?.mode;
     if (mode === "linear-only") {
@@ -91,7 +92,7 @@ export function evaluateComments(context) {
         );
       }
       if (comment.externalId === null) {
-        if (comment.createdAtMs <= cutoff) {
+        if (comment.createdAtMs <= linearCutoff) {
           findings.push(
             finding(
               "incomplete",
@@ -106,7 +107,7 @@ export function evaluateComments(context) {
       }
       const githubComment = githubById.get(comment.externalId);
       if (!githubComment) {
-        if (comment.createdAtMs <= cutoff) {
+        if (comment.createdAtMs <= githubCutoff) {
           findings.push(
             finding(
               "drift",
@@ -131,7 +132,7 @@ export function evaluateComments(context) {
     }
     for (const comment of githubIssue.comments) {
       if (
-        comment.createdAtMs <= cutoff &&
+        comment.createdAtMs <= linearCutoff &&
         !linearByExternalId.has(comment.id)
       ) {
         findings.push(

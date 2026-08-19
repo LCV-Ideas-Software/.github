@@ -98,6 +98,7 @@ function baseline() {
     linear: {
       complete: true,
       failures: [],
+      captureStartedAtMs: NOW.getTime(),
       capturedAtMs: NOW.getTime(),
       teams: [
         {
@@ -138,6 +139,7 @@ function baseline() {
           insecureGithubResourceKeys: [],
           carrierPullKeys: [],
           comments: [],
+          githubThreadControls: [],
           releases: [],
           duplicateOf: null,
           relatedIdentifiers: [],
@@ -163,6 +165,7 @@ function baseline() {
     github: {
       complete: true,
       failures: [],
+      captureStartedAtMs: NOW.getTime(),
       capturedAtMs: NOW.getTime(),
       organization: "example-org",
       repositories: [
@@ -181,6 +184,7 @@ function baseline() {
           repository: "repo-a",
           number: 1,
           status: "active",
+          createdAtMs: 4_000,
           updatedAtMs: 5_000,
           comments: [],
         },
@@ -325,11 +329,15 @@ test("snapshot parcial ou fora do contrato nunca executa regras como se fosse co
   const contradictory = baseline();
   contradictory.linear.failures.push({
     source: "linear",
-    code: "partial_page",
-    scope: "issues",
+    code: "node_invalid",
+    scope: "issues[4].comments[2]",
+    reasonCodes: ["comment_github_sync_ambiguous"],
+    message: "linear node normalization failed",
   });
-  assert.deepEqual(codes(evaluate(contradictory)), [
-    "linear_snapshot_incomplete",
+  const contradictoryResult = evaluate(contradictory);
+  assert.deepEqual(codes(contradictoryResult), ["linear_snapshot_incomplete"]);
+  assert.deepEqual(contradictoryResult.findings[0].references, [
+    "linear:node_invalid:issues[4].comments[2]:comment_github_sync_ambiguous",
   ]);
 
   const malformed = baseline();
@@ -351,6 +359,7 @@ test("snapshot parcial ou fora do contrato nunca executa regras como se fosse co
     key: ISSUE_KEY,
     repository: "repo-a",
     number: 1,
+    createdAtMs: 1_000,
     updatedAtMs: 5_000,
     mergedAtMs: null,
     mergeCommitSha: null,
@@ -383,6 +392,7 @@ test("counterparts aplicam cardinalidade nos dois sentidos", () => {
     repository: "repo-a",
     number: 2,
     status: "active",
+    createdAtMs: 4_000,
     updatedAtMs: 5_000,
     comments: [],
   });
@@ -404,10 +414,68 @@ test("counterparts aplicam cardinalidade nos dois sentidos", () => {
   );
 });
 
-test("fronteira normalizada fecha relogio, identidade composta e ciclos duplicateOf", () => {
-  const divergentClock = baseline();
-  divergentClock.github.capturedAtMs -= 1;
-  assert.deepEqual(codes(evaluate(divergentClock)), [
+test("fronteira normalizada preserva janela por fonte sem lavar timestamps", () => {
+  const divergentEnds = baseline();
+  divergentEnds.linear.captureStartedAtMs = NOW.getTime() - 3_000;
+  divergentEnds.github.captureStartedAtMs = NOW.getTime() - 3_000;
+  divergentEnds.linear.capturedAtMs = NOW.getTime() - 2_000;
+  divergentEnds.github.capturedAtMs = NOW.getTime() - 1_000;
+  assert.equal(evaluate(divergentEnds).state, "clean");
+
+  const divergentStarts = clone(divergentEnds);
+  divergentStarts.github.captureStartedAtMs += 1;
+  assert.deepEqual(codes(evaluate(divergentStarts)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const endBeforeStart = clone(divergentEnds);
+  endBeforeStart.linear.capturedAtMs =
+    endBeforeStart.linear.captureStartedAtMs - 1;
+  assert.deepEqual(codes(evaluate(endBeforeStart)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const endAfterEvaluation = clone(divergentEnds);
+  endAfterEvaluation.github.capturedAtMs = NOW.getTime() + 1;
+  assert.deepEqual(codes(evaluate(endAfterEvaluation)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const linearTimestampAfterLinearEnd = clone(divergentEnds);
+  linearTimestampAfterLinearEnd.linear.teams[0].updatedAtMs =
+    divergentEnds.linear.capturedAtMs + 1;
+  assert.ok(
+    linearTimestampAfterLinearEnd.linear.teams[0].updatedAtMs <
+      divergentEnds.github.capturedAtMs,
+  );
+  assert.deepEqual(codes(evaluate(linearTimestampAfterLinearEnd)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const githubTimestampAfterGithubEnd = clone(divergentEnds);
+  githubTimestampAfterGithubEnd.github.issues[0].updatedAtMs =
+    divergentEnds.github.capturedAtMs + 1;
+  assert.ok(
+    githubTimestampAfterGithubEnd.github.issues[0].updatedAtMs <= NOW.getTime(),
+  );
+  assert.deepEqual(codes(evaluate(githubTimestampAfterGithubEnd)), [
+    "normalized_snapshot_invalid",
+  ]);
+});
+
+test("fronteira normalizada fecha identidade composta e ciclos duplicateOf", () => {
+  const invertedNormalizedComment = baseline();
+  invertedNormalizedComment.linear.issues[0].comments.push({
+    id: "linear-comment-inverted",
+    provenance: "linear",
+    resourceKey: null,
+    externalId: null,
+    threadId: null,
+    connected: true,
+    createdAtMs: 2_000,
+    updatedAtMs: 1_999,
+  });
+  assert.deepEqual(codes(evaluate(invertedNormalizedComment)), [
     "normalized_snapshot_invalid",
   ]);
 
@@ -445,6 +513,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
     repository: "repo-a",
     number: 2,
     status: "active",
+    createdAtMs: 4_000,
     updatedAtMs: 5_000,
     comments: [],
   });
@@ -497,6 +566,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
     repository: "repo-b",
     number: 1,
     status: "active",
+    createdAtMs: 4_000,
     updatedAtMs: 5_000,
     comments: [],
   });
@@ -517,10 +587,10 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
   assert.equal(evaluate(archivedRepository).state, "incomplete");
 });
 
-test("umbrella vazio cobre todas as classes finitas de work item", () => {
+test("umbrella vazio cobre as classes residuais de work item", () => {
   const input = baseline();
   addLinearIssue(input, { teamKey: "TEAM_ROOT" });
-  for (const collection of ["cycles", "projects", "initiatives", "documents"]) {
+  for (const collection of ["projects", "initiatives", "documents"]) {
     input.linear[collection].push({
       id: `${collection}-1`,
       teamId: TEAM_IDS.TEAM_ROOT,
@@ -534,7 +604,7 @@ test("umbrella vazio cobre todas as classes finitas de work item", () => {
     result.findings.filter(
       (finding) => finding.code === "umbrella_work_item_present",
     ).length,
-    5,
+    4,
   );
   assert.equal(result.state, "drift");
 });
@@ -606,7 +676,7 @@ test("comments pareiam somente por IDs e proveniência estruturada", () => {
   );
 });
 
-test("comment recente respeita grace e thread desconectada continua sendo drift", () => {
+test("grace de comment usa createdAt e thread desconectada continua sendo drift", () => {
   const recent = baseline();
   recent.github.issues[0].comments.push({
     id: "github-comment-recent",
@@ -630,7 +700,6 @@ test("comment recente respeita grace e thread desconectada continua sendo drift"
   assert.equal(evaluate(pendingFromLinear).state, "clean");
 
   pendingFromLinear.linear.issues[0].comments[0].createdAtMs = 1_000;
-  pendingFromLinear.linear.issues[0].comments[0].updatedAtMs = 1_000;
   assert.ok(
     codes(evaluate(pendingFromLinear)).includes(
       "comment_external_identity_missing",
@@ -657,6 +726,77 @@ test("comment recente respeita grace e thread desconectada continua sendo drift"
   assert.ok(
     codes(evaluate(disconnected)).includes("comment_sync_disconnected"),
   );
+});
+
+test("grace de comment usa inicio da observacao de cada fonte", () => {
+  const captureStartedAtMs = 4_000_000;
+  const linearCapturedAtMs = 9_000_000;
+  const githubCapturedAtMs = 6_000_000;
+
+  for (const graceMinutes of [0, COMMENT_GRACE_MINUTES]) {
+    const input = baseline();
+    input.config.commentGraceMinutes = graceMinutes;
+    input.linear.captureStartedAtMs = captureStartedAtMs;
+    input.linear.capturedAtMs = linearCapturedAtMs;
+    input.github.captureStartedAtMs = captureStartedAtMs;
+    input.github.capturedAtMs = githubCapturedAtMs;
+
+    const graceMs = graceMinutes * 60_000;
+    const exactCutoff = captureStartedAtMs - graceMs;
+    const afterCutoff = exactCutoff + 1;
+    const suffix = String(graceMinutes);
+    const linearComment = (id, externalId, createdAtMs) => ({
+      id,
+      provenance: "github",
+      resourceKey: ISSUE_KEY,
+      externalId,
+      threadId: ISSUE_KEY,
+      connected: true,
+      createdAtMs,
+      updatedAtMs: createdAtMs,
+    });
+    const githubComment = (id, createdAtMs) => ({
+      id,
+      threadId: ISSUE_KEY,
+      createdAtMs,
+      updatedAtMs: createdAtMs,
+    });
+
+    input.linear.issues[0].comments.push(
+      linearComment(
+        `linear-gap-exact-${suffix}`,
+        `github-missing-exact-${suffix}`,
+        exactCutoff,
+      ),
+      linearComment(
+        `linear-gap-after-${suffix}`,
+        `github-missing-after-${suffix}`,
+        afterCutoff,
+      ),
+      linearComment(`identity-exact-${suffix}`, null, exactCutoff),
+      linearComment(`identity-after-${suffix}`, null, afterCutoff),
+    );
+    input.github.issues[0].comments.push(
+      githubComment(`github-gap-exact-${suffix}`, exactCutoff),
+      githubComment(`github-gap-after-${suffix}`, afterCutoff),
+    );
+
+    const result = evaluate(input);
+    const entitiesFor = (code) =>
+      result.findings
+        .filter((item) => item.code === code)
+        .map((item) => item.entity);
+
+    assert.deepEqual(entitiesFor("comment_sync_gap_to_github"), [
+      `linear-gap-exact-${suffix}`,
+    ]);
+    assert.deepEqual(entitiesFor("comment_sync_gap_to_linear"), [
+      `github-gap-exact-${suffix}`,
+    ]);
+    assert.deepEqual(entitiesFor("comment_external_identity_missing"), [
+      `identity-exact-${suffix}`,
+    ]);
+  }
 });
 
 test("identidade global duplicada de comment invalida o snapshot", () => {
@@ -700,6 +840,7 @@ test("release exige commit e pipeline exatos depois do corte", () => {
     key: pullKey,
     repository: "repo-a",
     number: 2,
+    createdAtMs: 1_000,
     updatedAtMs: 2_500,
     mergedAtMs: 2_000,
     mergeCommitSha: commitSha,
@@ -809,6 +950,7 @@ test("scan global agrupa milhares de candidatos sem materializar findings por pa
       insecureGithubResourceKeys: [],
       carrierPullKeys: [],
       comments: [],
+      githubThreadControls: [],
       releases: [],
       duplicateOf: null,
       relatedIdentifiers: [],
@@ -865,6 +1007,7 @@ test("pipeline usa ID estável e somente release continuous concluída prova car
     key: pullKey,
     repository: "repo-a",
     number: 2,
+    createdAtMs: 1_000,
     updatedAtMs: 2_500,
     mergedAtMs: 2_000,
     mergeCommitSha: commitSha,

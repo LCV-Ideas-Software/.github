@@ -1,5 +1,14 @@
 import { finding } from "./findings.mjs";
 import { findDuplicateOfCycles } from "./duplicate-graph.mjs";
+import {
+  parseGithubOwner,
+  parseGithubRepository,
+  parseGithubResourceKey,
+} from "./github-resource.mjs";
+import {
+  linearFailureReferences,
+  validLinearFailure,
+} from "./linear-failures.mjs";
 import { NORMALIZED_STATUSES } from "./model.mjs";
 
 function nonempty(value) {
@@ -13,12 +22,7 @@ function canonical(value) {
 }
 
 function githubResourceKey(value) {
-  if (!canonical(value)) return false;
-  const match =
-    /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9][a-z0-9_.-]{0,99}#([1-9]\d*)$/u.exec(
-      value,
-    );
-  return match !== null && Number.isSafeInteger(Number(match[1]));
+  return parseGithubResourceKey(value)?.key === value;
 }
 
 function sha40(value) {
@@ -53,6 +57,7 @@ function compareOpaque(left, right) {
 }
 
 function validFailure(value) {
+  if (value?.source === "linear") return validLinearFailure(value);
   return (
     value &&
     typeof value === "object" &&
@@ -67,7 +72,11 @@ function incompleteSnapshot(source, snapshot) {
   const references = Array.isArray(snapshot?.failures)
     ? snapshot.failures
         .filter(validFailure)
-        .map((failure) => `${failure.source}:${failure.code}:${failure.scope}`)
+        .flatMap((failure) =>
+          failure.source === "linear"
+            ? linearFailureReferences(failure)
+            : [`${failure.source}:${failure.code}:${failure.scope}`],
+        )
     : [];
   return finding(
     "incomplete",
@@ -113,6 +122,22 @@ function validNativeCounterpart(counterpart) {
   );
 }
 
+function validGithubThreadControl(control) {
+  if (
+    !control ||
+    typeof control !== "object" ||
+    Array.isArray(control) ||
+    !nonempty(control.linearCommentId) ||
+    typeof control.connected !== "boolean" ||
+    !["resource", "unparseable", "absent"].includes(control.urlState)
+  ) {
+    return false;
+  }
+  return control.urlState === "resource"
+    ? githubResourceKey(control.observedResourceKey)
+    : control.observedResourceKey === null;
+}
+
 function validRelease(release, capturedAtMs) {
   return (
     release &&
@@ -123,8 +148,6 @@ function validRelease(release, capturedAtMs) {
     (release.completedAtMs === null ||
       instant(release.completedAtMs, capturedAtMs)) &&
     instant(release.updatedAtMs, capturedAtMs) &&
-    (release.completedAtMs === null ||
-      release.completedAtMs <= release.updatedAtMs) &&
     nonempty(release.issueToReleaseId) &&
     instant(release.issueToReleaseUpdatedAtMs, capturedAtMs)
   );
@@ -167,6 +190,11 @@ function validLinearIssue(issue, teamById, teamByKey, capturedAtMs) {
     ) &&
     new Set(issue.comments.map((comment) => comment.id)).size ===
       issue.comments.length &&
+    Array.isArray(issue.githubThreadControls) &&
+    issue.githubThreadControls.every(validGithubThreadControl) &&
+    new Set(
+      issue.githubThreadControls.map((control) => control.linearCommentId),
+    ).size === issue.githubThreadControls.length &&
     Array.isArray(issue.releases) &&
     issue.releases.every((release) => validRelease(release, capturedAtMs)) &&
     new Set(issue.releases.map((release) => release.id)).size ===
@@ -199,7 +227,9 @@ function validGithubIssue(issue, repositoryNames, organization, capturedAtMs) {
     issue.number > 0 &&
     issue.key === `${organization}/${issue.repository}#${issue.number}` &&
     NORMALIZED_STATUSES.includes(issue.status) &&
+    instant(issue.createdAtMs, capturedAtMs) &&
     instant(issue.updatedAtMs, capturedAtMs) &&
+    issue.createdAtMs <= issue.updatedAtMs &&
     Array.isArray(issue.comments) &&
     issue.comments.every((comment) =>
       validGithubComment(comment, issue.key, capturedAtMs),
@@ -230,8 +260,7 @@ function validWorkspaceRelease(release, capturedAtMs) {
     instant(release.updatedAtMs, capturedAtMs) &&
     release.createdAtMs <= release.updatedAtMs &&
     (release.completedAtMs === null ||
-      (release.createdAtMs <= release.completedAtMs &&
-        release.completedAtMs <= release.updatedAtMs))
+      release.createdAtMs <= release.completedAtMs)
   );
 }
 
@@ -269,9 +298,12 @@ function validGithubPull(pull, repositoryNames, organization, capturedAtMs) {
     Number.isSafeInteger(pull.number) &&
     pull.number > 0 &&
     pull.key === `${organization}/${pull.repository}#${pull.number}` &&
+    instant(pull.createdAtMs, capturedAtMs) &&
     instant(pull.updatedAtMs, capturedAtMs) &&
+    pull.createdAtMs <= pull.updatedAtMs &&
     (!merged ||
       (instant(pull.mergedAtMs, capturedAtMs) &&
+        pull.createdAtMs <= pull.mergedAtMs &&
         pull.mergedAtMs <= pull.updatedAtMs)) &&
     (merged
       ? sha40(pull.mergeCommitSha)
@@ -313,17 +345,26 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     problems.push("github failures are invalid");
   }
 
+  const linearCaptureStartedAtMs = linear?.captureStartedAtMs;
+  const githubCaptureStartedAtMs = github?.captureStartedAtMs;
   const linearCapturedAtMs = linear?.capturedAtMs;
   const githubCapturedAtMs = github?.capturedAtMs;
   if (
+    !instant(linearCaptureStartedAtMs, nowMs) ||
+    !instant(githubCaptureStartedAtMs, nowMs) ||
+    linearCaptureStartedAtMs !== githubCaptureStartedAtMs ||
     !instant(linearCapturedAtMs, nowMs) ||
     !instant(githubCapturedAtMs, nowMs) ||
-    linearCapturedAtMs !== githubCapturedAtMs
+    linearCapturedAtMs < linearCaptureStartedAtMs ||
+    githubCapturedAtMs < githubCaptureStartedAtMs
   ) {
-    problems.push("snapshot capturedAt boundaries are invalid or divergent");
+    problems.push("snapshot capture windows are invalid or divergent");
   }
-  const capturedAtMs = Number.isSafeInteger(linearCapturedAtMs)
+  const linearBoundaryMs = Number.isSafeInteger(linearCapturedAtMs)
     ? linearCapturedAtMs
+    : -1;
+  const githubBoundaryMs = Number.isSafeInteger(githubCapturedAtMs)
+    ? githubCapturedAtMs
     : -1;
 
   const teams = Array.isArray(linear?.teams) ? linear.teams : [];
@@ -336,7 +377,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
         !nonempty(team?.id) ||
         !nonempty(team?.key) ||
         typeof team?.active !== "boolean" ||
-        !instant(team?.updatedAtMs, capturedAtMs),
+        !instant(team?.updatedAtMs, linearBoundaryMs),
     ) ||
     teamById.size !== teams.length ||
     teamByKey.size !== teams.length
@@ -350,7 +391,8 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   if (
     !Array.isArray(linear?.issues) ||
     issues.some(
-      (issue) => !validLinearIssue(issue, teamById, teamByKey, capturedAtMs),
+      (issue) =>
+        !validLinearIssue(issue, teamById, teamByKey, linearBoundaryMs),
     ) ||
     issueById.size !== issues.length ||
     duplicateValues(issues.map((issue) => issue?.identifier))
@@ -396,6 +438,24 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   ) {
     problems.push("linear comment identities are not globally unique");
   }
+  const githubThreadControls = issues.flatMap(
+    (issue) => issue?.githubThreadControls ?? [],
+  );
+  const linearCommentIds = new Set(
+    linearComments.map((comment) => comment?.id),
+  );
+  if (
+    duplicateValues(
+      githubThreadControls.map((control) => control?.linearCommentId),
+    ) ||
+    githubThreadControls.some((control) =>
+      linearCommentIds.has(control?.linearCommentId),
+    )
+  ) {
+    problems.push(
+      "linear GitHub thread control identities are repeated or collide with comments",
+    );
+  }
 
   const releasePipelines = Array.isArray(linear?.releasePipelines)
     ? linear.releasePipelines
@@ -406,7 +466,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   if (
     !Array.isArray(linear?.releasePipelines) ||
     releasePipelines.some(
-      (pipeline) => !validReleasePipeline(pipeline, capturedAtMs),
+      (pipeline) => !validReleasePipeline(pipeline, linearBoundaryMs),
     ) ||
     pipelineById.size !== releasePipelines.length
   ) {
@@ -423,11 +483,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     !Array.isArray(linear?.releases) ||
     workspaceReleases.some((release) => {
       const pipeline = pipelineById.get(release?.pipelineId);
-      return (
-        !validWorkspaceRelease(release, capturedAtMs) ||
-        !pipeline ||
-        pipeline.createdAtMs > release.createdAtMs
-      );
+      return !validWorkspaceRelease(release, linearBoundaryMs) || !pipeline;
     }) ||
     releaseById.size !== workspaceReleases.length
   ) {
@@ -445,7 +501,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     issueToReleases.some((association) => {
       const release = releaseById.get(association?.releaseId);
       return (
-        !validIssueToRelease(association, capturedAtMs) ||
+        !validIssueToRelease(association, linearBoundaryMs) ||
         !issueById.has(association?.issueId) ||
         !release ||
         release.createdAtMs > association.createdAtMs
@@ -510,7 +566,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
           !nonempty(entity?.id) ||
           teamById.get(entity?.teamId) === undefined ||
           teamById.get(entity?.teamId) !== teamByKey.get(entity?.teamKey) ||
-          !instant(entity?.updatedAtMs, capturedAtMs),
+          !instant(entity?.updatedAtMs, linearBoundaryMs),
       ) ||
       duplicateValues(
         (entities ?? []).map(
@@ -533,12 +589,13 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   );
   if (
     github?.organization !== organization ||
+    parseGithubOwner(github?.organization) !== github?.organization ||
     !Array.isArray(github?.repositories) ||
     repositories.some(
       (repository) =>
         !Number.isSafeInteger(repository?.id) ||
         repository.id <= 0 ||
-        !canonical(repository?.name) ||
+        parseGithubRepository(repository?.name) !== repository?.name ||
         repository.archived !== false ||
         typeof repository.issuesEnabled !== "boolean" ||
         typeof repository.fork !== "boolean",
@@ -557,7 +614,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
           issue,
           repositoryNames,
           organization,
-          githubCapturedAtMs,
+          githubBoundaryMs,
         ),
     ) ||
     duplicateValues(githubIssues.map((issue) => issue?.key))
@@ -597,12 +654,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     !Array.isArray(github?.pulls) ||
     pulls.some(
       (pull) =>
-        !validGithubPull(
-          pull,
-          repositoryNames,
-          organization,
-          githubCapturedAtMs,
-        ),
+        !validGithubPull(pull, repositoryNames, organization, githubBoundaryMs),
     ) ||
     duplicateValues(pulls.map((pull) => pull?.key))
   ) {

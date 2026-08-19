@@ -17,26 +17,55 @@ A reconciliação inventaria os repositórios GitHub ativos e não arquivados, s
 Issues e pull requests. No Linear, ela coleta primeiro uma visão global paginada
 de Teams, Issues, Cycles, Projects, Initiatives, Documents, ReleasePipelines,
 Releases e IssueToRelease. Identidades, referências e todos os timestamps
-mutáveis são validados contra o mesmo `capturedAt` antes de qualquer filtragem
-pelos mappings locais. A avaliação detecta, sem efetuar qualquer alteração:
+mutáveis são validados antes de qualquer filtragem pelos mappings locais. A
+captura é representada honestamente como uma janela: ambos os provedores têm o
+mesmo início, cada leitura paginada preserva seu próprio término e a avaliação
+usa um novo tick local posterior às duas leituras. A
+[paginação oficial do Linear](https://linear.app/developers/pagination) é
+baseada em cursores e não oferece um token de snapshot transacional entre
+páginas; por isso o relatório não descreve a captura como atômica em um
+instante. Por consequência, ausência de comentário só se torna acionável
+quando o período de grace já terminou antes do início da captura do provedor
+que deveria conter a evidência. Nem o fim da paginação nem o tick final
+envelhecem retroativamente um snapshot já iniciado. A avaliação detecta, sem
+efetuar qualquer alteração:
 
 - ausência ou cardinalidade diferente de 1:1 entre contrapartes;
 - divergência de estado;
 - attachments e releases ausentes;
 - comentários sem proveniência estável ou sem contraparte;
 - duplicatas e itens semelhantes sem relação explícita;
-- Issues, Cycles, Projects, Initiatives ou Documents vinculados diretamente ao
-  time configurado no modo `umbrella`.
+- Issues, Projects, Initiatives ou Documents vinculados diretamente ao time
+  configurado no modo `umbrella`.
 
 O time `umbrella` permanece apenas como contêiner hierárquico. O reconciliador
 não escolhe destinos, não migra entidades, não cria relações e não corrige
 findings. Times sem repositório correspondente são declarados explicitamente no
 modo `linear-only`.
 
+Cycles continuam inventariados e validados no snapshot. Sua presença no time
+`umbrella` representa cadência hierárquica herdável e, por si só, não constitui
+trabalho residual nem gera `umbrella_work_item_present`. Um Cycle malformado ou
+com referência de time inconsistente ainda torna o snapshot inconclusivo.
+
 Snapshots incompletos, paginação inconclusiva, credenciais insuficientes e
 respostas inválidas nunca são classificados como limpos. Comentários são
 correlacionados apenas por identidade externa ou thread estável, não por
 similaridade do corpo Markdown.
+
+O boundary de comentários Linear canonicaliza a inversão de relógio comprovada
+nessa entidade: `createdAt` e `updatedAt` são validados individualmente como
+timestamps finitos até o término observado da fonte; depois, se o `updatedAt`
+reportado anteceder o `createdAt`, o valor normalizado é elevado a `createdAt`.
+Essa canonicalização não se aplica ao GitHub, a outras entidades Linear, a
+janela de captura, nem às cronologias entre pipeline, release, associação,
+merge e conclusão. Os timestamps de Release permanecem exatamente como o
+provedor os entregou: `createdAt <= completedAt` continua obrigatório, mas
+`updatedAt` não é teto para `completedAt`; releases importadas também podem
+anteceder a criação da pipeline. A associação IssueToRelease continua exigindo
+uma Release já existente. Esse tratamento acompanha o
+[ciclo de vida oficial de Releases](https://linear.app/docs/releases), sem
+atribuir a `updatedAt` uma semântica de conclusão que o contrato não publica.
 
 A identidade canônica vem exclusivamente do GitHub Issues Sync nativo. O
 attachment dessa contraparte é obrigatório, mas attachments suplementares
@@ -45,6 +74,36 @@ não participam de estado, comentários, releases ou cardinalidade.
 `syncedWith.id` deve coincidir exatamente, com comparação case-sensitive, com o
 `node_id` do GitHub Issue. A resource key é derivada somente depois dessa prova;
 URL ou attachment não substitui a identidade nativa.
+
+A classificação de attachments é `exact-or-generic`: somente uma URL que
+satisfaça integralmente a gramática de GitHub Issue ou pull request produz uma
+resource key. Qualquer outra URL sintaticamente válida permanece um attachment
+genérico e não identitário, inclusive quando usa `github.com` ou quando
+`sourceType` informa que uma integração GitHub o criou. `sourceType` descreve a
+proveniência do attachment, não o tipo do recurso de destino. Links genéricos
+nunca satisfazem nem mascaram a contraparte ou o carrier exigidos. Esse contrato
+segue a semântica oficial de [attachments como links para recursos
+externos](https://linear.app/developers/attachments), sem inferir intenção por
+pathname.
+
+Owner, repositório, número, resource key e URLs exatas usam uma única gramática
+em toda a fronteira. Ela inclui nomes oficiais de repositório iniciados por
+ponto, como `.github`, e recusa números não seguros. Em URLs exatas, a
+identidade vem somente do pathname, enquanto o envelope canônico exige HTTPS,
+autoridade literal inteira `github.com` e ausência de qualquer delimitador de
+query. Fragmentos de navegação de uma `externalThread` não entram na
+identidade; qualquer delimitador de fragment em attachments exatos continua
+inseguro.
+
+Comentários de controle emitidos pela integração são preservados em um eixo
+próprio e nunca entram no pareamento de conteúdo. A classificação depende da
+tupla estruturada exposta pelo SDK — inclusive da ausência de usuário,
+external user, parent e `userDisplayName` —, nunca do corpo ou da URL. Um
+controle histórico desconectado sem contradição é aceito; evidência histórica
+ambígua gera `advisory`. Um controle conectado precisa concordar com uma única
+contraparte nativa, caso contrário o snapshot é `incomplete`. Para comentários
+de conteúdo, somente `Comment.syncedWith` fornece identidade externa; uma URL
+ou attachment isolado não promove comentário Linear a comentário GitHub.
 
 ## Configuração local
 
@@ -206,6 +265,15 @@ exemplo:
 Falhas inesperadas produzem somente uma mensagem genérica no stderr e o estado
 redigido `incomplete` no stdout.
 
+Na fronteira Linear, somente erros de dados esperados tipados e erros Zod são
+acumulados como `node_invalid`, sempre com `reasonCodes` de uma allowlist fixa e
+escopo ordinal. Falhas estruturais abortam a captura como `boundary_invalid`;
+qualquer exceção não classificada aborta como `adapter_internal_error`. Nenhuma
+dessas categorias inclui mensagem, identificador ou payload remoto, e todo
+snapshot `incomplete` devolve vazias as coleções normalizadas. As referências do
+relatório usam apenas `source:code:scope:reasonCode` (ou
+`source:code:scope` quando não há motivo adicional).
+
 ## Relatório local
 
 O resultado detalhado e derivado é gravado atomicamente no perfil local. Raw
@@ -247,6 +315,11 @@ ser sincronizado para armazenamento público.
 Um finding produzido pela execução local deve ser analisado contra o panorama
 global antes de qualquer write operacional no GitHub ou Linear. A ferramenta é
 e permanece somente leitura para ambos os provedores.
+
+Uma primeira execução completa pode retornar `drift` em um workspace
+operacional: isso é a lista de reconciliação a tratar, não uma falha da captura.
+Somente `incomplete` indica que o inventário ou a prova de identidade não foi
+concluído e impede qualquer conclusão sobre ausência de divergências.
 
 ## Verificação pública
 
