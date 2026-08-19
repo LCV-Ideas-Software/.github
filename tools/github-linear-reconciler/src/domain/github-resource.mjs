@@ -79,14 +79,12 @@ function parsedUrl(raw) {
   }
 }
 
-function literalAuthority(raw) {
-  return /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/u.exec(raw)?.[1] ?? null;
-}
-
-function literalPathname(raw) {
+function literalUrlSyntax(raw) {
   const match =
-    /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?(?:[?#]|$)/u.exec(raw);
-  const pathname = match?.[1] ?? "/";
+    /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)(\/[^?#]*)?(\?[^#]*)?(#[\s\S]*)?$/u.exec(
+      raw,
+    );
+  const pathname = match?.[2] ?? "/";
   if (
     match === null ||
     pathname.includes("\\") ||
@@ -95,7 +93,12 @@ function literalPathname(raw) {
   ) {
     return null;
   }
-  return pathname;
+  return Object.freeze({
+    authority: match[1],
+    pathname,
+    hasQueryDelimiter: match[3] !== undefined,
+    hasFragmentDelimiter: match[4] !== undefined,
+  });
 }
 
 export function hasGithubHostname(raw) {
@@ -106,10 +109,10 @@ export function parseGithubResourceUrl(raw, { role = "attachment" } = {}) {
   if (!new Set(["attachment", "external-thread"]).has(role)) return null;
   const url = parsedUrl(raw);
   if (url?.hostname.toLowerCase() !== GITHUB_HOSTNAME) return null;
-  const pathname = literalPathname(raw);
-  if (pathname === null) return null;
+  const literal = literalUrlSyntax(raw);
+  if (literal === null) return null;
   const match = /^\/([^/]+)\/([^/]+)\/(issues|pull)\/([^/]+)\/?$/u.exec(
-    pathname,
+    literal.pathname,
   );
   if (!match) return null;
   const key = buildGithubResourceKey({
@@ -119,16 +122,11 @@ export function parseGithubResourceUrl(raw, { role = "attachment" } = {}) {
   });
   if (key === null) return null;
   const parsedKey = parseGithubResourceKey(key);
-  const authority = literalAuthority(raw);
-  const literalHost = authority?.split("@").at(-1)?.toLowerCase() ?? null;
   const secure =
     url.protocol === "https:" &&
-    url.port === "" &&
-    literalHost === GITHUB_HOSTNAME &&
-    url.username === "" &&
-    url.password === "" &&
-    url.search === "" &&
-    (role === "external-thread" || url.hash === "");
+    literal.authority.toLowerCase() === GITHUB_HOSTNAME &&
+    !literal.hasQueryDelimiter &&
+    (role === "external-thread" || !literal.hasFragmentDelimiter);
   return Object.freeze({
     ...parsedKey,
     kind: match[3] === "pull" ? "pull" : "issue",

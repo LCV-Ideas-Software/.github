@@ -6,6 +6,7 @@ import { parseOperationalConfig } from "../src/config.mjs";
 import { validateConfig } from "../src/domain/config.mjs";
 import {
   buildGithubResourceKey,
+  classifyGithubAttachmentUrl,
   parseGithubOwner,
   parseGithubRepository,
   parseGithubResourceKey,
@@ -69,6 +70,71 @@ test("fragmento e apenas navegacao em externalThread, nunca em attachment", () =
   assert.equal(externalThread?.secure, true);
   assert.equal(attachment?.key, "example-org/.github#7");
   assert.equal(attachment?.secure, false);
+});
+
+test("sintaxe literal separa identidade do envelope canonico por role", () => {
+  const cases = [
+    {
+      raw: "https://github.com/example-org/repo/issues/7",
+      attachmentSecure: true,
+      externalThreadSecure: true,
+    },
+    {
+      raw: "https://@github.com/example-org/repo/issues/7",
+      attachmentSecure: false,
+      externalThreadSecure: false,
+    },
+    {
+      raw: "https://:@github.com/example-org/repo/issues/7",
+      attachmentSecure: false,
+      externalThreadSecure: false,
+    },
+    {
+      raw: "https://github.com/example-org/repo/issues/7?",
+      attachmentSecure: false,
+      externalThreadSecure: false,
+    },
+    {
+      raw: "https://github.com/example-org/repo/issues/7#",
+      attachmentSecure: false,
+      externalThreadSecure: true,
+    },
+    {
+      raw: "https://github.com/example-org/repo/issues/7?#",
+      attachmentSecure: false,
+      externalThreadSecure: false,
+    },
+    {
+      raw: "https://github.com/example-org/repo/issues/7#?",
+      attachmentSecure: false,
+      externalThreadSecure: true,
+    },
+    {
+      raw: "https://github.com/example-org/repo/issues/7?notification=1",
+      attachmentSecure: false,
+      externalThreadSecure: false,
+    },
+    {
+      raw: "https://github.com/example-org/repo/issues/7#issuecomment-123",
+      attachmentSecure: false,
+      externalThreadSecure: true,
+    },
+  ];
+
+  for (const { raw, attachmentSecure, externalThreadSecure } of cases) {
+    const attachment = parseGithubResourceUrl(raw, { role: "attachment" });
+    const externalThread = parseGithubResourceUrl(raw, {
+      role: "external-thread",
+    });
+    const classification = classifyGithubAttachmentUrl(raw);
+
+    assert.equal(attachment?.key, "example-org/repo#7", raw);
+    assert.equal(attachment?.secure, attachmentSecure, raw);
+    assert.equal(externalThread?.key, "example-org/repo#7", raw);
+    assert.equal(externalThread?.secure, externalThreadSecure, raw);
+    assert.equal(classification.kind, "github-issue", raw);
+    assert.equal(classification.resource?.secure, attachmentSecure, raw);
+  }
 });
 
 test("configuracoes operacional e de dominio reutilizam a mesma gramatica", () => {

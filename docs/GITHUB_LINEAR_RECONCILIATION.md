@@ -24,7 +24,11 @@ usa um novo tick local posterior às duas leituras. A
 [paginação oficial do Linear](https://linear.app/developers/pagination) é
 baseada em cursores e não oferece um token de snapshot transacional entre
 páginas; por isso o relatório não descreve a captura como atômica em um
-instante. A avaliação detecta, sem efetuar qualquer alteração:
+instante. Por consequência, ausência de comentário só se torna acionável
+quando o período de grace já terminou antes do início da captura do provedor
+que deveria conter a evidência. Nem o fim da paginação nem o tick final
+envelhecem retroativamente um snapshot já iniciado. A avaliação detecta, sem
+efetuar qualquer alteração:
 
 - ausência ou cardinalidade diferente de 1:1 entre contrapartes;
 - divergência de estado;
@@ -84,9 +88,12 @@ pathname.
 
 Owner, repositório, número, resource key e URLs exatas usam uma única gramática
 em toda a fronteira. Ela inclui nomes oficiais de repositório iniciados por
-ponto, como `.github`, e recusa números não seguros ou URLs exatas sem a
-autoridade HTTPS esperada. Fragmentos de navegação de uma `externalThread` não
-entram na identidade; fragments em attachments exatos continuam inseguros.
+ponto, como `.github`, e recusa números não seguros. Em URLs exatas, a
+identidade vem somente do pathname, enquanto o envelope canônico exige HTTPS,
+autoridade literal inteira `github.com` e ausência de qualquer delimitador de
+query. Fragmentos de navegação de uma `externalThread` não entram na
+identidade; qualquer delimitador de fragment em attachments exatos continua
+inseguro.
 
 Comentários de controle emitidos pela integração são preservados em um eixo
 próprio e nunca entram no pareamento de conteúdo. A classificação depende da

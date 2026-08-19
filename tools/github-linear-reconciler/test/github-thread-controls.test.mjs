@@ -216,6 +216,73 @@ test("controle desconectado e somente evidencia historica", () => {
   );
 });
 
+test("controle historico preserva precedencia e nao aceita identidade nativa ambigua", () => {
+  const withSecondNativeCounterpart = (input) => {
+    const secondKey = resourceKey("repo-a", 2);
+    input.linear.issues[0].nativeCounterparts.push({
+      resourceKey: secondKey,
+      externalId: nodeId(secondKey),
+    });
+    input.linear.issues[0].nativeCounterpartKeys.push(secondKey);
+    input.github.issues.push(githubIssue(secondKey));
+  };
+  const summarized = (result) =>
+    findingsByPrefix(result).map(({ severity, code }) => ({ severity, code }));
+
+  assert.deepEqual(
+    summarized(evaluateWithControl(control(), withSecondNativeCounterpart)),
+    [
+      {
+        severity: "advisory",
+        code: "github_thread_control_historical_native_counterpart_ambiguous",
+      },
+    ],
+  );
+  assert.deepEqual(
+    summarized(
+      evaluateWithControl(
+        control({ observedResourceKey: resourceKey("repo-a", 3) }),
+        withSecondNativeCounterpart,
+      ),
+    ),
+    [
+      {
+        severity: "advisory",
+        code: "github_thread_control_historical_mismatch",
+      },
+    ],
+  );
+  assert.deepEqual(
+    summarized(
+      evaluateWithControl(
+        control({
+          observedResourceKey: null,
+          urlState: "absent",
+        }),
+        withSecondNativeCounterpart,
+      ),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    summarized(
+      evaluateWithControl(
+        control({
+          observedResourceKey: null,
+          urlState: "unparseable",
+        }),
+        withSecondNativeCounterpart,
+      ),
+    ),
+    [
+      {
+        severity: "advisory",
+        code: "github_thread_control_historical_url_unparseable",
+      },
+    ],
+  );
+});
+
 test("controle conectado exige uma unica identidade nativa coincidente", () => {
   assert.deepEqual(
     findingsByPrefix(evaluateWithControl(control({ connected: true }))),

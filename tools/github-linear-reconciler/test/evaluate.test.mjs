@@ -728,6 +728,77 @@ test("grace de comment usa createdAt e thread desconectada continua sendo drift"
   );
 });
 
+test("grace de comment usa inicio da observacao de cada fonte", () => {
+  const captureStartedAtMs = 4_000_000;
+  const linearCapturedAtMs = 9_000_000;
+  const githubCapturedAtMs = 6_000_000;
+
+  for (const graceMinutes of [0, COMMENT_GRACE_MINUTES]) {
+    const input = baseline();
+    input.config.commentGraceMinutes = graceMinutes;
+    input.linear.captureStartedAtMs = captureStartedAtMs;
+    input.linear.capturedAtMs = linearCapturedAtMs;
+    input.github.captureStartedAtMs = captureStartedAtMs;
+    input.github.capturedAtMs = githubCapturedAtMs;
+
+    const graceMs = graceMinutes * 60_000;
+    const exactCutoff = captureStartedAtMs - graceMs;
+    const afterCutoff = exactCutoff + 1;
+    const suffix = String(graceMinutes);
+    const linearComment = (id, externalId, createdAtMs) => ({
+      id,
+      provenance: "github",
+      resourceKey: ISSUE_KEY,
+      externalId,
+      threadId: ISSUE_KEY,
+      connected: true,
+      createdAtMs,
+      updatedAtMs: createdAtMs,
+    });
+    const githubComment = (id, createdAtMs) => ({
+      id,
+      threadId: ISSUE_KEY,
+      createdAtMs,
+      updatedAtMs: createdAtMs,
+    });
+
+    input.linear.issues[0].comments.push(
+      linearComment(
+        `linear-gap-exact-${suffix}`,
+        `github-missing-exact-${suffix}`,
+        exactCutoff,
+      ),
+      linearComment(
+        `linear-gap-after-${suffix}`,
+        `github-missing-after-${suffix}`,
+        afterCutoff,
+      ),
+      linearComment(`identity-exact-${suffix}`, null, exactCutoff),
+      linearComment(`identity-after-${suffix}`, null, afterCutoff),
+    );
+    input.github.issues[0].comments.push(
+      githubComment(`github-gap-exact-${suffix}`, exactCutoff),
+      githubComment(`github-gap-after-${suffix}`, afterCutoff),
+    );
+
+    const result = evaluate(input);
+    const entitiesFor = (code) =>
+      result.findings
+        .filter((item) => item.code === code)
+        .map((item) => item.entity);
+
+    assert.deepEqual(entitiesFor("comment_sync_gap_to_github"), [
+      `linear-gap-exact-${suffix}`,
+    ]);
+    assert.deepEqual(entitiesFor("comment_sync_gap_to_linear"), [
+      `github-gap-exact-${suffix}`,
+    ]);
+    assert.deepEqual(entitiesFor("comment_external_identity_missing"), [
+      `identity-exact-${suffix}`,
+    ]);
+  }
+});
+
 test("identidade global duplicada de comment invalida o snapshot", () => {
   const input = baseline();
   input.github.issues[0].comments.push(

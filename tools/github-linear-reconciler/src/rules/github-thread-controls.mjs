@@ -25,7 +25,25 @@ function historicalFindings(issue, control) {
       ),
     ];
   }
-  if (!issue.nativeCounterpartKeys.includes(control.observedResourceKey)) {
+  const corroboratesNative = issue.nativeCounterpartKeys.includes(
+    control.observedResourceKey,
+  );
+  if (issue.nativeCounterpartKeys.length > 1 && corroboratesNative) {
+    return [
+      finding(
+        "advisory",
+        "github_thread_control_historical_native_counterpart_ambiguous",
+        control.linearCommentId,
+        "disconnected GitHub thread control cannot corroborate multiple native Issues Sync identities",
+        [
+          issue.identifier,
+          control.observedResourceKey,
+          ...issue.nativeCounterpartKeys,
+        ],
+      ),
+    ];
+  }
+  if (!corroboratesNative) {
     return [
       finding(
         "advisory",

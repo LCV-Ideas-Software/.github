@@ -32,7 +32,7 @@ export function evaluateAttachments(context) {
           "drift",
           "insecure_github_attachment",
           issue.identifier,
-          "GitHub attachment uses an insecure HTTP resource",
+          "GitHub attachment uses a noncanonical or insecure resource URL",
           issue.insecureGithubResourceKeys,
         ),
       );
