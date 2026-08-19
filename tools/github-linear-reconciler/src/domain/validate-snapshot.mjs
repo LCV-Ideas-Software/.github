@@ -148,8 +148,6 @@ function validRelease(release, capturedAtMs) {
     (release.completedAtMs === null ||
       instant(release.completedAtMs, capturedAtMs)) &&
     instant(release.updatedAtMs, capturedAtMs) &&
-    (release.completedAtMs === null ||
-      release.completedAtMs <= release.updatedAtMs) &&
     nonempty(release.issueToReleaseId) &&
     instant(release.issueToReleaseUpdatedAtMs, capturedAtMs)
   );
@@ -229,7 +227,9 @@ function validGithubIssue(issue, repositoryNames, organization, capturedAtMs) {
     issue.number > 0 &&
     issue.key === `${organization}/${issue.repository}#${issue.number}` &&
     NORMALIZED_STATUSES.includes(issue.status) &&
+    instant(issue.createdAtMs, capturedAtMs) &&
     instant(issue.updatedAtMs, capturedAtMs) &&
+    issue.createdAtMs <= issue.updatedAtMs &&
     Array.isArray(issue.comments) &&
     issue.comments.every((comment) =>
       validGithubComment(comment, issue.key, capturedAtMs),
@@ -260,8 +260,7 @@ function validWorkspaceRelease(release, capturedAtMs) {
     instant(release.updatedAtMs, capturedAtMs) &&
     release.createdAtMs <= release.updatedAtMs &&
     (release.completedAtMs === null ||
-      (release.createdAtMs <= release.completedAtMs &&
-        release.completedAtMs <= release.updatedAtMs))
+      release.createdAtMs <= release.completedAtMs)
   );
 }
 
@@ -299,9 +298,12 @@ function validGithubPull(pull, repositoryNames, organization, capturedAtMs) {
     Number.isSafeInteger(pull.number) &&
     pull.number > 0 &&
     pull.key === `${organization}/${pull.repository}#${pull.number}` &&
+    instant(pull.createdAtMs, capturedAtMs) &&
     instant(pull.updatedAtMs, capturedAtMs) &&
+    pull.createdAtMs <= pull.updatedAtMs &&
     (!merged ||
       (instant(pull.mergedAtMs, capturedAtMs) &&
+        pull.createdAtMs <= pull.mergedAtMs &&
         pull.mergedAtMs <= pull.updatedAtMs)) &&
     (merged
       ? sha40(pull.mergeCommitSha)
@@ -343,17 +345,26 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     problems.push("github failures are invalid");
   }
 
+  const linearCaptureStartedAtMs = linear?.captureStartedAtMs;
+  const githubCaptureStartedAtMs = github?.captureStartedAtMs;
   const linearCapturedAtMs = linear?.capturedAtMs;
   const githubCapturedAtMs = github?.capturedAtMs;
   if (
+    !instant(linearCaptureStartedAtMs, nowMs) ||
+    !instant(githubCaptureStartedAtMs, nowMs) ||
+    linearCaptureStartedAtMs !== githubCaptureStartedAtMs ||
     !instant(linearCapturedAtMs, nowMs) ||
     !instant(githubCapturedAtMs, nowMs) ||
-    linearCapturedAtMs !== githubCapturedAtMs
+    linearCapturedAtMs < linearCaptureStartedAtMs ||
+    githubCapturedAtMs < githubCaptureStartedAtMs
   ) {
-    problems.push("snapshot capturedAt boundaries are invalid or divergent");
+    problems.push("snapshot capture windows are invalid or divergent");
   }
-  const capturedAtMs = Number.isSafeInteger(linearCapturedAtMs)
+  const linearBoundaryMs = Number.isSafeInteger(linearCapturedAtMs)
     ? linearCapturedAtMs
+    : -1;
+  const githubBoundaryMs = Number.isSafeInteger(githubCapturedAtMs)
+    ? githubCapturedAtMs
     : -1;
 
   const teams = Array.isArray(linear?.teams) ? linear.teams : [];
@@ -366,7 +377,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
         !nonempty(team?.id) ||
         !nonempty(team?.key) ||
         typeof team?.active !== "boolean" ||
-        !instant(team?.updatedAtMs, capturedAtMs),
+        !instant(team?.updatedAtMs, linearBoundaryMs),
     ) ||
     teamById.size !== teams.length ||
     teamByKey.size !== teams.length
@@ -380,7 +391,8 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   if (
     !Array.isArray(linear?.issues) ||
     issues.some(
-      (issue) => !validLinearIssue(issue, teamById, teamByKey, capturedAtMs),
+      (issue) =>
+        !validLinearIssue(issue, teamById, teamByKey, linearBoundaryMs),
     ) ||
     issueById.size !== issues.length ||
     duplicateValues(issues.map((issue) => issue?.identifier))
@@ -454,7 +466,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
   if (
     !Array.isArray(linear?.releasePipelines) ||
     releasePipelines.some(
-      (pipeline) => !validReleasePipeline(pipeline, capturedAtMs),
+      (pipeline) => !validReleasePipeline(pipeline, linearBoundaryMs),
     ) ||
     pipelineById.size !== releasePipelines.length
   ) {
@@ -471,11 +483,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     !Array.isArray(linear?.releases) ||
     workspaceReleases.some((release) => {
       const pipeline = pipelineById.get(release?.pipelineId);
-      return (
-        !validWorkspaceRelease(release, capturedAtMs) ||
-        !pipeline ||
-        pipeline.createdAtMs > release.createdAtMs
-      );
+      return !validWorkspaceRelease(release, linearBoundaryMs) || !pipeline;
     }) ||
     releaseById.size !== workspaceReleases.length
   ) {
@@ -493,7 +501,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     issueToReleases.some((association) => {
       const release = releaseById.get(association?.releaseId);
       return (
-        !validIssueToRelease(association, capturedAtMs) ||
+        !validIssueToRelease(association, linearBoundaryMs) ||
         !issueById.has(association?.issueId) ||
         !release ||
         release.createdAtMs > association.createdAtMs
@@ -558,7 +566,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
           !nonempty(entity?.id) ||
           teamById.get(entity?.teamId) === undefined ||
           teamById.get(entity?.teamId) !== teamByKey.get(entity?.teamKey) ||
-          !instant(entity?.updatedAtMs, capturedAtMs),
+          !instant(entity?.updatedAtMs, linearBoundaryMs),
       ) ||
       duplicateValues(
         (entities ?? []).map(
@@ -606,7 +614,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
           issue,
           repositoryNames,
           organization,
-          githubCapturedAtMs,
+          githubBoundaryMs,
         ),
     ) ||
     duplicateValues(githubIssues.map((issue) => issue?.key))
@@ -646,12 +654,7 @@ export function validateSnapshots(linear, github, organization, nowMs) {
     !Array.isArray(github?.pulls) ||
     pulls.some(
       (pull) =>
-        !validGithubPull(
-          pull,
-          repositoryNames,
-          organization,
-          githubCapturedAtMs,
-        ),
+        !validGithubPull(pull, repositoryNames, organization, githubBoundaryMs),
     ) ||
     duplicateValues(pulls.map((pull) => pull?.key))
   ) {

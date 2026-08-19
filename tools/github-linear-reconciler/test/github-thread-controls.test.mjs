@@ -22,6 +22,7 @@ function githubIssue(key) {
     repository,
     number: Number(number),
     status: "active",
+    createdAtMs: 4_000,
     updatedAtMs: 5_000,
     comments: [],
   };
@@ -47,6 +48,7 @@ function baseline({ repository = "repo-a" } = {}) {
     linear: {
       complete: true,
       failures: [],
+      captureStartedAtMs: NOW.getTime(),
       capturedAtMs: NOW.getTime(),
       teams: [
         {
@@ -102,6 +104,7 @@ function baseline({ repository = "repo-a" } = {}) {
     github: {
       complete: true,
       failures: [],
+      captureStartedAtMs: NOW.getTime(),
       capturedAtMs: NOW.getTime(),
       organization: "example-org",
       repositories: [

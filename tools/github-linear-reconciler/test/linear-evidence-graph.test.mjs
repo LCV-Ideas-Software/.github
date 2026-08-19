@@ -127,6 +127,7 @@ function validGithub(nodeId = "I_kwDOCaseSensitive") {
   return {
     complete: true,
     failures: [],
+    captureStartedAtMs: CAPTURED_AT_MS,
     capturedAtMs: CAPTURED_AT_MS,
     organization: "example-org",
     repositories: [
@@ -145,6 +146,7 @@ function validGithub(nodeId = "I_kwDOCaseSensitive") {
         repository: "example-app",
         number: 7,
         status: "active",
+        createdAtMs: Date.parse(BEFORE_CAPTURE) - 1,
         updatedAtMs: Date.parse(BEFORE_CAPTURE),
         comments: [],
       },
@@ -335,10 +337,178 @@ test("r5554: release com SHA e pipeline nula falha fechado", async () => {
   assert.equal(result.failures[0].scope, "releases[0]");
 });
 
+test("contrato oficial preserva release backdated e conclusão posterior a updatedAt", async () => {
+  const releaseCreatedAt = "2030-01-02T03:00:00.000Z";
+  const releaseUpdatedAt = "2030-01-02T03:00:00.050Z";
+  const pipelineCreatedAt = "2030-01-02T03:00:00.100Z";
+  const releaseCompletedAt = "2030-01-02T03:00:00.200Z";
+  const associationCreatedAt = "2030-01-02T03:00:00.250Z";
+  const result = await read(
+    client({
+      releasePipelines: async () =>
+        connection([
+          pipeline({
+            createdAt: pipelineCreatedAt,
+            updatedAt: pipelineCreatedAt,
+          }),
+        ]),
+      releases: async () =>
+        connection([
+          release({
+            createdAt: releaseCreatedAt,
+            updatedAt: releaseUpdatedAt,
+            completedAt: releaseCompletedAt,
+          }),
+        ]),
+      issueToReleases: async () =>
+        connection([
+          issueToRelease({
+            createdAt: associationCreatedAt,
+            updatedAt: associationCreatedAt,
+          }),
+        ]),
+    }),
+  );
+
+  assert.equal(result.complete, true);
+  assert.equal(result.captureStartedAtMs, CAPTURED_AT_MS);
+  assert.equal(result.capturedAtMs, CAPTURED_AT_MS);
+  assert.deepEqual(
+    {
+      pipelineCreatedAtMs: result.releasePipelines[0].createdAtMs,
+      releaseCreatedAtMs: result.releases[0].createdAtMs,
+      releaseUpdatedAtMs: result.releases[0].updatedAtMs,
+      releaseCompletedAtMs: result.releases[0].completedAtMs,
+      associationCreatedAtMs: result.issueToReleases[0].createdAtMs,
+    },
+    {
+      pipelineCreatedAtMs: Date.parse(pipelineCreatedAt),
+      releaseCreatedAtMs: Date.parse(releaseCreatedAt),
+      releaseUpdatedAtMs: Date.parse(releaseUpdatedAt),
+      releaseCompletedAtMs: Date.parse(releaseCompletedAt),
+      associationCreatedAtMs: Date.parse(associationCreatedAt),
+    },
+  );
+  assert.deepEqual(
+    validateSnapshots(result, validGithub(), "example-org", CAPTURED_AT_MS),
+    [],
+  );
+});
+
+test("captura Linear live avança até a observação sem alterar timestamps remotos", async () => {
+  const startedAt = CAPTURED_AT;
+  const duringCapture = "2030-01-02T04:00:00.001Z";
+  const captureEndedAt = "2030-01-02T04:00:00.002Z";
+  let clockMs = Date.parse(startedAt);
+  const liveClient = client({
+    releases: async () => {
+      clockMs = Date.parse(captureEndedAt);
+      return connection([
+        release({
+          createdAt: duringCapture,
+          updatedAt: duringCapture,
+          completedAt: duringCapture,
+        }),
+      ]);
+    },
+    issueToReleases: async () =>
+      connection([
+        issueToRelease({
+          createdAt: duringCapture,
+          updatedAt: duringCapture,
+        }),
+      ]),
+  });
+  const live = await createLinearAdapter({
+    apiKey: "linear-test-token",
+    clientFactory: () => liveClient,
+    clock: () => clockMs,
+  }).readWorkspaceSnapshot({ capturedAt: startedAt });
+
+  assert.equal(live.complete, true);
+  assert.equal(live.captureStartedAtMs, Date.parse(startedAt));
+  assert.equal(live.capturedAtMs, Date.parse(captureEndedAt));
+  assert.equal(live.releases[0].createdAtMs, Date.parse(duringCapture));
+  assert.equal(live.releases[0].updatedAtMs, Date.parse(duringCapture));
+  assert.equal(live.releases[0].completedAtMs, Date.parse(duringCapture));
+  assert.equal(live.issueToReleases[0].createdAtMs, Date.parse(duringCapture));
+
+  const fixed = await createLinearAdapter({
+    apiKey: "linear-test-token",
+    clientFactory: () => liveClient,
+  }).readWorkspaceSnapshot({ capturedAt: startedAt });
+  assert.equal(fixed.complete, false);
+  assert.equal(fixed.captureStartedAtMs, Date.parse(startedAt));
+  assert.equal(fixed.capturedAtMs, Date.parse(startedAt));
+
+  const afterEnd = new Date(Date.parse(captureEndedAt) + 1).toISOString();
+  const outside = await createLinearAdapter({
+    apiKey: "linear-test-token",
+    clientFactory: () =>
+      client({
+        releases: async () => {
+          clockMs = Date.parse(captureEndedAt);
+          return connection([
+            release({
+              createdAt: afterEnd,
+              updatedAt: afterEnd,
+              completedAt: afterEnd,
+            }),
+          ]);
+        },
+      }),
+    clock: () => clockMs,
+  }).readWorkspaceSnapshot({ capturedAt: startedAt });
+  assert.equal(outside.complete, false);
+  assert.equal(outside.captureStartedAtMs, Date.parse(startedAt));
+  assert.equal(outside.capturedAtMs, Date.parse(captureEndedAt));
+  assert.deepEqual(outside.releases, []);
+  assert.deepEqual(outside.failures[0].reasonCodes, [
+    "timestamp_outside_capture_window",
+  ]);
+});
+
+test("snapshot Linear incompleto preserva o término observado da fonte", async () => {
+  const captureEndedAt = "2030-01-02T04:00:07.000Z";
+  let clockMs = CAPTURED_AT_MS;
+  const snapshot = await createLinearAdapter({
+    apiKey: "linear-test-token",
+    clientFactory: () =>
+      client({
+        teams: async () => {
+          clockMs = Date.parse(captureEndedAt);
+          throw new Error("synthetic-sdk-failure");
+        },
+      }),
+    clock: () => clockMs,
+  }).readWorkspaceSnapshot({ capturedAt: CAPTURED_AT });
+
+  assert.equal(snapshot.complete, false);
+  assert.equal(snapshot.captureStartedAtMs, CAPTURED_AT_MS);
+  assert.equal(snapshot.capturedAtMs, Date.parse(captureEndedAt));
+  assert.deepEqual(snapshot.teams, []);
+  assert.deepEqual(snapshot.issues, []);
+  assert.deepEqual(snapshot.releases, []);
+
+  let closingRegressed = false;
+  const regressionSnapshot = await createLinearAdapter({
+    apiKey: "linear-test-token",
+    clientFactory: () =>
+      client({
+        issues: async () => {
+          closingRegressed = true;
+          throw new Error("synthetic-issue-page-failure");
+        },
+      }),
+    clock: () => Date.parse(captureEndedAt) - (closingRegressed ? 1_000 : 0),
+  }).readWorkspaceSnapshot({ capturedAt: CAPTURED_AT });
+  assert.equal(regressionSnapshot.complete, false);
+  assert.equal(regressionSnapshot.capturedAtMs, Date.parse(captureEndedAt));
+});
+
 test("grafo global rejeita cronologia impossível no adapter e no validator", async () => {
   const releaseCreatedAt = Date.parse(BEFORE_CAPTURE);
   const beforeRelease = new Date(releaseCreatedAt - 1).toISOString();
-  const afterRelease = new Date(releaseCreatedAt + 1).toISOString();
 
   const invalidClients = [
     [
@@ -375,16 +545,6 @@ test("grafo global rejeita cronologia impossível no adapter e no validator", as
     ],
     [
       client({
-        releasePipelines: async () =>
-          connection([
-            pipeline({ createdAt: afterRelease, updatedAt: afterRelease }),
-          ]),
-      }),
-      "boundary_invalid",
-      "release_pipeline_precedes_release",
-    ],
-    [
-      client({
         issueToReleases: async () =>
           connection([
             issueToRelease({
@@ -414,10 +574,6 @@ test("grafo global rejeita cronologia impossível no adapter e no validator", as
     (snapshot) => {
       snapshot.releases[0].completedAtMs = releaseCreatedAt - 1;
       snapshot.issues[0].releases[0].completedAtMs = releaseCreatedAt - 1;
-    },
-    (snapshot) => {
-      snapshot.releasePipelines[0].createdAtMs = releaseCreatedAt + 1;
-      snapshot.releasePipelines[0].updatedAtMs = releaseCreatedAt + 1;
     },
     (snapshot) => {
       snapshot.issueToReleases[0].createdAtMs = releaseCreatedAt - 1;

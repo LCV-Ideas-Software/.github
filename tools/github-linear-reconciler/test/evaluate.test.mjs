@@ -98,6 +98,7 @@ function baseline() {
     linear: {
       complete: true,
       failures: [],
+      captureStartedAtMs: NOW.getTime(),
       capturedAtMs: NOW.getTime(),
       teams: [
         {
@@ -164,6 +165,7 @@ function baseline() {
     github: {
       complete: true,
       failures: [],
+      captureStartedAtMs: NOW.getTime(),
       capturedAtMs: NOW.getTime(),
       organization: "example-org",
       repositories: [
@@ -182,6 +184,7 @@ function baseline() {
           repository: "repo-a",
           number: 1,
           status: "active",
+          createdAtMs: 4_000,
           updatedAtMs: 5_000,
           comments: [],
         },
@@ -356,6 +359,7 @@ test("snapshot parcial ou fora do contrato nunca executa regras como se fosse co
     key: ISSUE_KEY,
     repository: "repo-a",
     number: 1,
+    createdAtMs: 1_000,
     updatedAtMs: 5_000,
     mergedAtMs: null,
     mergeCommitSha: null,
@@ -388,6 +392,7 @@ test("counterparts aplicam cardinalidade nos dois sentidos", () => {
     repository: "repo-a",
     number: 2,
     status: "active",
+    createdAtMs: 4_000,
     updatedAtMs: 5_000,
     comments: [],
   });
@@ -409,13 +414,56 @@ test("counterparts aplicam cardinalidade nos dois sentidos", () => {
   );
 });
 
-test("fronteira normalizada fecha relogio, identidade composta e ciclos duplicateOf", () => {
-  const divergentClock = baseline();
-  divergentClock.github.capturedAtMs -= 1;
-  assert.deepEqual(codes(evaluate(divergentClock)), [
+test("fronteira normalizada preserva janela por fonte sem lavar timestamps", () => {
+  const divergentEnds = baseline();
+  divergentEnds.linear.captureStartedAtMs = NOW.getTime() - 3_000;
+  divergentEnds.github.captureStartedAtMs = NOW.getTime() - 3_000;
+  divergentEnds.linear.capturedAtMs = NOW.getTime() - 2_000;
+  divergentEnds.github.capturedAtMs = NOW.getTime() - 1_000;
+  assert.equal(evaluate(divergentEnds).state, "clean");
+
+  const divergentStarts = clone(divergentEnds);
+  divergentStarts.github.captureStartedAtMs += 1;
+  assert.deepEqual(codes(evaluate(divergentStarts)), [
     "normalized_snapshot_invalid",
   ]);
 
+  const endBeforeStart = clone(divergentEnds);
+  endBeforeStart.linear.capturedAtMs =
+    endBeforeStart.linear.captureStartedAtMs - 1;
+  assert.deepEqual(codes(evaluate(endBeforeStart)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const endAfterEvaluation = clone(divergentEnds);
+  endAfterEvaluation.github.capturedAtMs = NOW.getTime() + 1;
+  assert.deepEqual(codes(evaluate(endAfterEvaluation)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const linearTimestampAfterLinearEnd = clone(divergentEnds);
+  linearTimestampAfterLinearEnd.linear.teams[0].updatedAtMs =
+    divergentEnds.linear.capturedAtMs + 1;
+  assert.ok(
+    linearTimestampAfterLinearEnd.linear.teams[0].updatedAtMs <
+      divergentEnds.github.capturedAtMs,
+  );
+  assert.deepEqual(codes(evaluate(linearTimestampAfterLinearEnd)), [
+    "normalized_snapshot_invalid",
+  ]);
+
+  const githubTimestampAfterGithubEnd = clone(divergentEnds);
+  githubTimestampAfterGithubEnd.github.issues[0].updatedAtMs =
+    divergentEnds.github.capturedAtMs + 1;
+  assert.ok(
+    githubTimestampAfterGithubEnd.github.issues[0].updatedAtMs <= NOW.getTime(),
+  );
+  assert.deepEqual(codes(evaluate(githubTimestampAfterGithubEnd)), [
+    "normalized_snapshot_invalid",
+  ]);
+});
+
+test("fronteira normalizada fecha identidade composta e ciclos duplicateOf", () => {
   const invertedNormalizedComment = baseline();
   invertedNormalizedComment.linear.issues[0].comments.push({
     id: "linear-comment-inverted",
@@ -465,6 +513,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
     repository: "repo-a",
     number: 2,
     status: "active",
+    createdAtMs: 4_000,
     updatedAtMs: 5_000,
     comments: [],
   });
@@ -517,6 +566,7 @@ test("mapeamento explícito distingue github-backed, linear-only e repositório 
     repository: "repo-b",
     number: 1,
     status: "active",
+    createdAtMs: 4_000,
     updatedAtMs: 5_000,
     comments: [],
   });
@@ -719,6 +769,7 @@ test("release exige commit e pipeline exatos depois do corte", () => {
     key: pullKey,
     repository: "repo-a",
     number: 2,
+    createdAtMs: 1_000,
     updatedAtMs: 2_500,
     mergedAtMs: 2_000,
     mergeCommitSha: commitSha,
@@ -885,6 +936,7 @@ test("pipeline usa ID estável e somente release continuous concluída prova car
     key: pullKey,
     repository: "repo-a",
     number: 2,
+    createdAtMs: 1_000,
     updatedAtMs: 2_500,
     mergedAtMs: 2_000,
     mergeCommitSha: commitSha,

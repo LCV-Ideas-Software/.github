@@ -12,6 +12,7 @@ function linearSnapshot() {
   return {
     complete: true,
     failures: [],
+    captureStartedAtMs: CAPTURED_AT_MS,
     capturedAtMs: CAPTURED_AT_MS,
     teams: [],
     issues: [],
@@ -29,6 +30,7 @@ function githubSnapshot({ issues = [], pulls = [] } = {}) {
   return {
     complete: true,
     failures: [],
+    captureStartedAtMs: CAPTURED_AT_MS,
     capturedAtMs: CAPTURED_AT_MS,
     organization: ORGANIZATION,
     repositories: [
@@ -50,6 +52,7 @@ function pull({ mergedAtMs, mergeCommitSha }) {
     key: `${ORGANIZATION}/${REPOSITORY}#1`,
     repository: REPOSITORY,
     number: 1,
+    createdAtMs: 7_000,
     updatedAtMs: 9_000,
     mergedAtMs,
     mergeCommitSha,
@@ -63,6 +66,7 @@ function issue(number, nodeId) {
     repository: REPOSITORY,
     number,
     status: "active",
+    createdAtMs: 7_000,
     updatedAtMs: 9_000,
     comments: [],
   };
@@ -109,4 +113,35 @@ test("nodeId de GitHub Issue e globalmente unico", () => {
 
   assert.equal(findings.length, 1);
   assert.match(findings[0].message, /node identities are not globally unique/u);
+});
+
+test("snapshot GitHub normalizado exige createdAt e cronologia por entidade", () => {
+  for (const mutate of [
+    (github) => {
+      delete github.issues[0].createdAtMs;
+    },
+    (github) => {
+      github.issues[0].createdAtMs = github.issues[0].updatedAtMs + 1;
+    },
+    (github) => {
+      delete github.pulls[0].createdAtMs;
+    },
+    (github) => {
+      github.pulls[0].createdAtMs = github.pulls[0].updatedAtMs + 1;
+    },
+  ]) {
+    const github = githubSnapshot({
+      issues: [issue(2, "I_kwDOIssueNode")],
+      pulls: [pull({ mergedAtMs: null, mergeCommitSha: null })],
+    });
+    mutate(github);
+    const findings = validateSnapshots(
+      linearSnapshot(),
+      github,
+      ORGANIZATION,
+      CAPTURED_AT_MS,
+    );
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].message, /github (?:issues|pulls) are invalid/u);
+  }
 });

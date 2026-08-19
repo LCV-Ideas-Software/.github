@@ -36,9 +36,9 @@
  * @property {'continuous'|'scheduled'} pipelineType
  * @property {string} commitSha Canonical lowercase opaque commit identity.
  * @property {number|null} completedAtMs Null while the release is planned.
- * @property {number} updatedAtMs Release observation boundary.
+ * @property {number} updatedAtMs Provider timestamp for the release's last meaningful update; it is not an upper bound for completedAtMs.
  * @property {string} issueToReleaseId Stable association identity.
- * @property {number} issueToReleaseUpdatedAtMs Association observation boundary.
+ * @property {number} issueToReleaseUpdatedAtMs Provider timestamp for the association's last meaningful update.
  *
  * @typedef {object} NormalizedLinearIssue
  * @property {string} id
@@ -88,7 +88,8 @@
  * @typedef {object} NormalizedLinearSnapshot
  * @property {boolean} complete
  * @property {{source:"linear",code:"node_invalid"|"boundary_invalid"|"adapter_internal_error",scope:string,reasonCodes:string[],message:string}[]} failures Sanitized machine-readable failures; incomplete snapshots expose no normalized entities.
- * @property {number} capturedAtMs Snapshot boundary in epoch milliseconds.
+ * @property {number} captureStartedAtMs Common observation-window start in epoch milliseconds.
+ * @property {number} capturedAtMs Source-specific observation-window end in epoch milliseconds; the paginated read is not an atomic point-in-time snapshot.
  * @property {{id:string,key:string,active:boolean,updatedAtMs:number}[]} teams
  * @property {NormalizedLinearIssue[]} issues
  * @property {{id:string,teamId:string,teamKey:string,updatedAtMs:number}[]} cycles
@@ -111,6 +112,7 @@
  * @property {string} repository
  * @property {number} number
  * @property {NormalizedStatus} status
+ * @property {number} createdAtMs Epoch milliseconds, bounded by the GitHub observation end.
  * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
  * @property {GithubComment[]} comments
  *
@@ -118,6 +120,7 @@
  * @property {string} key
  * @property {string} repository
  * @property {number} number
+ * @property {number} createdAtMs Epoch milliseconds, bounded by the GitHub observation end.
  * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs.
  * @property {number|null} mergedAtMs
  * @property {string|null} mergeCommitSha
@@ -125,7 +128,8 @@
  * @typedef {object} NormalizedGithubSnapshot
  * @property {boolean} complete
  * @property {{source:string,code:string,scope:string}[]} failures
- * @property {number} capturedAtMs Snapshot boundary in epoch milliseconds.
+ * @property {number} captureStartedAtMs Common observation-window start in epoch milliseconds.
+ * @property {number} capturedAtMs Source-specific observation-window end in epoch milliseconds; the paginated read is not an atomic point-in-time snapshot.
  * @property {{id:number,name:string,archived:false,issuesEnabled:boolean,fork:boolean}[]} repositories
  * @property {NormalizedGithubIssue[]} issues
  * @property {NormalizedGithubPull[]} pulls

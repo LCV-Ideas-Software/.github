@@ -46,7 +46,6 @@ export const LINEAR_BOUNDARY_REASON_CODES = Object.freeze([
   "linear_comment_identity_duplicate",
   "native_github_issue_identity_duplicate",
   "pagination_limit_exceeded",
-  "release_pipeline_precedes_release",
   "release_pipeline_unresolved",
   "sdk_reader_missing",
   "sdk_relation_read_failed",

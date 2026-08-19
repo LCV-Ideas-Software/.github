@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { LinearClient } from "@linear/sdk";
 import { z } from "zod";
 
+import { createCaptureWindow } from "../domain/capture-window.mjs";
 import {
   buildGithubResourceKey,
   classifyGithubAttachmentUrl,
@@ -80,7 +81,7 @@ function timestampMs(value) {
 function capturedAtTimestampMs(value) {
   const milliseconds =
     value instanceof Date ? value.getTime() : Date.parse(value);
-  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
     throw linearBoundaryError("workspace", "captured_at_invalid");
   }
   return milliseconds;
@@ -117,9 +118,15 @@ function requiredSdkReader(owner, method, scope) {
   return reader.bind(owner);
 }
 
-function boundedTimestampMs(value, _label, capturedAtMs) {
+function captureCeilingMs(captureBoundary) {
+  return typeof captureBoundary?.currentCeilingMs === "function"
+    ? captureBoundary.currentCeilingMs()
+    : captureBoundary;
+}
+
+function boundedTimestampMs(value, _label, captureBoundary) {
   const milliseconds = timestampMs(value);
-  if (milliseconds < 0 || milliseconds > capturedAtMs)
+  if (milliseconds < 0 || milliseconds > captureCeilingMs(captureBoundary))
     throw linearNodeNormalizationError("timestamp_outside_capture_window");
   return milliseconds;
 }
@@ -888,10 +895,6 @@ async function normalizeReleaseGraph(client, capturedAtMs, issues, failures) {
               `releases.${parsed.id}.completedAt`,
               capturedAtMs,
             );
-      if (completedAtMs !== null && completedAtMs > times.updatedAtMs)
-        throw linearNodeNormalizationError(
-          "release_completion_chronology_invalid",
-        );
       if (completedAtMs !== null && completedAtMs < times.createdAtMs)
         throw linearNodeNormalizationError(
           "release_completion_chronology_invalid",
@@ -951,11 +954,6 @@ async function normalizeReleaseGraph(client, capturedAtMs, issues, failures) {
     const pipeline = pipelineById.get(release.pipelineId);
     if (!pipeline)
       throw linearBoundaryError("releases", "release_pipeline_unresolved");
-    if (pipeline.createdAtMs > release.createdAtMs)
-      throw linearBoundaryError(
-        "releases",
-        "release_pipeline_precedes_release",
-      );
   }
   const associationPairs = new Set();
   for (const association of issueToReleases) {
@@ -1150,7 +1148,31 @@ function assertTeamReferences(teams, issues, collections) {
   }
 }
 
-function incompleteSnapshot(capturedAtMs, failures) {
+function captureMetadata(
+  captureWindow,
+  { close = false, tolerateClockFailure = false } = {},
+) {
+  if (typeof captureWindow?.lastCeilingMs !== "function") {
+    return {
+      captureStartedAtMs: captureWindow,
+      capturedAtMs: captureWindow,
+    };
+  }
+  let capturedAtMs = captureWindow.lastCeilingMs();
+  if (close) {
+    try {
+      capturedAtMs = captureWindow.closeMs();
+    } catch (error) {
+      if (!tolerateClockFailure) throw error;
+    }
+  }
+  return {
+    captureStartedAtMs: captureWindow.captureStartedAtMs,
+    capturedAtMs,
+  };
+}
+
+function incompleteSnapshot(captureWindow, failures, { close = false } = {}) {
   const stableFailures = [...failures].sort(
     (left, right) =>
       compareOpaque(left.scope, right.scope) ||
@@ -1164,7 +1186,10 @@ function incompleteSnapshot(capturedAtMs, failures) {
   return Object.freeze({
     complete: false,
     failures: Object.freeze(stableFailures.map(Object.freeze)),
-    capturedAtMs,
+    ...captureMetadata(captureWindow, {
+      close,
+      tolerateClockFailure: true,
+    }),
     teams: Object.freeze([]),
     issues: Object.freeze([]),
     cycles: Object.freeze([]),
@@ -1178,7 +1203,7 @@ function incompleteSnapshot(capturedAtMs, failures) {
 }
 
 /** @returns {{readWorkspaceSnapshot(options:{capturedAt:string}):Promise<import('../domain/model.mjs').NormalizedLinearSnapshot>}} */
-export function createLinearAdapter({ apiKey, clientFactory } = {}) {
+export function createLinearAdapter({ apiKey, clientFactory, clock } = {}) {
   if (typeof apiKey !== "string" || apiKey.trim() === "")
     throw new Error("apiKey Linear somente leitura obrigatoria");
   const client = clientFactory
@@ -1186,8 +1211,13 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
     : new LinearClient({ apiKey });
 
   async function readWorkspaceSnapshot({ capturedAt }) {
+    let captureWindow;
     try {
-      const capturedAtMs = capturedAtTimestampMs(capturedAt);
+      captureWindow = createCaptureWindow({
+        startedAt: capturedAtTimestampMs(capturedAt),
+        clock,
+      });
+      const capturedAtMs = captureWindow;
       const normalizationFailures = [];
       const teamsDetailed = await collectConnection(
         () => client.teams({ first: 50, includeArchived: true }),
@@ -1252,7 +1282,9 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         { failures: normalizationFailures },
       );
       if (normalizationFailures.length > 0) {
-        return incompleteSnapshot(capturedAtMs, normalizationFailures);
+        return incompleteSnapshot(captureWindow, normalizationFailures, {
+          close: true,
+        });
       }
 
       const issuesWithoutReleases = finalizeIssueReferences(issuesRaw);
@@ -1263,7 +1295,9 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         normalizationFailures,
       );
       if (normalizationFailures.length > 0) {
-        return incompleteSnapshot(capturedAtMs, normalizationFailures);
+        return incompleteSnapshot(captureWindow, normalizationFailures, {
+          close: true,
+        });
       }
       const issues = releaseGraph.issues;
       assertTeamReferences(teamsDetailed, issues, {
@@ -1275,7 +1309,7 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
       return Object.freeze({
         complete: true,
         failures: Object.freeze([]),
-        capturedAtMs,
+        ...captureMetadata(captureWindow, { close: true }),
         teams: Object.freeze(
           teamsDetailed.map((team) =>
             Object.freeze({
@@ -1296,10 +1330,12 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         issueToReleases: releaseGraph.issueToReleases,
       });
     } catch (error) {
-      const capturedAtMs = fallbackCapturedAtMs(capturedAt);
-      return incompleteSnapshot(capturedAtMs, [
-        linearBoundaryFailure(error) ?? linearAdapterInternalFailure(),
-      ]);
+      const fallbackCapturedAt = fallbackCapturedAtMs(capturedAt);
+      return incompleteSnapshot(
+        captureWindow ?? fallbackCapturedAt,
+        [linearBoundaryFailure(error) ?? linearAdapterInternalFailure()],
+        { close: true },
+      );
     }
   }
 
@@ -1309,8 +1345,9 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
 export async function readLinearSnapshot({
   token,
   capturedAt = new Date().toISOString(),
+  clock,
 } = {}) {
-  return createLinearAdapter({ apiKey: token }).readWorkspaceSnapshot({
+  return createLinearAdapter({ apiKey: token, clock }).readWorkspaceSnapshot({
     capturedAt,
   });
 }

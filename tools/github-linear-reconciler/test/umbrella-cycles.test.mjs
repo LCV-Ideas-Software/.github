@@ -35,6 +35,7 @@ function linearSnapshot(cycles) {
   return {
     complete: true,
     failures: [],
+    captureStartedAtMs: CAPTURED_AT_MS,
     capturedAtMs: CAPTURED_AT_MS,
     teams: [
       {
@@ -59,6 +60,7 @@ function githubSnapshot() {
   return {
     complete: true,
     failures: [],
+    captureStartedAtMs: CAPTURED_AT_MS,
     capturedAtMs: CAPTURED_AT_MS,
     organization: ORGANIZATION,
     repositories: [],

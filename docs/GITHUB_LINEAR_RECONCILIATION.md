@@ -17,8 +17,14 @@ A reconciliação inventaria os repositórios GitHub ativos e não arquivados, s
 Issues e pull requests. No Linear, ela coleta primeiro uma visão global paginada
 de Teams, Issues, Cycles, Projects, Initiatives, Documents, ReleasePipelines,
 Releases e IssueToRelease. Identidades, referências e todos os timestamps
-mutáveis são validados contra o mesmo `capturedAt` antes de qualquer filtragem
-pelos mappings locais. A avaliação detecta, sem efetuar qualquer alteração:
+mutáveis são validados antes de qualquer filtragem pelos mappings locais. A
+captura é representada honestamente como uma janela: ambos os provedores têm o
+mesmo início, cada leitura paginada preserva seu próprio término e a avaliação
+usa um novo tick local posterior às duas leituras. A
+[paginação oficial do Linear](https://linear.app/developers/pagination) é
+baseada em cursores e não oferece um token de snapshot transacional entre
+páginas; por isso o relatório não descreve a captura como atômica em um
+instante. A avaliação detecta, sem efetuar qualquer alteração:
 
 - ausência ou cardinalidade diferente de 1:1 entre contrapartes;
 - divergência de estado;
@@ -45,11 +51,17 @@ similaridade do corpo Markdown.
 
 O boundary de comentários Linear canonicaliza a inversão de relógio comprovada
 nessa entidade: `createdAt` e `updatedAt` são validados individualmente como
-timestamps finitos dentro da janela de `capturedAt`; depois, se o `updatedAt`
+timestamps finitos até o término observado da fonte; depois, se o `updatedAt`
 reportado anteceder o `createdAt`, o valor normalizado é elevado a `createdAt`.
 Essa canonicalização não se aplica ao GitHub, a outras entidades Linear, a
-`capturedAt`, nem às cronologias entre pipeline, release, associação, merge e
-conclusão.
+janela de captura, nem às cronologias entre pipeline, release, associação,
+merge e conclusão. Os timestamps de Release permanecem exatamente como o
+provedor os entregou: `createdAt <= completedAt` continua obrigatório, mas
+`updatedAt` não é teto para `completedAt`; releases importadas também podem
+anteceder a criação da pipeline. A associação IssueToRelease continua exigindo
+uma Release já existente. Esse tratamento acompanha o
+[ciclo de vida oficial de Releases](https://linear.app/docs/releases), sem
+atribuir a `updatedAt` uma semântica de conclusão que o contrato não publica.
 
 A identidade canônica vem exclusivamente do GitHub Issues Sync nativo. O
 attachment dessa contraparte é obrigatório, mas attachments suplementares

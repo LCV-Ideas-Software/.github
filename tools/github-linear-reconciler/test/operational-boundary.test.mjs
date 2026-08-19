@@ -216,17 +216,22 @@ test("boundary oficial separa autenticação App da autenticação da instalaç�
 });
 
 test("facade converte falha de autenticação em snapshot incompleto redigido", async () => {
+  const captureEndedAt = "2030-01-02T04:00:05.000Z";
+  let clockMs = Date.parse(CAPTURED_AT);
   const snapshot = await readGithubSnapshot({
     config: { organization: "example-org" },
     appId: "456",
     privateKeyPath: "C:\\private\\app.pem",
     capturedAt: CAPTURED_AT,
+    clock: () => clockMs,
     createBoundary: async () => {
+      clockMs = Date.parse(captureEndedAt);
       throw new Error("private-key-material-must-not-leak");
     },
   });
   assert.equal(snapshot.complete, false);
-  assert.equal(snapshot.capturedAtMs, Date.parse(CAPTURED_AT));
+  assert.equal(snapshot.captureStartedAtMs, Date.parse(CAPTURED_AT));
+  assert.equal(snapshot.capturedAtMs, Date.parse(captureEndedAt));
   assert.equal(snapshot.failures[0].code, "boundary_invalid");
   assert.doesNotMatch(
     JSON.stringify(snapshot),
