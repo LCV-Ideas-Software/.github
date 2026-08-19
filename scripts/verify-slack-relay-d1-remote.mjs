@@ -107,9 +107,10 @@ function deleteConfirmationFailure(phase, attempt, error) {
       attempt <= DELETE_CONFIRMATION_ATTEMPTS,
     "The D1 delete-confirmation attempt is invalid.",
   );
-  return new Error(
-    `D1 delete confirmation failed (phase=${phase}; attempt=${String(attempt)}/${String(DELETE_CONFIRMATION_ATTEMPTS)}). ${remoteFailureSummary(error)}`,
-  );
+  const message = `D1 delete confirmation failed (phase=${phase}; attempt=${String(attempt)}/${String(DELETE_CONFIRMATION_ATTEMPTS)}). ${remoteFailureSummary(error)}`;
+  return error instanceof RemoteMaintenanceDeadlineError
+    ? new RemoteMaintenanceDeadlineError(message)
+    : new Error(message);
 }
 
 async function waitForDeleteConfirmationRetry(phase, attempt, deadlineMs) {
@@ -148,8 +149,8 @@ function delay(milliseconds) {
 }
 
 class RemoteMaintenanceDeadlineError extends Error {
-  constructor() {
-    super("The remote maintenance deadline has been reached.");
+  constructor(message = "The remote maintenance deadline has been reached.") {
+    super(message);
     this.name = "RemoteMaintenanceDeadlineError";
   }
 }

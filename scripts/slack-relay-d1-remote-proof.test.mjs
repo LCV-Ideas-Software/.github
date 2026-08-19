@@ -813,6 +813,47 @@ test("the stale reaper propagates its deadline through inventory, DELETE, and co
   );
 });
 
+test("the stale reaper defers when delete confirmation exhausts its deadline", async (context) => {
+  const nowMs = 1_755_000_000_000 + 4 * STALE_DATABASE_AGE_MS;
+  let observedAt = 1_800_000_000_000;
+  const deadlineMs = observedAt + 1_000;
+  context.mock.method(Date, "now", () => observedAt);
+  const database = fakeDatabase(
+    43,
+    `${DATABASE_NAME_PREFIX}${String(nowMs - 4 * STALE_DATABASE_AGE_MS)}-00000000`,
+  );
+  let deleteCalls = 0;
+  const requestFn = async (_configuration, _path, init = {}) => {
+    if ((init.method ?? "GET") === "DELETE") {
+      deleteCalls += 1;
+      return { success: true, result: null };
+    }
+    if (deleteCalls === 0) {
+      return {
+        result: [database],
+        result_info: {
+          count: 1,
+          page: 1,
+          per_page: 1000,
+          total_count: 1,
+        },
+      };
+    }
+    observedAt = deadlineMs;
+    throw new Error("simulated inventory outage after DELETE");
+  };
+
+  const result = await reapStaleDisposables(
+    FAKE_CONFIGURATION,
+    nowMs,
+    requestFn,
+    deadlineMs,
+  );
+
+  assert.deepEqual(result, { reapedCount: 0, deferredCount: 1 });
+  assert.equal(deleteCalls, 1);
+});
+
 test("an ambiguous creation failure deletes the orphan it may have left", async () => {
   const orphanId = "11111111-1111-4111-8111-111111111111";
   let capturedName = null;
