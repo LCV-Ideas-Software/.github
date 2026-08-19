@@ -22,7 +22,7 @@
  * @property {string|null} threadId
  * @property {boolean} connected
  * @property {number} createdAtMs Epoch milliseconds, decoded by the adapter.
- * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs; a Linear-provider inversion of at most 1,000 ms is canonicalized to createdAtMs by the adapter.
+ * @property {number} updatedAtMs Epoch milliseconds, bounded by capturedAtMs; any Linear-provider inversion is canonicalized to createdAtMs by the adapter.
  *
  * @typedef {object} GithubThreadControl
  * @property {string} linearCommentId Stable Linear comment identity; globally disjoint from content-comment IDs.
@@ -87,7 +87,7 @@
  *
  * @typedef {object} NormalizedLinearSnapshot
  * @property {boolean} complete
- * @property {{source:string,code:string,scope:string}[]} failures
+ * @property {{source:"linear",code:"node_invalid"|"boundary_invalid"|"adapter_internal_error",scope:string,reasonCodes:string[],message:string}[]} failures Sanitized machine-readable failures; incomplete snapshots expose no normalized entities.
  * @property {number} capturedAtMs Snapshot boundary in epoch milliseconds.
  * @property {{id:string,key:string,active:boolean,updatedAtMs:number}[]} teams
  * @property {NormalizedLinearIssue[]} issues

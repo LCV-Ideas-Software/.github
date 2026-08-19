@@ -5,11 +5,17 @@ import { z } from "zod";
 
 import {
   buildGithubResourceKey,
-  hasGithubHostname,
+  classifyGithubAttachmentUrl,
   parseGithubResourceUrl,
 } from "../domain/github-resource.mjs";
-
-const MAX_LINEAR_COMMENT_TIMESTAMP_SKEW_MS = 1_000;
+import {
+  LinearBoundaryError,
+  linearAdapterInternalFailure,
+  linearBoundaryError,
+  linearBoundaryFailure,
+  linearNodeFailure,
+  linearNodeNormalizationError,
+} from "../domain/linear-failures.mjs";
 
 const MAX_PAGES = 1_000;
 const idSchema = z.string().trim().min(1);
@@ -63,61 +69,62 @@ const NON_INFORMATIVE_WORDS = new Set([
   "uma",
 ]);
 
-function failure(error, scope = "workspace") {
-  return {
-    source: "linear",
-    code: "boundary_invalid",
-    scope,
-    message: error instanceof Error ? error.message : String(error),
-  };
-}
-
-function normalizationFailure(scope) {
-  return {
-    source: "linear",
-    code: "boundary_invalid",
-    scope,
-    message: `${scope}: entidade invalida`,
-  };
-}
-
-class StructuralBoundaryError extends Error {
-  constructor(scope, message, cause) {
-    super(`${scope}: ${message}`, { cause });
-    this.scope = scope;
-  }
-}
-
-function structuralFailure(scope, message, cause) {
-  return new StructuralBoundaryError(scope, message, cause);
-}
-
-function timestampMs(value, label) {
+function timestampMs(value) {
   const milliseconds =
     value instanceof Date ? value.getTime() : Date.parse(value);
   if (!Number.isFinite(milliseconds))
-    throw new Error(`${label}: timestamp invalido`);
+    throw linearNodeNormalizationError("timestamp_invalid");
   return milliseconds;
 }
 
-function boundedTimestampMs(value, label, capturedAtMs) {
-  const milliseconds = timestampMs(value, label);
-  if (milliseconds < 0 || milliseconds > capturedAtMs)
-    throw new Error(`${label}: fora da janela capturedAt`);
-  return milliseconds;
-}
-
-function canonicalLinearCommentUpdatedAtMs(
-  createdAtMs,
-  reportedUpdatedAtMs,
-  label,
-) {
-  if (
-    createdAtMs - reportedUpdatedAtMs >
-    MAX_LINEAR_COMMENT_TIMESTAMP_SKEW_MS
-  ) {
-    throw new Error(`${label}: createdAt posterior a updatedAt`);
+function capturedAtTimestampMs(value) {
+  const milliseconds =
+    value instanceof Date ? value.getTime() : Date.parse(value);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    throw linearBoundaryError("workspace", "captured_at_invalid");
   }
+  return milliseconds;
+}
+
+function fallbackCapturedAtMs(value) {
+  try {
+    const milliseconds =
+      value instanceof Date ? value.getTime() : Date.parse(value);
+    return Number.isFinite(milliseconds) ? milliseconds : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function readSdkRelation(load, scope) {
+  try {
+    return await load();
+  } catch (error) {
+    throw linearBoundaryError(scope, "sdk_relation_read_failed", error);
+  }
+}
+
+function requiredSdkReader(owner, method, scope) {
+  let reader;
+  try {
+    reader = owner?.[method];
+  } catch (error) {
+    throw linearBoundaryError(scope, "sdk_reader_missing", error);
+  }
+  if (typeof reader !== "function") {
+    throw linearBoundaryError(scope, "sdk_reader_missing");
+  }
+  return reader.bind(owner);
+}
+
+function boundedTimestampMs(value, _label, capturedAtMs) {
+  const milliseconds = timestampMs(value);
+  if (milliseconds < 0 || milliseconds > capturedAtMs)
+    throw linearNodeNormalizationError("timestamp_outside_capture_window");
+  return milliseconds;
+}
+
+function canonicalLinearCommentUpdatedAtMs(createdAtMs, reportedUpdatedAtMs) {
   return Math.max(createdAtMs, reportedUpdatedAtMs);
 }
 
@@ -137,7 +144,7 @@ async function collectConnection(
   try {
     connection = await load();
   } catch (error) {
-    throw structuralFailure(diagnosticScope, "leitura falhou", error);
+    throw linearBoundaryError(diagnosticScope, "connection_read_failed", error);
   }
   const output = [];
   const identities = new Set();
@@ -148,42 +155,57 @@ async function collectConnection(
   for (;;) {
     page += 1;
     if (page > MAX_PAGES)
-      throw structuralFailure(diagnosticScope, "paginacao excedeu o limite");
+      throw linearBoundaryError(diagnosticScope, "pagination_limit_exceeded");
     if (!connection || !Array.isArray(connection.nodes))
-      throw structuralFailure(diagnosticScope, "nodes ausentes");
+      throw linearBoundaryError(diagnosticScope, "connection_nodes_missing");
     const pageInfo = connection.pageInfo;
     if (!pageInfo || typeof pageInfo.hasNextPage !== "boolean")
-      throw structuralFailure(diagnosticScope, "pageInfo invalido");
+      throw linearBoundaryError(
+        diagnosticScope,
+        "connection_page_info_invalid",
+      );
     for (const node of connection.nodes.slice(start)) {
       const nodeScope = `${diagnosticScope}[${ordinal}]`;
       ordinal += 1;
       try {
         const normalized = await normalize(node, { nodeScope });
-        const id = idSchema.parse(normalized.id);
+        const id = normalized?.id;
+        if (typeof id !== "string" || id.length === 0 || id.trim() !== id) {
+          throw new TypeError("Linear normalizer returned an invalid identity");
+        }
         if (identities.has(id))
-          throw new Error(`${scope}: identidade duplicada`);
+          throw linearNodeNormalizationError("identity_duplicate");
         identities.add(id);
         output.push(normalized);
       } catch (error) {
-        if (error instanceof StructuralBoundaryError || failures === null)
+        if (error instanceof LinearBoundaryError || failures === null)
           throw error;
-        failures.push(Object.freeze(normalizationFailure(nodeScope)));
+        const normalizedFailure = linearNodeFailure(nodeScope, error);
+        if (normalizedFailure === null) throw error;
+        failures.push(normalizedFailure);
       }
     }
     if (!pageInfo.hasNextPage) return Object.freeze(output);
     if (typeof pageInfo.endCursor !== "string" || pageInfo.endCursor === "")
-      throw structuralFailure(diagnosticScope, "cursor ausente");
+      throw linearBoundaryError(diagnosticScope, "connection_cursor_missing");
     if (cursors.has(pageInfo.endCursor))
-      throw structuralFailure(diagnosticScope, "cursor repetido");
+      throw linearBoundaryError(diagnosticScope, "connection_cursor_repeated");
     cursors.add(pageInfo.endCursor);
     if (typeof connection.fetchNext !== "function")
-      throw structuralFailure(diagnosticScope, "fetchNext ausente");
+      throw linearBoundaryError(
+        diagnosticScope,
+        "connection_fetch_next_missing",
+      );
     const previous = connection;
     const previousLength = connection.nodes.length;
     try {
       connection = await connection.fetchNext();
     } catch (error) {
-      throw structuralFailure(diagnosticScope, "fetchNext falhou", error);
+      throw linearBoundaryError(
+        diagnosticScope,
+        "connection_fetch_next_failed",
+        error,
+      );
     }
     start = connection === previous ? previousLength : 0;
   }
@@ -197,12 +219,12 @@ function exactGithubIntegrationTuple(value) {
   return value?.type === "integration" && value?.subType === "github";
 }
 
-function assertNoContradictoryGithubDiscriminator(value, label) {
+function assertNoContradictoryGithubDiscriminator(value, _label) {
   if (
     [value?.type, value?.subType].some(githubDiscriminator) &&
     !exactGithubIntegrationTuple(value)
   ) {
-    throw new Error(`${label}: discriminadores GitHub contraditorios`);
+    throw linearNodeNormalizationError("github_discriminator_conflict");
   }
 }
 
@@ -220,7 +242,7 @@ function githubSyncedCounterpart(entity) {
     entity.id.length === 0 ||
     resourceKey === null
   )
-    throw new Error("syncedWith GitHub invalido");
+    throw linearNodeNormalizationError("github_sync_invalid");
   return {
     resourceKey,
     externalId: entity.id,
@@ -361,8 +383,12 @@ async function normalizeIssue(
     `${base.identifier}.updatedAt`,
     capturedAtMs,
   );
-  const team = teamIdentitySchema.parse(await Promise.resolve(issue.team));
-  const state = stateSchema.parse(await Promise.resolve(issue.state));
+  const team = teamIdentitySchema.parse(
+    await readSdkRelation(() => issue.team, issueScope),
+  );
+  const state = stateSchema.parse(
+    await readSdkRelation(() => issue.state, issueScope),
+  );
   const nativeGithubEntities = (base.syncedWith ?? []).filter(
     (entity) => String(entity?.service ?? "").toLowerCase() === "github",
   );
@@ -381,46 +407,43 @@ async function normalizeIssue(
       .size !== nativeCounterparts.length ||
     new Set(nativeCounterpartKeys).size !== nativeCounterpartKeys.length
   ) {
-    throw new Error(`${base.identifier}: sync GitHub nativo duplicado`);
+    throw linearNodeNormalizationError("github_sync_duplicate");
   }
-  const duplicateOfValue = await Promise.resolve(issue.duplicateOf ?? null);
+  const duplicateOfValue = await readSdkRelation(
+    () => issue.duplicateOf ?? null,
+    issueScope,
+  );
   const duplicateOf = duplicateOfValue
     ? issueReferenceSchema.parse(duplicateOfValue)
     : null;
+  const issueReaders = new Map();
   for (const method of [
     "attachments",
     "comments",
     "relations",
     "inverseRelations",
   ]) {
-    if (typeof issue[method] !== "function")
-      throw new Error(`${base.identifier}.${method}: SDK reader ausente`);
+    issueReaders.set(
+      method,
+      requiredSdkReader(issue, method, `${issueScope}.${method}`),
+    );
   }
   const attachments = await collectConnection(
-    () => issue.attachments({ first: 50 }),
+    () => issueReaders.get("attachments")({ first: 50 }),
     async (attachment) => {
       const parsed = z
         .object({
           id: idSchema,
           title: idSchema,
           url: z.url(),
-          sourceType: z
-            .string()
-            .nullish()
-            .transform((value) => value ?? null),
         })
         .parse(attachment);
-      const resource = parseGithubResourceUrl(parsed.url, {
-        role: "attachment",
-      });
-      const claimsGithub =
-        parsed.sourceType?.toLowerCase() === "github" ||
-        hasGithubHostname(parsed.url);
-      if (claimsGithub && resource === null) {
-        throw new Error(
-          `${base.identifier}.attachment: recurso GitHub invalido`,
-        );
-      }
+      const classification = classifyGithubAttachmentUrl(parsed.url);
+      const resource = ["github-issue", "github-pull"].includes(
+        classification.kind,
+      )
+        ? classification.resource
+        : null;
       return { id: parsed.id, resource };
     },
     `${base.identifier}.attachments`,
@@ -430,8 +453,8 @@ async function normalizeIssue(
     },
   );
   const comments = await collectConnection(
-    () => issue.comments({ first: 50, orderBy: "createdAt" }),
-    async (comment) => {
+    () => issueReaders.get("comments")({ first: 50, orderBy: "createdAt" }),
+    async (comment, { nodeScope: commentScope }) => {
       const parsed = z
         .object({
           id: idSchema,
@@ -461,13 +484,12 @@ async function normalizeIssue(
       const commentUpdatedAtMs = canonicalLinearCommentUpdatedAtMs(
         createdAtMs,
         reportedUpdatedAtMs,
-        `${base.identifier}.comment`,
       );
       const githubEntities = (parsed.syncedWith ?? []).filter(
         (entity) => String(entity?.service ?? "").toLowerCase() === "github",
       );
       if (githubEntities.length > 1)
-        throw new Error(`${base.identifier}.comment: sync GitHub ambiguo`);
+        throw linearNodeNormalizationError("comment_github_sync_ambiguous");
       const githubEntity = githubEntities[0] ?? null;
       if (
         githubEntity &&
@@ -475,8 +497,8 @@ async function normalizeIssue(
           githubEntity.id.trim() !== githubEntity.id ||
           githubEntity.id.length === 0)
       )
-        throw new Error(
-          `${base.identifier}.comment: externalId GitHub invalido`,
+        throw linearNodeNormalizationError(
+          "comment_github_external_id_invalid",
         );
       const externalThread = parsed.externalThread
         ? z
@@ -492,7 +514,9 @@ async function normalizeIssue(
               isPersonalIntegrationRequired: z.boolean(),
               isPersonalIntegrationConnected: z.boolean(),
             })
-            .parse(await Promise.resolve(parsed.externalThread))
+            .parse(
+              await readSdkRelation(() => parsed.externalThread, commentScope),
+            )
         : null;
       const botActor = parsed.botActor
         ? z
@@ -505,7 +529,7 @@ async function normalizeIssue(
                 .nullish()
                 .transform((value) => value ?? null),
             })
-            .parse(await Promise.resolve(parsed.botActor))
+            .parse(await readSdkRelation(() => parsed.botActor, commentScope))
         : null;
       assertNoContradictoryGithubDiscriminator(
         externalThread,
@@ -542,13 +566,13 @@ async function normalizeIssue(
       let resourceKey = null;
       if (githubProvenance) {
         if (nativeCounterpartKeys.length !== 1) {
-          throw new Error(`${base.identifier}.comment: recurso GitHub ausente`);
+          throw linearNodeNormalizationError("comment_github_resource_missing");
         }
         resourceKey = nativeCounterpartKeys[0];
         if (externalThread !== null) {
           if (!exactGithubIntegrationTuple(externalThread)) {
-            throw new Error(
-              `${base.identifier}.comment.externalThread: integracao contraditoria`,
+            throw linearNodeNormalizationError(
+              "comment_thread_integration_conflict",
             );
           }
           if (
@@ -556,8 +580,8 @@ async function normalizeIssue(
             (threadObservation.urlState !== "resource" ||
               threadObservation.resource?.key !== resourceKey)
           ) {
-            throw new Error(
-              `${base.identifier}.comment.externalThread: recurso contraditorio`,
+            throw linearNodeNormalizationError(
+              "comment_thread_resource_conflict",
             );
           }
         }
@@ -590,13 +614,19 @@ async function normalizeIssue(
   for (const method of ["relations", "inverseRelations"]) {
     relationNodes.push(
       ...(await collectConnection(
-        () => issue[method]({ first: 50 }),
-        async (relation) => {
+        () => issueReaders.get(method)({ first: 50 }),
+        async (relation, { nodeScope: relationScope }) => {
           const parsed = z
             .object({ id: idSchema, type: relationTypeSchema })
             .parse(relation);
-          const source = await Promise.resolve(relation.issue);
-          const target = await Promise.resolve(relation.relatedIssue);
+          const source = await readSdkRelation(
+            () => relation.issue,
+            relationScope,
+          );
+          const target = await readSdkRelation(
+            () => relation.relatedIssue,
+            relationScope,
+          );
           const sourceRef = issueReferenceSchema.parse(source);
           const targetRef = issueReferenceSchema.parse(target);
           const sourceOwns =
@@ -606,7 +636,7 @@ async function normalizeIssue(
             targetRef.id === base.id &&
             targetRef.identifier === base.identifier;
           if (sourceOwns === targetOwns)
-            throw new Error(`${base.identifier}.${method}: ownership invalido`);
+            throw linearNodeNormalizationError("relation_ownership_invalid");
           const other = sourceOwns ? targetRef : sourceRef;
           return {
             id: parsed.id,
@@ -650,14 +680,14 @@ async function normalizeIssue(
     ).values(),
   ];
   if (duplicateTargets.length > 1)
-    throw new Error(`${base.identifier}: duplicateOf ambiguo`);
+    throw linearNodeNormalizationError("issue_duplicate_target_ambiguous");
   if (
     duplicateOf &&
     duplicateTargets.length === 1 &&
     (duplicateTargets[0].id !== duplicateOf.id ||
       duplicateTargets[0].identifier !== duplicateOf.identifier)
   )
-    throw new Error(`${base.identifier}: duplicateOf contraditorio`);
+    throw linearNodeNormalizationError("issue_duplicate_target_conflict");
   return {
     id: base.id,
     identifier: base.identifier,
@@ -717,24 +747,26 @@ function finalizeIssueReferences(issues) {
   const linearCommentById = new Map();
   for (const issue of issues) {
     if (issueById.has(issue.id))
-      throw new Error(`issues: identidade duplicada ${issue.id}`);
+      throw linearBoundaryError("issues", "issue_identity_duplicate");
     if (issueByIdentifier.has(issue.identifier))
-      throw new Error(`issues: identifier duplicado ${issue.identifier}`);
+      throw linearBoundaryError("issues", "issue_identifier_duplicate");
     issueById.set(issue.id, issue);
     issueByIdentifier.set(issue.identifier, issue);
     for (const externalId of issue._nativeGithubExternalIds) {
       const previous = githubIssueByExternalId.get(externalId);
       if (previous)
-        throw new Error(
-          `${issue.identifier}: externalId GitHub nativo duplicado ${externalId} (tambem em ${previous})`,
+        throw linearBoundaryError(
+          "issues",
+          "native_github_issue_identity_duplicate",
         );
       githubIssueByExternalId.set(externalId, issue.identifier);
     }
     for (const commentId of issue._commentIds) {
       const previous = linearCommentById.get(commentId);
       if (previous)
-        throw new Error(
-          `${issue.identifier}.comment: id Linear duplicado ${commentId} (tambem em ${previous})`,
+        throw linearBoundaryError(
+          "issues",
+          "linear_comment_identity_duplicate",
         );
       linearCommentById.set(commentId, issue.identifier);
     }
@@ -742,8 +774,9 @@ function finalizeIssueReferences(issues) {
       if (comment.externalId === null) continue;
       const previous = githubCommentByExternalId.get(comment.externalId);
       if (previous)
-        throw new Error(
-          `${issue.identifier}.comment: externalId GitHub duplicado ${comment.externalId} (tambem em ${previous})`,
+        throw linearBoundaryError(
+          "issues",
+          "github_comment_identity_duplicate",
         );
       githubCommentByExternalId.set(comment.externalId, issue.identifier);
     }
@@ -753,9 +786,7 @@ function finalizeIssueReferences(issues) {
     const byId = issueById.get(reference.id);
     const byIdentifier = issueByIdentifier.get(reference.identifier);
     if (!byId || byId !== byIdentifier) {
-      throw new Error(
-        `${owner}: referencia nao resolve ${reference.id}/${reference.identifier}`,
-      );
+      throw linearBoundaryError("issues", "issue_reference_unresolved");
     }
     return byId;
   }
@@ -771,7 +802,7 @@ function finalizeIssueReferences(issues) {
           issue.identifier,
         );
         if (duplicateTarget === issue)
-          throw new Error(`${issue.identifier}: duplicateOf autorreferente`);
+          throw linearBoundaryError("issues", "issue_duplicate_self_reference");
       }
       const {
         _commentIds: _discardCommentIds,
@@ -803,18 +834,18 @@ function boundedEntityTimes(entity, scope, capturedAtMs) {
     capturedAtMs,
   );
   if (createdAtMs > updatedAtMs)
-    throw new Error(`${scope}: createdAt posterior a updatedAt`);
+    throw linearNodeNormalizationError("entity_chronology_invalid");
   return { createdAtMs, updatedAtMs };
 }
 
 async function normalizeReleaseGraph(client, capturedAtMs, issues, failures) {
+  const readers = new Map();
   for (const method of ["releasePipelines", "releases", "issueToReleases"]) {
-    if (typeof client[method] !== "function")
-      throw new Error(`${method}: SDK reader ausente`);
+    readers.set(method, requiredSdkReader(client, method, method));
   }
 
   const releasePipelines = await collectConnection(
-    () => client.releasePipelines({ first: 50 }),
+    () => readers.get("releasePipelines")({ first: 50 }),
     async (pipeline) => {
       const parsed = z
         .object({ id: uuidSchema, type: releasePipelineTypeSchema })
@@ -831,7 +862,7 @@ async function normalizeReleaseGraph(client, capturedAtMs, issues, failures) {
   );
 
   const releases = await collectConnection(
-    () => client.releases({ first: 50 }),
+    () => readers.get("releases")({ first: 50 }),
     async (release) => {
       const parsed = z
         .object({
@@ -858,12 +889,12 @@ async function normalizeReleaseGraph(client, capturedAtMs, issues, failures) {
               capturedAtMs,
             );
       if (completedAtMs !== null && completedAtMs > times.updatedAtMs)
-        throw new Error(
-          `releases.${parsed.id}: completedAt posterior a updatedAt`,
+        throw linearNodeNormalizationError(
+          "release_completion_chronology_invalid",
         );
       if (completedAtMs !== null && completedAtMs < times.createdAtMs)
-        throw new Error(
-          `releases.${parsed.id}: completedAt anterior a createdAt`,
+        throw linearNodeNormalizationError(
+          "release_completion_chronology_invalid",
         );
       return {
         id: parsed.id,
@@ -878,7 +909,7 @@ async function normalizeReleaseGraph(client, capturedAtMs, issues, failures) {
   );
 
   const issueToReleases = await collectConnection(
-    () => client.issueToReleases({ first: 50 }),
+    () => readers.get("issueToReleases")({ first: 50 }),
     async (association) => {
       const parsed = z
         .object({
@@ -919,31 +950,36 @@ async function normalizeReleaseGraph(client, capturedAtMs, issues, failures) {
   for (const release of releases) {
     const pipeline = pipelineById.get(release.pipelineId);
     if (!pipeline)
-      throw new Error(
-        `releases.${release.id}: pipeline nao resolve ${release.pipelineId}`,
-      );
+      throw linearBoundaryError("releases", "release_pipeline_unresolved");
     if (pipeline.createdAtMs > release.createdAtMs)
-      throw new Error(`releases.${release.id}: createdAt anterior ao pipeline`);
+      throw linearBoundaryError(
+        "releases",
+        "release_pipeline_precedes_release",
+      );
   }
   const associationPairs = new Set();
   for (const association of issueToReleases) {
     if (!issueById.has(association.issueId))
-      throw new Error(
-        `issueToReleases.${association.id}: issue nao resolve ${association.issueId}`,
+      throw linearBoundaryError(
+        "issueToReleases",
+        "issue_release_issue_unresolved",
       );
     const release = releaseById.get(association.releaseId);
     if (!release)
-      throw new Error(
-        `issueToReleases.${association.id}: release nao resolve ${association.releaseId}`,
+      throw linearBoundaryError(
+        "issueToReleases",
+        "issue_release_release_unresolved",
       );
     if (release.createdAtMs > association.createdAtMs)
-      throw new Error(
-        `issueToReleases.${association.id}: createdAt anterior a release`,
+      throw linearBoundaryError(
+        "issueToReleases",
+        "issue_release_precedes_release",
       );
     const pair = `${association.issueId}\0${association.releaseId}`;
     if (associationPairs.has(pair))
-      throw new Error(
-        `issueToReleases.${association.id}: associacao duplicada ${association.issueId}/${association.releaseId}`,
+      throw linearBoundaryError(
+        "issueToReleases",
+        "issue_release_association_duplicate",
       );
     associationPairs.add(pair);
   }
@@ -996,11 +1032,10 @@ async function normalizeTopology(
   capturedAtMs,
   { teamRequired = false, failures = null } = {},
 ) {
-  if (typeof client[method] !== "function")
-    throw new Error(`${scope}: SDK reader ausente`);
+  const reader = requiredSdkReader(client, method, scope);
   return collectConnection(
-    () => client[method]({ first: 50, includeArchived: true }),
-    async (entity) => {
+    () => reader({ first: 50, includeArchived: true }),
+    async (entity, { nodeScope }) => {
       const parsed = z
         .object({
           id: idSchema,
@@ -1012,11 +1047,13 @@ async function normalizeTopology(
         `${scope}.${parsed.id}.updatedAt`,
         capturedAtMs,
       );
-      let team = entity.team ?? entity.leadTeam;
-      if (team) team = await Promise.resolve(team);
+      const team = await readSdkRelation(
+        () => entity.team ?? entity.leadTeam ?? null,
+        nodeScope,
+      );
       if (team == null) {
         if (teamRequired)
-          throw new Error(`${scope}.${parsed.id}: time obrigatorio ausente`);
+          throw linearNodeNormalizationError("topology_team_missing");
         return {
           id: parsed.id,
           teamId: null,
@@ -1040,10 +1077,9 @@ async function normalizeTopology(
 }
 
 async function normalizeProjects(client, capturedAtMs, failures) {
-  if (typeof client.projects !== "function")
-    throw new Error("projects: SDK reader ausente");
+  const projectsReader = requiredSdkReader(client, "projects", "projects");
   const projects = await collectConnection(
-    () => client.projects({ first: 50, includeArchived: true }),
+    () => projectsReader({ first: 50, includeArchived: true }),
     async (project, { nodeScope }) => {
       const parsed = z
         .object({
@@ -1056,17 +1092,20 @@ async function normalizeProjects(client, capturedAtMs, failures) {
         `projects.${parsed.id}.updatedAt`,
         capturedAtMs,
       );
-      if (typeof project.teams !== "function")
-        throw new Error(`projects.${parsed.id}: teams reader ausente`);
-      return { id: parsed.id, project, updatedAtMs, nodeScope };
+      const teamsReader = requiredSdkReader(
+        project,
+        "teams",
+        `${nodeScope}.teams`,
+      );
+      return { id: parsed.id, teamsReader, updatedAtMs, nodeScope };
     },
     "projects",
     { failures, diagnosticScope: "projects" },
   );
   const associations = [];
-  for (const { id, project, updatedAtMs, nodeScope } of projects) {
+  for (const { id, teamsReader, updatedAtMs, nodeScope } of projects) {
     const teams = await collectConnection(
-      () => project.teams({ first: 50 }),
+      () => teamsReader({ first: 50 }),
       async (team) => teamIdentitySchema.parse(team),
       `projects.${id}.teams`,
       { failures, diagnosticScope: `${nodeScope}.teams` },
@@ -1087,9 +1126,9 @@ function assertTeamReferences(teams, issues, collections) {
   const teamByKey = new Map();
   for (const team of teams) {
     if (teamById.has(team.id))
-      throw new Error(`teams: identidade duplicada ${team.id}`);
+      throw linearBoundaryError("teams", "team_identity_duplicate");
     if (teamByKey.has(team.key))
-      throw new Error(`teams: key duplicada ${team.key}`);
+      throw linearBoundaryError("teams", "team_key_duplicate");
     teamById.set(team.id, team);
     teamByKey.set(team.key, team);
   }
@@ -1098,7 +1137,7 @@ function assertTeamReferences(teams, issues, collections) {
     const byId = teamById.get(teamId);
     const byKey = teamByKey.get(teamKey);
     if (!byId || byId !== byKey)
-      throw new Error(`${owner}: time nao resolve ${teamId}/${teamKey}`);
+      throw linearBoundaryError("workspace", "team_reference_unresolved");
   }
 
   for (const issue of issues) {
@@ -1116,6 +1155,10 @@ function incompleteSnapshot(capturedAtMs, failures) {
     (left, right) =>
       compareOpaque(left.scope, right.scope) ||
       compareOpaque(left.code, right.code) ||
+      compareOpaque(
+        JSON.stringify(left.reasonCodes ?? []),
+        JSON.stringify(right.reasonCodes ?? []),
+      ) ||
       compareOpaque(left.message, right.message),
   );
   return Object.freeze({
@@ -1144,7 +1187,7 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
 
   async function readWorkspaceSnapshot({ capturedAt }) {
     try {
-      const capturedAtMs = timestampMs(capturedAt, "capturedAt");
+      const capturedAtMs = capturedAtTimestampMs(capturedAt);
       const normalizationFailures = [];
       const teamsDetailed = await collectConnection(
         () => client.teams({ first: 50, includeArchived: true }),
@@ -1253,12 +1296,10 @@ export function createLinearAdapter({ apiKey, clientFactory } = {}) {
         issueToReleases: releaseGraph.issueToReleases,
       });
     } catch (error) {
-      const capturedAtMs = Number.isFinite(Date.parse(capturedAt))
-        ? Date.parse(capturedAt)
-        : 0;
-      const scope =
-        error instanceof StructuralBoundaryError ? error.scope : "workspace";
-      return incompleteSnapshot(capturedAtMs, [failure(error, scope)]);
+      const capturedAtMs = fallbackCapturedAtMs(capturedAt);
+      return incompleteSnapshot(capturedAtMs, [
+        linearBoundaryFailure(error) ?? linearAdapterInternalFailure(),
+      ]);
     }
   }
 

@@ -261,45 +261,67 @@ test("r5535: grafo global pagina e valida release, pipeline e associacao antes d
     },
   ]);
 
-  for (const failingClient of [
-    client({
-      releases: async () => connection([release({ updatedAt: AFTER_CAPTURE })]),
-    }),
-    client({
-      releases: async () =>
-        connection([
-          release({
-            id: "release-without-sha-future",
-            commitSha: null,
-            updatedAt: AFTER_CAPTURE,
-          }),
-        ]),
-      issueToReleases: async () =>
-        connection([
-          issueToRelease({
-            releaseId: "release-without-sha-future",
-          }),
-        ]),
-    }),
-    client({
-      issueToReleases: async () =>
-        connection([issueToRelease({ updatedAt: AFTER_CAPTURE })]),
-    }),
-    client({
-      issueToReleases: async () =>
-        connection([issueToRelease({ releaseId: "missing-release" })]),
-    }),
-    client({
-      issueToReleases: async () =>
-        connection([
-          issueToRelease(),
-          issueToRelease({ id: "issue-release-duplicate-pair" }),
-        ]),
-    }),
+  for (const [failingClient, expectedCode, expectedReasonCode] of [
+    [
+      client({
+        releases: async () =>
+          connection([release({ updatedAt: AFTER_CAPTURE })]),
+      }),
+      "node_invalid",
+      "timestamp_outside_capture_window",
+    ],
+    [
+      client({
+        releases: async () =>
+          connection([
+            release({
+              id: "release-without-sha-future",
+              commitSha: null,
+              updatedAt: AFTER_CAPTURE,
+            }),
+          ]),
+        issueToReleases: async () =>
+          connection([
+            issueToRelease({
+              releaseId: "release-without-sha-future",
+            }),
+          ]),
+      }),
+      "node_invalid",
+      "timestamp_outside_capture_window",
+    ],
+    [
+      client({
+        issueToReleases: async () =>
+          connection([issueToRelease({ updatedAt: AFTER_CAPTURE })]),
+      }),
+      "node_invalid",
+      "timestamp_outside_capture_window",
+    ],
+    [
+      client({
+        issueToReleases: async () =>
+          connection([issueToRelease({ releaseId: "missing-release" })]),
+      }),
+      "boundary_invalid",
+      "issue_release_release_unresolved",
+    ],
+    [
+      client({
+        issueToReleases: async () =>
+          connection([
+            issueToRelease(),
+            issueToRelease({ id: "issue-release-duplicate-pair" }),
+          ]),
+      }),
+      "boundary_invalid",
+      "issue_release_association_duplicate",
+    ],
   ]) {
     const result = await read(failingClient);
     assert.equal(result.complete, false);
-    assert.equal(result.failures[0].code, "boundary_invalid");
+    assert.equal(result.failures[0].code, expectedCode);
+    assert.deepEqual(result.failures[0].reasonCodes, [expectedReasonCode]);
   }
 });
 
@@ -319,41 +341,71 @@ test("grafo global rejeita cronologia impossível no adapter e no validator", as
   const afterRelease = new Date(releaseCreatedAt + 1).toISOString();
 
   const invalidClients = [
-    client({
-      releasePipelines: async () =>
-        connection([pipeline({ updatedAt: beforeRelease })]),
-    }),
-    client({
-      releases: async () => connection([release({ updatedAt: beforeRelease })]),
-    }),
-    client({
-      issueToReleases: async () =>
-        connection([issueToRelease({ updatedAt: beforeRelease })]),
-    }),
-    client({
-      releases: async () =>
-        connection([release({ completedAt: beforeRelease })]),
-    }),
-    client({
-      releasePipelines: async () =>
-        connection([
-          pipeline({ createdAt: afterRelease, updatedAt: afterRelease }),
-        ]),
-    }),
-    client({
-      issueToReleases: async () =>
-        connection([
-          issueToRelease({
-            createdAt: beforeRelease,
-            updatedAt: beforeRelease,
-          }),
-        ]),
-    }),
+    [
+      client({
+        releasePipelines: async () =>
+          connection([pipeline({ updatedAt: beforeRelease })]),
+      }),
+      "node_invalid",
+      "entity_chronology_invalid",
+    ],
+    [
+      client({
+        releases: async () =>
+          connection([release({ updatedAt: beforeRelease })]),
+      }),
+      "node_invalid",
+      "entity_chronology_invalid",
+    ],
+    [
+      client({
+        issueToReleases: async () =>
+          connection([issueToRelease({ updatedAt: beforeRelease })]),
+      }),
+      "node_invalid",
+      "entity_chronology_invalid",
+    ],
+    [
+      client({
+        releases: async () =>
+          connection([release({ completedAt: beforeRelease })]),
+      }),
+      "node_invalid",
+      "release_completion_chronology_invalid",
+    ],
+    [
+      client({
+        releasePipelines: async () =>
+          connection([
+            pipeline({ createdAt: afterRelease, updatedAt: afterRelease }),
+          ]),
+      }),
+      "boundary_invalid",
+      "release_pipeline_precedes_release",
+    ],
+    [
+      client({
+        issueToReleases: async () =>
+          connection([
+            issueToRelease({
+              createdAt: beforeRelease,
+              updatedAt: beforeRelease,
+            }),
+          ]),
+      }),
+      "boundary_invalid",
+      "issue_release_precedes_release",
+    ],
   ];
-  for (const invalidClient of invalidClients) {
+  for (const [
+    invalidClient,
+    expectedCode,
+    expectedReasonCode,
+  ] of invalidClients) {
     const result = await read(invalidClient);
     assert.equal(result.complete, false);
-    assert.equal(result.failures[0].code, "boundary_invalid");
+    assert.equal(result.failures[0].code, expectedCode);
+    assert.deepEqual(result.failures[0].reasonCodes, [expectedReasonCode]);
   }
 
   const valid = await read(client());

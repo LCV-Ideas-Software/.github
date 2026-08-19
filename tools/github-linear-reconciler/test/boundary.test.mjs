@@ -354,7 +354,8 @@ test("Linear torna pagina ou node parcial inconclusivo", async () => {
   });
   assert.equal(snapshot.complete, false);
   assert.equal(snapshot.failures[0].source, "linear");
-  assert.equal(snapshot.failures[0].code, "boundary_invalid");
+  assert.equal(snapshot.failures[0].code, "node_invalid");
+  assert.deepEqual(snapshot.failures[0].reasonCodes, ["schema_invalid"]);
   assert.deepEqual(snapshot.teams, []);
 });
 
@@ -897,7 +898,10 @@ test("Linear falha fechado quando entidades nativas duplicam identidade ou recur
       capturedAt: "2030-01-02T04:00:00.000Z",
     });
     assert.equal(snapshot.complete, false);
-    assert.equal(snapshot.failures[0].code, "boundary_invalid");
+    assert.equal(snapshot.failures[0].code, "node_invalid");
+    assert.deepEqual(snapshot.failures[0].reasonCodes, [
+      "github_sync_duplicate",
+    ]);
   }
 });
 
@@ -1001,7 +1005,10 @@ test("Linear falha fechado para metadata GitHub ou relação sem ownership", asy
   const malformedRelation = syntheticIssue({
     relations: async () => pagedConnection([[badRelation]]),
   });
-  for (const issue of [malformedSync, malformedRelation]) {
+  for (const [issue, reasonCode] of [
+    [malformedSync, "github_sync_invalid"],
+    [malformedRelation, "relation_ownership_invalid"],
+  ]) {
     const adapter = createLinearAdapter({
       apiKey: "linear-test-token",
       clientFactory: () => syntheticLinearClient({ team, issue }),
@@ -1010,7 +1017,8 @@ test("Linear falha fechado para metadata GitHub ou relação sem ownership", asy
       capturedAt: "2030-01-02T04:00:00.000Z",
     });
     assert.equal(snapshot.complete, false);
-    assert.equal(snapshot.failures[0].code, "boundary_invalid");
+    assert.equal(snapshot.failures[0].code, "node_invalid");
+    assert.deepEqual(snapshot.failures[0].reasonCodes, [reasonCode]);
   }
 });
 
@@ -1048,6 +1056,8 @@ test("Linear valida identidade composta, enum de relacao e resolucao global", as
   const invalidCases = [
     {
       name: "owner identifier divergente",
+      expectedCode: "node_invalid",
+      expectedReasonCode: "relation_ownership_invalid",
       source: syntheticBareIssue({
         id: "issue-1",
         identifier: "APP-1",
@@ -1064,6 +1074,8 @@ test("Linear valida identidade composta, enum de relacao e resolucao global", as
     },
     {
       name: "target composto nao resolve",
+      expectedCode: "boundary_invalid",
+      expectedReasonCode: "issue_reference_unresolved",
       source: syntheticBareIssue({
         id: "issue-1",
         identifier: "APP-1",
@@ -1080,6 +1092,8 @@ test("Linear valida identidade composta, enum de relacao e resolucao global", as
     },
     {
       name: "tipo fora do enum",
+      expectedCode: "node_invalid",
+      expectedReasonCode: "schema_invalid",
       source: syntheticBareIssue({
         id: "issue-1",
         identifier: "APP-1",
@@ -1096,6 +1110,8 @@ test("Linear valida identidade composta, enum de relacao e resolucao global", as
     },
     {
       name: "duplicateOf composto nao resolve",
+      expectedCode: "boundary_invalid",
+      expectedReasonCode: "issue_reference_unresolved",
       source: syntheticBareIssue({
         id: "issue-1",
         identifier: "APP-1",
@@ -1117,7 +1133,16 @@ test("Linear valida identidade composta, enum de relacao e resolucao global", as
       capturedAt: "2030-01-02T04:00:00.000Z",
     });
     assert.equal(invalid.complete, false, scenario.name);
-    assert.equal(invalid.failures[0].code, "boundary_invalid", scenario.name);
+    assert.equal(
+      invalid.failures[0].code,
+      scenario.expectedCode,
+      scenario.name,
+    );
+    assert.deepEqual(
+      invalid.failures[0].reasonCodes,
+      [scenario.expectedReasonCode],
+      scenario.name,
+    );
   }
 });
 

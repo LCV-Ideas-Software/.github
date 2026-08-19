@@ -5,6 +5,10 @@ import {
   parseGithubRepository,
   parseGithubResourceKey,
 } from "./github-resource.mjs";
+import {
+  linearFailureReferences,
+  validLinearFailure,
+} from "./linear-failures.mjs";
 import { NORMALIZED_STATUSES } from "./model.mjs";
 
 function nonempty(value) {
@@ -53,6 +57,7 @@ function compareOpaque(left, right) {
 }
 
 function validFailure(value) {
+  if (value?.source === "linear") return validLinearFailure(value);
   return (
     value &&
     typeof value === "object" &&
@@ -67,7 +72,11 @@ function incompleteSnapshot(source, snapshot) {
   const references = Array.isArray(snapshot?.failures)
     ? snapshot.failures
         .filter(validFailure)
-        .map((failure) => `${failure.source}:${failure.code}:${failure.scope}`)
+        .flatMap((failure) =>
+          failure.source === "linear"
+            ? linearFailureReferences(failure)
+            : [`${failure.source}:${failure.code}:${failure.scope}`],
+        )
     : [];
   return finding(
     "incomplete",

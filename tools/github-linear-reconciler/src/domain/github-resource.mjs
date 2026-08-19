@@ -135,3 +135,25 @@ export function parseGithubResourceUrl(raw, { role = "attachment" } = {}) {
     secure,
   });
 }
+
+/**
+ * Exhaustively classifies an attachment URL without treating every github.com
+ * link as a GitHub Issue or pull request identity.
+ */
+export function classifyGithubAttachmentUrl(raw) {
+  const url = parsedUrl(raw);
+  if (url === null) return Object.freeze({ kind: "invalid-url" });
+  if (url.hostname.toLowerCase() !== GITHUB_HOSTNAME) {
+    return Object.freeze({ kind: "non-github" });
+  }
+
+  const resource = parseGithubResourceUrl(raw, { role: "attachment" });
+  if (resource !== null) {
+    return Object.freeze({
+      kind: resource.kind === "pull" ? "github-pull" : "github-issue",
+      resource,
+    });
+  }
+
+  return Object.freeze({ kind: "github-other" });
+}

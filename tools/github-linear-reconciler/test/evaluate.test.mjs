@@ -326,11 +326,15 @@ test("snapshot parcial ou fora do contrato nunca executa regras como se fosse co
   const contradictory = baseline();
   contradictory.linear.failures.push({
     source: "linear",
-    code: "partial_page",
-    scope: "issues",
+    code: "node_invalid",
+    scope: "issues[4].comments[2]",
+    reasonCodes: ["comment_github_sync_ambiguous"],
+    message: "linear node normalization failed",
   });
-  assert.deepEqual(codes(evaluate(contradictory)), [
-    "linear_snapshot_incomplete",
+  const contradictoryResult = evaluate(contradictory);
+  assert.deepEqual(codes(contradictoryResult), ["linear_snapshot_incomplete"]);
+  assert.deepEqual(contradictoryResult.findings[0].references, [
+    "linear:node_invalid:issues[4].comments[2]:comment_github_sync_ambiguous",
   ]);
 
   const malformed = baseline();
@@ -622,7 +626,7 @@ test("comments pareiam somente por IDs e proveniência estruturada", () => {
   );
 });
 
-test("comment recente respeita grace e thread desconectada continua sendo drift", () => {
+test("grace de comment usa createdAt e thread desconectada continua sendo drift", () => {
   const recent = baseline();
   recent.github.issues[0].comments.push({
     id: "github-comment-recent",
@@ -646,7 +650,6 @@ test("comment recente respeita grace e thread desconectada continua sendo drift"
   assert.equal(evaluate(pendingFromLinear).state, "clean");
 
   pendingFromLinear.linear.issues[0].comments[0].createdAtMs = 1_000;
-  pendingFromLinear.linear.issues[0].comments[0].updatedAtMs = 1_000;
   assert.ok(
     codes(evaluate(pendingFromLinear)).includes(
       "comment_external_identity_missing",

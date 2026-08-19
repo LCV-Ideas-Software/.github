@@ -383,7 +383,7 @@ test("adapter preserva controles conectados para policy downstream", async () =>
   }
 });
 
-test("attachment GitHub nao reconhecido falha fechado em vez de ser descartado", async () => {
+test("attachment GitHub generico permanece referencia nao identitaria", async () => {
   for (const sourceType of ["github", undefined]) {
     const result = await snapshot({
       issues: async () =>
@@ -402,10 +402,11 @@ test("attachment GitHub nao reconhecido falha fechado em vez de ser descartado",
         ]),
     });
 
-    assert.equal(result.complete, false);
-    assert.equal(result.failures.length, 1);
-    assert.equal(result.failures[0].scope, "issues[0].attachments[0]");
-    assert.deepEqual(result.issues, []);
+    assert.equal(result.complete, true);
+    assert.deepEqual(result.failures, []);
+    assert.deepEqual(result.issues[0].attachmentIssueKeys, []);
+    assert.deepEqual(result.issues[0].carrierPullKeys, []);
+    assert.deepEqual(result.issues[0].insecureGithubResourceKeys, []);
   }
 });
 
@@ -460,24 +461,27 @@ test("duas entidades invalidas acumulam duas failures redigidas e nenhum dado pa
 
   assert.equal(result.complete, false);
   assert.deepEqual(
-    result.failures.map(({ source, code, scope, message }) => ({
+    result.failures.map(({ source, code, scope, reasonCodes, message }) => ({
       source,
       code,
       scope,
+      reasonCodes,
       message,
     })),
     [
       {
         source: "linear",
-        code: "boundary_invalid",
+        code: "node_invalid",
         scope: "issues[0]",
-        message: "issues[0]: entidade invalida",
+        reasonCodes: ["github_sync_invalid"],
+        message: "linear node normalization failed",
       },
       {
         source: "linear",
-        code: "boundary_invalid",
+        code: "node_invalid",
         scope: "issues[1]",
-        message: "issues[1]: entidade invalida",
+        reasonCodes: ["github_sync_invalid"],
+        message: "linear node normalization failed",
       },
     ],
   );
@@ -526,7 +530,82 @@ test("paginacao estrutural invalida aborta sem virar census parcial", async () =
   assert.equal(result.complete, false);
   assert.equal(result.failures.length, 1);
   assert.equal(result.failures[0].scope, "issues[0].comments");
-  assert.match(result.failures[0].message, /pageInfo invalido/u);
+  assert.equal(result.failures[0].code, "boundary_invalid");
+  assert.deepEqual(result.failures[0].reasonCodes, [
+    "connection_page_info_invalid",
+  ]);
+  assert.equal(result.failures[0].message, "linear boundary failed");
   assert.equal(laterIssueRead, false);
   assert.deepEqual(result.issues, []);
+});
+
+test("falha de relacao SDK aborta estruturalmente sem expor a causa", async () => {
+  const result = await snapshot({
+    issues: async () =>
+      connection([
+        issue({
+          team: {
+            then(_resolve, reject) {
+              reject(new Error("remote relation token=raw-secret"));
+            },
+          },
+        }),
+      ]),
+  });
+
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.failures, [
+    {
+      source: "linear",
+      code: "boundary_invalid",
+      scope: "issues[0]",
+      reasonCodes: ["sdk_relation_read_failed"],
+      message: "linear boundary failed",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /remote|token|raw-secret/u);
+  assert.deepEqual(result.issues, []);
+});
+
+test("erro inesperado aborta como adapter_internal_error sem payload remoto", async () => {
+  const candidate = issue({
+    syncedWith: [
+      {
+        service: {
+          [Symbol.toPrimitive]() {
+            throw new Error("provider token=raw-secret");
+          },
+        },
+      },
+    ],
+  });
+
+  const result = await snapshot({
+    issues: async () => connection([candidate]),
+  });
+
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.failures, [
+    {
+      source: "linear",
+      code: "adapter_internal_error",
+      scope: "workspace",
+      reasonCodes: [],
+      message: "linear adapter internal error",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /provider|token|raw-secret/u);
+  for (const collection of [
+    "teams",
+    "issues",
+    "cycles",
+    "projects",
+    "initiatives",
+    "documents",
+    "releasePipelines",
+    "releases",
+    "issueToReleases",
+  ]) {
+    assert.deepEqual(result[collection], [], collection);
+  }
 });

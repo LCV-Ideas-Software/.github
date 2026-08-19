@@ -43,13 +43,13 @@ respostas inválidas nunca são classificados como limpos. Comentários são
 correlacionados apenas por identidade externa ou thread estável, não por
 similaridade do corpo Markdown.
 
-O boundary de comentários Linear admite somente a imprecisão de relógio
-comprovada nessa entidade: se o `updatedAt` reportado anteceder o `createdAt` em
-no máximo 1.000 ms, ambos ainda são validados individualmente contra
-`capturedAt` e o `updatedAt` normalizado é elevado a `createdAt`. Uma inversão
-maior torna o snapshot inconclusivo. Essa exceção não se aplica ao GitHub, a
-outras entidades Linear, a `capturedAt`, nem às cronologias entre pipeline,
-release, associação, merge e conclusão.
+O boundary de comentários Linear canonicaliza a inversão de relógio comprovada
+nessa entidade: `createdAt` e `updatedAt` são validados individualmente como
+timestamps finitos dentro da janela de `capturedAt`; depois, se o `updatedAt`
+reportado anteceder o `createdAt`, o valor normalizado é elevado a `createdAt`.
+Essa canonicalização não se aplica ao GitHub, a outras entidades Linear, a
+`capturedAt`, nem às cronologias entre pipeline, release, associação, merge e
+conclusão.
 
 A identidade canônica vem exclusivamente do GitHub Issues Sync nativo. O
 attachment dessa contraparte é obrigatório, mas attachments suplementares
@@ -59,11 +59,22 @@ não participam de estado, comentários, releases ou cardinalidade.
 `node_id` do GitHub Issue. A resource key é derivada somente depois dessa prova;
 URL ou attachment não substitui a identidade nativa.
 
-Owner, repositório, número, resource key e URL usam uma única gramática em toda
-a fronteira. Ela inclui nomes oficiais de repositório iniciados por ponto, como
-`.github`, e rejeita ambiguidades de path, números não seguros e URLs sem a
+A classificação de attachments é `exact-or-generic`: somente uma URL que
+satisfaça integralmente a gramática de GitHub Issue ou pull request produz uma
+resource key. Qualquer outra URL sintaticamente válida permanece um attachment
+genérico e não identitário, inclusive quando usa `github.com` ou quando
+`sourceType` informa que uma integração GitHub o criou. `sourceType` descreve a
+proveniência do attachment, não o tipo do recurso de destino. Links genéricos
+nunca satisfazem nem mascaram a contraparte ou o carrier exigidos. Esse contrato
+segue a semântica oficial de [attachments como links para recursos
+externos](https://linear.app/developers/attachments), sem inferir intenção por
+pathname.
+
+Owner, repositório, número, resource key e URLs exatas usam uma única gramática
+em toda a fronteira. Ela inclui nomes oficiais de repositório iniciados por
+ponto, como `.github`, e recusa números não seguros ou URLs exatas sem a
 autoridade HTTPS esperada. Fragmentos de navegação de uma `externalThread` não
-entram na identidade; fragments em attachments continuam inseguros.
+entram na identidade; fragments em attachments exatos continuam inseguros.
 
 Comentários de controle emitidos pela integração são preservados em um eixo
 próprio e nunca entram no pareamento de conteúdo. A classificação depende da
@@ -234,6 +245,15 @@ exemplo:
 
 Falhas inesperadas produzem somente uma mensagem genérica no stderr e o estado
 redigido `incomplete` no stdout.
+
+Na fronteira Linear, somente erros de dados esperados tipados e erros Zod são
+acumulados como `node_invalid`, sempre com `reasonCodes` de uma allowlist fixa e
+escopo ordinal. Falhas estruturais abortam a captura como `boundary_invalid`;
+qualquer exceção não classificada aborta como `adapter_internal_error`. Nenhuma
+dessas categorias inclui mensagem, identificador ou payload remoto, e todo
+snapshot `incomplete` devolve vazias as coleções normalizadas. As referências do
+relatório usam apenas `source:code:scope:reasonCode` (ou
+`source:code:scope` quando não há motivo adicional).
 
 ## Relatório local
 
