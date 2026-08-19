@@ -37,7 +37,7 @@ client components. `zod` is the exact-pinned third-party schema validator used a
 
 | Component   | Version | License           | Scope       | Source                                    |
 | ----------- | ------- | ----------------- | ----------- | ----------------------------------------- |
-| @types/node | 26.1.2  | MIT               | development | https://www.npmjs.com/package/@types/node |
+| @types/node | 26.2.0  | MIT               | development | https://www.npmjs.com/package/@types/node |
 | fast-check  | 4.9.0   | MIT               | development | https://www.npmjs.com/package/fast-check  |
 | typescript  | 7.0.2   | Apache-2.0        | development | https://www.npmjs.com/package/typescript  |
 | vitest      | 4.1.10  | MIT               | development | https://www.npmjs.com/package/vitest      |
