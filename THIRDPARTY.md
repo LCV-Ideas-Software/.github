@@ -27,7 +27,7 @@ exact `yaml@2.9.0` parser.
 | @octokit/plugin-paginate-rest | 15.0.0  | MIT               | runtime     | https://www.npmjs.com/package/@octokit/plugin-paginate-rest |
 | zod                           | 4.4.3   | MIT               | runtime     | https://www.npmjs.com/package/zod                           |
 | prettier                      | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier                      |
-| wrangler                      | 4.120.1 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler                      |
+| wrangler                      | 4.121.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler                      |
 | yaml                          | 2.9.0   | ISC               | development | https://www.npmjs.com/package/yaml                          |
 
 `@linear/sdk` is Linear's official TypeScript SDK. The three `@octokit` packages are official GitHub
@@ -41,7 +41,7 @@ client components. `zod` is the exact-pinned third-party schema validator used a
 | fast-check  | 4.9.0   | MIT               | development | https://www.npmjs.com/package/fast-check  |
 | typescript  | 7.0.2   | Apache-2.0        | development | https://www.npmjs.com/package/typescript  |
 | vitest      | 4.1.10  | MIT               | development | https://www.npmjs.com/package/vitest      |
-| wrangler    | 4.120.1 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler    |
+| wrangler    | 4.121.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler    |
 
 The Worker itself ships no runtime dependency: every entry above is a development tool, and the
 deployed bundle is built from this repository's own source.

@@ -8,6 +8,7 @@ import {
   assertFinalSchema,
   assertInvalidAlertDeliveryStateWasRejected,
   assertSentAlertDeliveryStateWasAccepted,
+  CloudflareApiError,
   cloudflareRequest,
   createDisposableDatabase,
   DATABASE_ID_PATTERN,
@@ -890,7 +891,7 @@ test("ambiguous creation uses the cleanup reserve after the work deadline", asyn
   );
 });
 
-test("DELETE confirmation retries contradictory inventory metadata without accepting partial absence", async () => {
+test("DELETE confirmation polls contradictory inventory metadata without deleting again or accepting partial absence", async () => {
   const databaseId = "55555555-5555-4555-8555-555555555555";
   const remainingDatabases = [
     fakeDatabase(1),
@@ -926,8 +927,217 @@ test("DELETE confirmation retries contradictory inventory metadata without accep
     requestFn,
     Date.now() + 60_000,
   );
-  assert.equal(deleteAttempts, 2);
+  assert.equal(deleteAttempts, 1);
   assert.equal(listCalls, 2);
+});
+
+test("an accepted DELETE polls through transient 404/7404 confirmation failures without deleting again", async () => {
+  const databaseId = "66666666-6666-4666-8666-666666666666";
+  let deleteCalls = 0;
+  let inventoryCalls = 0;
+  const requestFn = async (_configuration, _path, init = {}) => {
+    if ((init.method ?? "GET") === "DELETE") {
+      deleteCalls += 1;
+      if (deleteCalls > 1) {
+        throw new Error(
+          "A Cloudflare API request failed (HTTP 404; error codes: 7404).",
+        );
+      }
+      return { success: true, result: null };
+    }
+    inventoryCalls += 1;
+    if (inventoryCalls < 3) {
+      throw new Error(
+        "A Cloudflare API request failed (HTTP 404; error codes: 7404).",
+      );
+    }
+    return {
+      result: [],
+      result_info: {
+        count: 0,
+        page: 1,
+        per_page: INVENTORY_PAGE_SIZE,
+        total_count: 0,
+      },
+    };
+  };
+
+  await deleteDatabaseWithConfirmation(
+    FAKE_CONFIGURATION,
+    databaseId,
+    requestFn,
+    Date.now() + 60_000,
+  );
+
+  assert.equal(deleteCalls, 1);
+  assert.equal(inventoryCalls, 3);
+});
+
+test("a terminal 404/7404 confirmation failure reports a sanitized phase and attempt", async () => {
+  const databaseId = "77777777-7777-4777-8777-777777777777";
+  const apiError = new CloudflareApiError(404, [7404]);
+  apiError.remotePath = `/accounts/${FAKE_CONFIGURATION.accountId}/d1/database/${databaseId}`;
+  apiError.remoteToken = FAKE_CONFIGURATION.apiToken;
+  let deleteCalls = 0;
+  const requestFn = async (_configuration, _path, init = {}) => {
+    if ((init.method ?? "GET") === "DELETE") {
+      deleteCalls += 1;
+      if (deleteCalls === 1) return { success: true, result: null };
+    }
+    throw apiError;
+  };
+
+  let error;
+  await assert.rejects(
+    () =>
+      deleteDatabaseWithConfirmation(
+        FAKE_CONFIGURATION,
+        databaseId,
+        requestFn,
+        Date.now() + 60_000,
+      ),
+    (rejection) => {
+      error = rejection;
+      return true;
+    },
+  );
+
+  assert.match(error.message, /phase=inventory-after-delete; attempt=4\/4/u);
+  assert.match(error.message, /HTTP 404; error codes: 7404/u);
+  assert.doesNotMatch(error.message, new RegExp(databaseId, "u"));
+  assert.doesNotMatch(
+    error.message,
+    new RegExp(FAKE_CONFIGURATION.accountId, "u"),
+  );
+  assert.doesNotMatch(
+    error.message,
+    new RegExp(FAKE_CONFIGURATION.apiToken, "u"),
+  );
+  assert.equal(deleteCalls, 1);
+});
+
+test("an ambiguous DELETE never repeats while every confirmation inventory fails", async () => {
+  const databaseId = "88888888-8888-4888-8888-888888888888";
+  const apiError = new CloudflareApiError(404, [7404]);
+  apiError.remotePath = `/accounts/${FAKE_CONFIGURATION.accountId}/d1/database/${databaseId}`;
+  apiError.remoteToken = FAKE_CONFIGURATION.apiToken;
+  let deleteCalls = 0;
+  let inventoryCalls = 0;
+  const requestFn = async (_configuration, _path, init = {}) => {
+    if ((init.method ?? "GET") === "DELETE") {
+      deleteCalls += 1;
+      throw apiError;
+    }
+    inventoryCalls += 1;
+    throw apiError;
+  };
+
+  let error;
+  await assert.rejects(
+    () =>
+      deleteDatabaseWithConfirmation(
+        FAKE_CONFIGURATION,
+        databaseId,
+        requestFn,
+        Date.now() + 60_000,
+      ),
+    (rejection) => {
+      error = rejection;
+      return true;
+    },
+  );
+
+  assert.match(error.message, /phase=inventory-after-delete; attempt=4\/4/u);
+  assert.match(error.message, /HTTP 404; error codes: 7404/u);
+  assert.doesNotMatch(error.message, new RegExp(databaseId, "u"));
+  assert.doesNotMatch(
+    error.message,
+    new RegExp(FAKE_CONFIGURATION.accountId, "u"),
+  );
+  assert.doesNotMatch(
+    error.message,
+    new RegExp(FAKE_CONFIGURATION.apiToken, "u"),
+  );
+  assert.equal(deleteCalls, 1);
+  assert.equal(inventoryCalls, 4);
+});
+
+test("only a complete inventory that still lists the database authorizes another DELETE", async () => {
+  const databaseId = "99999999-9999-4999-8999-999999999999";
+  const apiError = new CloudflareApiError(404, [7404]);
+  const calls = [];
+  let deleteCalls = 0;
+  let inventoryCalls = 0;
+  const requestFn = async (_configuration, _path, init = {}) => {
+    if ((init.method ?? "GET") === "DELETE") {
+      deleteCalls += 1;
+      calls.push(`delete-${String(deleteCalls)}`);
+      if (deleteCalls === 1) throw apiError;
+      if (deleteCalls === 2) return { success: true, result: null };
+      throw new Error("an unproven extra DELETE was issued");
+    }
+    inventoryCalls += 1;
+    calls.push(`inventory-${String(inventoryCalls)}`);
+    if (inventoryCalls === 1) throw apiError;
+    if (inventoryCalls === 2) {
+      return {
+        result: [{ name: "qualquer", uuid: databaseId }],
+        result_info: {
+          count: 1,
+          page: 1,
+          per_page: INVENTORY_PAGE_SIZE,
+          total_count: 1,
+        },
+      };
+    }
+    return {
+      result: [],
+      result_info: {
+        count: 0,
+        page: 1,
+        per_page: INVENTORY_PAGE_SIZE,
+        total_count: 0,
+      },
+    };
+  };
+
+  await deleteDatabaseWithConfirmation(
+    FAKE_CONFIGURATION,
+    databaseId,
+    requestFn,
+    Date.now() + 60_000,
+  );
+
+  assert.deepEqual(calls, [
+    "delete-1",
+    "inventory-1",
+    "inventory-2",
+    "delete-2",
+    "inventory-3",
+  ]);
+  assert.equal(deleteCalls, 2);
+  assert.equal(inventoryCalls, 3);
+});
+
+test("an exhausted confirmation backoff reports its sanitized phase and attempt", async () => {
+  const databaseId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  let requestCalls = 0;
+  const requestFn = async () => {
+    requestCalls += 1;
+    throw new Error("the expired deadline must prevent network access");
+  };
+
+  await assert.rejects(
+    () =>
+      deleteDatabaseWithConfirmation(
+        FAKE_CONFIGURATION,
+        databaseId,
+        requestFn,
+        Date.now() - 1,
+      ),
+    /phase=inventory-after-delete; attempt=1\/4.*deadline/u,
+  );
+  assert.equal(requestCalls, 0);
 });
 
 test("a final DELETE error is not authoritative when the database is already gone", async () => {
@@ -968,6 +1178,6 @@ test("a final DELETE error with the database still listed propagates", async () 
   await assert.rejects(
     () =>
       deleteDatabaseWithConfirmation(FAKE_CONFIGURATION, databaseId, requestFn),
-    /simulated delete failure/u,
+    /phase=delete; attempt=4\/4.*details were withheld/u,
   );
 });

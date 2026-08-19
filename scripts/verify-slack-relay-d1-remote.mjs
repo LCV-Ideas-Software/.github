@@ -41,6 +41,8 @@ export const REAPER_MINIMUM_MARGIN_MS = 60_000;
 export const REMOTE_PROOF_CLEANUP_RESERVE_MS = 5 * 60_000;
 const REMOTE_PROOF_REAPER_BUDGET_MS = 5 * 60_000;
 const DELETE_CONFIRMATION_ATTEMPTS = 4;
+const DELETE_PHASE = "delete";
+const INVENTORY_AFTER_DELETE_PHASE = "inventory-after-delete";
 
 // A migração 0006 sela o protocolo legado e EXIGE o estado de ativação
 // histórico em relay_state (a 0001 o cria inativo). O pipeline legado foi
@@ -65,6 +67,58 @@ export const EXPECTED_FINAL_SCHEMA = Object.freeze([
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+export class CloudflareApiError extends Error {
+  constructor(status, errorCodes) {
+    const safeStatus = Number.isSafeInteger(status) ? status : 0;
+    const safeErrorCodes = Object.freeze(
+      Array.isArray(errorCodes)
+        ? errorCodes
+            .map((code) => Number(code))
+            .filter((code) => Number.isFinite(code))
+        : [],
+    );
+    super(
+      `A Cloudflare API request failed (HTTP ${String(safeStatus)}; error codes: ${safeErrorCodes.join(",") || "none"}).`,
+    );
+    this.name = "CloudflareApiError";
+    this.status = safeStatus;
+    this.errorCodes = safeErrorCodes;
+  }
+}
+
+function remoteFailureSummary(error) {
+  if (error instanceof CloudflareApiError) return error.message;
+  if (error instanceof RemoteMaintenanceDeadlineError) {
+    return "The remote maintenance deadline was reached.";
+  }
+  return "The remote request failed; details were withheld from the log.";
+}
+
+function deleteConfirmationFailure(phase, attempt, error) {
+  invariant(
+    phase === DELETE_PHASE || phase === INVENTORY_AFTER_DELETE_PHASE,
+    "The D1 delete-confirmation phase is invalid.",
+  );
+  invariant(
+    Number.isSafeInteger(attempt) &&
+      attempt >= 1 &&
+      attempt <= DELETE_CONFIRMATION_ATTEMPTS,
+    "The D1 delete-confirmation attempt is invalid.",
+  );
+  return new Error(
+    `D1 delete confirmation failed (phase=${phase}; attempt=${String(attempt)}/${String(DELETE_CONFIRMATION_ATTEMPTS)}). ${remoteFailureSummary(error)}`,
+  );
+}
+
+async function waitForDeleteConfirmationRetry(phase, attempt, deadlineMs) {
+  try {
+    const backoffMs = deleteConfirmationBackoffMs(attempt - 1, deadlineMs);
+    await delay(backoffMs);
+  } catch (error) {
+    throw deleteConfirmationFailure(phase, attempt, error);
+  }
 }
 
 // Reconstrução por alfabeto CONSTANTE: todo identificador vindo da rede que
@@ -246,14 +300,12 @@ export async function cloudflareRequest(
     ? payload.errors
         .map((entry) => Number(entry?.code))
         .filter((code) => Number.isFinite(code))
-        .join(",")
-    : "";
+    : [];
   // A mensagem nunca inclui o caminho: ele embute o account id vindo do
   // ambiente, e nada derivado do ambiente pode alcançar um log.
-  invariant(
-    payload?.success === true,
-    `A Cloudflare API request failed (HTTP ${response.status}; error codes: ${numericErrorCodes || "none"}); the failing step names the operation.`,
-  );
+  if (payload?.success !== true) {
+    throw new CloudflareApiError(response.status, numericErrorCodes);
+  }
   return payload;
 }
 
@@ -607,60 +659,67 @@ export async function deleteDatabaseWithConfirmation(
     databaseId !== PRODUCTION_DATABASE_ID,
     "Refusing to delete the production database.",
   );
-  for (let attempt = 0; attempt < DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
-    try {
-      deadlineBoundedTimeout(deadlineMs);
-      await requestFn(
-        configuration,
-        `/accounts/${configuration.accountId}/d1/database/${databaseId}`,
-        { method: "DELETE" },
-        deadlineMs,
-      );
-    } catch (error) {
-      if (attempt + 1 === DELETE_CONFIRMATION_ATTEMPTS) {
-        // Um DELETE anterior pode ter vencido com o inventário atrasado:
-        // o erro do último DELETE (um 404, por exemplo) só é veredito se
-        // o banco AINDA estiver listado. Se o inventário estiver
-        // indisponível, a causa raiz continua sendo o erro original.
-        let stillListed = true;
-        try {
-          const databases = await listDatabases(
-            configuration,
-            requestFn,
-            deadlineMs,
-          );
-          stillListed = databases.some(
-            (database) => database.uuid === databaseId,
-          );
-        } catch {
-          // inventário indisponível: propaga o erro original do DELETE
-        }
-        if (!stillListed) return;
-        throw error;
+  // A primeira tentativa é autorizada pelo chamador, que obteve o UUID de
+  // uma criação ou de um inventário completo. Depois de QUALQUER tentativa,
+  // inclusive uma resposta perdida, só um novo inventário positivo pode
+  // autorizar outro DELETE.
+  let deletePermitted = true;
+  let lastDeleteError;
+  for (let attempt = 1; attempt <= DELETE_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    if (deletePermitted) {
+      try {
+        deadlineBoundedTimeout(deadlineMs);
+        deletePermitted = false;
+        await requestFn(
+          configuration,
+          `/accounts/${configuration.accountId}/d1/database/${databaseId}`,
+          { method: "DELETE" },
+          deadlineMs,
+        );
+        lastDeleteError = undefined;
+      } catch (error) {
+        // A resposta pode ter se perdido depois de um DELETE aceito. Nem 404
+        // nem qualquer outra falha de DELETE prova ausência: somente um
+        // inventário completo e coerente pode concluir a confirmação.
+        lastDeleteError = error;
       }
     }
     let databases;
     try {
       databases = await listDatabases(configuration, requestFn, deadlineMs);
     } catch (error) {
-      // Depois de um DELETE aceito, a lista e o total_count do plano de
-      // controle podem convergir em momentos diferentes. Nunca trate essa
-      // leitura contraditória como ausência: repita o ciclo de DELETE +
-      // inventário dentro do mesmo teto e propague o erro na última tentativa.
-      const backoffMs = deleteConfirmationBackoffMs(attempt, deadlineMs);
-      if (backoffMs === 0) throw error;
-      await delay(backoffMs);
+      // Depois de um DELETE aceito ou de resposta ambígua, a lista e o
+      // total_count do plano de controle podem convergir em momentos
+      // diferentes. Não repita o DELETE: consulte novamente o inventário, e
+      // nunca converta um 404 em sucesso.
+      if (attempt === DELETE_CONFIRMATION_ATTEMPTS) {
+        throw deleteConfirmationFailure(
+          INVENTORY_AFTER_DELETE_PHASE,
+          attempt,
+          error,
+        );
+      }
+      await waitForDeleteConfirmationRetry(
+        INVENTORY_AFTER_DELETE_PHASE,
+        attempt,
+        deadlineMs,
+      );
       continue;
     }
     if (!databases.some((database) => database.uuid === databaseId)) {
       return;
     }
-    const backoffMs = deleteConfirmationBackoffMs(attempt, deadlineMs);
-    if (backoffMs > 0) await delay(backoffMs);
+    deletePermitted = true;
+    if (attempt === DELETE_CONFIRMATION_ATTEMPTS) {
+      if (lastDeleteError !== undefined) {
+        throw deleteConfirmationFailure(DELETE_PHASE, attempt, lastDeleteError);
+      }
+      throw new Error(
+        `D1 delete confirmation failed (phase=${INVENTORY_AFTER_DELETE_PHASE}; attempt=${String(attempt)}/${String(DELETE_CONFIRMATION_ATTEMPTS)}). The disposable database is still listed.`,
+      );
+    }
+    await waitForDeleteConfirmationRetry(DELETE_PHASE, attempt, deadlineMs);
   }
-  throw new Error(
-    `A disposable database is still listed after ${DELETE_CONFIRMATION_ATTEMPTS} delete attempts (ID withheld from the log; see the Cloudflare dashboard).`,
-  );
 }
 
 async function d1Query(configuration, databaseId, sql, deadlineMs) {
