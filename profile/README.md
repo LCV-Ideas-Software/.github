@@ -73,9 +73,9 @@ The organization maintains 11 active public repositories, including its institut
 
 ### 🏛️ Organization infrastructure
 
-| Repository                                                   | Visibility | What it does                                                                                                                          |
-| ------------------------------------------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| [**.github**](https://github.com/LCV-Ideas-Software/.github) | Public     | Organization profile, community-health defaults, policy documentation, public Pages/Sponsors surfaces, and the GitHub-to-Slack relay. |
+| Repository                                                   | Visibility | What it does                                                                                                      |
+| ------------------------------------------------------------ | ---------- | ----------------------------------------------------------------------------------------------------------------- |
+| [**.github**](https://github.com/LCV-Ideas-Software/.github) | Public     | Organization profile, community-health defaults, public policy documentation, and public Pages/Sponsors surfaces. |
 
 ### Archived / discontinued
 
@@ -104,7 +104,7 @@ Anti-abuse   Cloudflare Turnstile + GCP Natural Language
 Desktop      Tauri 2  (Maestro)
 ```
 
-- **D1 separation.** Consumer products and the operator control plane share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; the GitHub-to-Slack relay uses `github-slack-alerts-db`. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
+- **D1 separation.** Consumer products and the operator control plane share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; infrastructure services use dedicated databases. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
 - **One media bucket.** `mainsite-media` is shared by `mainsite-app` and `admin-app`. Upload handling uses magic-byte sniffing, allowlisted MIME types, a 10 MiB cap, and a sandboxed legacy SVG fallback.
 - **Defense in depth.** Cloudflare Access gates _who_ enters admin surfaces; CSP gates _what_ the browser can execute on public surfaces; Turnstile gates form anti-abuse; GCP Natural Language scores comment moderation.
 

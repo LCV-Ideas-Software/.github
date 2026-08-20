@@ -43,6 +43,8 @@ jobs:
           npm audit --audit-level=low
           expected_wrangler="$(node -p "require('./package.json').devDependencies.wrangler")"
           test "$(./node_modules/.bin/wrangler --version)" = "$expected_wrangler"
+      - name: Verify public institutional boundary
+        run: npm test
       - name: Check public page formatting
         run: npm run format:public:check
       - name: Deploy site to Cloudflare Pages

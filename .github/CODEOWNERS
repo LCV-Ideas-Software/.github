@@ -11,13 +11,12 @@
 /.agents/ @lcv-leo
 /.gemini/ @lcv-leo
 /.github/CODEOWNERS @lcv-leo
+/codeql-sarif-gate/ @lcv-leo
 /.github/copilot-instructions.md @lcv-leo
 /.github/dependabot.yml @lcv-leo
 /.github/workflows/ @lcv-leo
 /.npmrc @lcv-leo
-/docs/GITHUB_SLACK_INTEGRATION.md @lcv-leo
-/scripts/ @lcv-leo
-/workers/github-slack-relay/ @lcv-leo
+/test/ @lcv-leo
 
 # Canonical repository artifacts audited on every sanitation
 /README.md @lcv-leo
