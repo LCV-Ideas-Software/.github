@@ -18,7 +18,12 @@ const migratedOperationalPaths = [
   "docs/GITHUB_SLACK_INTEGRATION.md",
   "docs/adr/ADR-002-alertas-v2.md",
   "docs/superpowers",
-  "scripts",
+  "scripts/github-slack-hook-audit.mjs",
+  "scripts/github-slack-hook-audit.test.mjs",
+  "scripts/github-slack-webhook-redelivery.mjs",
+  "scripts/github-slack-webhook-redelivery.test.mjs",
+  "scripts/slack-relay-d1-remote-proof.test.mjs",
+  "scripts/verify-slack-relay-d1-remote.mjs",
   "tools/github-linear-reconciler",
   "workers/github-slack-relay",
 ];
@@ -40,18 +45,28 @@ const retainedPublicPaths = [
 
 test("main contains no migrated operational implementation", () => {
   for (const path of migratedOperationalPaths) {
-    assert.equal(existsSync(join(repositoryRoot, path)), false, `${path} must be absent`);
+    assert.equal(
+      existsSync(join(repositoryRoot, path)),
+      false,
+      `${path} must be absent`,
+    );
   }
 });
 
 test("main retains the public institutional surface", () => {
   for (const path of retainedPublicPaths) {
-    assert.equal(existsSync(join(repositoryRoot, path)), true, `${path} must remain`);
+    assert.equal(
+      existsSync(join(repositoryRoot, path)),
+      true,
+      `${path} must remain`,
+    );
   }
 });
 
 test("only active public workflows remain versioned", () => {
-  const workflows = readdirSync(join(repositoryRoot, ".github", "workflows")).sort();
+  const workflows = readdirSync(
+    join(repositoryRoot, ".github", "workflows"),
+  ).sort();
   assert.deepEqual(workflows, [
     "cloudflare-pages.yml",
     "codeql.yml",

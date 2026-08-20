@@ -18,7 +18,9 @@ presentation rule this organization applies to text meant for people
 
 - Removed the GitHub-to-Slack, Cloudflare Worker/D1, and GitHub–Linear operational implementations,
   their workflows, tests, runbooks, and dedicated dependencies from the public institutional
-  branch after their migration to `github-operations` was validated.
+  branch after their migration to `github-operations` was validated
+  ([github-operations#8](https://github.com/LCV-Ideas-Software/github-operations/pull/8),
+  [tracker #3](https://github.com/LCV-Ideas-Software/github-operations/issues/3)).
 - Removed all seven disabled operational workflow files still present on `main`. The two other
   disabled catalog entries, `native-pr-feedback-signal.yml` and `add-to-project.yml`, were already
   absent from the branch and therefore required no versioned deletion.
@@ -27,8 +29,8 @@ presentation rule this organization applies to text meant for people
 
 - Reduced the root npm dependency graph and Dependabot configuration to the tooling still used by
   the two public-site deployments.
-- Kept the organization profile, public and sponsor sites, community-health defaults, Android
-  public guidance, and active public security/governance workflows in this repository.
+- Kept the organization profile, public and sponsor sites, community-health defaults, and active
+  public security/governance workflows in this repository.
 - Preserved all Git history, tags, releases, and immutable component references. Existing consumers
   pinned to the historical public `codeql-sarif-gate` commit remain unaffected by this branch-only
   cleanup.
