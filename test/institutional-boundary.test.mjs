@@ -63,11 +63,12 @@ test("main retains the public institutional surface", () => {
   }
 });
 
-test("only active public workflows remain versioned", () => {
+test("only active public workflows and their lockfile remain versioned", () => {
   const workflows = readdirSync(
     join(repositoryRoot, ".github", "workflows"),
   ).sort();
   assert.deepEqual(workflows, [
+    "actions.lock",
     "cloudflare-pages.yml",
     "codeql.yml",
     "dependency-review.yml",
