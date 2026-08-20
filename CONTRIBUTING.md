@@ -1,6 +1,6 @@
 # Contributing
 
-This repository is maintained by LCV Ideas & Software. Contributions should preserve the security, automation, and release posture of .github.
+This repository is maintained by LCV Ideas & Software. Contributions should preserve the public institutional, community-health, security, and site surfaces of `.github`.
 
 ## Baseline
 

@@ -22,7 +22,8 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard invoke their official Actions directly, pinned by full commit SHA. Repository-owned SARIF gates, policy manifests, workflow-contract validators, and scanner wrappers are intentionally absent.
 - Pull requests reach `main` only through squash and GitHub's native merge queue after authorized human admission; no repository-owned auto-merge or governance controller is used.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
-- The organization-wide GitHub-to-Slack alert relay lives in [`workers/github-slack-relay`](./workers/github-slack-relay); its architecture and operating procedure are documented in [`docs/GITHUB_SLACK_INTEGRATION.md`](./docs/GITHUB_SLACK_INTEGRATION.md).
+
+Operational systems and their private runbooks are intentionally outside this public institutional repository.
 
 Changes from 11/08/2026 onward are recorded in [`CHANGELOG.md`](./CHANGELOG.md), grouped by date, each linked to the pull request that carried it or, for changes that are repository settings rather than files, to the issue holding their execution trail. Earlier work is not summarized there; the commit history remains its record.
 

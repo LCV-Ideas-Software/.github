@@ -1,4 +1,0 @@
-# Intentionally contains no values.
-# Secrets Store bindings are created locally with Wrangler Secrets Store commands;
-# .dev.vars is not a substitute for GITHUB_WEBHOOK_SECRET, SLACK_BOT_TOKEN, or
-# ALERTS_STATUS_SECRET in this Worker.

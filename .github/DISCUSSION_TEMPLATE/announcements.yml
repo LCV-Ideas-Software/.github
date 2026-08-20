@@ -1,17 +1,16 @@
-title: "[Release] "
+title: "[Anúncio] "
 body:
   - type: markdown
     attributes:
       value: |
-        Use este formulário para registrar uma publicação concluída. Não publique segredos,
-        credenciais, URLs privadas nem identificadores reais de contas ou infraestrutura.
+        Use este formulário somente para anúncios que possam ser apresentados integralmente ao
+        público. Não publique segredos, credenciais, URLs privadas, identificadores reais de contas
+        ou infraestrutura, nem dados de trabalho sensíveis.
   - type: input
-    id: version
+    id: reference
     attributes:
-      label: Versão
-      placeholder: "vXX.YY.ZZ"
-    validations:
-      required: true
+      label: Referência pública
+      description: Informe uma versão, PR, Issue ou URL pública quando houver.
   - type: textarea
     id: highlights
     attributes:
@@ -21,8 +20,8 @@ body:
   - type: textarea
     id: breaking
     attributes:
-      label: Mudanças incompatíveis
-      description: Escreva "nenhuma" quando não houver.
+      label: Impacto público
+      description: Explique mudanças de comportamento ou escreva "nenhum" quando não houver.
     validations:
       required: true
   - type: textarea

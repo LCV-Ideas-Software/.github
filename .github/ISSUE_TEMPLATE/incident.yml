@@ -1,5 +1,5 @@
-name: Incident
-description: Produção ou CI está indisponível ou degradada e exige análise de causa
+name: Public incident
+description: Uma superfície pública deste repositório está indisponível ou degradada
 title: "[Incident]: "
 labels: ["bug"]
 type: Incident
@@ -7,8 +7,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Este repositório é público. Não publique segredos, credenciais, URLs privadas nem
-        identificadores reais de contas ou infraestrutura.
+        Use este formulário somente para incidentes das superfícies públicas deste repositório.
+        Incidentes internos pertencem aos trackers privados. Não publique segredos, credenciais,
+        URLs privadas nem identificadores reais de contas ou infraestrutura.
   - type: textarea
     id: impact
     attributes:
