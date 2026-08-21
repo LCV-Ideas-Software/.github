@@ -20,7 +20,8 @@ presentation rule this organization applies to text meant for people
   repository. The complete controller, scheduler, canaries, credentials, and operational ownership
   now live exclusively in `github-operations`
   ([controller #101](https://github.com/LCV-Ideas-Software/github-operations/pull/101),
-  [ruleset validation #102](https://github.com/LCV-Ideas-Software/github-operations/pull/102)).
+  [ruleset validation #102](https://github.com/LCV-Ideas-Software/github-operations/pull/102),
+  [cleanup #271](https://github.com/LCV-Ideas-Software/.github/pull/271)).
 - Removed the exception that allowed operational system code in `.github`; this repository retains
   only its institutional public surfaces and the workflows that secure or publish those surfaces.
 
