@@ -37,6 +37,8 @@ const retainedPublicPaths = [
   ".github/workflows/zizmor.yml",
   ".github/ISSUE_TEMPLATE",
   ".github/DISCUSSION_TEMPLATE",
+  "dependabot-automerge/action.yml",
+  "dependabot-automerge/main.mjs",
   "profile/README.md",
   "site/index.html",
   "site/sponsor/index.html",
