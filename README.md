@@ -20,13 +20,13 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - Dependabot checks GitHub Actions and npm daily and automatically rebases its pull requests. GitHub Actions updates are evaluated immediately; npm applies a seven-day cooldown to ordinary version updates. The cooldown does not apply to security updates.
 - The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build.
 - CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard invoke their official Actions directly, pinned by full commit SHA. Repository-owned SARIF gates, policy manifests, workflow-contract validators, and scanner wrappers are intentionally absent.
-- Pull requests reach `main` only through squash and GitHub's native merge queue. Human-authored changes require authorized human admission. Canonical same-repository Dependabot pull requests use a narrowly scoped native auto-merge reconciler that pins every mutation to the observed head SHA and cannot bypass queue checks.
+- Pull requests reach `main` only through squash and GitHub's native merge queue. Human-authored changes require authorized human admission. Canonical same-repository Dependabot pull requests are handled by **Dependabot Custom Auto-merge**, operated exclusively from `github-operations`; it pins every mutation to the observed head SHA and cannot bypass queue checks.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
 
-The reusable Dependabot action in `dependabot-automerge/` is an explicitly authorized exception.
-Its scheduler, operational ownership, future evolutions, and canaries belong in the private
-`github-operations` repository. All other operational systems and private runbooks remain outside
-this public institutional repository.
+Operational systems, reusable actions, controllers, schedulers, canaries, and private runbooks are
+intentionally absent from this public institutional repository. Their implementation and operation
+belong in `github-operations`. The workflows retained here act only on this repository's public
+institutional surfaces and security posture; they are not organization-wide control systems.
 
 Changes from 11/08/2026 onward are recorded in [`CHANGELOG.md`](./CHANGELOG.md), grouped by date, each linked to the pull request that carried it or, for changes that are repository settings rather than files, to the issue holding their execution trail. Earlier work is not summarized there; the commit history remains its record.
 

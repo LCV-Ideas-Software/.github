@@ -12,22 +12,24 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
-## 21/08/2026 — Dependabot native auto-merge
+## 21/08/2026 — Dependabot Custom Auto-merge
 
-### Added
+### Removed
 
-- Added a reusable, fail-closed Dependabot reconciler that accepts only canonical same-repository
-  `dependabot[bot]` pull requests. It updates an explicitly stale head through GitHub's native
-  rebase operation and admits an exact observed SHA to native auto-merge or the merge queue.
-- This reusable action is the explicitly authorized exception in the organization's special
-  `.github` repository. Its scheduler, operational ownership, future evolutions, and canaries
-  belong in `github-operations`.
+- Removed the short-lived reusable Dependabot action and its tests from this special `.github`
+  repository. The complete controller, scheduler, canaries, credentials, and operational ownership
+  now live exclusively in `github-operations`
+  ([controller #101](https://github.com/LCV-Ideas-Software/github-operations/pull/101),
+  [ruleset validation #102](https://github.com/LCV-Ideas-Software/github-operations/pull/102)).
+- Removed the exception that allowed operational system code in `.github`; this repository retains
+  only its institutional public surfaces and the workflows that secure or publish those surfaces.
 
 ### Changed
 
 - Distinguished human-authored pull requests, which retain human queue admission, from Dependabot
-  updates, whose admission is intentionally automated. Both paths remain squash-only, have no
-  bypass actor, and must pass the same required checks again on the synthetic `merge_group` SHA.
+  updates, whose admission is intentionally automated by Dependabot Custom Auto-merge from
+  `github-operations`. Both paths remain squash-only, have no bypass actor, and must pass the same
+  required checks again on the synthetic `merge_group` SHA.
 
 ## 20/08/2026 — Separação da operação interna
 
