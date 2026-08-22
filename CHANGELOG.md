@@ -12,6 +12,24 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 22/08/2026 — Linear Release oficial
+
+### Added
+
+- Added a repository-local `Linear Release` workflow for pushes to `main`, using Linear's official
+  `linear/linear-release-action` `v0.16.0` pinned to immutable commit
+  `0a25abab892a91062ebf42260dbb2ce6277aa205`.
+- Preserved the continuous `.github-org` pipeline, complete Git history, dedicated
+  `linear-release` environment, least-privilege `contents: read` grant, non-canceling concurrency,
+  and best-effort behavior. The workflow records only this repository's commits and is not an
+  organization-wide operational system.
+- Refined the institutional-boundary gate so it continues to reject migrated controllers and
+  integrations while explicitly requiring the repository-local writer's trigger, permissions,
+  environment, full history, immutable Action pin, and absence of shell downloaders.
+- Documented the accepted upstream supply-chain gap: the Action pin protects the Action source,
+  but its installer still downloads the selected CLI without authenticating its bytes. The issue
+  remains tracked in `linear/linear-release-action#59` / `LIN-82854`.
+
 ## 21/08/2026 — Dependabot Custom Auto-merge
 
 ### Removed

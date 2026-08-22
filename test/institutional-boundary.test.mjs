@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -12,7 +12,6 @@ const migratedOperationalPaths = [
   ".github/workflows/github-slack-integration.yml",
   ".github/workflows/github-slack-webhook-redelivery.yml",
   ".github/workflows/linear-freshness.yml",
-  ".github/workflows/linear-release.yml",
   ".github/workflows/slack-d1-disposable-reaper.yml",
   "docs/GITHUB_LINEAR_RECONCILIATION.md",
   "docs/GITHUB_SLACK_INTEGRATION.md",
@@ -34,6 +33,7 @@ const retainedPublicPaths = [
   ".github/workflows/cloudflare-pages.yml",
   ".github/workflows/codeql.yml",
   ".github/workflows/dependency-review.yml",
+  ".github/workflows/linear-release.yml",
   ".github/workflows/pages.yml",
   ".github/workflows/scorecard.yml",
   ".github/workflows/zizmor.yml",
@@ -65,6 +65,31 @@ test("main retains the public institutional surface", () => {
   }
 });
 
+test("Linear Release remains a repository-local official writer", () => {
+  const workflow = readFileSync(
+    join(repositoryRoot, ".github", "workflows", "linear-release.yml"),
+    "utf8",
+  );
+
+  assert.match(workflow, /push:\s*\n\s*branches:\s*\n\s*- main/);
+  assert.match(workflow, /^permissions: \{\}$/m);
+  assert.match(workflow, /environment: linear-release/);
+  assert.match(workflow, /contents: read/);
+  assert.match(workflow, /fetch-depth: 0/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /continue-on-error: true/);
+  assert.match(
+    workflow,
+    /linear\/linear-release-action@0a25abab892a91062ebf42260dbb2ce6277aa205/,
+  );
+  assert.doesNotMatch(workflow, /workflow_call:/);
+  assert.doesNotMatch(workflow, /\b(?:curl|wget|Invoke-WebRequest)\b/);
+  assert.doesNotMatch(
+    workflow,
+    /(?:github-slack|github-linear|reconciliation)/i,
+  );
+});
+
 test("only active public workflows and their lockfile remain versioned", () => {
   const workflows = readdirSync(
     join(repositoryRoot, ".github", "workflows"),
@@ -74,6 +99,7 @@ test("only active public workflows and their lockfile remain versioned", () => {
     "cloudflare-pages.yml",
     "codeql.yml",
     "dependency-review.yml",
+    "linear-release.yml",
     "pages.yml",
     "scorecard.yml",
     "zizmor.yml",
