@@ -45,581 +45,194 @@
       }
     </script>
 
-    <style>
-      :root {
-        --bg: #050b18;
-        --bg-deep: #03070f;
-        --bg-elev: #0d1a2e;
-        --bg-elev-2: #13243f;
-        --fg: #f1f5fb;
-        --fg-soft: #c5d3e6;
-        --fg-muted: #8aa0bd;
-        --border: #1e3a5f;
-        --border-strong: #2d5180;
-        --accent: #38bdf8;
-        --accent-strong: #0ea5e9;
-        --accent-cool: #2563eb;
-        --accent-emerald: #34d399;
-        --accent-warm: #f59e0b;
-        --shadow: rgba(2, 6, 18, 0.6);
-        --glow-cyan: rgba(56, 189, 248, 0.35);
-        --glow-blue: rgba(37, 99, 235, 0.32);
-        --grad-hero:
-          radial-gradient(
-            circle at 14% -8%,
-            rgba(37, 99, 235, 0.55),
-            transparent 52%
-          ),
-          radial-gradient(
-            circle at 92% 18%,
-            rgba(6, 182, 212, 0.42),
-            transparent 56%
-          ),
-          radial-gradient(
-            circle at 50% 110%,
-            rgba(15, 118, 110, 0.25),
-            transparent 60%
-          );
-        --grad-card: linear-gradient(160deg, #0f1f3d 0%, #081428 100%);
-        --grad-cta: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
-        --grad-pill: linear-gradient(135deg, #38bdf8 0%, #2563eb 100%);
-        --grad-eyebrow: linear-gradient(
-          135deg,
-          rgba(56, 189, 248, 0.18),
-          rgba(52, 211, 153, 0.18)
-        );
-      }
-      * {
-        box-sizing: border-box;
-      }
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-      }
-      body {
-        background: var(--grad-hero), var(--bg);
-        background-attachment: fixed;
-        color: var(--fg);
-        font:
-          16px/1.55 -apple-system,
-          BlinkMacSystemFont,
-          "Segoe UI",
-          Roboto,
-          "Helvetica Neue",
-          Arial,
-          sans-serif;
-        font-feature-settings: "ss01", "cv11";
-        min-height: 100vh;
-      }
-      a {
-        color: var(--accent);
-        text-decoration: none;
-      }
-      a:hover {
-        color: #7dd3fc;
-        text-decoration: underline;
-      }
-      code {
-        font-family:
-          ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas,
-          monospace;
-        font-size: 0.92em;
-      }
-
-      .sr-only {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
-        border: 0;
-      }
-
-      .topbar {
-        position: sticky;
-        top: 0;
-        z-index: 10;
-        background: rgba(5, 11, 24, 0.78);
-        backdrop-filter: saturate(160%) blur(14px);
-        -webkit-backdrop-filter: saturate(160%) blur(14px);
-        border-bottom: 1px solid var(--border);
-      }
-      .topbar-inner {
-        width: min(1080px, 100%);
-        margin: 0 auto;
-        padding: 14px 20px;
-        display: flex;
-        align-items: center;
-        gap: 16px;
-      }
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        color: var(--fg);
-        font-weight: 800;
-        letter-spacing: -0.01em;
-      }
-      .brand img {
-        width: 32px;
-        height: 32px;
-        display: block;
-        filter: drop-shadow(0 0 12px var(--glow-cyan));
-      }
-      .brand span {
-        font-size: 15px;
-      }
-      .topbar nav {
-        margin-left: auto;
-        display: flex;
-        gap: 18px;
-        font-size: 14px;
-      }
-      .topbar nav a {
-        color: var(--fg-muted);
-        font-weight: 600;
-        transition: color 120ms ease;
-      }
-      .topbar nav a:hover {
-        color: var(--accent);
-        text-decoration: none;
-      }
-
-      main {
-        width: min(1080px, 100%);
-        margin: 0 auto;
-        padding: 64px 20px 96px;
-      }
-
-      .hero {
-        text-align: center;
-        padding: 32px 0 56px;
-      }
-      .hero .hero-mark {
-        display: block;
-        width: 64px;
-        height: 64px;
-        margin: 0 auto 20px;
-        filter: drop-shadow(0 0 28px var(--glow-cyan))
-          drop-shadow(0 0 40px var(--glow-blue));
-      }
-      .hero .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 7px 16px;
-        border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-        background: var(--grad-eyebrow);
-        border-radius: 999px;
-        color: #bae6fd;
-        font-size: 11.5px;
-        font-weight: 700;
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        margin-bottom: 26px;
-        box-shadow:
-          0 0 24px rgba(56, 189, 248, 0.18),
-          inset 0 1px 0 rgba(255, 255, 255, 0.06);
-      }
-      .hero h1 {
-        font-size: clamp(38px, 5.8vw, 68px);
-        line-height: 1.02;
-        letter-spacing: -0.045em;
-        font-weight: 900;
-        margin: 0 auto;
-        max-width: 18ch;
-        text-wrap: balance;
-      }
-      .hero h1 strong {
-        background: linear-gradient(
-          135deg,
-          #7dd3fc 0%,
-          #38bdf8 50%,
-          #34d399 100%
-        );
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
-        color: transparent;
-        font-weight: 900;
-      }
-      .hero .tagline {
-        max-width: 640px;
-        margin: 22px auto 0;
-        color: var(--fg-soft);
-        font-size: clamp(16px, 1.8vw, 19px);
-        line-height: 1.6;
-      }
-      .hero .actions {
-        margin-top: 32px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        justify-content: center;
-      }
-
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 11px 20px;
-        border-radius: 999px;
-        border: 1px solid var(--border-strong);
-        background: rgba(13, 26, 46, 0.7);
-        color: var(--fg);
-        font-weight: 700;
-        font-size: 14px;
-        letter-spacing: 0.01em;
-        transition:
-          transform 160ms ease,
-          border-color 160ms ease,
-          box-shadow 160ms ease,
-          background 160ms ease;
-      }
-      .btn:hover {
-        text-decoration: none;
-        transform: translateY(-1px);
-        border-color: var(--accent);
-        background: rgba(13, 26, 46, 0.92);
-        box-shadow: 0 8px 24px var(--glow-cyan);
-      }
-      .btn.primary {
-        background: var(--grad-cta);
-        color: #fff;
-        border-color: transparent;
-        box-shadow:
-          0 10px 28px var(--glow-blue),
-          inset 0 1px 0 rgba(255, 255, 255, 0.18);
-      }
-      .btn.primary:hover {
-        border-color: transparent;
-        filter: brightness(1.08);
-        box-shadow:
-          0 14px 36px var(--glow-blue),
-          inset 0 1px 0 rgba(255, 255, 255, 0.22);
-      }
-
-      .stats {
-        margin: 8px auto 0;
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 4px 32px;
-        padding: 22px 18px;
-        border: 1px solid var(--border);
-        border-radius: 22px;
-        background: var(--grad-card);
-        box-shadow:
-          0 24px 48px var(--shadow),
-          inset 0 1px 0 rgba(255, 255, 255, 0.04);
-        max-width: 780px;
-      }
-      .stats div {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 8px;
-      }
-      .stats b {
-        font-size: 20px;
-        font-weight: 900;
-        color: var(--fg);
-        letter-spacing: -0.02em;
-        background: linear-gradient(135deg, #f1f5fb 0%, #7dd3fc 100%);
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
-      }
-      .stats span {
-        color: var(--fg-muted);
-        font-size: 13px;
-      }
-
-      .section {
-        padding-top: 72px;
-      }
-      .section h2 {
-        font-size: clamp(24px, 3vw, 32px);
-        margin: 0 0 8px;
-        letter-spacing: -0.025em;
-        font-weight: 800;
-        color: var(--fg);
-      }
-      .section .lead {
-        color: var(--fg-muted);
-        margin: 0 0 28px;
-        font-size: 15px;
-        max-width: 680px;
-        line-height: 1.6;
-      }
-
-      .cards {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 18px;
-      }
-      .card {
-        position: relative;
-        background: var(--grad-card);
-        border: 1px solid var(--border);
-        border-radius: 20px;
-        padding: 22px 22px;
-        transition:
-          border-color 200ms ease,
-          transform 200ms ease,
-          box-shadow 200ms ease;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        isolation: isolate;
-      }
-      .card::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: radial-gradient(
-          circle at 80% -20%,
-          rgba(56, 189, 248, 0.16),
-          transparent 60%
-        );
-        opacity: 0;
-        transition: opacity 200ms ease;
-        pointer-events: none;
-        z-index: -1;
-      }
-      .card:hover {
-        border-color: var(--accent);
-        transform: translateY(-3px);
-        box-shadow:
-          0 20px 44px var(--shadow),
-          0 0 0 1px var(--glow-cyan);
-      }
-      .card:hover::before {
-        opacity: 1;
-      }
-      .card .badges {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-bottom: 14px;
-      }
-      .badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 3px 10px;
-        font-size: 10.5px;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--fg-muted);
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        background: rgba(5, 11, 24, 0.5);
-      }
-      .badge.accent {
-        color: #bae6fd;
-        border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-        background: linear-gradient(
-          135deg,
-          rgba(56, 189, 248, 0.15),
-          rgba(37, 99, 235, 0.12)
-        );
-      }
-      .badge.warm {
-        color: #fcd34d;
-        border-color: color-mix(in srgb, var(--accent-warm) 60%, var(--border));
-        background: linear-gradient(
-          135deg,
-          rgba(245, 158, 11, 0.14),
-          rgba(245, 158, 11, 0.05)
-        );
-      }
-      .card h3 {
-        margin: 0 0 4px;
-        font-size: 18px;
-        font-weight: 800;
-        letter-spacing: -0.015em;
-        color: var(--fg);
-      }
-      .card .repo {
-        font-size: 12px;
-        color: var(--accent);
-        font-family:
-          ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas,
-          monospace;
-        opacity: 0.85;
-      }
-      .card p {
-        color: var(--fg-soft);
-        margin: 12px 0 14px;
-        font-size: 14px;
-        line-height: 1.55;
-      }
-      .card .links {
-        margin-top: auto;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        font-size: 13px;
-        font-weight: 600;
-      }
-      .card .links a {
-        color: var(--accent);
-      }
-
-      .stack {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-        gap: 14px 24px;
-        font-size: 14px;
-        color: var(--fg-soft);
-        list-style: none;
-        padding: 24px 24px;
-        margin: 18px 0 0;
-        background: var(--grad-card);
-        border: 1px solid var(--border);
-        border-radius: 22px;
-        box-shadow:
-          0 24px 48px var(--shadow),
-          inset 0 1px 0 rgba(255, 255, 255, 0.04);
-      }
-      .stack li b {
-        display: block;
-        color: var(--accent);
-        font-size: 11.5px;
-        font-weight: 800;
-        margin-bottom: 4px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-      }
-
-      footer {
-        border-top: 1px solid var(--border);
-        margin-top: 80px;
-        padding: 40px 20px 56px;
-        text-align: center;
-        color: var(--fg-muted);
-        font-size: 14px;
-        background: linear-gradient(180deg, transparent, rgba(3, 7, 15, 0.6));
-      }
-      footer a {
-        color: var(--fg-soft);
-        font-weight: 600;
-      }
-      footer a:hover {
-        color: var(--accent);
-      }
-      footer .row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 18px;
-        justify-content: center;
-      }
-      footer .copy {
-        margin-top: 18px;
-        font-size: 12.5px;
-        line-height: 1.65;
-        color: var(--fg-muted);
-      }
-      footer .footer-brand {
-        display: block;
-        font-size: 1.5em;
-        line-height: 1.1;
-        margin-bottom: 0.25em;
-        font-weight: 800;
-        background: linear-gradient(135deg, #f1f5fb 0%, #7dd3fc 100%);
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
-        letter-spacing: -0.02em;
-      }
-    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
 
   <body>
-    <header class="topbar">
-      <div class="topbar-inner">
-        <a class="brand" href="#top">
+    <a class="skip-link" href="#products">Ir para o conteúdo</a>
+
+    <header class="nav" id="top">
+      <div class="nav__inner">
+        <a class="nav__brand" href="#top">
           <img src="./assets/lcv-ideas-software-mark.svg" alt="" />
           <span>LCV Ideas &amp; Software</span>
         </a>
-        <nav>
+        <nav class="nav__links" aria-label="Seções">
           <a href="#products">Produtos</a>
           <a href="#operator">Infraestrutura</a>
           <a href="#tooling">Ferramentas</a>
-          <a href="#stack">Stack</a>
-          <a
-            href="https://github.com/LCV-Ideas-Software"
-            target="_blank"
-            rel="noopener noreferrer"
-            >GitHub</a
-          >
+          <a href="#stack">Plataforma</a>
+          <a href="#principles">Princípios</a>
+          <a href="#connect">Sobre</a>
         </nav>
+        <a
+          class="nav__cta"
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+            />
+          </svg>
+          GitHub
+        </a>
       </div>
     </header>
 
-    <main id="top">
+    <main>
+      <!-- ============ HERO ============ -->
       <section class="hero">
-        <img
-          class="hero-mark"
-          src="./assets/lcv-ideas-software-mark.svg"
-          alt=""
-        />
-        <span class="eyebrow">Studio Independente de Vibe Coding</span>
-        <h1>
-          <strong>Transformando Ideias em Software</strong>
-        </h1>
-        <p class="tagline">
-          Onze repositórios públicos no GitHub e deploys cross-reviewed pelo
-          sexteto de AI antes de tocar a edge da Cloudflare.
-        </p>
-        <div class="actions">
-          <a class="btn primary" href="#products">Explorar produtos</a>
-          <a
-            class="btn"
-            href="https://github.com/LCV-Ideas-Software"
-            target="_blank"
-            rel="noopener noreferrer"
-            >Organização no GitHub</a
+        <div class="hero__inner">
+          <div class="hero__copy">
+            <p class="eyebrow">
+              <span class="eyebrow__pulse" aria-hidden="true"></span>Studio
+              Independente de Vibe Coding
+            </p>
+            <h1 class="hero__title">
+              Transformando<br />Ideias em
+              <span class="hero__title-accent">Software</span>
+            </h1>
+            <p class="hero__roles mono" aria-label="Frases">
+              <span id="role-type">Transformando Ideias em Software</span
+              ><span class="caret" aria-hidden="true"></span>
+            </p>
+            <p class="hero__lede">
+              Portfólio público no GitHub e deploys cross-reviewed pelo sexteto
+              de AI antes de tocar a edge da Cloudflare. Da ideia ao produto em
+              produção — com portões que recusam a dúvida.
+            </p>
+            <div class="hero__actions">
+              <a class="btn btn--primary" href="#products">Explorar produtos</a>
+              <a
+                class="btn"
+                href="https://github.com/LCV-Ideas-Software"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Organização no GitHub</a
+              >
+              <a
+                class="btn"
+                href="/sponsor"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Apoiar</a
+              >
+            </div>
+            <dl class="hero__stats">
+              <div class="stat">
+                <dt>repositórios públicos</dt>
+                <dd id="stat-repos" data-count="11">0</dd>
+              </div>
+              <div class="stat">
+                <dt>serviços em produção</dt>
+                <dd data-count="6">0</dd>
+              </div>
+              <div class="stat">
+                <dt>pacotes no npm</dt>
+                <dd data-count="2">0</dd>
+              </div>
+              <div class="stat">
+                <dt>agentes de AI por review</dt>
+                <dd data-count="6">0</dd>
+              </div>
+            </dl>
+            <p class="hero__live mono">
+              <span class="eyebrow__pulse" aria-hidden="true"></span>ao vivo da
+              API do GitHub a cada visita
+            </p>
+          </div>
+
+          <div
+            class="editor reveal"
+            aria-label="lcv.yaml — a empresa como código"
           >
-          <a
-            class="btn"
-            href="/sponsor"
-            target="_blank"
-            rel="noopener noreferrer"
-            >Apoiar</a
-          >
+            <div class="editor__bar">
+              <span
+                class="editor__dot editor__dot--r"
+                aria-hidden="true"
+              ></span>
+              <span
+                class="editor__dot editor__dot--y"
+                aria-hidden="true"
+              ></span>
+              <span
+                class="editor__dot editor__dot--g"
+                aria-hidden="true"
+              ></span>
+              <span class="editor__file mono">lcv.yaml</span>
+              <button
+                class="editor__skip mono"
+                id="editor-skip"
+                type="button"
+                title="Renderizar o arquivo inteiro agora"
+              >
+                pular ⏭
+              </button>
+            </div>
+            <div class="editor__body">
+              <ol
+                class="editor__gutter mono"
+                id="editor-gutter"
+                aria-hidden="true"
+              ></ol>
+              <pre
+                class="editor__code mono"
+                id="editor-code"
+                aria-live="off"
+              ></pre>
+            </div>
+            <div class="editor__status mono" aria-hidden="true">
+              <span class="editor__mode">NORMAL</span>
+              <span>~/lcv/lcv.yaml</span>
+              <span class="editor__meta"
+                ><span id="editor-progress">0%</span> · yaml · utf-8</span
+              >
+            </div>
+          </div>
         </div>
       </section>
 
-      <section class="stats" aria-label="Números do portfólio">
-        <div><b>11</b><span>repositórios públicos</span></div>
-        <div><b>6</b><span>agentes AI</span></div>
-        <div><b>edge</b><span>Cloudflare</span></div>
-      </section>
-
+      <!-- ============ PRODUTOS ============ -->
       <section class="section" id="products">
-        <h2>Aplicações Publicadas</h2>
-        <p class="lead">Web apps com assistência de AI embutida.</p>
+        <div class="section__head reveal">
+          <p class="eyebrow mono">$ ls ~/produtos</p>
+          <h2>Aplicações Publicadas</h2>
+          <p class="section__note">
+            Web apps com assistência de AI embutida, rodando na edge da
+            Cloudflare.
+          </p>
+        </div>
         <div class="cards">
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Web app</span>
-              <span class="badge">AI</span>
-              <span class="badge">Blog</span>
+          <article class="card reveal" style="--accent: var(--cyan)">
+            <div class="card__badges">
+              <span class="chip chip--blue">Web app</span>
+              <span class="chip chip--green">Live</span>
+              <span class="chip chip--muted">Blog · AI</span>
             </div>
             <h3>Reflexos da Alma</h3>
-            <div class="repo">mainsite-app</div>
+            <p class="card__repo">mainsite-app</p>
             <p>
-              Blog pessoal público e serviços companion. Smart-polling reader,
-              chatbot público de AI (Gemini), comentários e ratings com
-              moderação por sentiment, links de sponsor roteados pro
-              sponsor-motor, design accessibility-first.
+              Blog pessoal público com experiência de leitura moderna:
+              smart-polling reader, chatbot público de AI contextualizado nos
+              posts, comentários e ratings com moderação por sentimento e design
+              accessibility-first.
             </p>
-            <div class="links">
+            <div class="card__links">
+              <a
+                href="https://www.reflexosdaalma.blog"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Visitar ↗</a
+              >
               <a
                 href="https://github.com/LCV-Ideas-Software/mainsite-app"
                 target="_blank"
@@ -629,20 +242,26 @@
             </div>
           </article>
 
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Web app</span>
-              <span class="badge">AI</span>
-              <span class="badge">Esoteric</span>
+          <article class="card reveal" style="--accent: var(--sky)">
+            <div class="card__badges">
+              <span class="chip chip--blue">Web app</span>
+              <span class="chip chip--green">Live</span>
+              <span class="chip chip--muted">Esotérico · AI</span>
             </div>
             <h3>Astrólogo</h3>
-            <div class="repo">astrologo-app</div>
+            <p class="card__repo">astrologo-app</p>
             <p>
-              Gerador de mapa natal e análise esotérica com narrativa AI por
-              Gemini. Cálculo astrométrico determinístico, throttling, auth
-              opcional e share por email.
+              Mapas astrais completos com cálculos astrométricos determinísticos
+              e auditáveis — roda natal SVG interativa, Casas Placidus,
+              trânsitos, sinastria consentida — e interpretação narrada por AI.
             </p>
-            <div class="links">
+            <div class="card__links">
+              <a
+                href="https://mapa-astral.lcv.app.br"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Visitar ↗</a
+              >
               <a
                 href="https://github.com/LCV-Ideas-Software/astrologo-app"
                 target="_blank"
@@ -652,20 +271,26 @@
             </div>
           </article>
 
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Web app</span>
-              <span class="badge">AI</span>
-              <span class="badge">Finance</span>
+          <article class="card reveal" style="--accent: var(--emerald)">
+            <div class="card__badges">
+              <span class="chip chip--blue">Web app</span>
+              <span class="chip chip--green">Live</span>
+              <span class="chip chip--muted">Finanças · AI</span>
             </div>
             <h3>Calculadora Financeira</h3>
-            <div class="repo">calculadora-app</div>
+            <p class="card__repo">calculadora-app</p>
             <p>
-              Simulador de FX internacional (cartão de crédito vs conta
-              multi-moeda) com análise contextual via AI. Integra PTAX (BCB),
-              Spot e Gemini.
+              Simulador de câmbio internacional — cartão de crédito vs conta
+              multi-moeda — com PTAX oficial (BCB), spot calibrado com backtest,
+              modo DCC de diagnóstico reverso e análise executiva por AI.
             </p>
-            <div class="links">
+            <div class="card__links">
+              <a
+                href="https://calculadora.lcv.app.br"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Visitar ↗</a
+              >
               <a
                 href="https://github.com/LCV-Ideas-Software/calculadora-app"
                 target="_blank"
@@ -675,20 +300,26 @@
             </div>
           </article>
 
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Web app</span>
-              <span class="badge">AI</span>
-              <span class="badge">Finance</span>
+          <article class="card reveal" style="--accent: var(--amber)">
+            <div class="card__badges">
+              <span class="chip chip--blue">Web app</span>
+              <span class="chip chip--green">Live</span>
+              <span class="chip chip--muted">Finanças · AI</span>
             </div>
             <h3>Oráculo Financeiro</h3>
-            <div class="repo">oraculo-financeiro</div>
+            <p class="card__repo">oraculo-financeiro</p>
             <p>
-              Dashboard de análise de renda fixa indexada ao IPCA (LCI/CDB
-              IPCA+, Tesouro IPCA+) com insights contextuais via Gemini e um
-              Cron Worker pré-aquecendo caches de taxa.
+              Dashboard de renda fixa indexada ao IPCA (LCI/CDB IPCA+, Tesouro
+              IPCA+): rentabilidade real e projeções até o vencimento com cache
+              diário de taxas públicas e insights executivos por AI.
             </p>
-            <div class="links">
+            <div class="card__links">
+              <a
+                href="https://oraculo-financeiro.lcv.app.br"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Visitar ↗</a
+              >
               <a
                 href="https://github.com/LCV-Ideas-Software/oraculo-financeiro"
                 target="_blank"
@@ -700,27 +331,31 @@
         </div>
       </section>
 
+      <!-- ============ INFRAESTRUTURA ============ -->
       <section class="section" id="operator">
-        <h2>Infraestrutura de operação</h2>
-        <p class="lead">
-          O control plane single-tenant e os serviços de suporte que governam os
-          produtos públicos. Cloudflare Access (Zero Trust JWT) gateia todas as
-          superfícies de operator.
-        </p>
+        <div class="section__head reveal">
+          <p class="eyebrow mono">$ systemctl status frota</p>
+          <h2>Infraestrutura de Operação</h2>
+          <p class="section__note">
+            O control plane single-tenant e os serviços de suporte que governam
+            os produtos públicos — superfícies de operador gateadas por
+            Cloudflare Access (Zero Trust).
+          </p>
+        </div>
         <div class="cards">
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Operator</span>
-              <span class="badge">Control plane</span>
+          <article class="card reveal" style="--accent: var(--blue)">
+            <div class="card__badges">
+              <span class="chip chip--amber">Operator</span>
+              <span class="chip chip--muted">Control plane</span>
             </div>
             <h3>Admin Dashboard</h3>
-            <div class="repo">admin-app</div>
+            <p class="card__repo">admin-app</p>
             <p>
-              Control plane de operator pra workspace multi-app: editor de
-              posts, seleção de modelo de AI, CRUD de DNS, ciclo de vida de
-              Pages e Workers, MTA-STS, TLS-RPT, telemetria.
+              Painel único do operador para a frota multi-app: moderação, editor
+              de posts, seleção de modelo de AI, DNS, ciclo de vida de Pages e
+              Workers, MTA-STS, TLS-RPT e telemetria operacional.
             </p>
-            <div class="links">
+            <div class="card__links">
               <a
                 href="https://github.com/LCV-Ideas-Software/admin-app"
                 target="_blank"
@@ -730,21 +365,25 @@
             </div>
           </article>
 
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Worker</span>
-              <span class="badge">Motor</span>
+          <article class="card reveal" style="--accent: var(--emerald)">
+            <div class="card__badges">
+              <span class="chip chip--blue">Worker</span>
+              <span class="chip chip--green">Live</span>
             </div>
-            <h3>MTA-STS Motor</h3>
-            <div class="repo">mtasts-motor</div>
+            <h3>Sponsor Motor</h3>
+            <p class="card__repo">sponsor-motor</p>
             <p>
-              Cloudflare Worker servindo policies MTA-STS dinâmicas (RFC 8461) a
-              partir de um D1 backing store. Desenhado para operadores
-              multi-domínio.
+              Motor de apoios da organização: Mercado Pago Checkout Transparente
+              com Orders API, 3DS acionado por risco, webhooks assinados (HMAC)
+              e dados de cartão restritos aos Secure Fields — o backend nunca vê
+              PII de pagamento em claro.
             </p>
-            <div class="links">
+            <div class="card__links">
+              <a href="/sponsor" target="_blank" rel="noopener noreferrer"
+                >Apoiar ↗</a
+              >
               <a
-                href="https://github.com/LCV-Ideas-Software/mtasts-motor"
+                href="https://github.com/LCV-Ideas-Software/sponsor-motor"
                 target="_blank"
                 rel="noopener noreferrer"
                 >GitHub →</a
@@ -752,21 +391,22 @@
             </div>
           </article>
 
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Worker</span>
-              <span class="badge">Motor</span>
+          <article class="card reveal" style="--accent: var(--cyan)">
+            <div class="card__badges">
+              <span class="chip chip--blue">Worker</span>
+              <span class="chip chip--muted">Infra · RFC 8461</span>
             </div>
-            <h3>Sponsor Motor</h3>
-            <div class="repo">sponsor-motor</div>
+            <h3>MTA-STS Motor</h3>
+            <p class="card__repo">mtasts-motor</p>
             <p>
-              Cloudflare Worker dedicado para o fluxo de sponsor da organização.
-              Processa pagamentos via Mercado Pago Orders API, valida webhooks e
-              armazena metadata mínima de auditoria no D1.
+              Políticas MTA-STS dinâmicas servidas na edge a partir de um D1
+              backing store: um único Worker resolve múltiplos domínios pelo
+              host
+              <code>mta-sts.&lt;domínio&gt;</code>, com respostas endurecidas.
             </p>
-            <div class="links">
+            <div class="card__links">
               <a
-                href="https://github.com/LCV-Ideas-Software/sponsor-motor"
+                href="https://github.com/LCV-Ideas-Software/mtasts-motor"
                 target="_blank"
                 rel="noopener noreferrer"
                 >GitHub →</a
@@ -776,51 +416,38 @@
         </div>
       </section>
 
+      <!-- ============ FERRAMENTAS ============ -->
       <section class="section" id="tooling">
-        <h2>Ferramentas para desenvolvedores</h2>
-        <p class="lead">
-          MCP servers e workbenches editoriais open-source construídos em torno
-          de convergência multi-agent de AI.
-        </p>
+        <div class="section__head reveal">
+          <p class="eyebrow mono">$ npx @lcv-ideas-software</p>
+          <h2>Ferramentas para Desenvolvedores</h2>
+          <p class="section__note">
+            MCP servers e workbenches editoriais open-source construídos em
+            torno de convergência multi-agente de AI.
+          </p>
+        </div>
         <div class="cards">
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">MCP server</span>
-              <span class="badge">Reasoning</span>
-              <span class="badge warm">Apache-2.0</span>
+          <article class="card reveal" style="--accent: var(--sky)">
+            <div class="card__badges">
+              <span class="chip chip--blue">MCP server</span>
+              <span class="chip chip--green">Live no npm</span>
+              <span class="chip chip--muted">Apache-2.0</span>
             </div>
-            <h3>Ultrabrain MCP</h3>
-            <div class="repo">ultrabrain-mcp</div>
+            <h3>cross-review</h3>
+            <p class="card__repo">cross-review</p>
             <p>
-              MCP local criado pela LCV para raciocínio estruturado de
-              engenharia: sessões, branches, evidências, métricas de qualidade,
-              bias checks, validação e prontidão para cross-review.
+              Banca técnica automatizada: seis pares de AI independentes —
+              Claude, Codex, Gemini, DeepSeek, Grok e Perplexity — via APIs
+              oficiais, com decisões estruturadas e convergência somente por
+              unanimidade. O caller jamais revisa o próprio trabalho.
             </p>
-            <div class="links">
+            <div class="card__links">
               <a
-                href="https://github.com/LCV-Ideas-Software/ultrabrain-mcp"
+                href="https://www.npmjs.com/package/@lcv-ideas-software/cross-review"
                 target="_blank"
                 rel="noopener noreferrer"
-                >GitHub →</a
+                >npm ↗</a
               >
-            </div>
-          </article>
-
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">MCP server</span>
-              <span class="badge">API</span>
-              <span class="badge warm">Apache-2.0</span>
-            </div>
-            <h3>Cross Review</h3>
-            <div class="repo">cross-review</div>
-            <p>
-              MCP stdio server API-first para cross-review multi-modelo via APIs
-              oficiais de provider — OpenAI, Anthropic, Google Gemini, DeepSeek,
-              xAI Grok e Perplexity. Sem execução de CLI; convergência unânime
-              obrigatória; caller jamais pode revisar o próprio trabalho.
-            </p>
-            <div class="links">
               <a
                 href="https://github.com/LCV-Ideas-Software/cross-review"
                 target="_blank"
@@ -830,21 +457,56 @@
             </div>
           </article>
 
-          <article class="card">
-            <div class="badges">
-              <span class="badge accent">Desktop</span>
-              <span class="badge">Tauri</span>
-              <span class="badge">AI</span>
+          <article class="card reveal" style="--accent: var(--blue)">
+            <div class="card__badges">
+              <span class="chip chip--blue">MCP server</span>
+              <span class="chip chip--green">Live no npm</span>
+              <span class="chip chip--muted">Apache-2.0</span>
+            </div>
+            <h3>Ultrabrain MCP</h3>
+            <p class="card__repo">ultrabrain-mcp</p>
+            <p>
+              Raciocínio estruturado para agentes de engenharia: sessões,
+              branches, merges, validação de evidências, métricas de qualidade e
+              export — 100% local, sem chamadas a APIs externas de LLM.
+            </p>
+            <div class="card__links">
+              <a
+                href="https://www.npmjs.com/package/@lcv-ideas-software/ultrabrain-mcp"
+                target="_blank"
+                rel="noopener noreferrer"
+                >npm ↗</a
+              >
+              <a
+                href="https://github.com/LCV-Ideas-Software/ultrabrain-mcp"
+                target="_blank"
+                rel="noopener noreferrer"
+                >GitHub →</a
+              >
+            </div>
+          </article>
+
+          <article class="card reveal" style="--accent: var(--amber)">
+            <div class="card__badges">
+              <span class="chip chip--blue">Desktop</span>
+              <span class="chip chip--blue">Tauri · Rust</span>
+              <span class="chip chip--green">Shipping</span>
             </div>
             <h3>Maestro Editorial AI</h3>
-            <div class="repo">maestro-app</div>
+            <p class="card__repo">maestro-app</p>
             <p>
-              Workbench editorial portátil para Windows (Tauri 2 + React 19)
-              voltado a drafting AI protocol-driven, verificação de fontes e
-              convergência editorial multi-agent usando Claude, Codex, Gemini,
-              DeepSeek, Grok e Perplexity.
+              Bancada editorial portátil para Windows com modelo estilo
+              tribunal: quem redige não vota como revisor. Seis pares editoriais
+              de AI, citações ABNT estruturadas, auditoria de links e
+              verificação de evidências web antes do texto final.
             </p>
-            <div class="links">
+            <div class="card__links">
+              <a
+                href="https://maestro-app.lcv.dev"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Site ↗</a
+              >
               <a
                 href="https://github.com/LCV-Ideas-Software/maestro-app"
                 target="_blank"
@@ -856,35 +518,264 @@
         </div>
       </section>
 
+      <!-- ============ PLATAFORMA ============ -->
       <section class="section" id="stack">
-        <h2>Plataforma compartilhada</h2>
-        <p class="lead">
-          Cada app do portfólio roda no mesmo edge stack da Cloudflare e
-          compartilha o D1 unificado. Leituras cross-app via Cloudflare bindings
-          — nunca URLs públicas entre apps siblings.
-        </p>
-        <ul class="stack">
-          <li><b>Frontend</b> React 19 + Vite 8 + TypeScript</li>
-          <li><b>Runtime</b> Cloudflare Pages + Workers (Hono)</li>
-          <li><b>Database</b> Cloudflare D1</li>
-          <li><b>Storage</b> Cloudflare R2</li>
-          <li><b>Auth</b> Cloudflare Access (Zero Trust JWT)</li>
-          <li>
-            <b>AI</b> Claude · Codex · Gemini · DeepSeek · Grok · Perplexity
-          </li>
-          <li><b>Email</b> Resend</li>
-          <li>
-            <b>Sponsorship</b> sponsor-motor + Mercado Pago Checkout
-            Transparente Orders API
-          </li>
-          <li><b>Anti-abuse</b> Turnstile + GCP NL</li>
-          <li><b>Desktop</b> Tauri 2 (Maestro)</li>
-        </ul>
+        <div class="section__head reveal">
+          <p class="eyebrow mono">$ cat plataforma.lock</p>
+          <h2>Plataforma Compartilhada</h2>
+          <p class="section__note">
+            Cada app do portfólio roda no mesmo edge stack da Cloudflare e
+            compartilha o D1 unificado — leituras cross-app via bindings, nunca
+            URLs públicas entre apps irmãos.
+          </p>
+        </div>
+        <div class="stackgrid">
+          <div class="stackrow reveal" style="--accent: var(--cyan)">
+            <h3 class="stackrow__label mono">frontend</h3>
+            <ul class="chips">
+              <li style="--dot: #61dafb">React 19</li>
+              <li style="--dot: #9499ff">Vite 8</li>
+              <li style="--dot: #3178c6">TypeScript</li>
+            </ul>
+          </div>
+          <div class="stackrow reveal" style="--accent: var(--amber)">
+            <h3 class="stackrow__label mono">runtime &amp; dados</h3>
+            <ul class="chips">
+              <li style="--dot: #f38020">Cloudflare Pages</li>
+              <li style="--dot: #f38020">Workers (Hono)</li>
+              <li style="--dot: #f38020">D1 (SQLite)</li>
+              <li style="--dot: #f38020">R2</li>
+              <li style="--dot: #f38020">Cron Triggers</li>
+            </ul>
+          </div>
+          <div class="stackrow reveal" style="--accent: var(--emerald)">
+            <h3 class="stackrow__label mono">auth &amp; anti-abuso</h3>
+            <ul class="chips">
+              <li style="--dot: #38bdf8">Cloudflare Access (Zero Trust JWT)</li>
+              <li style="--dot: #f6821f">Turnstile</li>
+              <li style="--dot: #4285f4">GCP Natural Language</li>
+            </ul>
+          </div>
+          <div class="stackrow reveal" style="--accent: var(--sky)">
+            <h3 class="stackrow__label mono">ai</h3>
+            <ul class="chips">
+              <li style="--dot: #d97757">Claude</li>
+              <li style="--dot: #a78bfa">Codex</li>
+              <li style="--dot: #4285f4">Gemini (Vertex AI)</li>
+              <li style="--dot: #4d6bfe">DeepSeek</li>
+              <li style="--dot: #f1f5fb">Grok</li>
+              <li style="--dot: #1fb8cd">Perplexity</li>
+            </ul>
+          </div>
+          <div class="stackrow reveal" style="--accent: var(--blue)">
+            <h3 class="stackrow__label mono">integrações</h3>
+            <ul class="chips">
+              <li style="--dot: #00b1ea">Mercado Pago Orders API</li>
+              <li style="--dot: #f1f5fb">Resend</li>
+              <li style="--dot: #e01e5a">Slack</li>
+              <li style="--dot: #5e6ad2">Linear</li>
+            </ul>
+          </div>
+          <div class="stackrow reveal" style="--accent: var(--red)">
+            <h3 class="stackrow__label mono">qualidade &amp; segurança</h3>
+            <ul class="chips">
+              <li style="--dot: #6e9f18">Vitest</li>
+              <li style="--dot: #3e67b1">Zod</li>
+              <li style="--dot: #60a5fa">Biome</li>
+              <li style="--dot: #2088ff">CodeQL</li>
+              <li style="--dot: #ff6b6b">Zizmor</li>
+              <li style="--dot: #2e7d32">OpenSSF Scorecard</li>
+              <li style="--dot: #f05032">Actions pinadas por SHA</li>
+              <li style="--dot: #f1f5fb">Merge queues</li>
+            </ul>
+          </div>
+          <div class="stackrow reveal" style="--accent: var(--amber)">
+            <h3 class="stackrow__label mono">desktop</h3>
+            <ul class="chips">
+              <li style="--dot: #24c8db">Tauri 2 (Rust)</li>
+              <li style="--dot: #61dafb">React 19 + WebView2</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ PRINCÍPIOS ============ -->
+      <section class="section" id="principles">
+        <div class="section__head reveal">
+          <p class="eyebrow mono">$ cat principios.txt</p>
+          <h2>Princípios de Engenharia</h2>
+        </div>
+        <div class="terminal reveal mono" role="list">
+          <p role="listitem">
+            <span class="terminal__n">1</span>Fail closed: um portão que não
+            consegue verificar <em>recusa</em> — nunca chuta
+          </p>
+          <p role="listitem">
+            <span class="terminal__n">2</span>RED antes de GREEN — o teste que
+            falha é metade da prova
+          </p>
+          <p role="listitem">
+            <span class="terminal__n">3</span>Toda action externa pinada em SHA
+            completo, toda dependência em lockfile
+          </p>
+          <p role="listitem">
+            <span class="terminal__n">4</span>Nada chega à produção fora da
+            merge queue — deploy manual não existe
+          </p>
+          <p role="listitem">
+            <span class="terminal__n">5</span>Seis modelos de AI discutem cada
+            mudança — unanimidade ou não mergeia
+          </p>
+          <p role="listitem">
+            <span class="terminal__n">6</span>Evidência acima de narrativa:
+            logs, SHAs e run IDs, ou não aconteceu
+          </p>
+          <p role="listitem">
+            <span class="terminal__n">7</span>Da ideia ao worker rodando na edge
+            — essa é a jornada favorita da casa
+          </p>
+        </div>
+      </section>
+
+      <!-- ============ ATIVIDADE / CONNECT ============ -->
+      <section class="section section--connect" id="connect">
+        <div class="section__head reveal">
+          <p class="eyebrow mono">$ gh org view --live</p>
+          <h2>A Organização no GitHub</h2>
+          <p class="section__note">
+            Números renderizados ao vivo da API do GitHub, a cada visita.
+          </p>
+        </div>
+
+        <div
+          class="orgcard reveal"
+          aria-label="Perfil da organização no GitHub"
+        >
+          <h3 class="orgcard__title">LCV-Ideas-Software</h3>
+          <ul class="orgcard__items mono">
+            <li>
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  fill="currentColor"
+                  d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"
+                /></svg
+              ><span id="orgcard-repos">11</span>&nbsp;repositórios públicos
+            </li>
+            <li>
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  fill="currentColor"
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+                /></svg
+              ><span id="orgcard-followers">1</span>&nbsp;seguidores
+            </li>
+            <li>
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  fill="currentColor"
+                  d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm7-3.25v2.992l2.028 1.352a.75.75 0 0 1-.832 1.248l-2.5-1.666A.75.75 0 0 1 6.75 8V4.75a.75.75 0 0 1 1.5 0Z"
+                /></svg
+              ><span id="orgcard-created">No GitHub desde abril de 2026</span>
+            </li>
+            <li>
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  fill="currentColor"
+                  d="M1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25v-8.5C0 2.784.784 2 1.75 2ZM1.5 12.251c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V5.809L8.38 9.397a.75.75 0 0 1-.76 0L1.5 5.809Zm13-8.181v-.32a.25.25 0 0 0-.25-.25H1.75a.25.25 0 0 0-.25.25v.32L8 7.88Z"
+                /></svg
+              >lcv@lcv.dev
+            </li>
+            <li>
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  fill="currentColor"
+                  d="m12.596 11.596-3.535 3.536a1.5 1.5 0 0 1-2.122 0l-3.535-3.536a6.5 6.5 0 1 1 9.192-9.193 6.5 6.5 0 0 1 0 9.193Zm-1.06-8.132v-.001a5 5 0 1 0-7.072 7.072L8 14.07l3.536-3.534a5 5 0 0 0 0-7.072ZM8 9a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 9Z"
+                /></svg
+              >São Paulo, Brasil
+            </li>
+          </ul>
+        </div>
+
+        <div class="connect reveal" style="margin-top: 1.1rem">
+          <a
+            class="connect__item"
+            href="https://github.com/LCV-Ideas-Software"
+            target="_blank"
+            rel="noopener noreferrer"
+            style="--accent: var(--fg)"
+          >
+            <span class="connect__label mono">github</span
+            ><span>LCV-Ideas-Software</span>
+          </a>
+          <a
+            class="connect__item"
+            href="mailto:lcv@lcv.dev"
+            style="--accent: var(--red)"
+          >
+            <span class="connect__label mono">email</span
+            ><span>lcv@lcv.dev</span>
+          </a>
+          <a
+            class="connect__item"
+            href="/sponsor"
+            target="_blank"
+            rel="noopener noreferrer"
+            style="--accent: var(--emerald)"
+          >
+            <span class="connect__label mono">sponsor</span
+            ><span>Apoiar os projetos</span>
+          </a>
+          <a
+            class="connect__item"
+            href="https://lcv-leo.lcv.dev"
+            target="_blank"
+            rel="noopener noreferrer"
+            style="--accent: var(--cyan)"
+          >
+            <span class="connect__label mono">founder</span
+            ><span>Leonardo Cardozo Vargas</span>
+          </a>
+          <a
+            class="connect__item"
+            href="https://www.npmjs.com/org/lcv-ideas-software"
+            target="_blank"
+            rel="noopener noreferrer"
+            style="--accent: var(--sky)"
+          >
+            <span class="connect__label mono">npm</span
+            ><span>@lcv-ideas-software</span>
+          </a>
+        </div>
       </section>
     </main>
 
-    <footer>
-      <div class="row">
+    <footer class="footer">
+      <div class="footer__row">
         <a
           href="https://github.com/LCV-Ideas-Software"
           target="_blank"
@@ -894,14 +785,17 @@
         <a href="mailto:lcv@lcv.dev" aria-label="Contato por email">Contato</a>
         <a href="/sponsor" target="_blank" rel="noopener noreferrer">Apoiar</a>
       </div>
-      <div class="copy">
-        <span class="footer-brand"
-          >Copyright © 2026 LCV Ideas &amp; Software</span
+      <div class="footer__legal">
+        <span class="footer__brand"
+          >Copyright © <span id="year">2026</span> LCV Ideas &amp;
+          Software</span
         >
         LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br />Rua Pais
         Leme, 215 Conj 1713&nbsp;&nbsp;- Pinheiros<br />São Paulo - SP<br />CEP
         05424-150<br />CNPJ: 66.584.678/0001-77<br />IM 3039854
       </div>
     </footer>
+
+    <script src="./app.js" defer></script>
   </body>
 </html>
