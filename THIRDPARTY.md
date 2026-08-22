@@ -44,6 +44,23 @@ What is verifiable here is the shape of the integration, not a justification for
 are fetched at runtime from unversioned provider endpoints, so neither carries a version this
 repository can pin, and neither is vendored.
 
+## Accepted upstream Linear Release installer exception
+
+The repository uses the official `linear/linear-release-action` `v0.16.0`, pinned in the workflow
+and Actions lockfile to immutable commit `0a25abab892a91062ebf42260dbb2ce6277aa205`
+([release](https://github.com/linear/linear-release-action/releases/tag/v0.16.0),
+[commit](https://github.com/linear/linear-release-action/commit/0a25abab892a91062ebf42260dbb2ce6277aa205),
+[MIT license](https://github.com/linear/linear-release-action/blob/0a25abab892a91062ebf42260dbb2ce6277aa205/LICENSE)).
+The workflow also selects CLI `v0.16.0` explicitly.
+
+The pin authenticates the Action source but not the CLI executable downloaded later by the
+Action's installer. The installer currently executes that asset without validating a checksum,
+signature, artifact attestation, or immutable-release guarantee. This accepted residual risk is
+tracked in [`linear/linear-release-action#59`](https://github.com/linear/linear-release-action/issues/59)
+and Linear's `LIN-82854`. Remove this exception only after an official release fails closed on
+missing or mismatched integrity metadata; then update the exact Action commit, CLI version,
+lockfile, and Actions allowlist together.
+
 ## This repository
 
 Licensed under [AGPL-3.0-or-later](./LICENSE). See [NOTICE](./NOTICE) for copyright.

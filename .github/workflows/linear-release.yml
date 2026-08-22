@@ -1,0 +1,47 @@
+# This workflow is managed by gh actions-lock.
+
+name: Linear Release
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+# The continuous Linear pipeline records repository commits rather than a
+# numbered artifact. Runs never cancel one another: the CLI scans the complete
+# history since the preceding release, so burst pushes may be coalesced without
+# losing a commit.
+concurrency:
+  group: linear-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linear_release:
+    name: Linear Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: linear-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Best-effort mirror: a Linear outage must not block the public surfaces
+      # published by this special repository. Post-merge verification therefore
+      # checks this step's outcome explicitly, not only the job conclusion.
+      #
+      # The official Action is pinned to the commit for v0.16.0 and selects the
+      # same CLI version. Its installer still downloads the CLI without
+      # authenticating the bytes; the accepted upstream gap is tracked in
+      # linear/linear-release-action#59 and documented in THIRDPARTY.md.
+      - name: Create Linear release with the official action
+        id: linear_release
+        continue-on-error: true
+        uses: linear/linear-release-action@0a25abab892a91062ebf42260dbb2ce6277aa205 # v0.16.0
+        with:
+          access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
+          cli_version: v0.16.0
