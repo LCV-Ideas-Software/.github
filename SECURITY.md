@@ -10,7 +10,7 @@ Please do not open a public issue for suspected vulnerabilities, credential leak
 
 Use GitHub's [private vulnerability reporting form](https://github.com/LCV-Ideas-Software/.github/security/advisories/new) or report privately by email:
 
-- lcv@lcv.dev
+- security@lcv.dev
 
 Please include:
 
