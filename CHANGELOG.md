@@ -12,6 +12,35 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 24/08/2026 — Regime proprietário e titularidade delimitada ([#280](https://github.com/LCV-Ideas-Software/.github/issues/280))
+
+### Changed
+
+- Replaced AGPL-3.0-or-later for repository revisions carrying this change
+  with an explicit proprietary `LICENSE`: the LCV-owned original content is
+  now **All rights reserved**, while third-party and contributor-owned
+  material retains its own terms and rights already granted for earlier
+  revisions are not revoked.
+- Added `INBOUND.md`, a repository-local document that GitHub does not
+  distribute as a community-health default: external copyrightable material
+  cannot be merged into `.github` unless a separate written inbound license
+  or copyright assignment has been executed and verified before merge. No
+  proprietary inbound rule was added to the shared `CONTRIBUTING.md` or pull
+  request template.
+- Documented the limited viewing and forking rights inherent to this public
+  special `.github` repository under the GitHub Terms of Service, without
+  granting an additional public software or content license.
+- Updated the rendered organization profile so its license badge, repository
+  matrix, conventions, and footer no longer identify the proprietary
+  institutional and operational repositories as AGPL.
+- Declared the private npm package `UNLICENSED`, expanded the third-party
+  inventory to the directly used Actions, assigned every repository path to
+  `@lcv-leo`, and aligned both applicable funding files to the
+  `lcv-ideas-software` GitHub Sponsors account.
+- Preserved the institutional-boundary test that prevents organization-wide
+  controllers and operational systems from returning to this public special
+  repository.
+
 ## 22/08/2026 — Linear Release oficial
 
 ### Added
