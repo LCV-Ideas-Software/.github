@@ -78,7 +78,9 @@ test("Linear Release remains a repository-local official writer", () => {
   assert.match(workflow, /contents: read/);
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /continue-on-error: true/);
+  assert.match(workflow, /queue: max/);
+  assert.doesNotMatch(workflow, /cancel-in-progress:/);
+  assert.doesNotMatch(workflow, /continue-on-error:/);
   assert.match(
     workflow,
     /linear\/linear-release-action@0a25abab892a91062ebf42260dbb2ce6277aa205/,
