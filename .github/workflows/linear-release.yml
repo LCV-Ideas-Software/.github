@@ -9,12 +9,11 @@ on:
 permissions: {}
 
 # The continuous Linear pipeline records repository commits rather than a
-# numbered artifact. Runs never cancel one another: the CLI scans the complete
-# history since the preceding release, so burst pushes may be coalesced without
-# losing a commit.
+# numbered artifact. Every run waits in the queue without replacing an older
+# pending run.
 concurrency:
   group: linear-release-${{ github.ref }}
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   linear_release:
@@ -30,9 +29,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Best-effort mirror: a Linear outage must not block the public surfaces
-      # published by this special repository. Post-merge verification therefore
-      # checks this step's outcome explicitly, not only the job conclusion.
+      # Fail-closed mirror: a Linear outage fails this workflow so post-merge
+      # verification and the normal workflow alerting surface the interruption.
       #
       # The official Action is pinned to the commit for v0.16.0 and selects the
       # same CLI version. Its installer still downloads the CLI without
@@ -40,7 +38,6 @@ jobs:
       # linear/linear-release-action#59 and documented in THIRDPARTY.md.
       - name: Create Linear release with the official action
         id: linear_release
-        continue-on-error: true
         uses: linear/linear-release-action@0a25abab892a91062ebf42260dbb2ce6277aa205 # v0.16.0
         with:
           access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
