@@ -42,6 +42,7 @@ const retainedPublicPaths = [
   "profile/README.md",
   "site/index.html",
   "site/sponsor/index.html",
+  "INBOUND.md",
   "SECURITY.md",
 ];
 
@@ -104,4 +105,53 @@ test("only active public workflows and their lockfile remain versioned", () => {
     "scorecard.yml",
     "zizmor.yml",
   ]);
+});
+
+test("proprietary terms preserve external ownership and stay repository-scoped", () => {
+  const license = readFileSync(join(repositoryRoot, "LICENSE"), "utf8");
+  const contributing = readFileSync(
+    join(repositoryRoot, "CONTRIBUTING.md"),
+    "utf8",
+  );
+  const inbound = readFileSync(join(repositoryRoot, "INBOUND.md"), "utf8");
+  const pullRequestTemplate = readFileSync(
+    join(repositoryRoot, ".github", "pull_request_template.md"),
+    "utf8",
+  );
+
+  assert.match(license, /LCV-owned original contents/i);
+  assert.match(
+    license,
+    /does\s+not claim ownership of third-party or contributor-owned material/i,
+  );
+  assert.match(
+    inbound,
+    /applies only when the target repository is `LCV-Ideas-Software\/\.github`/,
+  );
+  assert.match(
+    inbound,
+    /opening an issue or pull request does not transfer copyright/i,
+  );
+  assert.match(
+    inbound,
+    /will not be merged unless a separate written inbound license or copyright assignment has been executed and verified/i,
+  );
+  assert.doesNotMatch(contributing, /inbound license|copyright assignment/i);
+  assert.doesNotMatch(
+    pullRequestTemplate,
+    /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
+  );
+
+  for (const path of [
+    "NOTICE",
+    "README.md",
+    "THIRDPARTY.md",
+    "profile/README.md",
+  ]) {
+    assert.match(
+      readFileSync(join(repositoryRoot, path), "utf8"),
+      /LCV-owned\s+original content/i,
+      `${path} must limit the ownership claim to LCV-owned material`,
+    );
+  }
 });

@@ -40,6 +40,7 @@ For product-specific documentation, see each repository in the [organization lis
 - **Security disclosure**: see [SECURITY.md](./SECURITY.md).
 - **Code of conduct**: see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
 - **Contributing**: see [CONTRIBUTING.md](./CONTRIBUTING.md).
+- **Inbound rights for this repository**: see [INBOUND.md](./INBOUND.md).
 - **Sponsorship**: see this repository's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor/).
 - **Action pinning**: all external GitHub Actions are pinned by full commit SHA per supply-chain hardening baseline.
 - **Code owners**: [.github/CODEOWNERS](.github/CODEOWNERS).
@@ -53,10 +54,12 @@ For product-specific documentation, see each repository in the [organization lis
 
 ## License
 
-Copyright © 2026 LCV Ideas & Software. The original content of this repository
-is proprietary and **all rights are reserved**. Public visibility permits
-viewing and forking through GitHub as provided by the applicable GitHub Terms
-of Service; it does not grant an additional public license. See the
+Copyright © 2026 LCV Ideas & Software. The LCV-owned original content of this
+repository is proprietary and **all rights are reserved**. Third-party and
+contributor-owned material remains subject to its own documented terms.
+Public visibility permits viewing and forking through GitHub as provided by
+the applicable GitHub Terms of Service; it does not grant an additional
+public license. See the
 [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service),
 [LICENSE](./LICENSE), [NOTICE](./NOTICE), and
 [THIRDPARTY](./THIRDPARTY.md).

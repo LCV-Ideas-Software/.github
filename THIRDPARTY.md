@@ -94,10 +94,13 @@ lockfile, and Actions allowlist together.
 
 ## This repository
 
-The original content of this repository is proprietary to LCV Ideas &
-Software. Copyright © 2026 LCV Ideas & Software. All rights reserved. See
-[LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+The LCV-owned original content of this repository is proprietary to LCV Ideas
+& Software. Copyright © 2026 LCV Ideas & Software. All rights reserved. See
+[LICENSE](./LICENSE) and [NOTICE](./NOTICE). Contributor-owned material may be
+incorporated only under the separate documented written terms and local gate
+defined in [INBOUND.md](./INBOUND.md), and must be listed here or in NOTICE
+before merge.
 
 The components listed above remain subject to their respective licenses and
 terms; the repository's proprietary terms do not replace or restrict those
-licenses.
+licenses or claim ownership of that material.

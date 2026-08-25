@@ -172,10 +172,11 @@ The proprietary row records the organization's current policy. A particular repo
 
 ## License
 
-Copyright © 2026 LCV Ideas & Software. The original content of this
-repository is proprietary and **all rights are reserved**. Public visibility
-permits viewing and forking through GitHub as provided by the applicable
-GitHub Terms of Service; it does not grant an additional public license. See
+Copyright © 2026 LCV Ideas & Software. The LCV-owned original content of this
+repository is proprietary and **all rights are reserved**. Third-party and
+contributor-owned material remains subject to its own documented terms. Public
+visibility permits viewing and forking through GitHub as provided by the
+applicable GitHub Terms of Service; it does not grant an additional public license. See
 the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service),
 [LICENSE](../LICENSE), [NOTICE](../NOTICE), and
 [THIRDPARTY](../THIRDPARTY.md).

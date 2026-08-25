@@ -3,10 +3,19 @@ LCV IDEAS & SOFTWARE PROPRIETARY LICENSE
 Copyright © 2026 LCV Ideas & Software. All rights reserved.
 
 This notice applies to repository revisions that contain this file. The
-original contents of those revisions, including source code, documentation,
-workflows, configuration, designs, institutional surfaces, and other
-materials, are proprietary to LCV Ideas & Software unless a file explicitly
-states otherwise.
+LCV-owned original contents of those revisions, including source code,
+documentation, workflows, configuration, designs, institutional surfaces,
+and other materials, are proprietary to LCV Ideas & Software unless a file
+explicitly states otherwise. "LCV-owned" means authored by LCV Ideas &
+Software or subject to a written copyright assignment to it. This notice does
+not claim ownership of third-party or contributor-owned material.
+
+Contributor-owned material will not be incorporated into this repository
+unless a separate written inbound license or copyright assignment has been
+executed and verified by LCV Ideas & Software before merge. Unless that
+agreement expressly assigns copyright, the contributor retains ownership and
+the agreement governs the rights granted to LCV Ideas & Software. The
+repository-local admission procedure is documented in INBOUND.md.
 
 This repository is public so GitHub can provide the special organization
 profile and default community-health features associated with a repository
@@ -16,21 +25,22 @@ including viewing and forking through the service.
 
 No additional permission is granted to use, copy, modify, merge, publish,
 distribute, sublicense, sell, disclose, or create derivative works from the
-original contents without prior written authorization from LCV Ideas &
-Software. Access to the repository does not transfer any intellectual-property
-right.
+LCV-owned original contents without prior written authorization from LCV
+Ideas & Software. Access to the repository does not transfer any
+intellectual-property right.
 
-Third-party components remain governed by their respective licenses and
-notices, as identified in THIRDPARTY.md. These proprietary terms do not replace
-or restrict rights granted directly by those third-party licenses.
+Third-party components and any contributor-owned material accepted under a
+written agreement remain governed by their respective licenses, notices, or
+agreements, as identified in THIRDPARTY.md or NOTICE. These proprietary terms
+do not replace or restrict rights granted directly by those instruments.
 
 Earlier repository revisions and copies already received under different
 terms remain governed by the terms that validly applied to those revisions;
 this notice does not revoke rights previously granted.
 
-THE ORIGINAL CONTENTS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT
-PERMITTED BY LAW, LCV IDEAS & SOFTWARE SHALL NOT BE LIABLE FOR ANY CLAIM,
-DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO THE CONTENTS OR THEIR
-USE.
+THE LCV-OWNED ORIGINAL CONTENTS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. TO
+THE MAXIMUM EXTENT PERMITTED BY LAW, LCV IDEAS & SOFTWARE SHALL NOT BE LIABLE
+FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO THOSE
+CONTENTS OR THEIR USE.
