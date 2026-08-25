@@ -1,6 +1,7 @@
 {
   "name": "@lcv-ideas-software/github-org-public-format",
   "private": true,
+  "license": "UNLICENSED",
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "format:public": "prettier --write \"**/index.html\"",

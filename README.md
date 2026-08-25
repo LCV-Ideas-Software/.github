@@ -7,7 +7,7 @@
 [![Pages](https://github.com/LCV-Ideas-Software/.github/actions/workflows/pages.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/pages.yml)
 [![Cloudflare Pages](https://github.com/LCV-Ideas-Software/.github/actions/workflows/cloudflare-pages.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/cloudflare-pages.yml)
 [![CodeQL](https://github.com/LCV-Ideas-Software/.github/actions/workflows/codeql.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/codeql.yml)
-[![license: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
+[![license: proprietary](https://img.shields.io/badge/license-proprietary-lightgrey.svg)](./LICENSE)
 Institutional repository for the organization profile and shared community-health defaults across LCV Ideas & Software repositories.
 
 **Status.** Active institutional repository. Current release: **not versioned** — it publishes surfaces rather than a numbered artifact. Notable changes are recorded in [`CHANGELOG.md`](./CHANGELOG.md).
@@ -35,7 +35,7 @@ For product-specific documentation, see each repository in the [organization lis
 
 ## Repository conventions
 
-- **License**: [AGPL-3.0-or-later](./LICENSE). Network-service trigger applies: running a modified fork as a public service obligates you to publish modifications.
+- **License**: proprietary — **All rights reserved**. Public visibility exists for GitHub's special `.github` features and grants no rights beyond those provided by the applicable [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) through the platform.
 - **Notices**: see [NOTICE](./NOTICE) and [THIRDPARTY](./THIRDPARTY.md).
 - **Security disclosure**: see [SECURITY.md](./SECURITY.md).
 - **Code of conduct**: see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
@@ -49,11 +49,17 @@ For product-specific documentation, see each repository in the [organization lis
 - Site: [https://www.lcv.dev](https://www.lcv.dev)
 - GitHub organization: [LCV-Ideas-Software](https://github.com/LCV-Ideas-Software)
 - Repository: [.github](https://github.com/LCV-Ideas-Software/.github)
-- Sponsors: [https://github.com/sponsors/LCV-Ideas-Software](https://github.com/sponsors/LCV-Ideas-Software)
+- Sponsors: [https://github.com/sponsors/lcv-ideas-software](https://github.com/sponsors/lcv-ideas-software)
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](./LICENSE), [NOTICE](./NOTICE), and [THIRDPARTY](./THIRDPARTY.md).
+Copyright © 2026 LCV Ideas & Software. The original content of this repository
+is proprietary and **all rights are reserved**. Public visibility permits
+viewing and forking through GitHub as provided by the applicable GitHub Terms
+of Service; it does not grant an additional public license. See the
+[GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service),
+[LICENSE](./LICENSE), [NOTICE](./NOTICE), and
+[THIRDPARTY](./THIRDPARTY.md).
 
 ---
 

@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg" alt="Cloudflare">
   <img src="https://img.shields.io/badge/AI-6%20agent%20stack-34d399.svg" alt="6-agent AI stack">
   <a href="../SECURITY.md"><img src="https://img.shields.io/badge/security-CodeQL%20%2B%20private%20reporting-brightgreen.svg" alt="security policy"></a>
-  <a href="../LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="AGPL-3.0-or-later"></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/badge/license-proprietary-lightgrey.svg" alt="Proprietary — all rights reserved"></a>
   <a href="https://www.lcv.dev/sponsor/"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor LCV Ideas & Software"></a>
 </p>
 
@@ -124,12 +124,15 @@ Desktop      Tauri 2  (Maestro)
 
 ## Licensing
 
-| License                                                         | Repositories                                                                                                                                                            |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `.github`, `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `apphub`, `admin-app`, `adminapps`, `mtasts-motor`, `maestro-app`, `sponsor-motor` |
-| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)       | `ultrabrain-mcp`, `cross-review`, `cross-review-v1` (archived), `deepseek-cli` (archived), `grok-cli` (archived)                                                        |
+| License                                                         | Repositories                                                                                                                                                 |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Proprietary — All rights reserved                               | `.github`, `.github-private`, `programa-android`, `github-operations`                                                                                        |
+| [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `apphub`, `admin-app`, `adminapps`, `mtasts-motor`, `maestro-app`, `sponsor-motor` |
+| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)       | `ultrabrain-mcp`, `cross-review`, `cross-review-v1` (archived), `deepseek-cli` (archived), `grok-cli` (archived)                                             |
 
-The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: running a modified fork as a public service obligates publication of the modifications under the same license. Public software repositories ship a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
+The AGPL-3.0 **network-service trigger** applies only to the repositories listed in the AGPL row: if a modified version lets users interact with it remotely through a computer network, those users must be offered its Corresponding Source under AGPL-3.0. The four institutional and operational repositories in the proprietary row grant no additional public license; the public `.github` repository remains viewable and forkable through GitHub under the platform's applicable [Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service). Each repository's own `LICENSE`, `NOTICE`, and `THIRDPARTY.md` are authoritative.
+
+The proprietary row records the organization's current policy. A particular repository revision remains governed by the license or notice it contains, and earlier copies retain rights validly granted under their applicable historical terms.
 
 ---
 
@@ -151,7 +154,7 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 
 ## Repository conventions
 
-- **License**: [AGPL-3.0-or-later](../LICENSE). Network-service trigger applies: running a modified fork as a public service obligates you to publish modifications.
+- **License**: proprietary — **All rights reserved**. This public special repository grants no rights beyond those provided by the applicable [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) through the platform.
 - **Notices**: see [NOTICE](../NOTICE) and [THIRDPARTY](../THIRDPARTY.md).
 - **Security disclosure**: see [SECURITY.md](../SECURITY.md).
 - **Code of conduct**: see [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).
@@ -165,11 +168,17 @@ The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: runni
 - Site: [https://www.lcv.dev](https://www.lcv.dev)
 - GitHub organization: [LCV-Ideas-Software](https://github.com/LCV-Ideas-Software)
 - Organization profile source: [.github](https://github.com/LCV-Ideas-Software/.github)
-- Sponsors: [https://github.com/sponsors/LCV-Ideas-Software](https://github.com/sponsors/LCV-Ideas-Software)
+- Sponsors: [https://github.com/sponsors/lcv-ideas-software](https://github.com/sponsors/lcv-ideas-software)
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](../LICENSE), [NOTICE](../NOTICE), and [THIRDPARTY](../THIRDPARTY.md).
+Copyright © 2026 LCV Ideas & Software. The original content of this
+repository is proprietary and **all rights are reserved**. Public visibility
+permits viewing and forking through GitHub as provided by the applicable
+GitHub Terms of Service; it does not grant an additional public license. See
+the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service),
+[LICENSE](../LICENSE), [NOTICE](../NOTICE), and
+[THIRDPARTY](../THIRDPARTY.md).
 
 ---
 
