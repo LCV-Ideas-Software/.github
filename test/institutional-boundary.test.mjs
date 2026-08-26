@@ -147,74 +147,81 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
   );
 
-  // The affirmative sentence, anchored at its own start, so that a surrounding
-  // negation cannot satisfy the guard as a substring. Only three starts count:
+  // Each guarded document must carry its approved ownership sentence directly
+  // after the specific sentence or heading that introduces it. The pair is
+  // checked for adjacency on whitespace-normalized text, so Markdown reflow is
+  // irrelevant while nothing can be inserted between the two.
   //
-  //   1. the beginning of the file;
-  //   2. a sentence terminator followed by whitespace;
-  //   3. the one heading a guarded document actually uses to open the clause.
+  // Three punctuation-based anchors were tried before this and all three fell
+  // to a negating preface, because every one of them tried to infer where a
+  // sentence begins from the characters around it: a bare newline ("It is
+  // false that\nThe original content ..."), any paragraph break ("The
+  // following statement is false:\n\nThe original content ..."), and any
+  // period ("It is false, e.g. The original content ..."). Inferring sentence
+  // structure from punctuation is a losing game; naming the expected
+  // predecessor ends it, because a preface can no longer reach the clause
+  // without displacing text the guard also verifies.
   //
-  // Two weaker anchors were tried and rejected, each because it let a negating
-  // preface bind the clause while the guard passed. A bare newline fails
-  // because Markdown wrapping carries no meaning ("It is false that\nThe
-  // original content ... is proprietary."). Any paragraph break fails because
-  // a preface ending in a colon binds across one ("The following statement is
-  // false:\n\nThe original content ... is proprietary."). Naming the expected
-  // heading removes both while still covering THIRDPARTY.md, the only guarded
-  // document that opens the clause at a heading rather than after a sentence.
-  //
-  // Whitespace inside the clause stays flexible; that is what keeps the guard
-  // tolerant of reflow.
-  //
-  // Residual limit, stated rather than hidden: a containment test cannot prove
-  // the absence of negation in prose. It proves the approved sentence is
-  // present at a structural start. Rewrites of the surrounding argument remain
-  // a review concern, not a regex concern.
-  const ownershipClause =
-    /(?:^|[.!?]\s+|(?:^|\n)##\s+This repository\s*\n\s*)(?:The|Its)\s+original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
+  // A rewrite of the introducing sentence fails this test on purpose: the
+  // ownership paragraph is legal text, so changing it should require touching
+  // the guard and getting the change reviewed.
+  const normalize = (text) => text.replace(/\s+/g, " ").trim();
 
+  const ownershipPairs = {
+    NOTICE: [
+      "maintained by LCV Ideas & Software.",
+      "Its original content owned by LCV Ideas & Software is proprietary.",
+    ],
+    "README.md": [
+      "Copyright © 2026 LCV Ideas & Software.",
+      "The original content of this repository owned by LCV Ideas & Software is proprietary and **all rights are reserved**.",
+    ],
+    "THIRDPARTY.md": [
+      "## This repository",
+      "The original content of this repository owned by LCV Ideas & Software is proprietary to it.",
+    ],
+    "profile/README.md": [
+      "Copyright © 2026 LCV Ideas &amp; Software.",
+      "The original content of this repository owned by LCV Ideas &amp; Software is proprietary and **all rights are reserved**.",
+    ],
+  };
+
+  const carriesClause = (text, [precededBy, clause]) =>
+    normalize(text).includes(`${normalize(precededBy)} ${normalize(clause)}`);
+
+  const notice = ownershipPairs.NOTICE;
+
+  // Anything wedged between the introducing sentence and the clause breaks the
+  // adjacency, which is what makes a negating preface unable to bind it.
   for (const reversed of [
-    "The original content of this repository is not owned by LCV Ideas & Software and is proprietary.",
+    `${notice[0]} It is false that ${notice[1]}`,
+    `${notice[0]} It is false, e.g. ${notice[1]}`,
+    `${notice[0]}\n\nThe following statement is false:\n\n${notice[1]}`,
+    `${notice[0]}\nNo one may claim that\n${notice[1]}`,
+    "Its original content is not owned by LCV Ideas & Software and is proprietary.",
     "No original content owned by LCV Ideas & Software is proprietary.",
-    "It is false that the original content owned by LCV Ideas & Software is proprietary.",
-    "Nothing here means the original content owned by LCV Ideas & Software is proprietary.",
-    "It is false that\nThe original content owned by LCV Ideas & Software is proprietary.",
-    "No one may claim that\n  Its original content owned by LCV Ideas & Software is proprietary.",
-    "The following statement is false:\n\nThe original content owned by LCV Ideas & Software is proprietary.",
-    "## The following is false\n\nThe original content of this repository owned by LCV Ideas & Software is proprietary.",
-    "Read the next paragraph as denied:\n\n  Its original content owned by LCV Ideas & Software is proprietary.",
   ]) {
-    assert.doesNotMatch(
-      reversed,
-      ownershipClause,
+    assert.ok(
+      !carriesClause(reversed, notice),
       `the ownership guard must reject a reversed clause: ${reversed}`,
     );
   }
 
+  // Reflow between and inside the two parts stays acceptable.
   for (const legitimate of [
-    // after a sentence terminator, on one line and reflowed across lines
-    "Copyright © 2026 LCV Ideas & Software. The original content of this repository owned by LCV Ideas & Software is proprietary.",
-    "maintained by LCV Ideas & Software.\nIts original\ncontent owned by LCV Ideas & Software is proprietary.",
-    // at a paragraph start, which is how THIRDPARTY.md opens the clause
-    "## This repository\n\nThe original content of this repository owned by LCV Ideas & Software is proprietary to it.",
+    `${notice[0]} ${notice[1]}`,
+    `${notice[0]}\nIts original\ncontent owned by LCV Ideas & Software is\nproprietary.`,
   ]) {
-    assert.match(
-      legitimate,
-      ownershipClause,
-      "the ownership guard must accept the approved affirmative sentence",
+    assert.ok(
+      carriesClause(legitimate, notice),
+      "the ownership guard must accept the approved sentence pair",
     );
   }
 
-  for (const path of [
-    "NOTICE",
-    "README.md",
-    "THIRDPARTY.md",
-    "profile/README.md",
-  ]) {
-    assert.match(
-      readFileSync(join(repositoryRoot, path), "utf8"),
-      ownershipClause,
-      `${path} must limit the ownership claim to material owned by LCV Ideas & Software`,
+  for (const [path, pair] of Object.entries(ownershipPairs)) {
+    assert.ok(
+      carriesClause(readFileSync(join(repositoryRoot, path), "utf8"), pair),
+      `${path} must carry the approved ownership sentence directly after "${pair[0]}"`,
     );
   }
 });

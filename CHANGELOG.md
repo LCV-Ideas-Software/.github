@@ -33,33 +33,28 @@ presentation rule this organization applies to text meant for people
   é verificável — CodeQL é check exigido em pull request e `merge_group`, e os
   resultados vão para o code scanning, onde os alertas são triados. A alegação
   era anterior à reforma e foi propagada por ela.
-- Restringiu a âncora de parágrafo do guard ao cabeçalho esperado. A alternativa
-  genérica de quebra de parágrafo, introduzida para cobrir o `THIRDPARTY.md`,
-  aceitava preâmbulo negador terminado em dois-pontos
-  (`The following statement is false:` seguido de linha em branco e da
-  cláusula) e também cabeçalho negador. A âncora agora nomeia `## This
-repository`, que é a única estrutura real com essa forma. Fica registrado no
-  próprio teste o limite residual: teste de contenção não prova ausência de
-  negação em prosa — prova que a sentença aprovada está presente num início
-  estrutural; reescrita do argumento ao redor é assunto de revisão, não de
-  regex.
-- Fechou a brecha da quebra de linha na âncora do guard. A primeira versão da
-  âncora aceitava `\n` como fronteira de sentença, e como o guard existe para
-  tolerar reflow, bastava quebrar o prefixo negador antes da cláusula
-  (`It is false that\nThe original content … is proprietary.`) para o teste
-  passar com o invariante invertido. A âncora agora reconhece apenas três
-  inícios reais: começo do arquivo, terminador de sentença seguido de espaço,
-  ou quebra de parágrafo. O espaçamento **dentro** da cláusula continua
-  flexível, que é o que preserva a tolerância a reflow.
+- Trocou o guard de titularidade de casamento por padrão para **adjacência
+  estrutural verificada**. Cada um dos quatro documentos protegidos passa a
+  declarar o par (sentença que introduz, cláusula aprovada), e o teste exige
+  que os dois apareçam colados no texto com espaçamento normalizado. Reflow
+  continua irrelevante; inserir qualquer coisa entre eles quebra a asserção.
+
+  A mudança encerra uma sequência de três tentativas que caíram todas pelo
+  mesmo motivo — inferir início de sentença a partir da pontuação ao redor:
+  quebra de linha simples (`It is false that\nThe original content …`),
+  qualquer quebra de parágrafo, já que dois-pontos ligam através dela
+  (`The following statement is false:` + linha em branco), e qualquer ponto,
+  já que abreviação também termina em ponto (`It is false, e.g. The original
+content …`). Nomear o predecessor esperado remove a classe inteira, porque
+  um preâmbulo negador não alcança mais a cláusula sem deslocar texto que o
+  guard também verifica.
+
+  Efeito colateral deliberado: reescrever a sentença que introduz a cláusula
+  reprova o teste. O parágrafo de titularidade é texto jurídico, então alterá-lo
+  deve exigir mexer no guard e passar por revisão.
+
 - Atualizou a referência ao quadro `Project #17` em `.github/WORK-TRACKING.md`
   para o nome atual do quadro.
-- Ancorou o guard de titularidade na sentença. A cláusula afirmativa ainda era
-  uma busca de substring, então `No original content owned by LCV Ideas &
-Software is proprietary.` e `It is false that the original content owned by
-… is proprietary.` continuavam satisfazendo a asserção com o invariante
-  invertido. O padrão agora exige o sujeito (`The`/`Its`) numa fronteira de
-  sentença, e quatro contraexemplos revertidos mais uma sentença legítima
-  ficam pinados no teste.
 
 ## 26/08/2026 — Perfil da Organization reformado e titularidade escrita por extenso ([#288](https://github.com/LCV-Ideas-Software/.github/issues/288))
 
