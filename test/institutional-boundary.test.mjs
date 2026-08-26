@@ -30,6 +30,8 @@ const migratedOperationalPaths = [
 ];
 
 const retainedPublicPaths = [
+  ".github/workflows/actions-lock-trigger.yml",
+  ".github/workflows/actions-lock-validate.yml",
   ".github/workflows/cloudflare-pages.yml",
   ".github/workflows/codeql.yml",
   ".github/workflows/dependency-review.yml",
@@ -98,6 +100,8 @@ test("only active public workflows and their lockfile remain versioned", () => {
     join(repositoryRoot, ".github", "workflows"),
   ).sort();
   assert.deepEqual(workflows, [
+    "actions-lock-trigger.yml",
+    "actions-lock-validate.yml",
     "actions.lock",
     "cloudflare-pages.yml",
     "codeql.yml",
