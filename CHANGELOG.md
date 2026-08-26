@@ -48,6 +48,19 @@ presentation rule this organization applies to text meant for people
   aprovado citado literalmente dentro de um preâmbulo negador. Contenção não
   restringe contexto; igualdade de bloco restringe.
 
+  A sexta rodada mostrou que a **localização** em texto puro também era
+  falha-aberta em dois pontos: indentar o parágrafo com 4 espaços o renderiza
+  como code block enquanto a normalização de espaços apaga a diferença, e
+  localizar o cabeçalho com `indexOf` aceita o texto dele dentro de fence ou
+  de comentário HTML. O localizador passou a ser **estrutural**, com as mesmas
+  regras CommonMark que a organização já aplica em outros lugares: fences
+  abrem com ≤3 espaços de indentação e fecham só com run igual do mesmo
+  caractere; linhas dentro de fence ou de comentário HTML são invisíveis para
+  cabeçalhos e parágrafos; cabeçalho só conta como linha ATX real; e parágrafo
+  governante com indentação estrutural (≥4 espaços ou tab) é desqualificado.
+  Os dois ataques foram provados em RED contra os arquivos reais e ficam
+  pinados como asserções, junto do caso de citação da rodada anterior.
+
   Fronteira declarada, porque é real: texto num bloco **diferente** não é
   alcançável por teste dessa natureza, e quem tem acesso de escrita pode editar
   o próprio teste. O que a verificação garante é que o parágrafo governante não

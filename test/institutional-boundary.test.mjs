@@ -164,6 +164,20 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
   // it inside the block, or removed from it. Reflow remains free because the
   // comparison normalizes whitespace.
   //
+  // Location is resolved STRUCTURALLY, not textually. A sixth review round
+  // showed that plain-text location is itself fail-open in two ways: four
+  // spaces of indentation render the paragraph as a code block while
+  // whitespace normalization erases the difference, and locating the heading
+  // with indexOf accepts its text inside a fenced code block or HTML comment.
+  // So the scan below applies the CommonMark rules this organization already
+  // enforces elsewhere: fences open at up to 3 spaces of indentation with a
+  // run of 3+ backticks or tildes (a backtick fence's info string cannot
+  // contain a backtick) and close only on a run of the same character at
+  // least as long, alone on its line; lines inside fences or HTML comments
+  // are invisible to headings and paragraphs alike; a heading counts only as
+  // a real ATX heading line; and a governing paragraph carrying structural
+  // indentation (4+ spaces or a tab) is disqualified outright.
+  //
   // Boundary, stated because it is real and not worth another round: text in a
   // DIFFERENT block cannot be constrained by any test of this kind, and an
   // author with commit access could edit this file as easily as the documents
@@ -171,22 +185,94 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
   // drift, be padded, or be quoted-and-reframed in place without failing.
   const normalize = (text) => text.replace(/\s+/g, " ").trim();
 
-  const blocksOf = (text) =>
-    text
-      .split(/\n\s*\n/)
-      .map((block) => block.trim())
-      .filter(Boolean);
+  const scanLines = (text) => {
+    const out = [];
+    let fence = null;
+    let inComment = false;
+    for (const raw of text.split("\n")) {
+      const indent = /^ */.exec(raw)[0].length;
+      const trimmed = raw.trim();
+      let hidden = false;
+      if (fence) {
+        hidden = true;
+        const close = /^(`{3,}|~{3,})[ \t]*$/.exec(trimmed);
+        if (
+          close &&
+          indent <= 3 &&
+          close[1][0] === fence.char &&
+          close[1].length >= fence.length
+        ) {
+          fence = null;
+        }
+      } else if (inComment) {
+        hidden = true;
+        if (raw.includes("-->")) inComment = false;
+      } else {
+        const open = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
+        if (
+          open &&
+          indent <= 3 &&
+          !(open[1][0] === "`" && open[2].includes("`"))
+        ) {
+          fence = { char: open[1][0], length: open[1].length };
+          hidden = true;
+        } else if (trimmed.startsWith("<!--")) {
+          hidden = true;
+          if (!raw.includes("-->")) inComment = true;
+        }
+      }
+      out.push({ raw, indent, trimmed, hidden });
+    }
+    return out;
+  };
 
-  // Locates the governing paragraph: the block after the named heading, or the
-  // block at the given index when the document has no headings.
+  const isHeading = (line, heading) => {
+    if (line.hidden || line.indent > 3) return false;
+    const m = /^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/.exec(line.trimmed);
+    return m !== null && `${m[1]} ${m[2]}` === heading;
+  };
+
+  // Visible blocks: runs of visible non-blank lines. Hidden and blank lines
+  // both terminate a block, so fenced content can never join a paragraph.
+  const visibleBlocks = (lines) => {
+    const blocks = [];
+    let current = null;
+    for (const line of lines) {
+      if (line.hidden || line.trimmed === "") {
+        current = null;
+        continue;
+      }
+      if (!current) {
+        current = [];
+        blocks.push(current);
+      }
+      current.push(line);
+    }
+    return blocks;
+  };
+
   const ownershipParagraphOf = (text, { heading, index }) => {
-    if (!heading) return blocksOf(text)[index];
-    const start = text.indexOf(heading);
-    if (start === -1) return undefined;
-    const rest = text.slice(start + heading.length);
-    const nextHeading = rest.indexOf("\n## ");
-    const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
-    return blocksOf(section)[index];
+    let lines = scanLines(text);
+    if (heading) {
+      const start = lines.findIndex((line) => isHeading(line, heading));
+      if (start === -1) return undefined;
+      lines = lines.slice(start + 1);
+      const next = lines.findIndex(
+        (line) =>
+          !line.hidden &&
+          line.indent <= 3 &&
+          /^#{1,2}([ \t]|$)/.test(line.trimmed),
+      );
+      if (next !== -1) lines = lines.slice(0, next);
+    }
+    const block = visibleBlocks(lines)[index];
+    if (!block) return undefined;
+    // 4+ spaces or a tab renders as an indented code block, which whitespace
+    // normalization would erase - so it disqualifies the paragraph outright.
+    if (block.some((line) => line.indent >= 4 || line.raw.startsWith("\t"))) {
+      return undefined;
+    }
+    return block.map((line) => line.trimmed).join(" ");
   };
 
   const ownershipParagraphs = [
@@ -254,10 +340,38 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     );
   }
 
-  // Reflow inside the block stays acceptable.
+  // Structural tampering the scanner must reject: the paragraph rendered as an
+  // indented code block; the heading and paragraph hidden inside a fence while
+  // the real section is altered; and the heading inside an HTML comment.
+  const readmeSpec = ownershipParagraphs[1];
+  for (const doc of [
+    `## License\n\n    ${readmeSpec.paragraph}\n`,
+    `\`\`\`\n## License\n\n${readmeSpec.paragraph}\n\`\`\`\n\n## License\n\nAll rights waived.\n`,
+    `<!--\n## License\n\n${readmeSpec.paragraph}\n-->\n`,
+  ]) {
+    const found = ownershipParagraphOf(doc, readmeSpec);
+    assert.notEqual(
+      found === undefined ? undefined : normalize(found),
+      readmeSpec.paragraph,
+      `the ownership guard must reject structural tampering: ${doc.slice(0, 60)}...`,
+    );
+  }
+
+  // Reflow inside the block stays acceptable, both for the comparison and
+  // through the structural locator (up to 3 spaces of indentation).
   assert.equal(
     normalize(noticeSpec.paragraph.split(" ").join("\n   ")),
     noticeSpec.paragraph,
     "the ownership guard must tolerate reflow inside the governing paragraph",
+  );
+  assert.equal(
+    normalize(
+      ownershipParagraphOf(
+        `## License\n\n${readmeSpec.paragraph.split(" ").join("\n  ")}\n`,
+        readmeSpec,
+      ) ?? "",
+    ),
+    readmeSpec.paragraph,
+    "the structural locator must tolerate reflow inside the governing paragraph",
   );
 });
