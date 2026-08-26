@@ -148,16 +148,30 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
   );
 
   // The affirmative sentence, anchored at its own start, so that a surrounding
-  // negation cannot satisfy the guard as a substring. The anchor accepts only
-  // three real starts: the beginning of the file, a sentence terminator
-  // followed by whitespace, or a paragraph break. A bare newline is
-  // deliberately NOT an anchor: Markdown line wrapping carries no meaning, so
-  // accepting it would let a negating prefix be reflowed onto its own line
-  // ("It is false that\nThe original content ... is proprietary.") while the
-  // guard still passed. Whitespace inside the clause stays flexible, which is
-  // what keeps the guard tolerant of reflow.
+  // negation cannot satisfy the guard as a substring. Only three starts count:
+  //
+  //   1. the beginning of the file;
+  //   2. a sentence terminator followed by whitespace;
+  //   3. the one heading a guarded document actually uses to open the clause.
+  //
+  // Two weaker anchors were tried and rejected, each because it let a negating
+  // preface bind the clause while the guard passed. A bare newline fails
+  // because Markdown wrapping carries no meaning ("It is false that\nThe
+  // original content ... is proprietary."). Any paragraph break fails because
+  // a preface ending in a colon binds across one ("The following statement is
+  // false:\n\nThe original content ... is proprietary."). Naming the expected
+  // heading removes both while still covering THIRDPARTY.md, the only guarded
+  // document that opens the clause at a heading rather than after a sentence.
+  //
+  // Whitespace inside the clause stays flexible; that is what keeps the guard
+  // tolerant of reflow.
+  //
+  // Residual limit, stated rather than hidden: a containment test cannot prove
+  // the absence of negation in prose. It proves the approved sentence is
+  // present at a structural start. Rewrites of the surrounding argument remain
+  // a review concern, not a regex concern.
   const ownershipClause =
-    /(?:^|[.!?]\s+|\n[ \t]*\n\s*)(?:The|Its)\s+original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
+    /(?:^|[.!?]\s+|(?:^|\n)##\s+This repository\s*\n\s*)(?:The|Its)\s+original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
 
   for (const reversed of [
     "The original content of this repository is not owned by LCV Ideas & Software and is proprietary.",
@@ -166,6 +180,9 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     "Nothing here means the original content owned by LCV Ideas & Software is proprietary.",
     "It is false that\nThe original content owned by LCV Ideas & Software is proprietary.",
     "No one may claim that\n  Its original content owned by LCV Ideas & Software is proprietary.",
+    "The following statement is false:\n\nThe original content owned by LCV Ideas & Software is proprietary.",
+    "## The following is false\n\nThe original content of this repository owned by LCV Ideas & Software is proprietary.",
+    "Read the next paragraph as denied:\n\n  Its original content owned by LCV Ideas & Software is proprietary.",
   ]) {
     assert.doesNotMatch(
       reversed,

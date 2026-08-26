@@ -33,6 +33,16 @@ presentation rule this organization applies to text meant for people
   é verificável — CodeQL é check exigido em pull request e `merge_group`, e os
   resultados vão para o code scanning, onde os alertas são triados. A alegação
   era anterior à reforma e foi propagada por ela.
+- Restringiu a âncora de parágrafo do guard ao cabeçalho esperado. A alternativa
+  genérica de quebra de parágrafo, introduzida para cobrir o `THIRDPARTY.md`,
+  aceitava preâmbulo negador terminado em dois-pontos
+  (`The following statement is false:` seguido de linha em branco e da
+  cláusula) e também cabeçalho negador. A âncora agora nomeia `## This
+repository`, que é a única estrutura real com essa forma. Fica registrado no
+  próprio teste o limite residual: teste de contenção não prova ausência de
+  negação em prosa — prova que a sentença aprovada está presente num início
+  estrutural; reescrita do argumento ao redor é assunto de revisão, não de
+  regex.
 - Fechou a brecha da quebra de linha na âncora do guard. A primeira versão da
   âncora aceitava `\n` como fronteira de sentença, e como o guard existe para
   tolerar reflow, bastava quebrar o prefixo negador antes da cláusula
