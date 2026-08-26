@@ -147,15 +147,31 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
   );
 
-  // Affirmative clause only: no wildcard gap, so a negated variant such as
-  // "original content is not owned by LCV Ideas & Software" cannot satisfy it.
+  // The affirmative sentence, anchored at its own start. Anchoring the subject
+  // to a sentence boundary is what stops a surrounding negation from
+  // satisfying the guard as a substring: "No original content owned by ... is
+  // proprietary" and "It is false that the original content owned by ... is
+  // proprietary" both fail because neither reaches "The"/"Its" at a boundary.
   const ownershipClause =
-    /original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
+    /(?:^|[.\n]\s*)(?:The|Its)\s+original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
 
-  assert.doesNotMatch(
+  for (const reversed of [
     "The original content of this repository is not owned by LCV Ideas & Software and is proprietary.",
+    "No original content owned by LCV Ideas & Software is proprietary.",
+    "It is false that the original content owned by LCV Ideas & Software is proprietary.",
+    "Nothing here means the original content owned by LCV Ideas & Software is proprietary.",
+  ]) {
+    assert.doesNotMatch(
+      reversed,
+      ownershipClause,
+      `the ownership guard must reject a reversed clause: ${reversed}`,
+    );
+  }
+
+  assert.match(
+    "Copyright © 2026 LCV Ideas & Software. The original content of this repository owned by LCV Ideas & Software is proprietary.",
     ownershipClause,
-    "the ownership guard must reject a negated clause",
+    "the ownership guard must accept the approved affirmative sentence",
   );
 
   for (const path of [

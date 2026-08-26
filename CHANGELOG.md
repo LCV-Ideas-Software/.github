@@ -12,6 +12,35 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
+
+### Fixed
+
+- Restaurou `contato@lcv.dev` como caixa de contato geral do perfil. A reforma
+  havia revertido o endereço para o anterior, desfazendo a sincronização feita
+  em `04e198f` ([#279](https://github.com/LCV-Ideas-Software/.github/pull/279)),
+  e passou a divergir de `site/index.html`, que já anunciava o endereço
+  canônico.
+- Restaurou a convenção de contribuição: toda mudança no branch padrão chega
+  por pull request e passa nos checks do repositório; push direto em `main`
+  não é permitido. A reforma havia trocado esse texto pelo do panorama da
+  Enterprise, que dizia o contrário, e a correção da rodada anterior alcançou
+  só o item equivalente em práticas de engenharia — o de convenções ficou
+  contradizendo `CONTRIBUTING.md`, `SECURITY.md` e o próprio documento.
+- Removeu a alegação de que o job do CodeQL reprova por achados SARIF.
+  `.github/workflows/codeql.yml` executa apenas checkout, `init` e `analyze`:
+  não há passo de contagem de alertas nem de falha. O texto agora afirma o que
+  é verificável — CodeQL é check exigido em pull request e `merge_group`, e os
+  resultados vão para o code scanning, onde os alertas são triados. A alegação
+  era anterior à reforma e foi propagada por ela.
+- Ancorou o guard de titularidade na sentença. A cláusula afirmativa ainda era
+  uma busca de substring, então `No original content owned by LCV Ideas &
+Software is proprietary.` e `It is false that the original content owned by
+… is proprietary.` continuavam satisfazendo a asserção com o invariante
+  invertido. O padrão agora exige o sujeito (`The`/`Its`) numa fronteira de
+  sentença, e quatro contraexemplos revertidos mais uma sentença legítima
+  ficam pinados no teste.
+
 ## 26/08/2026 — Perfil da Organization reformado e titularidade escrita por extenso ([#288](https://github.com/LCV-Ideas-Software/.github/issues/288))
 
 ### Fixed (rodada 1 do Codex)
