@@ -61,6 +61,14 @@ presentation rule this organization applies to text meant for people
   Os dois ataques foram provados em RED contra os arquivos reais e ficam
   pinados como asserções, junto do caso de citação da rodada anterior.
 
+  A sétima rodada completou a fidelidade CommonMark do scanner em dois pontos:
+  blocos de HTML cru além de comentário (tipos 1–7 — `<script>`, `<pre>`,
+  `<div>` e afins) agora são invisíveis para cabeçalhos e parágrafos, já que o
+  CommonMark não renderiza cabeçalho Markdown dentro deles; e a closing
+  sequence de um cabeçalho ATX só é descartada quando precedida de espaço —
+  `## License#` é o cabeçalho de texto `License#`, não `License`. Ambos
+  provados em RED contra o arquivo real e pinados como asserções.
+
   Fronteira declarada, porque é real: texto num bloco **diferente** não é
   alcançável por teste dessa natureza, e quem tem acesso de escrita pode editar
   o próprio teste. O que a verificação garante é que o parágrafo governante não

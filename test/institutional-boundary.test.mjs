@@ -185,10 +185,26 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
   // drift, be padded, or be quoted-and-reframed in place without failing.
   const normalize = (text) => text.replace(/\s+/g, " ").trim();
 
+  // htmlBlock, when set, says how the current raw-HTML block ends: on a line
+  // containing a needle (CommonMark block types 1-5) or on the next blank
+  // line (types 6-7). Every line of such a block is hidden - CommonMark does
+  // not render a Markdown heading inside <script>, <div>, <pre> or any other
+  // raw HTML block, so the guard must not see one there either.
+  const htmlBlockEnd = (trimmed) => {
+    const type1 = /^<(script|pre|style|textarea)\b/i.exec(trimmed);
+    if (type1) return { needle: `</${type1[1].toLowerCase()}>` };
+    if (trimmed.startsWith("<![CDATA[")) return { needle: "]]>" };
+    if (trimmed.startsWith("<?")) return { needle: "?>" };
+    if (/^<![a-z]/i.test(trimmed)) return { needle: ">" };
+    if (/^<[a-z/!?]/i.test(trimmed)) return { untilBlank: true };
+    return null;
+  };
+
   const scanLines = (text) => {
     const out = [];
     let fence = null;
     let inComment = false;
+    let htmlBlock = null;
     for (const raw of text.split("\n")) {
       const indent = /^ */.exec(raw)[0].length;
       const trimmed = raw.trim();
@@ -207,6 +223,18 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
       } else if (inComment) {
         hidden = true;
         if (raw.includes("-->")) inComment = false;
+      } else if (htmlBlock) {
+        if (htmlBlock.untilBlank && trimmed === "") {
+          htmlBlock = null;
+        } else {
+          hidden = true;
+          if (
+            htmlBlock.needle &&
+            raw.toLowerCase().includes(htmlBlock.needle)
+          ) {
+            htmlBlock = null;
+          }
+        }
       } else {
         const open = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
         if (
@@ -219,6 +247,16 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
         } else if (trimmed.startsWith("<!--")) {
           hidden = true;
           if (!raw.includes("-->")) inComment = true;
+        } else if (indent <= 3 && trimmed.startsWith("<")) {
+          const end = htmlBlockEnd(trimmed);
+          if (end) {
+            hidden = true;
+            if (end.needle && raw.toLowerCase().includes(end.needle)) {
+              // opened and closed on the same line
+            } else {
+              htmlBlock = end;
+            }
+          }
         }
       }
       out.push({ raw, indent, trimmed, hidden });
@@ -228,7 +266,10 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
 
   const isHeading = (line, heading) => {
     if (line.hidden || line.indent > 3) return false;
-    const m = /^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/.exec(line.trimmed);
+    // The optional closing hash sequence must be separated by whitespace:
+    // CommonMark reads "## License#" as the heading text "License#", not as
+    // "License" with a closing sequence.
+    const m = /^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line.trimmed);
     return m !== null && `${m[1]} ${m[2]}` === heading;
   };
 
@@ -348,6 +389,13 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     `## License\n\n    ${readmeSpec.paragraph}\n`,
     `\`\`\`\n## License\n\n${readmeSpec.paragraph}\n\`\`\`\n\n## License\n\nAll rights waived.\n`,
     `<!--\n## License\n\n${readmeSpec.paragraph}\n-->\n`,
+    // heading and paragraph inside a raw HTML block (CommonMark type 1 and
+    // type 6), while the real section carries altered terms
+    `<script>\n## License\n\n${readmeSpec.paragraph}\n</script>\n\n## License\n\nAll rights waived.\n`,
+    `<div>\n## License\n\n${readmeSpec.paragraph}\n</div>\n\n## License\n\nAll rights waived.\n`,
+    // "## License#" is the heading text "License#": a closing hash sequence
+    // requires separating whitespace, so this must not match the heading
+    `## License#\n\n${readmeSpec.paragraph}\n\n## License\n\nAll rights waived.\n`,
   ]) {
     const found = ownershipParagraphOf(doc, readmeSpec);
     assert.notEqual(
