@@ -33,25 +33,28 @@ presentation rule this organization applies to text meant for people
   é verificável — CodeQL é check exigido em pull request e `merge_group`, e os
   resultados vão para o code scanning, onde os alertas são triados. A alegação
   era anterior à reforma e foi propagada por ela.
-- Trocou o guard de titularidade de casamento por padrão para **adjacência
-  estrutural verificada**. Cada um dos quatro documentos protegidos passa a
-  declarar o par (sentença que introduz, cláusula aprovada), e o teste exige
-  que os dois apareçam colados no texto com espaçamento normalizado. Reflow
-  continua irrelevante; inserir qualquer coisa entre eles quebra a asserção.
+- Inverteu o guard de titularidade de **contenção** para **verificação de
+  bloco**. Cada documento protegido declara ONDE fica o seu parágrafo de
+  titularidade — por cabeçalho, ou por índice na sequência de blocos — e o
+  parágrafo encontrado ali precisa ser **igual** ao texto aprovado, com
+  espaçamento normalizado. Nada pode ser acrescentado, citado em volta dentro
+  do bloco, ou removido. Reflow continua livre.
 
-  A mudança encerra uma sequência de três tentativas que caíram todas pelo
-  mesmo motivo — inferir início de sentença a partir da pontuação ao redor:
-  quebra de linha simples (`It is false that\nThe original content …`),
-  qualquer quebra de parágrafo, já que dois-pontos ligam através dela
-  (`The following statement is false:` + linha em branco), e qualquer ponto,
-  já que abreviação também termina em ponto (`It is false, e.g. The original
-content …`). Nomear o predecessor esperado remove a classe inteira, porque
-  um preâmbulo negador não alcança mais a cláusula sem deslocar texto que o
-  guard também verifica.
+  A inversão encerra cinco rodadas que caíram todas pelo mesmo motivo: perguntar
+  "este texto aparece em algum lugar do arquivo?" é **falha-aberto** — não diz
+  nada sobre o que cerca o achado. As tentativas anteriores fecharam um
+  invólucro de cada vez (quebra de linha, quebra de parágrafo, ponto de
+  abreviação) e sempre deixaram o próximo disponível, até o caso terminal: o par
+  aprovado citado literalmente dentro de um preâmbulo negador. Contenção não
+  restringe contexto; igualdade de bloco restringe.
 
-  Efeito colateral deliberado: reescrever a sentença que introduz a cláusula
-  reprova o teste. O parágrafo de titularidade é texto jurídico, então alterá-lo
-  deve exigir mexer no guard e passar por revisão.
+  Fronteira declarada, porque é real: texto num bloco **diferente** não é
+  alcançável por teste dessa natureza, e quem tem acesso de escrita pode editar
+  o próprio teste. O que a verificação garante é que o parágrafo governante não
+  deriva, não é preenchido e não é reemoldurado no lugar sem reprovar.
+
+  Efeito colateral deliberado: reescrever o parágrafo reprova o teste. É texto
+  jurídico — alterá-lo deve exigir mexer no guard e passar por revisão.
 
 - Atualizou a referência ao quadro `Project #17` em `.github/WORK-TRACKING.md`
   para o nome atual do quadro.

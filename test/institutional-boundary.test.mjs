@@ -147,81 +147,117 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
   );
 
-  // Each guarded document must carry its approved ownership sentence directly
-  // after the specific sentence or heading that introduces it. The pair is
-  // checked for adjacency on whitespace-normalized text, so Markdown reflow is
-  // irrelevant while nothing can be inserted between the two.
+  // The ownership statement is verified as a whole block, not searched for.
   //
-  // Three punctuation-based anchors were tried before this and all three fell
-  // to a negating preface, because every one of them tried to infer where a
-  // sentence begins from the characters around it: a bare newline ("It is
-  // false that\nThe original content ..."), any paragraph break ("The
-  // following statement is false:\n\nThe original content ..."), and any
-  // period ("It is false, e.g. The original content ..."). Inferring sentence
-  // structure from punctuation is a losing game; naming the expected
-  // predecessor ends it, because a preface can no longer reach the clause
-  // without displacing text the guard also verifies.
+  // Every earlier version asked "does this text appear somewhere in the file?",
+  // which is fail-open: it says nothing about what surrounds the match. Five
+  // rounds of review walked that consequence down one counterexample at a time
+  // - a bare newline, a paragraph break, an abbreviation period, and finally a
+  // negating preface quoting the approved pair verbatim. Each fix closed one
+  // wrapper and left the next one available, because containment cannot
+  // constrain context.
   //
-  // A rewrite of the introducing sentence fails this test on purpose: the
-  // ownership paragraph is legal text, so changing it should require touching
-  // the guard and getting the change reviewed.
+  // So the check is inverted to fail-closed. Each document declares WHERE its
+  // ownership paragraph lives - a heading, or an index into the block sequence
+  // - and the paragraph found at that location must EQUAL the approved text
+  // once whitespace is normalized. Nothing may be added to it, quoted around
+  // it inside the block, or removed from it. Reflow remains free because the
+  // comparison normalizes whitespace.
+  //
+  // Boundary, stated because it is real and not worth another round: text in a
+  // DIFFERENT block cannot be constrained by any test of this kind, and an
+  // author with commit access could edit this file as easily as the documents
+  // it guards. What this test buys is that the governing paragraph cannot
+  // drift, be padded, or be quoted-and-reframed in place without failing.
   const normalize = (text) => text.replace(/\s+/g, " ").trim();
 
-  const ownershipPairs = {
-    NOTICE: [
-      "maintained by LCV Ideas & Software.",
-      "Its original content owned by LCV Ideas & Software is proprietary.",
-    ],
-    "README.md": [
-      "Copyright © 2026 LCV Ideas & Software.",
-      "The original content of this repository owned by LCV Ideas & Software is proprietary and **all rights are reserved**.",
-    ],
-    "THIRDPARTY.md": [
-      "## This repository",
-      "The original content of this repository owned by LCV Ideas & Software is proprietary to it.",
-    ],
-    "profile/README.md": [
-      "Copyright © 2026 LCV Ideas &amp; Software.",
-      "The original content of this repository owned by LCV Ideas &amp; Software is proprietary and **all rights are reserved**.",
-    ],
+  const blocksOf = (text) =>
+    text
+      .split(/\n\s*\n/)
+      .map((block) => block.trim())
+      .filter(Boolean);
+
+  // Locates the governing paragraph: the block after the named heading, or the
+  // block at the given index when the document has no headings.
+  const ownershipParagraphOf = (text, { heading, index }) => {
+    if (!heading) return blocksOf(text)[index];
+    const start = text.indexOf(heading);
+    if (start === -1) return undefined;
+    const rest = text.slice(start + heading.length);
+    const nextHeading = rest.indexOf("\n## ");
+    const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+    return blocksOf(section)[index];
   };
 
-  const carriesClause = (text, [precededBy, clause]) =>
-    normalize(text).includes(`${normalize(precededBy)} ${normalize(clause)}`);
+  const ownershipParagraphs = [
+    {
+      path: "NOTICE",
+      heading: null,
+      index: 1,
+      paragraph:
+        "This repository hosts organization profile, static site, sponsorship, and community-health material maintained by LCV Ideas & Software. Its original content owned by LCV Ideas & Software is proprietary. This notice does not claim copyright in third-party or contributor-owned material, which may be accepted only under separate documented written terms and the repository-local process in INBOUND.md. The repository remains public so GitHub can provide the special organization-profile and default community-health features of a repository named `.github`.",
+    },
+    {
+      path: "README.md",
+      heading: "## License",
+      index: 0,
+      paragraph:
+        "Copyright © 2026 LCV Ideas & Software. The original content of this repository owned by LCV Ideas & Software is proprietary and **all rights are reserved**. Third-party and contributor-owned material remains subject to its own documented terms. Public visibility permits viewing and forking through GitHub as provided by the applicable GitHub Terms of Service; it does not grant an additional public license. See the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service), [LICENSE](./LICENSE), [NOTICE](./NOTICE), and [THIRDPARTY](./THIRDPARTY.md).",
+    },
+    {
+      path: "THIRDPARTY.md",
+      heading: "## This repository",
+      index: 0,
+      paragraph:
+        "The original content of this repository owned by LCV Ideas & Software is proprietary to it. Copyright © 2026 LCV Ideas & Software. All rights reserved. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE). Contributor-owned material may be incorporated only under the separate documented written terms and local gate defined in [INBOUND.md](./INBOUND.md), and must be listed here or in NOTICE before merge.",
+    },
+    {
+      path: "profile/README.md",
+      heading: "## 📄 License",
+      index: 0,
+      paragraph:
+        "Copyright © 2026 LCV Ideas &amp; Software. The original content of this repository owned by LCV Ideas &amp; Software is proprietary and **all rights are reserved**. See [LICENSE](https://github.com/LCV-Ideas-Software/.github/blob/main/LICENSE), [NOTICE](https://github.com/LCV-Ideas-Software/.github/blob/main/NOTICE), and [THIRDPARTY](https://github.com/LCV-Ideas-Software/.github/blob/main/THIRDPARTY.md).",
+    },
+  ];
 
-  const notice = ownershipPairs.NOTICE;
+  for (const spec of ownershipParagraphs) {
+    const found = ownershipParagraphOf(
+      readFileSync(join(repositoryRoot, spec.path), "utf8"),
+      spec,
+    );
+    assert.equal(
+      found === undefined ? undefined : normalize(found),
+      spec.paragraph,
+      `${spec.path} must carry the approved ownership paragraph verbatim at ${
+        spec.heading ?? `block ${spec.index}`
+      }`,
+    );
+  }
 
-  // Anything wedged between the introducing sentence and the clause breaks the
-  // adjacency, which is what makes a negating preface unable to bind it.
-  for (const reversed of [
-    `${notice[0]} It is false that ${notice[1]}`,
-    `${notice[0]} It is false, e.g. ${notice[1]}`,
-    `${notice[0]}\n\nThe following statement is false:\n\n${notice[1]}`,
-    `${notice[0]}\nNo one may claim that\n${notice[1]}`,
-    "Its original content is not owned by LCV Ideas & Software and is proprietary.",
-    "No original content owned by LCV Ideas & Software is proprietary.",
+  // A negating wrapper has to live inside the governing block to reach the
+  // statement, and putting it there breaks the equality.
+  const noticeSpec = ownershipParagraphs[0];
+  for (const tampered of [
+    `The following passage is false: "${noticeSpec.paragraph}"`,
+    `${noticeSpec.paragraph} None of the above applies.`,
+    `It is false, e.g. ${noticeSpec.paragraph}`,
+    noticeSpec.paragraph.replace("is proprietary", "is not proprietary"),
+    noticeSpec.paragraph.replace(
+      "Its original content owned by LCV Ideas & Software is proprietary.",
+      "",
+    ),
   ]) {
-    assert.ok(
-      !carriesClause(reversed, notice),
-      `the ownership guard must reject a reversed clause: ${reversed}`,
+    assert.notEqual(
+      normalize(tampered),
+      noticeSpec.paragraph,
+      "the ownership guard must reject a tampered governing paragraph",
     );
   }
 
-  // Reflow between and inside the two parts stays acceptable.
-  for (const legitimate of [
-    `${notice[0]} ${notice[1]}`,
-    `${notice[0]}\nIts original\ncontent owned by LCV Ideas & Software is\nproprietary.`,
-  ]) {
-    assert.ok(
-      carriesClause(legitimate, notice),
-      "the ownership guard must accept the approved sentence pair",
-    );
-  }
-
-  for (const [path, pair] of Object.entries(ownershipPairs)) {
-    assert.ok(
-      carriesClause(readFileSync(join(repositoryRoot, path), "utf8"), pair),
-      `${path} must carry the approved ownership sentence directly after "${pair[0]}"`,
-    );
-  }
+  // Reflow inside the block stays acceptable.
+  assert.equal(
+    normalize(noticeSpec.paragraph.split(" ").join("\n   ")),
+    noticeSpec.paragraph,
+    "the ownership guard must tolerate reflow inside the governing paragraph",
+  );
 });
