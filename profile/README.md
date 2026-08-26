@@ -1,50 +1,200 @@
+<div align="center">
+  <img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="560" />
+</div>
+
+<h1 align="center">
+  <img src="https://readme-typing-svg.demolab.com?font=Poppins&weight=600&size=30&duration=3200&pause=1000&color=2563EB&center=true&vCenter=true&width=860&lines=Independent+software+studio;Cloudflare+Pages+%E2%80%A2+Workers+%E2%80%A2+D1;Six-model+adversarial+review+gates;Fail+closed+%E2%80%A2+Test+first+%E2%80%A2+Ship+through+CI" alt="Independent software studio — Cloudflare Pages, Workers and D1 — six-model adversarial review gates — fail closed, test first, ship through CI" />
+</h1>
+
+<h3 align="center">LCV Ideas &amp; Software</h3>
+
 <p align="center">
-  <img src="./assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="520" />
+  <em>Public web apps, operator tooling and AI agent infrastructure on Cloudflare's edge.</em><br>
+  <em>Every deploy goes through CI. Every gate refuses to guess.</em>
 </p>
 
-<h1 align="center">LCV Ideas &amp; Software</h1>
-
 <p align="center">
-  <em>Independent software studio building public web apps, operator tooling, and AI agent infrastructure on Cloudflare's edge.</em>
+  <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-LCV--Ideas--Software-38bdf8.svg?style=flat-square" alt="GitHub organization"></a>
+  <a href="https://www.lcv.dev"><img src="https://img.shields.io/badge/homepage-www.lcv.dev-2563eb.svg?style=flat-square" alt="www.lcv.dev"></a>
+  <img src="https://img.shields.io/badge/location-Brazil-34d399.svg?style=flat-square" alt="Brazil">
+  <img src="https://img.shields.io/badge/repos-15%20public-7dd3fc.svg?style=flat-square" alt="15 public repositories">
+  <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg?style=flat-square" alt="Cloudflare Pages and Workers">
+  <img src="https://img.shields.io/badge/AI-6%20model%20review%20panel-34d399.svg?style=flat-square" alt="Six-model review panel">
 </p>
 
 <p align="center">
-  <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-verified-38bdf8.svg" alt="verified org"></a>
-  <a href="https://www.lcv.dev"><img src="https://img.shields.io/badge/homepage-www.lcv.dev-2563eb.svg" alt="www.lcv.dev"></a>
-  <img src="https://img.shields.io/badge/location-Brazil-34d399.svg" alt="Brazil">
-  <img src="https://img.shields.io/badge/repos-11%20public-7dd3fc.svg" alt="11 public repos">
-  <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg" alt="Cloudflare">
-  <img src="https://img.shields.io/badge/AI-6%20agent%20stack-34d399.svg" alt="6-agent AI stack">
-  <a href="../SECURITY.md"><img src="https://img.shields.io/badge/security-CodeQL%20%2B%20private%20reporting-brightgreen.svg" alt="security policy"></a>
-  <a href="../LICENSE"><img src="https://img.shields.io/badge/license-proprietary-lightgrey.svg" alt="Proprietary — all rights reserved"></a>
-  <a href="https://www.lcv.dev/sponsor/"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg" alt="Sponsor LCV Ideas & Software"></a>
+  <a href="https://github.com/LCV-Ideas-Software/.github/actions/workflows/codeql.yml"><img src="https://github.com/LCV-Ideas-Software/.github/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://github.com/LCV-Ideas-Software/.github/actions/workflows/scorecard.yml"><img src="https://github.com/LCV-Ideas-Software/.github/actions/workflows/scorecard.yml/badge.svg" alt="OpenSSF Scorecard"></a>
+  <a href="https://github.com/LCV-Ideas-Software/.github/blob/main/SECURITY.md"><img src="https://img.shields.io/badge/security-private%20reporting%20enabled-brightgreen.svg?style=flat-square" alt="Security policy"></a>
+  <a href="https://github.com/LCV-Ideas-Software/.github/blob/main/LICENSE"><img src="https://img.shields.io/badge/this%20repo-proprietary-lightgrey.svg?style=flat-square" alt="This repository is proprietary"></a>
+  <a href="https://www.lcv.dev/sponsor/"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ff69b4.svg?style=flat-square" alt="Sponsor LCV Ideas &amp; Software"></a>
 </p>
 
 LCV Ideas &amp; Software is an independent vibe-coding studio. It builds AI-assisted public-facing web applications, editorial tooling, infrastructure services, sponsor infrastructure, and developer utilities — primarily on a Cloudflare edge stack (Pages + Workers + D1) integrated with leading AI providers (Claude, Codex, Gemini, DeepSeek, Grok, Perplexity). Public homepage: **[www.lcv.dev](https://www.lcv.dev)**.
 
----
+<img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
-## Change History
+## 🧭 Who we are
+
+```yaml
+studio: LCV Ideas & Software
+homepage: https://www.lcv.dev
+location: Brazil
+model: single-operator studio, multi-agent engineering
+surface:
+  public_repositories: 15
+  live_products: 4 web apps + 3 operator services + 3 developer tools
+  android_portfolio: 3 delivery repositories (governance baseline stage)
+stack:
+  languages: [TypeScript, JavaScript, Rust, Python, SQL]
+  frontend: [React 19, Vite 8, TipTap, PWA/Workbox, DOMPurify]
+  edge: [Cloudflare Pages, Workers, Hono, D1, R2, Secrets Store, Cron Triggers]
+  desktop: [Tauri 2 (Rust)]
+  ai: [MCP servers, Claude, Codex, Gemini, DeepSeek, Grok, Perplexity]
+  payments: [Mercado Pago Checkout Transparente (Orders API + 3DS)]
+  quality: [Vitest, Zod, Biome, CodeQL, Zizmor, OpenSSF Scorecard]
+  ops: [GitHub Actions, merge queues, Wrangler, Dependabot, Linear]
+discipline: "Fail closed, test first, ship through the queue."
+```
+
+<img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
+
+## 📌 Change History
 
 **Status.** Active organization profile. Current release: **not versioned** — it publishes a surface rather than a numbered artifact.
 
 Changes to this profile are recorded, from 11/08/2026 onward, in the [`CHANGELOG.md`](https://github.com/LCV-Ideas-Software/.github/blob/main/CHANGELOG.md) of the `.github` repository that hosts it. Earlier work is not summarized there; the commit history remains its record.
 
----
+## 🏗️ What we build
 
-## What we build
-
-A small, opinionated portfolio organized in three layers, with its web services centered on Cloudflare's edge:
+A small, opinionated portfolio organized in four layers, with its web services centered on Cloudflare's edge:
 
 1. **Public products** — consumer-facing web apps with AI assistance, deployed on Cloudflare Pages with Worker backends.
 2. **Operator infrastructure** — the single-tenant control plane and supporting services that govern the public products.
 3. **Developer tooling** — open-source MCP servers and editorial workbenches built around multi-agent AI convergence.
+4. **Android portfolio** — public delivery repositories for the Android editions, currently carrying the reviewed governance, security and release baseline ahead of their application code.
 
-The organization maintains 11 active public repositories, including its institutional `.github` repository. Product and tooling repositories expose public project surfaces or operational endpoints over HTTPS on custom domains. Engineering work follows strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL Advanced Setup on public code repositories, Secret Scanning push protection, and SHA-pinned external GitHub Actions.
+The organization maintains **15 active public repositories**, including its institutional `.github` repository and the public trust root for supply-chain policy. Product and tooling repositories expose public project surfaces or operational endpoints over HTTPS on custom domains. Engineering work follows strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL Advanced Setup on public code repositories, Secret Scanning push protection, and SHA-pinned external GitHub Actions.
 
----
+<img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
-## Repositories
+## 🧰 Stack
+
+<div align="center">
+
+### Languages
+
+<table>
+<tr>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/typescript/typescript-original.svg" width="46" height="46" alt="TypeScript" />
+    <br><sub><b>TypeScript</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/javascript/javascript-original.svg" width="46" height="46" alt="JavaScript" />
+    <br><sub><b>JavaScript</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/rust/rust-original.svg" width="46" height="46" alt="Rust" />
+    <br><sub><b>Rust</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/python/python-original.svg" width="46" height="46" alt="Python" />
+    <br><sub><b>Python</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/sqlite/sqlite-original.svg" width="46" height="46" alt="SQL / SQLite" />
+    <br><sub><b>SQL / SQLite</b></sub>
+  </td>
+</tr>
+</table>
+
+### Frontend &amp; Desktop
+
+<table>
+<tr>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/react/react-original.svg" width="46" height="46" alt="React" />
+    <br><sub><b>React 19</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/vitejs/vitejs-original.svg" width="46" height="46" alt="Vite" />
+    <br><sub><b>Vite 8</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/tauri/tauri-original.svg" width="46" height="46" alt="Tauri" />
+    <br><sub><b>Tauri 2</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/PWA-5A0FC8?style=flat-square&logo=pwa&logoColor=white" alt="PWA" />
+    <br><sub><b>PWA / Workbox</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/DOMPurify-7952B3?style=flat-square" alt="DOMPurify" />
+    <br><sub><b>DOMPurify</b></sub>
+  </td>
+</tr>
+</table>
+
+### Edge &amp; Data
+
+<table>
+<tr>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/cloudflare/cloudflare-original.svg" width="46" height="46" alt="Cloudflare" />
+    <br><sub><b>Pages</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/cloudflareworkers/cloudflareworkers-original.svg" width="46" height="46" alt="Cloudflare Workers" />
+    <br><sub><b>Workers</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/sqlite/sqlite-original.svg" width="46" height="46" alt="D1" />
+    <br><sub><b>D1</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/R2-F38020?style=flat-square&logo=cloudflare&logoColor=white" alt="R2" />
+    <br><sub><b>R2</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/Hono-E36002?style=flat-square&logo=hono&logoColor=white" alt="Hono" />
+    <br><sub><b>Hono</b></sub>
+  </td>
+</tr>
+</table>
+
+### AI &amp; Quality gates
+
+<table>
+<tr>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/MCP-000000?style=flat-square" alt="MCP" />
+    <br><sub><b>MCP servers</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/6--model-panel-34d399?style=flat-square" alt="Six-model panel" />
+    <br><sub><b>Review panel</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/vitest/vitest-original.svg" width="46" height="46" alt="Vitest" />
+    <br><sub><b>Vitest</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/CodeQL-2088FF?style=flat-square&logo=github&logoColor=white" alt="CodeQL" />
+    <br><sub><b>CodeQL</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/OpenSSF-Scorecard-brightgreen?style=flat-square" alt="OpenSSF Scorecard" />
+    <br><sub><b>Scorecard</b></sub>
+  </td>
+</tr>
+</table>
+
+</div>
+
+<img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
+
+## 📦 Repositories
 
 ### 🌐 Public-facing applications
 
@@ -67,15 +217,26 @@ The organization maintains 11 active public repositories, including its institut
 
 | Repository                                                                 | Project page                                             | What it does                                                                                                                                                                                                                                                                                                                                                |
 | -------------------------------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**ultrabrain-mcp**](https://github.com/LCV-Ideas-Software/ultrabrain-mcp) | [ultrabrain-mcp.lcv.dev](https://ultrabrain-mcp.lcv.dev) | LCV-created local MCP reasoning gate for structured engineering thought, validation, branch synthesis, quality metrics, bias checks, prompts, resources, and review readiness. Published as [`@lcv-ideas-software/ultrabrain-mcp`](https://www.npmjs.com/package/@lcv-ideas-software/ultrabrain-mcp).                                                       |
+| [**ultrabrain-mcp**](https://github.com/LCV-Ideas-Software/ultrabrain-mcp) | [ultrabrain-mcp.lcv.dev](https://ultrabrain-mcp.lcv.dev) | Local MCP reasoning gate built by LCV Ideas &amp; Software for structured engineering thought, validation, branch synthesis, quality metrics, bias checks, prompts, resources, and review readiness. Published as [`@lcv-ideas-software/ultrabrain-mcp`](https://www.npmjs.com/package/@lcv-ideas-software/ultrabrain-mcp).                                 |
 | [**cross-review**](https://github.com/LCV-Ideas-Software/cross-review)     | [cross-review.lcv.dev](https://cross-review.lcv.dev)     | API-first MCP stdio server for multi-model cross-review using official provider APIs for OpenAI, Anthropic, Google Gemini, DeepSeek, xAI Grok and Perplexity. No CLI execution; automated releases publish npmjs.com and GitHub Packages artifacts as [`@lcv-ideas-software/cross-review`](https://www.npmjs.com/package/@lcv-ideas-software/cross-review). |
 | [**maestro-app**](https://github.com/LCV-Ideas-Software/maestro-app)       | [maestro-app.lcv.dev](https://maestro-app.lcv.dev)       | _Maestro Editorial AI_ — portable Windows editorial workbench (Tauri 2 + React 19) supporting Claude, Codex, Gemini, DeepSeek, Grok, and Perplexity. Sessions, editorial artifacts, and NDJSON diagnostics remain local; configuration can optionally use Cloudflare D1 and Secrets Store.                                                                  |
 
+### 📱 Android portfolio
+
+Public delivery repositories for the Android editions. Each currently carries the reviewed governance, security, observability and publication baseline; the Gradle project, signing configuration and application code are introduced only in a reviewed change, never as scaffolding placed to satisfy automation.
+
+| Repository                                                                           | Project page                                                        | What it does                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [**maestro-android**](https://github.com/LCV-Ideas-Software/maestro-android)         | [maestro-android.lcv.dev](https://maestro-android.lcv.dev/)         | Public governance and automation baseline for the future Android edition of _Maestro Editorial AI_. Tracked in [Project #20](https://github.com/orgs/LCV-Ideas-Software/projects/20). |
+| [**calculadora-android**](https://github.com/LCV-Ideas-Software/calculadora-android) | [calculadora-android.lcv.dev](https://calculadora-android.lcv.dev/) | Public delivery repository for the Android edition of the _Calculadora_ — no AI and no tracking by design. Target package name `dev.lcv.calculadora`.                                 |
+| [**astrologo-android**](https://github.com/LCV-Ideas-Software/astrologo-android)     | [astrologo-android.lcv.dev](https://astrologo-android.lcv.dev/)     | Public delivery repository for the Android edition of the astrology product. Tracked in [Project #19](https://github.com/orgs/LCV-Ideas-Software/projects/19).                        |
+
 ### 🏛️ Organization infrastructure
 
-| Repository                                                   | Visibility | What it does                                                                                                      |
-| ------------------------------------------------------------ | ---------- | ----------------------------------------------------------------------------------------------------------------- |
-| [**.github**](https://github.com/LCV-Ideas-Software/.github) | Public     | Organization profile, community-health defaults, public policy documentation, and public Pages/Sponsors surfaces. |
+| Repository                                                                           | Visibility | What it does                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [**.github**](https://github.com/LCV-Ideas-Software/.github)                         | Public     | Organization profile, community-health defaults, public policy documentation, and public Pages/Sponsors surfaces.                                                                                                                                                                                                                                                                                   |
+| [**actions-lock-policy**](https://github.com/LCV-Ideas-Software/actions-lock-policy) | Public     | Public trust root for the Required Workflow that validates `.github/workflows/actions.lock` across the governed fleet. Public visibility is an architectural requirement: GitHub matches Required Workflow visibility against the repositories it applies to, so only a public source covers public, internal and private repositories alike. It holds no secrets, credentials or operational data. |
 
 ### Archived / discontinued
 
@@ -87,9 +248,9 @@ The organization maintains 11 active public repositories, including its institut
 | **`grok-cli`**        | Archived · private · 15/05/2026 | Discontinued. The npm package `@lcv-ideas-software/grok-cli` is published through version `1.6.5` and marked deprecated on npm; the private GitHub repository is read-only. Existing installs continue to function as-is.                                                                                                                                                                      |
 | **`deepseek-cli`**    | Archived · private · 15/05/2026 | Discontinued. The npm package `@lcv-ideas-software/deepseek-cli` is published through version `0.3.3` and marked deprecated on npm; the private GitHub repository is read-only. Existing installs continue to function as-is.                                                                                                                                                                  |
 
----
+<img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
-## Shared platform
+## 🌐 Shared platform
 
 ```
 Frontend     React 19 + Vite 8 + TypeScript
@@ -101,85 +262,76 @@ AI           Claude Code · ChatGPT Codex · Gemini CLI · DeepSeek · Grok · P
 Email        Resend
 Sponsorship  sponsor-motor + Mercado Pago Checkout Transparente Orders API
 Anti-abuse   Cloudflare Turnstile + GCP Natural Language
-Desktop      Tauri 2  (Maestro)
+Desktop      Tauri 2 (Maestro)
 ```
 
-- **D1 separation.** Consumer products and the operator control plane share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; infrastructure services use dedicated databases. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
+- **D1 separation.** Consumer products and the operator control plane share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; the GitHub-to-Slack relay uses `github-slack-alerts-db`. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
 - **One media bucket.** `mainsite-media` is shared by `mainsite-app` and `admin-app`. Upload handling uses magic-byte sniffing, allowlisted MIME types, a 10 MiB cap, and a sandboxed legacy SVG fallback.
 - **Defense in depth.** Cloudflare Access gates _who_ enters admin surfaces; CSP gates _what_ the browser can execute on public surfaces; Turnstile gates form anti-abuse; GCP Natural Language scores comment moderation.
 
----
+<img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
-## Engineering practices
+## ⚙️ Engineering practices
 
 - **Structured reasoning and independent review.** Substantive operator-authored engineering changes use `ultrabrain` for structured reasoning and the `cross-review` MCP for independent review before they are declared complete. Caller/reviewer self-review is invalid. This is an operator-process control, not a required GitHub merge check.
 - **Repository-specific quality gates.** Each change must pass the checks defined by the affected repository — formatting, linting, type checking, tests, builds, and security checks as applicable. Toolchains vary; there is no universal four-check chain.
-- **CodeQL Advanced Setup.** Every active repository maintains an explicit `.github/workflows/codeql.yml` with the languages relevant to that repository. CodeQL is a required check on both pull request and `merge_group` revisions; its analyzer job enforces zero SARIF findings because native code-scanning merge protection does not cover merge-queue groups.
-- **GitHub-native PR governance.** A pull request is required for every change to the default branch. Squash is the only merge method; an authorized human admits eligible human-authored pull requests to GitHub's native merge queue. Canonical same-repository Dependabot pull requests are admitted automatically on their exact observed head SHA. In both paths, all effective rules and required checks run again on the synthetic revision before GitHub creates a signed, single-parent squash. Default branches cannot be deleted or force-pushed, review conversations that exist must be resolved, and no actor has a ruleset bypass.
+- **CodeQL Advanced Setup.** Every public repository containing code maintains an explicit `.github/workflows/codeql.yml` and has active CodeQL analysis. Default Setup is not the current model, and no CodeQL status check is required to update `main`; changes to the setup remain operator-controlled.
+- **Direct-to-`main` baseline.** `main` is the default and deploy branch. Direct signed, fast-forward pushes are allowed. Default branches cannot be deleted or force-pushed; tags require signed commits and cannot be deleted or updated. PRs and auto-merge may be used, but are not mandatory.
 - **`cross-review` anti-drift checks.** In the `cross-review` repository, push CI verifies package/runtime version consistency and the expected release markers in `README.md`, `SECURITY.md`, and `CHANGELOG.md`.
 - **Agent-instruction parity.** Program-wide directives are mirrored across the active agent environments as an operator process; GitHub does not enforce this parity.
-- **Supply-chain baseline.** External GitHub Actions are pinned by full commit SHA. Cloudflare deployment workflows use exact Wrangler versions from committed manifests and lockfiles, verify package signatures and audit results, and rely on daily Dependabot checks with automatic rebasing. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and ordinary version updates in every other ecosystem observe a seven-day stability cooldown. Security updates are not delayed by it.
+- **Supply-chain baseline.** Organization policy requires external GitHub Actions to be pinned by full commit SHA, and `actions-lock-policy` publishes the trust root that validates the resulting `actions.lock` across the fleet. Cloudflare deployment workflows intentionally resolve `wrangler@latest` in an isolated prefix and verify package signatures and audit results before execution.
 
----
+<img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
-## Licensing
+## ⚖️ Licensing
 
-| License                                                         | Repositories                                                                                                                                                 |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Proprietary — All rights reserved                               | `.github`, `.github-private`, `programa-android`, `github-operations`                                                                                        |
-| [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `apphub`, `admin-app`, `adminapps`, `mtasts-motor`, `maestro-app`, `sponsor-motor` |
-| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)       | `ultrabrain-mcp`, `cross-review`, `cross-review-v1` (archived), `deepseek-cli` (archived), `grok-cli` (archived)                                             |
+| License                                                         | Public repositories                                                                                                                                                                                  |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `admin-app`, `mtasts-motor`, `sponsor-motor`, `maestro-app`, `maestro-android`, `calculadora-android`, `astrologo-android` |
+| [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)       | `ultrabrain-mcp`, `cross-review`                                                                                                                                                                     |
+| Proprietary — all rights reserved                               | `.github`, `actions-lock-policy`                                                                                                                                                                     |
 
-The AGPL-3.0 **network-service trigger** applies only to the repositories listed in the AGPL row: if a modified version lets users interact with it remotely through a computer network, those users must be offered its Corresponding Source under AGPL-3.0. The four institutional and operational repositories in the proprietary row grant no additional public license; the public `.github` repository remains viewable and forkable through GitHub under the platform's applicable [Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service). Each repository's own `LICENSE`, `NOTICE`, and `THIRDPARTY.md` are authoritative.
+The AGPL-3.0 **network-service trigger** applies to the AGPL repositories: running a modified fork as a public service obligates publication of the modifications under the same license. The proprietary repositories are public because GitHub requires public visibility for their platform role — the organization profile and the Required Workflow trust root — and that visibility grants no rights beyond those provided by the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service). Public software repositories ship a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
 
-The proprietary row records the organization's current policy. A particular repository revision remains governed by the license or notice it contains, and earlier copies retain rights validly granted under their applicable historical terms.
+Archived repositories are recorded under the terms they carried when they were archived: `apphub` and `adminapps` under AGPL-3.0-or-later; `cross-review-v1`, `grok-cli` and `deepseek-cli` under Apache-2.0.
 
----
+## 📋 Conventions
 
-## Conventions
-
-- **Security**: Secret Scanning, push protection, and Dependabot security updates are enabled across every active repository. CodeQL Advanced Setup runs in every active repository; the internal `.github-private` enterprise governance repository analyzes its GitHub Actions source with the same zero-finding SARIF gate. Vulnerability disclosures follow each public repository's `SECURITY.md`.
-- **Contributing**: Every public repository carries its own `CONTRIBUTING.md`. Every change to the default branch must arrive through a PR and pass the repository-specific checks; direct pushes to `main` are not permitted. Human-authored PRs require authorized human queue admission. Dependabot Custom Auto-merge, operated exclusively from `github-operations`, prepares, rebases, and admits canonical same-repository Dependabot updates automatically, while the same native merge queue and required security and quality gates remain mandatory.
+- **Security**: Secret Scanning, push protection, and Dependabot security updates are enabled across every active repository. CodeQL Advanced Setup runs in all public repositories containing code. Vulnerability disclosures follow each public repository's `SECURITY.md`.
+- **Contributing**: Every public repository carries its own `CONTRIBUTING.md`. PRs are optional; when used, contributors should run the repository-specific checks before submission. Direct signed pushes to `main` remain permitted.
 - **Code of Conduct**: Every public repository follows Contributor Covenant 3.0 through its own `CODE_OF_CONDUCT.md`.
 
----
-
-## Contact and support
+## ✉️ Contact and support
 
 - **Homepage**: [www.lcv.dev](https://www.lcv.dev)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
-- **Email**: [contato@lcv.dev](mailto:contato@lcv.dev) for general topics.
+- **Email**: [lcv@lcv.dev](mailto:lcv@lcv.dev) for general topics.
 - **Phones**: [+55 (21) 3955-0883](https://wa.me/552139550883) / [+55 (21) 99152-4643](https://wa.me/5521991524643)
 - **Sponsorship**: support the work through the secure sponsor page → [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor/).
 
-## Repository conventions
+## 🧾 Repository conventions
 
-- **License**: proprietary — **All rights reserved**. This public special repository grants no rights beyond those provided by the applicable [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) through the platform.
-- **Notices**: see [NOTICE](../NOTICE) and [THIRDPARTY](../THIRDPARTY.md).
-- **Security disclosure**: see [SECURITY.md](../SECURITY.md).
-- **Code of conduct**: see [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).
-- **Contributing**: see [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **License**: this `.github` repository is proprietary — **all rights reserved**. See [LICENSE](https://github.com/LCV-Ideas-Software/.github/blob/main/LICENSE).
+- **Notices**: see [NOTICE](https://github.com/LCV-Ideas-Software/.github/blob/main/NOTICE) and [THIRDPARTY](https://github.com/LCV-Ideas-Software/.github/blob/main/THIRDPARTY.md).
+- **Security disclosure**: see [SECURITY.md](https://github.com/LCV-Ideas-Software/.github/blob/main/SECURITY.md).
+- **Code of conduct**: see [CODE_OF_CONDUCT.md](https://github.com/LCV-Ideas-Software/.github/blob/main/CODE_OF_CONDUCT.md).
+- **Contributing**: see [CONTRIBUTING.md](https://github.com/LCV-Ideas-Software/.github/blob/main/CONTRIBUTING.md).
+- **Inbound rights**: see [INBOUND.md](https://github.com/LCV-Ideas-Software/.github/blob/main/INBOUND.md).
 - **Sponsorship**: see the relevant repository's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor/).
 - **Action pinning**: all external GitHub Actions are pinned by full commit SHA per supply-chain hardening baseline.
-- **Code owners**: [.github/CODEOWNERS](../.github/CODEOWNERS).
+- **Code owners**: [.github/CODEOWNERS](https://github.com/LCV-Ideas-Software/.github/blob/main/.github/CODEOWNERS).
 
-## Links
+## 🔗 Links
 
 - Site: [https://www.lcv.dev](https://www.lcv.dev)
 - GitHub organization: [LCV-Ideas-Software](https://github.com/LCV-Ideas-Software)
-- Organization profile source: [.github](https://github.com/LCV-Ideas-Software/.github)
+- Public organization profile source: [.github](https://github.com/LCV-Ideas-Software/.github)
+- Supply-chain trust root: [actions-lock-policy](https://github.com/LCV-Ideas-Software/actions-lock-policy)
 - Sponsors: [https://github.com/sponsors/lcv-ideas-software](https://github.com/sponsors/lcv-ideas-software)
 
-## License
+## 📄 License
 
-Copyright © 2026 LCV Ideas & Software. The LCV-owned original content of this
-repository is proprietary and **all rights are reserved**. Third-party and
-contributor-owned material remains subject to its own documented terms. Public
-visibility permits viewing and forking through GitHub as provided by the
-applicable GitHub Terms of Service; it does not grant an additional public license. See
-the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service),
-[LICENSE](../LICENSE), [NOTICE](../NOTICE), and
-[THIRDPARTY](../THIRDPARTY.md).
+Copyright © 2026 LCV Ideas &amp; Software. The original content of this repository owned by LCV Ideas &amp; Software is proprietary and **all rights are reserved**. See [LICENSE](https://github.com/LCV-Ideas-Software/.github/blob/main/LICENSE), [NOTICE](https://github.com/LCV-Ideas-Software/.github/blob/main/NOTICE), and [THIRDPARTY](https://github.com/LCV-Ideas-Software/.github/blob/main/THIRDPARTY.md).
 
 ---
 
