@@ -30,7 +30,7 @@ quando a decisão de fechamento ainda não tiver sido tomada.
 
 ### Projects
 
-- [Project #17 — `LCV Portfolio`](https://github.com/orgs/LCV-Ideas-Software/projects/17):
+- [Project #17 — `LCV Ideas & Software Portfolio`](https://github.com/orgs/LCV-Ideas-Software/projects/17):
   visão consolidada da organização.
 
 O quadro é **privado**. O link exige uma conta com acesso à organização; para quem lê este arquivo

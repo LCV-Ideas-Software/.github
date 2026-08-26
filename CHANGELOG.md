@@ -33,6 +33,16 @@ presentation rule this organization applies to text meant for people
   é verificável — CodeQL é check exigido em pull request e `merge_group`, e os
   resultados vão para o code scanning, onde os alertas são triados. A alegação
   era anterior à reforma e foi propagada por ela.
+- Fechou a brecha da quebra de linha na âncora do guard. A primeira versão da
+  âncora aceitava `\n` como fronteira de sentença, e como o guard existe para
+  tolerar reflow, bastava quebrar o prefixo negador antes da cláusula
+  (`It is false that\nThe original content … is proprietary.`) para o teste
+  passar com o invariante invertido. A âncora agora reconhece apenas três
+  inícios reais: começo do arquivo, terminador de sentença seguido de espaço,
+  ou quebra de parágrafo. O espaçamento **dentro** da cláusula continua
+  flexível, que é o que preserva a tolerância a reflow.
+- Atualizou a referência ao quadro `Project #17` em `.github/WORK-TRACKING.md`
+  para o nome atual do quadro.
 - Ancorou o guard de titularidade na sentença. A cláusula afirmativa ainda era
   uma busca de substring, então `No original content owned by LCV Ideas &
 Software is proprietary.` e `It is false that the original content owned by

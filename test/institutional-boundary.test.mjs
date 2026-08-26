@@ -147,19 +147,25 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
   );
 
-  // The affirmative sentence, anchored at its own start. Anchoring the subject
-  // to a sentence boundary is what stops a surrounding negation from
-  // satisfying the guard as a substring: "No original content owned by ... is
-  // proprietary" and "It is false that the original content owned by ... is
-  // proprietary" both fail because neither reaches "The"/"Its" at a boundary.
+  // The affirmative sentence, anchored at its own start, so that a surrounding
+  // negation cannot satisfy the guard as a substring. The anchor accepts only
+  // three real starts: the beginning of the file, a sentence terminator
+  // followed by whitespace, or a paragraph break. A bare newline is
+  // deliberately NOT an anchor: Markdown line wrapping carries no meaning, so
+  // accepting it would let a negating prefix be reflowed onto its own line
+  // ("It is false that\nThe original content ... is proprietary.") while the
+  // guard still passed. Whitespace inside the clause stays flexible, which is
+  // what keeps the guard tolerant of reflow.
   const ownershipClause =
-    /(?:^|[.\n]\s*)(?:The|Its)\s+original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
+    /(?:^|[.!?]\s+|\n[ \t]*\n\s*)(?:The|Its)\s+original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
 
   for (const reversed of [
     "The original content of this repository is not owned by LCV Ideas & Software and is proprietary.",
     "No original content owned by LCV Ideas & Software is proprietary.",
     "It is false that the original content owned by LCV Ideas & Software is proprietary.",
     "Nothing here means the original content owned by LCV Ideas & Software is proprietary.",
+    "It is false that\nThe original content owned by LCV Ideas & Software is proprietary.",
+    "No one may claim that\n  Its original content owned by LCV Ideas & Software is proprietary.",
   ]) {
     assert.doesNotMatch(
       reversed,
@@ -168,11 +174,19 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     );
   }
 
-  assert.match(
+  for (const legitimate of [
+    // after a sentence terminator, on one line and reflowed across lines
     "Copyright © 2026 LCV Ideas & Software. The original content of this repository owned by LCV Ideas & Software is proprietary.",
-    ownershipClause,
-    "the ownership guard must accept the approved affirmative sentence",
-  );
+    "maintained by LCV Ideas & Software.\nIts original\ncontent owned by LCV Ideas & Software is proprietary.",
+    // at a paragraph start, which is how THIRDPARTY.md opens the clause
+    "## This repository\n\nThe original content of this repository owned by LCV Ideas & Software is proprietary to it.",
+  ]) {
+    assert.match(
+      legitimate,
+      ownershipClause,
+      "the ownership guard must accept the approved affirmative sentence",
+    );
+  }
 
   for (const path of [
     "NOTICE",
