@@ -121,10 +121,13 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     "utf8",
   );
 
-  assert.match(license, /LCV-owned original contents/i);
   assert.match(
     license,
-    /does\s+not claim ownership of third-party or contributor-owned material/i,
+    /original\s+contents\s+of\s+those\s+revisions\s+owned\s+by\s+LCV\s+Ideas\s+&\s+Software/i,
+  );
+  assert.match(
+    license,
+    /does\s+not\s+claim\s+ownership\s+of\s+third-party\s+or\s+contributor-owned\s+material/i,
   );
   assert.match(
     inbound,
@@ -144,6 +147,17 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
   );
 
+  // Affirmative clause only: no wildcard gap, so a negated variant such as
+  // "original content is not owned by LCV Ideas & Software" cannot satisfy it.
+  const ownershipClause =
+    /original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
+
+  assert.doesNotMatch(
+    "The original content of this repository is not owned by LCV Ideas & Software and is proprietary.",
+    ownershipClause,
+    "the ownership guard must reject a negated clause",
+  );
+
   for (const path of [
     "NOTICE",
     "README.md",
@@ -152,8 +166,8 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
   ]) {
     assert.match(
       readFileSync(join(repositoryRoot, path), "utf8"),
-      /LCV-owned\s+original content/i,
-      `${path} must limit the ownership claim to LCV-owned material`,
+      ownershipClause,
+      `${path} must limit the ownership claim to material owned by LCV Ideas & Software`,
     );
   }
 });

@@ -54,8 +54,9 @@ For product-specific documentation, see each repository in the [organization lis
 
 ## License
 
-Copyright © 2026 LCV Ideas & Software. The LCV-owned original content of this
-repository is proprietary and **all rights are reserved**. Third-party and
+Copyright © 2026 LCV Ideas & Software. The original content of this
+repository owned by LCV Ideas & Software is proprietary and **all rights are
+reserved**. Third-party and
 contributor-owned material remains subject to its own documented terms.
 Public visibility permits viewing and forking through GitHub as provided by
 the applicable GitHub Terms of Service; it does not grant an additional

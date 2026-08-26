@@ -12,12 +12,78 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 26/08/2026 — Perfil da Organization reformado e titularidade escrita por extenso ([#288](https://github.com/LCV-Ideas-Software/.github/issues/288))
+
+### Fixed (rodada 1 do Codex)
+
+- Restaurou cinco afirmações que a reforma havia substituído por texto do
+  panorama da Enterprise, mais antigo que este documento. A raiz era única: o
+  perfil público foi redigido a partir daquele texto, e os dois documentos
+  divergem de propósito. Voltaram a valer as redações verificadas — governança
+  por pull request obrigatório com fila de merge nativa e squash, CodeQL como
+  check exigido em pull request e `merge_group`, e Wrangler em versão exata
+  vinda de manifesto e lockfile, com a janela de estabilização de sete dias.
+- Removeu do perfil público o identificador `github-slack-alerts-db`, que a
+  reforma havia introduzido. `WORK-TRACKING.md` proíbe publicar identificador
+  de sistema operacional privado, e o relay foi migrado para `github-operations`;
+  a redação genérica de bancos dedicados foi restaurada.
+- Restaurou a formulação fiel do gatilho de rede da AGPL-3.0: ele alcança
+  qualquer versão modificada com a qual usuários interajam remotamente por rede
+  — não apenas serviço público — e obriga a oferecer o Corresponding Source a
+  esses usuários, não apenas a publicar modificações.
+- Endureceu o guard de titularidade em `test/institutional-boundary.test.mjs`.
+  A tolerância a reflow havia sido implementada com um curinga de 60 caracteres
+  que aceitava a proposição inversa: `original content is not owned by
+LCV Ideas & Software` satisfazia a asserção. A cláusula agora é afirmativa e
+  sem curinga, e uma asserção nova prova que a forma negada é rejeitada.
+
+### Changed
+
+- Reformulou `profile/README.md` com a linguagem visual aprovada pelo operador —
+  cabeçalho com logotipo e animação de digitação, faixas de badges, bloco de
+  identidade em YAML, tabelas de ícones da stack e separadores de seção —
+  preservando integralmente o corpo institucional: catálogo de repositórios,
+  plataforma compartilhada, práticas de engenharia, licenciamento, convenções e
+  contato.
+- Substituiu o termo definido de titularidade pela forma por extenso "owned by
+  LCV Ideas & Software" em `LICENSE`, `NOTICE`, `README.md`, `THIRDPARTY.md`,
+  `INBOUND.md` e `profile/README.md`, atendendo à diretriz de que o nome da
+  Enterprise e da Organization nunca é abreviado em prosa. O invariante
+  permanece: a reivindicação de propriedade continua limitada ao material
+  próprio e não alcança material de terceiros ou de contribuidores.
+- Tornou as asserções de titularidade de `test/institutional-boundary.test.mjs`
+  tolerantes a reflow, para que o guard passe a verificar o invariante e não a
+  quebra de linha do parágrafo.
+- Trocou os links relativos do perfil (`./assets/`, `../SECURITY.md`,
+  `../LICENSE`) por URLs absolutas, já que a página renderizada da organização
+  não resolve caminhos relativos de forma confiável.
+
+### Fixed
+
+- Corrigiu o inventário do perfil, que declarava 11 repositórios públicos
+  quando o real são 15. Entraram no catálogo `maestro-android`,
+  `calculadora-android`, `astrologo-android` e `actions-lock-policy`, este
+  último com a explicação de por que sua visibilidade pública é exigência
+  arquitetural do Required Workflow.
+- Corrigiu a tabela de licenciamento, conferida arquivo a arquivo: AGPL-3.0 nos
+  onze repositórios de produto, Apache-2.0 em `ultrabrain-mcp` e `cross-review`,
+  e proprietário em `.github` e `actions-lock-policy`. As entradas arquivadas
+  passam a ser apresentadas como registro histórico.
+- Corrigiu o nome do produto do `astrologo-app` para _Oráculo Celestial_,
+  conforme a página publicada em `mapa-astral.lcv.app.br`.
+
+### Added
+
+- `profile/assets/section-divider.svg`, separador de seção próprio, para não
+  depender de imagens hospedadas por terceiros em uma superfície institucional.
+
 ## 24/08/2026 — Regime proprietário e titularidade delimitada ([#280](https://github.com/LCV-Ideas-Software/.github/issues/280))
 
 ### Changed
 
 - Replaced AGPL-3.0-or-later for repository revisions carrying this change
-  with an explicit proprietary `LICENSE`: the LCV-owned original content is
+  with an explicit proprietary `LICENSE`: the original content owned by
+  LCV Ideas & Software is
   now **All rights reserved**, while third-party and contributor-owned
   material retains its own terms and rights already granted for earlier
   revisions are not revoked.
