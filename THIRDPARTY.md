@@ -13,15 +13,17 @@ policy wrapper of its own.
 
 Versions and licenses below were read from each package's own published manifest or from its
 upstream repository, not inferred. Versions are the ones actually resolved by the committed
-lockfile, not the ranges declared in the manifest: the root `package.json` requests `prettier`
-as `^3.9.6` and resolves it to `3.9.6`.
+lockfile, not the ranges declared in the manifest: the root `package.json` requests `commonmark`
+as `0.31.2`, `prettier` as `^3.9.6`, and `wrangler` as `4.124.0`; the lockfile resolves those
+same versions.
 
 ## Repository root — `package.json`
 
-| Component | Version | License           | Scope       | Source                                 |
-| --------- | ------- | ----------------- | ----------- | -------------------------------------- |
-| prettier  | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier |
-| wrangler  | 4.123.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler |
+| Component  | Version | License           | Scope       | Source                                   |
+| ---------- | ------- | ----------------- | ----------- | ---------------------------------------- |
+| commonmark | 0.31.2  | BSD-2-Clause      | development | https://www.npmjs.com/package/commonmark |
+| prettier   | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier   |
+| wrangler   | 4.124.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler   |
 
 ## GitHub Actions
 

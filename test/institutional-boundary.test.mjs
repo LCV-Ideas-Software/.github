@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { Parser } from "commonmark";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -147,27 +148,263 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
   );
 
-  // Affirmative clause only: no wildcard gap, so a negated variant such as
-  // "original content is not owned by LCV Ideas & Software" cannot satisfy it.
-  const ownershipClause =
-    /original\s+content(?:\s+of\s+this\s+repository)?\s+owned\s+by\s+LCV\s+Ideas\s+&(?:amp;)?\s+Software\s+is\s+proprietary/i;
+  // Parse Markdown with the CommonMark reference implementation instead of
+  // maintaining a second, partial Markdown parser in this test. The guard only
+  // accepts an exact top-level structural anchor followed by the exact approved
+  // paragraph. Soft line wrapping is normalized, while links, emphasis, code,
+  // hard breaks, raw HTML, and every other semantic node remain significant.
+  const markdownParser = new Parser();
 
-  assert.doesNotMatch(
-    "The original content of this repository is not owned by LCV Ideas & Software and is proprietary.",
-    ownershipClause,
-    "the ownership guard must reject a negated clause",
-  );
+  const topLevelNodesOf = (text) => {
+    const document = markdownParser.parse(text);
+    const nodes = [];
+    for (let node = document.firstChild; node; node = node.next) {
+      nodes.push(node);
+    }
+    return nodes;
+  };
 
-  for (const path of [
-    "NOTICE",
-    "README.md",
-    "THIRDPARTY.md",
-    "profile/README.md",
-  ]) {
-    assert.match(
-      readFileSync(join(repositoryRoot, path), "utf8"),
-      ownershipClause,
-      `${path} must limit the ownership claim to material owned by LCV Ideas & Software`,
+  const appendText = (children, text) => {
+    const previous = children.at(-1);
+    if (previous?.type === "text") {
+      previous.literal += text;
+    } else {
+      children.push({ type: "text", literal: text });
+    }
+  };
+
+  const canonicalChildrenOf = (parent) => {
+    const children = [];
+    for (let node = parent.firstChild; node; node = node.next) {
+      if (node.type === "text") {
+        appendText(children, node.literal);
+        continue;
+      }
+      if (node.type === "softbreak") {
+        appendText(children, " ");
+        continue;
+      }
+
+      const child = { type: node.type };
+      if (["code", "html_inline"].includes(node.type)) {
+        child.literal = node.literal;
+      }
+      if (["link", "image"].includes(node.type)) {
+        child.destination = node.destination;
+        child.title = node.title;
+      }
+      if (node.firstChild) {
+        child.children = canonicalChildrenOf(node);
+      }
+      children.push(child);
+    }
+
+    for (const child of children) {
+      if (child.type === "text") {
+        child.literal = child.literal.replace(/\s+/gu, " ");
+      }
+    }
+    if (children[0]?.type === "text") {
+      children[0].literal = children[0].literal.trimStart();
+    }
+    if (children.at(-1)?.type === "text") {
+      children.at(-1).literal = children.at(-1).literal.trimEnd();
+    }
+    return children.filter(
+      (child) => child.type !== "text" || child.literal !== "",
+    );
+  };
+
+  const canonicalNodeOf = (node) => {
+    const canonical = { type: node.type };
+    if (node.type === "heading") canonical.level = node.level;
+    if (node.firstChild) canonical.children = canonicalChildrenOf(node);
+    return canonical;
+  };
+
+  const canonicalBlockOf = (markdown, expectedType) => {
+    const nodes = topLevelNodesOf(markdown);
+    assert.equal(nodes.length, 1, "the approved fixture must be one block");
+    assert.equal(
+      nodes[0].type,
+      expectedType,
+      `the approved fixture must be a ${expectedType}`,
+    );
+    return canonicalNodeOf(nodes[0]);
+  };
+
+  const canonicalKeyOf = (node) => JSON.stringify(canonicalNodeOf(node));
+
+  const ownershipParagraphOf = (text, spec) => {
+    const nodes = topLevelNodesOf(text);
+    const anchorType = spec.heading ? "heading" : "paragraph";
+    const anchorMarkdown = spec.heading ?? spec.anchorParagraph;
+    const anchorKey = JSON.stringify(
+      canonicalBlockOf(anchorMarkdown, anchorType),
+    );
+    const anchors = nodes.filter(
+      (node) => node.type === anchorType && canonicalKeyOf(node) === anchorKey,
+    );
+    if (anchors.length !== 1) return undefined;
+
+    const paragraph = anchors[0].next;
+    if (!paragraph || paragraph.type !== "paragraph") return undefined;
+    return canonicalNodeOf(paragraph);
+  };
+
+  const ownershipParagraphs = [
+    {
+      path: "NOTICE",
+      heading: null,
+      anchorParagraph:
+        "LCV Ideas & Software public organization surfaces Copyright © 2026 LCV Ideas & Software. All rights reserved.",
+      paragraph:
+        "This repository hosts organization profile, static site, sponsorship, and community-health material maintained by LCV Ideas & Software. Its original content owned by LCV Ideas & Software is proprietary. This notice does not claim copyright in third-party or contributor-owned material, which may be accepted only under separate documented written terms and the repository-local process in INBOUND.md. The repository remains public so GitHub can provide the special organization-profile and default community-health features of a repository named `.github`.",
+    },
+    {
+      path: "README.md",
+      heading: "## License",
+      index: 0,
+      paragraph:
+        "Copyright © 2026 LCV Ideas & Software. The original content of this repository owned by LCV Ideas & Software is proprietary and **all rights are reserved**. Third-party and contributor-owned material remains subject to its own documented terms. Public visibility permits viewing and forking through GitHub as provided by the applicable GitHub Terms of Service; it does not grant an additional public license. See the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service), [LICENSE](./LICENSE), [NOTICE](./NOTICE), and [THIRDPARTY](./THIRDPARTY.md).",
+    },
+    {
+      path: "THIRDPARTY.md",
+      heading: "## This repository",
+      index: 0,
+      paragraph:
+        "The original content of this repository owned by LCV Ideas & Software is proprietary to it. Copyright © 2026 LCV Ideas & Software. All rights reserved. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE). Contributor-owned material may be incorporated only under the separate documented written terms and local gate defined in [INBOUND.md](./INBOUND.md), and must be listed here or in NOTICE before merge.",
+    },
+    {
+      path: "profile/README.md",
+      heading: "## 📄 License",
+      index: 0,
+      paragraph:
+        "Copyright © 2026 LCV Ideas &amp; Software. The original content of this repository owned by LCV Ideas &amp; Software is proprietary and **all rights are reserved**. See [LICENSE](https://github.com/LCV-Ideas-Software/.github/blob/main/LICENSE), [NOTICE](https://github.com/LCV-Ideas-Software/.github/blob/main/NOTICE), and [THIRDPARTY](https://github.com/LCV-Ideas-Software/.github/blob/main/THIRDPARTY.md).",
+    },
+  ];
+
+  for (const spec of ownershipParagraphs) {
+    const approvedParagraph = canonicalBlockOf(spec.paragraph, "paragraph");
+    const found = ownershipParagraphOf(
+      readFileSync(join(repositoryRoot, spec.path), "utf8"),
+      spec,
+    );
+    assert.deepEqual(
+      found,
+      approvedParagraph,
+      `${spec.path} must carry the approved CommonMark ownership paragraph at ${
+        spec.heading ?? "the approved top-level anchor"
+      }`,
     );
   }
+
+  const noticeSpec = ownershipParagraphs[0];
+  const approvedNotice = canonicalBlockOf(noticeSpec.paragraph, "paragraph");
+  const noticeDocumentWith = (paragraph) =>
+    `${noticeSpec.anchorParagraph}\n\n${paragraph}\n`;
+
+  // Every historical textual bypass remains pinned as a parser-level
+  // regression: bare newline, paragraph break, punctuation, quoted wrapper,
+  // trailing denial, direct negation, and deletion.
+  for (const tampered of [
+    `It is false that\n${noticeSpec.paragraph}`,
+    `The following statement is false:\n\n${noticeSpec.paragraph}`,
+    `The following passage is false: "${noticeSpec.paragraph}"`,
+    `${noticeSpec.paragraph} None of the above applies.`,
+    `It is false, e.g. ${noticeSpec.paragraph}`,
+    noticeSpec.paragraph.replace("is proprietary", "is not proprietary"),
+    noticeSpec.paragraph.replace(
+      "Its original content owned by LCV Ideas & Software is proprietary.",
+      "",
+    ),
+  ]) {
+    assert.notDeepEqual(
+      ownershipParagraphOf(noticeDocumentWith(tampered), noticeSpec),
+      approvedNotice,
+      "the ownership guard must reject a tampered governing paragraph",
+    );
+  }
+
+  // Structural tampering the scanner must reject: the paragraph rendered as an
+  // indented code block; the heading and paragraph hidden inside a fence while
+  // the real section is altered; and the heading inside an HTML comment.
+  const readmeSpec = ownershipParagraphs[1];
+  const approvedReadme = canonicalBlockOf(readmeSpec.paragraph, "paragraph");
+  for (const doc of [
+    `## License\n\n    ${readmeSpec.paragraph}\n`,
+    `\`\`\`\n## License\n\n${readmeSpec.paragraph}\n\`\`\`\n\n## License\n\nAll rights waived.\n`,
+    `<!--\n## License\n\n${readmeSpec.paragraph}\n-->\n`,
+    // heading and paragraph inside a raw HTML block (CommonMark type 1 and
+    // type 6), while the real section carries altered terms
+    `<script>\n## License\n\n${readmeSpec.paragraph}\n</script>\n\n## License\n\nAll rights waived.\n`,
+    `<div>\n## License\n\n${readmeSpec.paragraph}\n</div>\n\n## License\n\nAll rights waived.\n`,
+    // A tab expands to four columns in CommonMark, so this apparent fence
+    // closer remains code and must not expose the decoy heading.
+    `\`\`\`\n\t\`\`\`\n## License\n\n${readmeSpec.paragraph}\n\`\`\`\n\n## License\n\nAll rights waived.\n`,
+    // A real heading nested in a list item is not the top-level License
+    // section that governs the document.
+    `- item\n\n  ## License\n\n  ${readmeSpec.paragraph}\n\n## License\n\nAll rights waived.\n`,
+    // "## License#" is the heading text "License#": a closing hash sequence
+    // requires separating whitespace, so this must not match the heading
+    `## License#\n\n${readmeSpec.paragraph}\n\n## License\n\nAll rights waived.\n`,
+    // Duplicate top-level anchors are ambiguous and therefore fail closed.
+    `## License\n\n${readmeSpec.paragraph}\n\n## License\n\n${readmeSpec.paragraph}\n`,
+  ]) {
+    assert.notDeepEqual(
+      ownershipParagraphOf(doc, readmeSpec),
+      approvedReadme,
+      `the ownership guard must reject structural tampering: ${doc.slice(0, 60)}...`,
+    );
+  }
+
+  // An autolink begins with "<" but is not a raw-HTML block. The visible
+  // negating preface must therefore remain part of the block sequence.
+  const autolinkPreface = `${noticeSpec.anchorParagraph}\n\n<https://example.invalid> The following statement is false:\n\n${noticeSpec.paragraph}`;
+  assert.notDeepEqual(
+    ownershipParagraphOf(autolinkPreface, noticeSpec),
+    approvedNotice,
+    "the ownership guard must not hide an autolink as raw HTML",
+  );
+
+  // Markdown semantics are part of the approved paragraph, not decoration
+  // discarded by a plain-text comparison.
+  for (const tampered of [
+    readmeSpec.paragraph.replace(
+      "**all rights are reserved**",
+      "all rights are reserved",
+    ),
+    readmeSpec.paragraph.replace(
+      "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+      "https://example.invalid/terms",
+    ),
+    readmeSpec.paragraph.replace(
+      "content of this repository",
+      "content  \n of this repository",
+    ),
+  ]) {
+    assert.notDeepEqual(
+      canonicalBlockOf(tampered, "paragraph"),
+      approvedReadme,
+      "the ownership guard must preserve approved CommonMark semantics",
+    );
+  }
+
+  // Soft line wrapping inside the governing paragraph stays acceptable.
+  assert.deepEqual(
+    ownershipParagraphOf(
+      noticeDocumentWith(noticeSpec.paragraph.split(" ").join("\n")),
+      noticeSpec,
+    ),
+    approvedNotice,
+    "the ownership guard must tolerate reflow inside the governing paragraph",
+  );
+  assert.deepEqual(
+    ownershipParagraphOf(
+      `## License\n\n${readmeSpec.paragraph.split(" ").join("\n")}\n`,
+      readmeSpec,
+    ),
+    approvedReadme,
+    "the structural locator must tolerate reflow inside the governing paragraph",
+  );
 });

@@ -12,6 +12,64 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
+
+### Fixed
+
+- Restaurou `contato@lcv.dev` como caixa de contato geral do perfil. A reforma
+  havia revertido o endereço para o anterior, desfazendo a sincronização feita
+  em `04e198f` ([#279](https://github.com/LCV-Ideas-Software/.github/pull/279)),
+  e passou a divergir de `site/index.html`, que já anunciava o endereço
+  canônico.
+- Restaurou a convenção de contribuição: toda mudança no branch padrão chega
+  por pull request e passa nos checks do repositório; push direto em `main`
+  não é permitido. A reforma havia trocado esse texto pelo do panorama da
+  Enterprise, que dizia o contrário, e a correção da rodada anterior alcançou
+  só o item equivalente em práticas de engenharia — o de convenções ficou
+  contradizendo `CONTRIBUTING.md`, `SECURITY.md` e o próprio documento.
+- Removeu a alegação de que o job do CodeQL reprova por achados SARIF.
+  `.github/workflows/codeql.yml` executa apenas checkout, `init` e `analyze`:
+  não há passo de contagem de alertas nem de falha. O texto agora afirma o que
+  é verificável — CodeQL é check exigido em pull request e `merge_group`, e os
+  resultados vão para o code scanning, onde os alertas são triados. A alegação
+  era anterior à reforma e foi propagada por ela.
+- Inverteu o guard de titularidade de **contenção** para **verificação
+  estrutural de bloco**. Cada documento protegido declara ONDE fica o seu
+  parágrafo de titularidade — por cabeçalho ou por uma âncora top-level exata —
+  e o parágrafo top-level seguinte precisa ser semanticamente igual ao texto
+  aprovado. Nada pode ser acrescentado, citado em volta dentro do bloco, ou
+  removido. Reflow por soft break continua livre.
+
+  A inversão encerra cinco rodadas que caíram todas pelo mesmo motivo: perguntar
+  "este texto aparece em algum lugar do arquivo?" é **falha-aberto** — não diz
+  nada sobre o que cerca o achado. As tentativas anteriores fecharam um
+  invólucro de cada vez (quebra de linha, quebra de parágrafo, ponto de
+  abreviação) e sempre deixaram o próximo disponível, até o caso terminal: o par
+  aprovado citado literalmente dentro de um preâmbulo negador. Contenção não
+  restringe contexto; igualdade de bloco restringe.
+
+  As rodadas seguintes mostraram que reimplementar apenas partes do CommonMark
+  continuava falha-aberto: code blocks indentados, cabeçalhos dentro de fence,
+  comentário ou HTML cru, closing hashes, tabulação em fence, autolinks
+  confundidos com HTML e cabeçalhos aninhados em listas produziam novas rotas
+  de bypass. O scanner artesanal foi removido por inteiro. O teste agora usa a
+  implementação de referência `commonmark` `0.31.2`, percorre somente os nós
+  top-level e compara AST canônica, preservando links, ênfase, code spans, HTML
+  e hard breaks como estrutura significativa. Âncoras ausentes ou duplicadas
+  reprovam de forma fechada. Todos os bypasses históricos e atuais ficaram
+  pinados como regressões.
+
+  Fronteira declarada, porque é real: texto num bloco **diferente** não é
+  alcançável por teste dessa natureza, e quem tem acesso de escrita pode editar
+  o próprio teste. O que a verificação garante é que o parágrafo governante não
+  deriva, não é preenchido e não é reemoldurado no lugar sem reprovar.
+
+  Efeito colateral deliberado: reescrever o parágrafo reprova o teste. É texto
+  jurídico — alterá-lo deve exigir mexer no guard e passar por revisão.
+
+- Atualizou a referência ao quadro `Project #17` em `.github/WORK-TRACKING.md`
+  para o nome atual do quadro.
+
 ## 26/08/2026 — Perfil da Organization reformado e titularidade escrita por extenso ([#288](https://github.com/LCV-Ideas-Software/.github/issues/288))
 
 ### Fixed (rodada 1 do Codex)

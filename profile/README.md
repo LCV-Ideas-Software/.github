@@ -275,7 +275,7 @@ Desktop      Tauri 2 (Maestro)
 
 - **Structured reasoning and independent review.** Substantive operator-authored engineering changes use `ultrabrain` for structured reasoning and the `cross-review` MCP for independent review before they are declared complete. Caller/reviewer self-review is invalid. This is an operator-process control, not a required GitHub merge check.
 - **Repository-specific quality gates.** Each change must pass the checks defined by the affected repository — formatting, linting, type checking, tests, builds, and security checks as applicable. Toolchains vary; there is no universal four-check chain.
-- **CodeQL Advanced Setup.** Every active repository maintains an explicit `.github/workflows/codeql.yml` with the languages relevant to that repository. CodeQL is a required check on both pull request and `merge_group` revisions; its analyzer job enforces zero SARIF findings because native code-scanning merge protection does not cover merge-queue groups.
+- **CodeQL Advanced Setup.** Every active repository maintains an explicit `.github/workflows/codeql.yml` with the languages relevant to that repository. CodeQL is a required check on both pull request and `merge_group` revisions, so a revision cannot reach `main` without a successful analysis. The analyzer uploads its results to code scanning and does not fail the job on findings; alerts are triaged in the repository's Security tab.
 - **GitHub-native PR governance.** A pull request is required for every change to the default branch. Squash is the only merge method; an authorized human admits eligible human-authored pull requests to GitHub's native merge queue. Canonical same-repository Dependabot pull requests are admitted automatically on their exact observed head SHA. In both paths, all effective rules and required checks run again on the synthetic revision before GitHub creates a signed, single-parent squash. Default branches cannot be deleted or force-pushed, review conversations that exist must be resolved, and no actor has a ruleset bypass.
 - **`cross-review` anti-drift checks.** In the `cross-review` repository, push CI verifies package/runtime version consistency and the expected release markers in `README.md`, `SECURITY.md`, and `CHANGELOG.md`.
 - **Agent-instruction parity.** Program-wide directives are mirrored across the active agent environments as an operator process; GitHub does not enforce this parity.
@@ -297,15 +297,15 @@ Archived repositories are recorded under the terms they carried when they were a
 
 ## 📋 Conventions
 
-- **Security**: Secret Scanning, push protection, and Dependabot security updates are enabled across every active repository. CodeQL Advanced Setup runs in all public repositories containing code. Vulnerability disclosures follow each public repository's `SECURITY.md`.
-- **Contributing**: Every public repository carries its own `CONTRIBUTING.md`. PRs are optional; when used, contributors should run the repository-specific checks before submission. Direct signed pushes to `main` remain permitted.
+- **Security**: Secret Scanning, push protection, and Dependabot security updates are enabled across every active repository. CodeQL Advanced Setup runs in every active repository containing analyzable source. Vulnerability disclosures follow each public repository's `SECURITY.md`.
+- **Contributing**: Every public repository carries its own `CONTRIBUTING.md`. Every change to the default branch must arrive through a pull request and pass the repository-specific checks; direct pushes to `main` are not permitted. Human-authored pull requests require authorized human admission to the native merge queue.
 - **Code of Conduct**: Every public repository follows Contributor Covenant 3.0 through its own `CODE_OF_CONDUCT.md`.
 
 ## ✉️ Contact and support
 
 - **Homepage**: [www.lcv.dev](https://www.lcv.dev)
 - **GitHub**: opening issues on the relevant repository is the canonical channel.
-- **Email**: [lcv@lcv.dev](mailto:lcv@lcv.dev) for general topics.
+- **Email**: [contato@lcv.dev](mailto:contato@lcv.dev) for general topics.
 - **Phones**: [+55 (21) 3955-0883](https://wa.me/552139550883) / [+55 (21) 99152-4643](https://wa.me/5521991524643)
 - **Sponsorship**: support the work through the secure sponsor page → [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor/).
 
