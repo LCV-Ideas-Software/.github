@@ -33,12 +33,12 @@ presentation rule this organization applies to text meant for people
   é verificável — CodeQL é check exigido em pull request e `merge_group`, e os
   resultados vão para o code scanning, onde os alertas são triados. A alegação
   era anterior à reforma e foi propagada por ela.
-- Inverteu o guard de titularidade de **contenção** para **verificação de
-  bloco**. Cada documento protegido declara ONDE fica o seu parágrafo de
-  titularidade — por cabeçalho, ou por índice na sequência de blocos — e o
-  parágrafo encontrado ali precisa ser **igual** ao texto aprovado, com
-  espaçamento normalizado. Nada pode ser acrescentado, citado em volta dentro
-  do bloco, ou removido. Reflow continua livre.
+- Inverteu o guard de titularidade de **contenção** para **verificação
+  estrutural de bloco**. Cada documento protegido declara ONDE fica o seu
+  parágrafo de titularidade — por cabeçalho ou por uma âncora top-level exata —
+  e o parágrafo top-level seguinte precisa ser semanticamente igual ao texto
+  aprovado. Nada pode ser acrescentado, citado em volta dentro do bloco, ou
+  removido. Reflow por soft break continua livre.
 
   A inversão encerra cinco rodadas que caíram todas pelo mesmo motivo: perguntar
   "este texto aparece em algum lugar do arquivo?" é **falha-aberto** — não diz
@@ -48,26 +48,16 @@ presentation rule this organization applies to text meant for people
   aprovado citado literalmente dentro de um preâmbulo negador. Contenção não
   restringe contexto; igualdade de bloco restringe.
 
-  A sexta rodada mostrou que a **localização** em texto puro também era
-  falha-aberta em dois pontos: indentar o parágrafo com 4 espaços o renderiza
-  como code block enquanto a normalização de espaços apaga a diferença, e
-  localizar o cabeçalho com `indexOf` aceita o texto dele dentro de fence ou
-  de comentário HTML. O localizador passou a ser **estrutural**, com as mesmas
-  regras CommonMark que a organização já aplica em outros lugares: fences
-  abrem com ≤3 espaços de indentação e fecham só com run igual do mesmo
-  caractere; linhas dentro de fence ou de comentário HTML são invisíveis para
-  cabeçalhos e parágrafos; cabeçalho só conta como linha ATX real; e parágrafo
-  governante com indentação estrutural (≥4 espaços ou tab) é desqualificado.
-  Os dois ataques foram provados em RED contra os arquivos reais e ficam
-  pinados como asserções, junto do caso de citação da rodada anterior.
-
-  A sétima rodada completou a fidelidade CommonMark do scanner em dois pontos:
-  blocos de HTML cru além de comentário (tipos 1–7 — `<script>`, `<pre>`,
-  `<div>` e afins) agora são invisíveis para cabeçalhos e parágrafos, já que o
-  CommonMark não renderiza cabeçalho Markdown dentro deles; e a closing
-  sequence de um cabeçalho ATX só é descartada quando precedida de espaço —
-  `## License#` é o cabeçalho de texto `License#`, não `License`. Ambos
-  provados em RED contra o arquivo real e pinados como asserções.
+  As rodadas seguintes mostraram que reimplementar apenas partes do CommonMark
+  continuava falha-aberto: code blocks indentados, cabeçalhos dentro de fence,
+  comentário ou HTML cru, closing hashes, tabulação em fence, autolinks
+  confundidos com HTML e cabeçalhos aninhados em listas produziam novas rotas
+  de bypass. O scanner artesanal foi removido por inteiro. O teste agora usa a
+  implementação de referência `commonmark` `0.31.2`, percorre somente os nós
+  top-level e compara AST canônica, preservando links, ênfase, code spans, HTML
+  e hard breaks como estrutura significativa. Âncoras ausentes ou duplicadas
+  reprovam de forma fechada. Todos os bypasses históricos e atuais ficaram
+  pinados como regressões.
 
   Fronteira declarada, porque é real: texto num bloco **diferente** não é
   alcançável por teste dessa natureza, e quem tem acesso de escrita pode editar

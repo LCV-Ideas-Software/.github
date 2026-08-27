@@ -8,6 +8,7 @@
     "format:public:check": "prettier --check \"**/index.html\""
   },
   "devDependencies": {
+    "commonmark": "0.31.2",
     "prettier": "^3.9.6",
     "wrangler": "4.124.0"
   }

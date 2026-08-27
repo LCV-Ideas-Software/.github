@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { Parser } from "commonmark";
 
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -147,180 +148,116 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     /inbound license|copyright assignment|LCV-Ideas-Software\/\.github/i,
   );
 
-  // The ownership statement is verified as a whole block, not searched for.
-  //
-  // Every earlier version asked "does this text appear somewhere in the file?",
-  // which is fail-open: it says nothing about what surrounds the match. Five
-  // rounds of review walked that consequence down one counterexample at a time
-  // - a bare newline, a paragraph break, an abbreviation period, and finally a
-  // negating preface quoting the approved pair verbatim. Each fix closed one
-  // wrapper and left the next one available, because containment cannot
-  // constrain context.
-  //
-  // So the check is inverted to fail-closed. Each document declares WHERE its
-  // ownership paragraph lives - a heading, or an index into the block sequence
-  // - and the paragraph found at that location must EQUAL the approved text
-  // once whitespace is normalized. Nothing may be added to it, quoted around
-  // it inside the block, or removed from it. Reflow remains free because the
-  // comparison normalizes whitespace.
-  //
-  // Location is resolved STRUCTURALLY, not textually. A sixth review round
-  // showed that plain-text location is itself fail-open in two ways: four
-  // spaces of indentation render the paragraph as a code block while
-  // whitespace normalization erases the difference, and locating the heading
-  // with indexOf accepts its text inside a fenced code block or HTML comment.
-  // So the scan below applies the CommonMark rules this organization already
-  // enforces elsewhere: fences open at up to 3 spaces of indentation with a
-  // run of 3+ backticks or tildes (a backtick fence's info string cannot
-  // contain a backtick) and close only on a run of the same character at
-  // least as long, alone on its line; lines inside fences or HTML comments
-  // are invisible to headings and paragraphs alike; a heading counts only as
-  // a real ATX heading line; and a governing paragraph carrying structural
-  // indentation (4+ spaces or a tab) is disqualified outright.
-  //
-  // Boundary, stated because it is real and not worth another round: text in a
-  // DIFFERENT block cannot be constrained by any test of this kind, and an
-  // author with commit access could edit this file as easily as the documents
-  // it guards. What this test buys is that the governing paragraph cannot
-  // drift, be padded, or be quoted-and-reframed in place without failing.
-  const normalize = (text) => text.replace(/\s+/g, " ").trim();
+  // Parse Markdown with the CommonMark reference implementation instead of
+  // maintaining a second, partial Markdown parser in this test. The guard only
+  // accepts an exact top-level structural anchor followed by the exact approved
+  // paragraph. Soft line wrapping is normalized, while links, emphasis, code,
+  // hard breaks, raw HTML, and every other semantic node remain significant.
+  const markdownParser = new Parser();
 
-  // htmlBlock, when set, says how the current raw-HTML block ends: on a line
-  // containing a needle (CommonMark block types 1-5) or on the next blank
-  // line (types 6-7). Every line of such a block is hidden - CommonMark does
-  // not render a Markdown heading inside <script>, <div>, <pre> or any other
-  // raw HTML block, so the guard must not see one there either.
-  const htmlBlockEnd = (trimmed) => {
-    const type1 = /^<(script|pre|style|textarea)\b/i.exec(trimmed);
-    if (type1) return { needle: `</${type1[1].toLowerCase()}>` };
-    if (trimmed.startsWith("<![CDATA[")) return { needle: "]]>" };
-    if (trimmed.startsWith("<?")) return { needle: "?>" };
-    if (/^<![a-z]/i.test(trimmed)) return { needle: ">" };
-    if (/^<[a-z/!?]/i.test(trimmed)) return { untilBlank: true };
-    return null;
-  };
-
-  const scanLines = (text) => {
-    const out = [];
-    let fence = null;
-    let inComment = false;
-    let htmlBlock = null;
-    for (const raw of text.split("\n")) {
-      const indent = /^ */.exec(raw)[0].length;
-      const trimmed = raw.trim();
-      let hidden = false;
-      if (fence) {
-        hidden = true;
-        const close = /^(`{3,}|~{3,})[ \t]*$/.exec(trimmed);
-        if (
-          close &&
-          indent <= 3 &&
-          close[1][0] === fence.char &&
-          close[1].length >= fence.length
-        ) {
-          fence = null;
-        }
-      } else if (inComment) {
-        hidden = true;
-        if (raw.includes("-->")) inComment = false;
-      } else if (htmlBlock) {
-        if (htmlBlock.untilBlank && trimmed === "") {
-          htmlBlock = null;
-        } else {
-          hidden = true;
-          if (
-            htmlBlock.needle &&
-            raw.toLowerCase().includes(htmlBlock.needle)
-          ) {
-            htmlBlock = null;
-          }
-        }
-      } else {
-        const open = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
-        if (
-          open &&
-          indent <= 3 &&
-          !(open[1][0] === "`" && open[2].includes("`"))
-        ) {
-          fence = { char: open[1][0], length: open[1].length };
-          hidden = true;
-        } else if (trimmed.startsWith("<!--")) {
-          hidden = true;
-          if (!raw.includes("-->")) inComment = true;
-        } else if (indent <= 3 && trimmed.startsWith("<")) {
-          const end = htmlBlockEnd(trimmed);
-          if (end) {
-            hidden = true;
-            if (end.needle && raw.toLowerCase().includes(end.needle)) {
-              // opened and closed on the same line
-            } else {
-              htmlBlock = end;
-            }
-          }
-        }
-      }
-      out.push({ raw, indent, trimmed, hidden });
+  const topLevelNodesOf = (text) => {
+    const document = markdownParser.parse(text);
+    const nodes = [];
+    for (let node = document.firstChild; node; node = node.next) {
+      nodes.push(node);
     }
-    return out;
+    return nodes;
   };
 
-  const isHeading = (line, heading) => {
-    if (line.hidden || line.indent > 3) return false;
-    // The optional closing hash sequence must be separated by whitespace:
-    // CommonMark reads "## License#" as the heading text "License#", not as
-    // "License" with a closing sequence.
-    const m = /^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line.trimmed);
-    return m !== null && `${m[1]} ${m[2]}` === heading;
+  const appendText = (children, text) => {
+    const previous = children.at(-1);
+    if (previous?.type === "text") {
+      previous.literal += text;
+    } else {
+      children.push({ type: "text", literal: text });
+    }
   };
 
-  // Visible blocks: runs of visible non-blank lines. Hidden and blank lines
-  // both terminate a block, so fenced content can never join a paragraph.
-  const visibleBlocks = (lines) => {
-    const blocks = [];
-    let current = null;
-    for (const line of lines) {
-      if (line.hidden || line.trimmed === "") {
-        current = null;
+  const canonicalChildrenOf = (parent) => {
+    const children = [];
+    for (let node = parent.firstChild; node; node = node.next) {
+      if (node.type === "text") {
+        appendText(children, node.literal);
         continue;
       }
-      if (!current) {
-        current = [];
-        blocks.push(current);
+      if (node.type === "softbreak") {
+        appendText(children, " ");
+        continue;
       }
-      current.push(line);
+
+      const child = { type: node.type };
+      if (["code", "html_inline"].includes(node.type)) {
+        child.literal = node.literal;
+      }
+      if (["link", "image"].includes(node.type)) {
+        child.destination = node.destination;
+        child.title = node.title;
+      }
+      if (node.firstChild) {
+        child.children = canonicalChildrenOf(node);
+      }
+      children.push(child);
     }
-    return blocks;
+
+    for (const child of children) {
+      if (child.type === "text") {
+        child.literal = child.literal.replace(/\s+/gu, " ");
+      }
+    }
+    if (children[0]?.type === "text") {
+      children[0].literal = children[0].literal.trimStart();
+    }
+    if (children.at(-1)?.type === "text") {
+      children.at(-1).literal = children.at(-1).literal.trimEnd();
+    }
+    return children.filter(
+      (child) => child.type !== "text" || child.literal !== "",
+    );
   };
 
-  const ownershipParagraphOf = (text, { heading, index }) => {
-    let lines = scanLines(text);
-    if (heading) {
-      const start = lines.findIndex((line) => isHeading(line, heading));
-      if (start === -1) return undefined;
-      lines = lines.slice(start + 1);
-      const next = lines.findIndex(
-        (line) =>
-          !line.hidden &&
-          line.indent <= 3 &&
-          /^#{1,2}([ \t]|$)/.test(line.trimmed),
-      );
-      if (next !== -1) lines = lines.slice(0, next);
-    }
-    const block = visibleBlocks(lines)[index];
-    if (!block) return undefined;
-    // 4+ spaces or a tab renders as an indented code block, which whitespace
-    // normalization would erase - so it disqualifies the paragraph outright.
-    if (block.some((line) => line.indent >= 4 || line.raw.startsWith("\t"))) {
-      return undefined;
-    }
-    return block.map((line) => line.trimmed).join(" ");
+  const canonicalNodeOf = (node) => {
+    const canonical = { type: node.type };
+    if (node.type === "heading") canonical.level = node.level;
+    if (node.firstChild) canonical.children = canonicalChildrenOf(node);
+    return canonical;
+  };
+
+  const canonicalBlockOf = (markdown, expectedType) => {
+    const nodes = topLevelNodesOf(markdown);
+    assert.equal(nodes.length, 1, "the approved fixture must be one block");
+    assert.equal(
+      nodes[0].type,
+      expectedType,
+      `the approved fixture must be a ${expectedType}`,
+    );
+    return canonicalNodeOf(nodes[0]);
+  };
+
+  const canonicalKeyOf = (node) => JSON.stringify(canonicalNodeOf(node));
+
+  const ownershipParagraphOf = (text, spec) => {
+    const nodes = topLevelNodesOf(text);
+    const anchorType = spec.heading ? "heading" : "paragraph";
+    const anchorMarkdown = spec.heading ?? spec.anchorParagraph;
+    const anchorKey = JSON.stringify(
+      canonicalBlockOf(anchorMarkdown, anchorType),
+    );
+    const anchors = nodes.filter(
+      (node) => node.type === anchorType && canonicalKeyOf(node) === anchorKey,
+    );
+    if (anchors.length !== 1) return undefined;
+
+    const paragraph = anchors[0].next;
+    if (!paragraph || paragraph.type !== "paragraph") return undefined;
+    return canonicalNodeOf(paragraph);
   };
 
   const ownershipParagraphs = [
     {
       path: "NOTICE",
       heading: null,
-      index: 1,
+      anchorParagraph:
+        "LCV Ideas & Software public organization surfaces Copyright © 2026 LCV Ideas & Software. All rights reserved.",
       paragraph:
         "This repository hosts organization profile, static site, sponsorship, and community-health material maintained by LCV Ideas & Software. Its original content owned by LCV Ideas & Software is proprietary. This notice does not claim copyright in third-party or contributor-owned material, which may be accepted only under separate documented written terms and the repository-local process in INBOUND.md. The repository remains public so GitHub can provide the special organization-profile and default community-health features of a repository named `.github`.",
     },
@@ -348,23 +285,31 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
   ];
 
   for (const spec of ownershipParagraphs) {
+    const approvedParagraph = canonicalBlockOf(spec.paragraph, "paragraph");
     const found = ownershipParagraphOf(
       readFileSync(join(repositoryRoot, spec.path), "utf8"),
       spec,
     );
-    assert.equal(
-      found === undefined ? undefined : normalize(found),
-      spec.paragraph,
-      `${spec.path} must carry the approved ownership paragraph verbatim at ${
-        spec.heading ?? `block ${spec.index}`
+    assert.deepEqual(
+      found,
+      approvedParagraph,
+      `${spec.path} must carry the approved CommonMark ownership paragraph at ${
+        spec.heading ?? "the approved top-level anchor"
       }`,
     );
   }
 
-  // A negating wrapper has to live inside the governing block to reach the
-  // statement, and putting it there breaks the equality.
   const noticeSpec = ownershipParagraphs[0];
+  const approvedNotice = canonicalBlockOf(noticeSpec.paragraph, "paragraph");
+  const noticeDocumentWith = (paragraph) =>
+    `${noticeSpec.anchorParagraph}\n\n${paragraph}\n`;
+
+  // Every historical textual bypass remains pinned as a parser-level
+  // regression: bare newline, paragraph break, punctuation, quoted wrapper,
+  // trailing denial, direct negation, and deletion.
   for (const tampered of [
+    `It is false that\n${noticeSpec.paragraph}`,
+    `The following statement is false:\n\n${noticeSpec.paragraph}`,
     `The following passage is false: "${noticeSpec.paragraph}"`,
     `${noticeSpec.paragraph} None of the above applies.`,
     `It is false, e.g. ${noticeSpec.paragraph}`,
@@ -374,9 +319,9 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
       "",
     ),
   ]) {
-    assert.notEqual(
-      normalize(tampered),
-      noticeSpec.paragraph,
+    assert.notDeepEqual(
+      ownershipParagraphOf(noticeDocumentWith(tampered), noticeSpec),
+      approvedNotice,
       "the ownership guard must reject a tampered governing paragraph",
     );
   }
@@ -385,6 +330,7 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
   // indented code block; the heading and paragraph hidden inside a fence while
   // the real section is altered; and the heading inside an HTML comment.
   const readmeSpec = ownershipParagraphs[1];
+  const approvedReadme = canonicalBlockOf(readmeSpec.paragraph, "paragraph");
   for (const doc of [
     `## License\n\n    ${readmeSpec.paragraph}\n`,
     `\`\`\`\n## License\n\n${readmeSpec.paragraph}\n\`\`\`\n\n## License\n\nAll rights waived.\n`,
@@ -393,33 +339,72 @@ test("proprietary terms preserve external ownership and stay repository-scoped",
     // type 6), while the real section carries altered terms
     `<script>\n## License\n\n${readmeSpec.paragraph}\n</script>\n\n## License\n\nAll rights waived.\n`,
     `<div>\n## License\n\n${readmeSpec.paragraph}\n</div>\n\n## License\n\nAll rights waived.\n`,
+    // A tab expands to four columns in CommonMark, so this apparent fence
+    // closer remains code and must not expose the decoy heading.
+    `\`\`\`\n\t\`\`\`\n## License\n\n${readmeSpec.paragraph}\n\`\`\`\n\n## License\n\nAll rights waived.\n`,
+    // A real heading nested in a list item is not the top-level License
+    // section that governs the document.
+    `- item\n\n  ## License\n\n  ${readmeSpec.paragraph}\n\n## License\n\nAll rights waived.\n`,
     // "## License#" is the heading text "License#": a closing hash sequence
     // requires separating whitespace, so this must not match the heading
     `## License#\n\n${readmeSpec.paragraph}\n\n## License\n\nAll rights waived.\n`,
+    // Duplicate top-level anchors are ambiguous and therefore fail closed.
+    `## License\n\n${readmeSpec.paragraph}\n\n## License\n\n${readmeSpec.paragraph}\n`,
   ]) {
-    const found = ownershipParagraphOf(doc, readmeSpec);
-    assert.notEqual(
-      found === undefined ? undefined : normalize(found),
-      readmeSpec.paragraph,
+    assert.notDeepEqual(
+      ownershipParagraphOf(doc, readmeSpec),
+      approvedReadme,
       `the ownership guard must reject structural tampering: ${doc.slice(0, 60)}...`,
     );
   }
 
-  // Reflow inside the block stays acceptable, both for the comparison and
-  // through the structural locator (up to 3 spaces of indentation).
-  assert.equal(
-    normalize(noticeSpec.paragraph.split(" ").join("\n   ")),
-    noticeSpec.paragraph,
+  // An autolink begins with "<" but is not a raw-HTML block. The visible
+  // negating preface must therefore remain part of the block sequence.
+  const autolinkPreface = `${noticeSpec.anchorParagraph}\n\n<https://example.invalid> The following statement is false:\n\n${noticeSpec.paragraph}`;
+  assert.notDeepEqual(
+    ownershipParagraphOf(autolinkPreface, noticeSpec),
+    approvedNotice,
+    "the ownership guard must not hide an autolink as raw HTML",
+  );
+
+  // Markdown semantics are part of the approved paragraph, not decoration
+  // discarded by a plain-text comparison.
+  for (const tampered of [
+    readmeSpec.paragraph.replace(
+      "**all rights are reserved**",
+      "all rights are reserved",
+    ),
+    readmeSpec.paragraph.replace(
+      "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+      "https://example.invalid/terms",
+    ),
+    readmeSpec.paragraph.replace(
+      "content of this repository",
+      "content  \n of this repository",
+    ),
+  ]) {
+    assert.notDeepEqual(
+      canonicalBlockOf(tampered, "paragraph"),
+      approvedReadme,
+      "the ownership guard must preserve approved CommonMark semantics",
+    );
+  }
+
+  // Soft line wrapping inside the governing paragraph stays acceptable.
+  assert.deepEqual(
+    ownershipParagraphOf(
+      noticeDocumentWith(noticeSpec.paragraph.split(" ").join("\n")),
+      noticeSpec,
+    ),
+    approvedNotice,
     "the ownership guard must tolerate reflow inside the governing paragraph",
   );
-  assert.equal(
-    normalize(
-      ownershipParagraphOf(
-        `## License\n\n${readmeSpec.paragraph.split(" ").join("\n  ")}\n`,
-        readmeSpec,
-      ) ?? "",
+  assert.deepEqual(
+    ownershipParagraphOf(
+      `## License\n\n${readmeSpec.paragraph.split(" ").join("\n")}\n`,
+      readmeSpec,
     ),
-    readmeSpec.paragraph,
+    approvedReadme,
     "the structural locator must tolerate reflow inside the governing paragraph",
   );
 });
