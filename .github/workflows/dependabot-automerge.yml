@@ -9,29 +9,30 @@ on:
     types:
       - opened
       - synchronize
-  pull_request_target:
-    branches:
-      - main
-    types:
-      - ready_for_review
-      - reopened
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open Dependabot pull request number
+        required: true
+        type: number
 
-# The event payload supplies the immutable PR metadata; only the short-lived App token performs a mutation.
+# Automatic runs use the event head; dispatch runs resolve the live PR. Only the short-lived App token mutates state.
 permissions: {}
 
 concurrency:
-  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  group: dependabot-automerge-${{ github.event.pull_request.number || inputs.pull_request_number || github.run_id }}
   cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  enable-dependabot: # zizmor: ignore[secrets-outside-env] Dependabot secrets cannot be environment-scoped; no pull-request code executes.
+  enable-dependabot: # zizmor: ignore[secrets-outside-env] Dedicated Dependabot secrets are the documented pull_request pattern; no repository content is checked out.
     name: Enable native auto-merge (Dependabot event)
     if: >-
       github.event.pull_request.user.id == 49699333 &&
       github.repository == github.event.pull_request.head.repo.full_name &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/') &&
       github.event.pull_request.draft == false &&
       github.event_name == 'pull_request' &&
       github.event.sender.id == 49699333 &&
@@ -77,16 +78,15 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --match-head-commit "$HEAD_SHA" "$PR_URL"
 
-  enable-maintainer-transition:
-    name: Enable native auto-merge (maintainer transition)
+  enable-operator-dispatch:
+    name: Enable native auto-merge (operator dispatch)
     if: >-
-      github.event.pull_request.user.id == 49699333 &&
-      github.repository == github.event.pull_request.head.repo.full_name &&
-      github.event.pull_request.draft == false &&
-      github.event_name == 'pull_request_target' &&
-      github.event.sender.id == 268063598 &&
+      github.event_name == 'workflow_dispatch' &&
+      github.actor_id == '268063598' &&
       github.actor == 'lcv-leo' &&
-      (github.event.action == 'ready_for_review' || github.event.action == 'reopened')
+      github.triggering_actor == github.actor &&
+      github.run_attempt == 1 &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment:
@@ -103,10 +103,35 @@ jobs:
           permission-pull-requests: write
           permission-merge-queues: write
 
+      - name: Resolve the eligible Dependabot pull request
+        id: pull-request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e --arg repository "$REPOSITORY" '
+            .state == "open" and
+            .draft == false and
+            .base.ref == "main" and
+            .head.repo.full_name == $repository and
+            (.head.ref | startswith("dependabot/")) and
+            .user.id == 49699333 and
+            .user.login == "dependabot[bot]"
+          ' <<<"$pr_json" >/dev/null
+          head_sha="$(jq -er '.head.sha' <<<"$pr_json")"
+          pr_url="$(jq -er '.html_url' <<<"$pr_json")"
+          printf 'head_sha=%s\n' "$head_sha" >>"$GITHUB_OUTPUT"
+          printf 'pr_url=%s\n' "$pr_url" >>"$GITHUB_OUTPUT"
+
       - name: Verify Dependabot provenance of the exact head
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
@@ -124,6 +149,6 @@ jobs:
       - name: Enable GitHub native auto-merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
+          PR_URL: ${{ steps.pull-request.outputs.pr_url }}
         run: gh pr merge --auto --match-head-commit "$HEAD_SHA" "$PR_URL"

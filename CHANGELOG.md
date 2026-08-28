@@ -12,6 +12,24 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 28/08/2026 — Remoção do trigger privilegiado do automerge Dependabot
+
+### Security
+
+- Removeu `pull_request_target`, identificado pelo Zizmor em
+  [code scanning #97](https://github.com/LCV-Ideas-Software/.github/security/code-scanning/97),
+  e preservou o caminho automático oficialmente documentado para eventos `opened` e `synchronize`
+  emitidos pelo Dependabot: `pull_request`, secret dedicado, token efêmero do GitHub App, validação
+  da origem e da assinatura do head exato e `gh pr merge --auto --match-head-commit`.
+- Substituiu as exceções `ready_for_review` e `reopened` por um `workflow_dispatch` explícito,
+  carregado de `main`, limitado ao operador por ID imutável e login, à primeira tentativa e ao
+  environment `dependabot-automation`. Antes de qualquer escrita, o fallback relê o pull request e
+  exige estado aberto, base `main`, branch `dependabot/**`, origem no mesmo repositório, autor
+  Dependabot e assinatura GitHub válida no SHA exato.
+- Sincronizou o inventário jurídico com os manifestos e workflows vigentes: `wrangler` 4.125.0,
+  `github/codeql-action` v4.37.9 e a Action oficial `actions/create-github-app-token` v3.2.0,
+  nos SHAs efetivamente executados.
+
 ## 28/08/2026 — Automerge nativo e independente do Dependabot ([#299](https://github.com/LCV-Ideas-Software/.github/issues/299), [#302](https://github.com/LCV-Ideas-Software/.github/issues/302))
 
 ### Added
