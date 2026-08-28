@@ -27,7 +27,6 @@ jobs:
     name: Enable native auto-merge
     if: >-
       github.event.pull_request.user.id == 49699333 &&
-      github.event.sender.id == 49699333 &&
       github.repository == github.event.pull_request.head.repo.full_name &&
       github.event.pull_request.draft == false
     runs-on: ubuntu-24.04

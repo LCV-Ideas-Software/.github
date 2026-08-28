@@ -12,12 +12,12 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
-## 28/08/2026 — Automerge nativo e independente do Dependabot ([#299](https://github.com/LCV-Ideas-Software/.github/issues/299))
+## 28/08/2026 — Automerge nativo e independente do Dependabot ([#299](https://github.com/LCV-Ideas-Software/.github/issues/299), [#302](https://github.com/LCV-Ideas-Software/.github/issues/302))
 
 ### Added
 
 - Adicionou um workflow local que habilita o auto-merge nativo do GitHub somente para pull requests
-  criados pelo `dependabot[bot]` e eventos emitidos pela identidade imutável dessa App. A admissão usa
+  criados pelo `dependabot[bot]`, identificado pelo autor imutável do pull request. A admissão usa
   um token efêmero limitado a pull requests e merge queue no repositório, preserva o SHA exato do
   head e deixa checks, aprovações e merge queue decidirem o merge.
 - Registrou a única Action oficial usada pelo fluxo no `actions.lock`. A atualização automática do
@@ -29,6 +29,9 @@ presentation rule this organization applies to text meant for people
 - Incluiu no token efêmero a permissão `contents: write` exigida oficialmente pela API nativa de
   merge. O token continua restrito ao repositório e exposto somente ao passo `gh pr merge`, sem
   checkout nem execução de código do pull request.
+- Removeu a exigência incorreta de que o ator do evento também fosse o Dependabot. O workflow agora
+  aceita `ready_for_review` e `reopened` acionados por mantenedores sem deixar de exigir autor
+  Dependabot, origem no próprio repositório, pull request não draft e correspondência do SHA exato.
 
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 
