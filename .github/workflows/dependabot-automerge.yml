@@ -12,9 +12,8 @@ on:
       - reopened
       - synchronize
 
-# The event token only reads the pull request; the short-lived App token performs the native merge action.
-permissions:
-  pull-requests: read # Read the triggering PR; native merge is performed with the scoped App token below.
+# The event payload supplies the immutable PR metadata; only the short-lived App token performs a mutation.
+permissions: {}
 
 concurrency:
   group: dependabot-automerge-${{ github.event.pull_request.number }}
