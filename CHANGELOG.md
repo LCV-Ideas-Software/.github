@@ -17,8 +17,9 @@ presentation rule this organization applies to text meant for people
 ### Added
 
 - Adicionou um workflow local que habilita o auto-merge nativo do GitHub somente para pull requests
-  criados pelo `dependabot[bot]`. A admissão usa um token efêmero e limitado ao repositório da App
-  dedicada, preserva o SHA exato do head e deixa checks, aprovações e merge queue decidirem o merge.
+  criados pelo `dependabot[bot]` e eventos emitidos pela identidade imutável dessa App. A admissão usa
+  um token efêmero limitado a pull requests e merge queue no repositório, preserva o SHA exato do
+  head e deixa checks, aprovações e merge queue decidirem o merge.
 - Registrou a única Action oficial usada pelo fluxo no `actions.lock`. A atualização automática do
   lockfile pelo Dependabot hospedado continua dependente do experimento nativo do GitHub; nenhum
   reparador de lockfile próprio foi introduzido.

@@ -33,6 +33,7 @@ const migratedOperationalPaths = [
 const retainedPublicPaths = [
   ".github/workflows/cloudflare-pages.yml",
   ".github/workflows/codeql.yml",
+  ".github/workflows/dependabot-automerge.yml",
   ".github/workflows/dependency-review.yml",
   ".github/workflows/linear-release.yml",
   ".github/workflows/pages.yml",
