@@ -102,6 +102,7 @@ test("only active public workflows and their lockfile remain versioned", () => {
     "actions.lock",
     "cloudflare-pages.yml",
     "codeql.yml",
+    "dependabot-automerge.yml",
     "dependency-review.yml",
     "linear-release.yml",
     "pages.yml",
