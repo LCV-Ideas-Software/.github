@@ -10,6 +10,11 @@ const workflow = readFileSync(
   join(repositoryRoot, ".github", "workflows", "dependabot-automerge.yml"),
   "utf8",
 );
+const securityPolicy = readFileSync(join(repositoryRoot, "SECURITY.md"), "utf8");
+const contributing = readFileSync(
+  join(repositoryRoot, "CONTRIBUTING.md"),
+  "utf8",
+);
 
 const condition = workflow.match(/\n    if: >-\n(?<body>[\s\S]*?)\n    runs-on:/)?.groups
   ?.body;
@@ -81,4 +86,12 @@ test("all events preserve author, origin, draft, action, and exact-head guards",
   );
   assert.equal(isEligible({ action: "edited" }), false);
   assert.match(workflow, /gh pr merge --auto --match-head-commit "\$HEAD_SHA"/);
+});
+
+test("policy documents the action-specific sender and dual-secret topology", () => {
+  for (const document of [securityPolicy, contributing]) {
+    assert.match(document, /`opened` and `synchronize`/);
+    assert.match(document, /`ready_for_review` and `reopened`/);
+  }
+  assert.match(securityPolicy, /Dependabot and Actions secret stores/);
 });

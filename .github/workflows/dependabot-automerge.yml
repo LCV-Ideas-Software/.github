@@ -23,7 +23,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  enable: # zizmor: ignore[secrets-outside-env] Dependabot secrets cannot be environment-scoped; no PR code executes.
+  enable: # zizmor: ignore[secrets-outside-env] Dependabot secrets cannot be environment-scoped; the Actions twin serves maintainer eligibility events; no PR code executes.
     name: Enable native auto-merge
     if: >-
       github.event.pull_request.user.id == 49699333 &&

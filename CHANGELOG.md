@@ -33,6 +33,8 @@ presentation rule this organization applies to text meant for people
   aceita `ready_for_review` e `reopened` acionados por mantenedores, mas `opened` e `synchronize`
   continuam exigindo o Dependabot como ator. Permanecem obrigatórios autor Dependabot, origem no
   próprio repositório, pull request não draft e correspondência do SHA exato.
+- Registrou a chave do App, sob o mesmo nome, nos stores de secrets de Actions e Dependabot. Cada
+  evento recebe a cópia cifrada correspondente ao seu ator, sem expor a chave em código ou logs.
 
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 
