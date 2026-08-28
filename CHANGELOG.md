@@ -29,12 +29,19 @@ presentation rule this organization applies to text meant for people
 - Incluiu no token efêmero a permissão `contents: write` exigida oficialmente pela API nativa de
   merge. O token continua restrito ao repositório e exposto somente ao passo `gh pr merge`, sem
   checkout nem execução de código do pull request.
-- Restringiu a validação do ator do evento à criação e à atualização de código. O workflow agora
-  aceita `ready_for_review` e `reopened` acionados por mantenedores, mas `opened` e `synchronize`
-  continuam exigindo o Dependabot como ator. Permanecem obrigatórios autor Dependabot, origem no
-  próprio repositório, pull request não draft e correspondência do SHA exato.
+- Separou os contextos oficiais de evento: ações emitidas pelo Dependabot usam `pull_request`,
+  enquanto `ready_for_review` e `reopened` emitidos por mantenedores usam `pull_request_target` e
+  carregam o workflow do branch base confiável. A condição faz o evento duplicado no outro contexto
+  pular antes do consumo de credenciais. Permanecem obrigatórios autor Dependabot, origem no próprio
+  repositório, pull request não draft e correspondência do SHA exato.
 - Registrou a chave do App, sob o mesmo nome, nos stores de secrets de Actions e Dependabot. Cada
-  evento recebe a cópia cifrada correspondente ao seu ator, sem expor a chave em código ou logs.
+  evento recebe a cópia cifrada correspondente ao seu ator, sem expor a chave em código ou logs. A
+  cópia de Actions ficou no environment `dependabot-automation`, restrito ao branch base `main`;
+  a cópia de Dependabot permanece no store próprio, que não oferece escopo por environment.
+- Passou a validar a proveniência do head exato pela API oficial de commits antes da admissão,
+  exigindo autoria Dependabot, committer `web-flow` e assinatura GitHub válida. A defesa em
+  profundidade complementa a ruleset Enterprise ativa que restringe atualizações em
+  `dependabot/**` aos Apps aprovados.
 
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 
