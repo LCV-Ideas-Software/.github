@@ -8,9 +8,13 @@ on:
       - main
     types:
       - opened
+      - synchronize
+  pull_request_target:
+    branches:
+      - main
+    types:
       - ready_for_review
       - reopened
-      - synchronize
 
 # The event payload supplies the immutable PR metadata; only the short-lived App token performs a mutation.
 permissions: {}
@@ -23,13 +27,18 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  enable: # zizmor: ignore[secrets-outside-env] Dependabot secrets cannot be environment-scoped; no PR code executes.
-    name: Enable native auto-merge
+  enable-dependabot: # zizmor: ignore[secrets-outside-env] Dependabot secrets cannot be environment-scoped; no pull-request code executes.
+    name: Enable native auto-merge (Dependabot event)
     if: >-
       github.event.pull_request.user.id == 49699333 &&
-      github.event.sender.id == 49699333 &&
       github.repository == github.event.pull_request.head.repo.full_name &&
-      github.event.pull_request.draft == false
+      github.event.pull_request.draft == false &&
+      github.event_name == 'pull_request' &&
+      github.event.sender.id == 49699333 &&
+      (
+        github.event.action == 'opened' ||
+        github.event.action == 'synchronize'
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -42,6 +51,75 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-merge-queues: write
+
+      - name: Verify Dependabot provenance of the exact head
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_json="$(gh api "repos/${REPOSITORY}/commits/${HEAD_SHA}")"
+          jq -e --arg sha "$HEAD_SHA" '
+            .sha == $sha and
+            .author.id == 49699333 and
+            .author.login == "dependabot[bot]" and
+            .committer.login == "web-flow" and
+            .commit.verification.verified == true and
+            .commit.verification.reason == "valid"
+          ' <<<"$commit_json" >/dev/null
+
+      - name: Enable GitHub native auto-merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --match-head-commit "$HEAD_SHA" "$PR_URL"
+
+  enable-maintainer-transition:
+    name: Enable native auto-merge (maintainer transition)
+    if: >-
+      github.event.pull_request.user.id == 49699333 &&
+      github.repository == github.event.pull_request.head.repo.full_name &&
+      github.event.pull_request.draft == false &&
+      github.event_name == 'pull_request_target' &&
+      github.event.sender.id == 268063598 &&
+      github.actor == 'lcv-leo' &&
+      (github.event.action == 'ready_for_review' || github.event.action == 'reopened')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment:
+      name: dependabot-automation
+      deployment: false
+    steps:
+      - name: Create the repository-scoped GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.DEPENDABOT_AUTOMERGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.DEPENDABOT_AUTOMERGE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-merge-queues: write
+
+      - name: Verify Dependabot provenance of the exact head
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_json="$(gh api "repos/${REPOSITORY}/commits/${HEAD_SHA}")"
+          jq -e --arg sha "$HEAD_SHA" '
+            .sha == $sha and
+            .author.id == 49699333 and
+            .author.login == "dependabot[bot]" and
+            .committer.login == "web-flow" and
+            .commit.verification.verified == true and
+            .commit.verification.reason == "valid"
+          ' <<<"$commit_json" >/dev/null
 
       - name: Enable GitHub native auto-merge
         env:

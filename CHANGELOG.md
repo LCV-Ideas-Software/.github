@@ -12,12 +12,12 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
-## 28/08/2026 — Automerge nativo e independente do Dependabot ([#299](https://github.com/LCV-Ideas-Software/.github/issues/299))
+## 28/08/2026 — Automerge nativo e independente do Dependabot ([#299](https://github.com/LCV-Ideas-Software/.github/issues/299), [#302](https://github.com/LCV-Ideas-Software/.github/issues/302))
 
 ### Added
 
 - Adicionou um workflow local que habilita o auto-merge nativo do GitHub somente para pull requests
-  criados pelo `dependabot[bot]` e eventos emitidos pela identidade imutável dessa App. A admissão usa
+  criados pelo `dependabot[bot]`, identificado pelo autor imutável do pull request. A admissão usa
   um token efêmero limitado a pull requests e merge queue no repositório, preserva o SHA exato do
   head e deixa checks, aprovações e merge queue decidirem o merge.
 - Registrou a única Action oficial usada pelo fluxo no `actions.lock`. A atualização automática do
@@ -29,6 +29,20 @@ presentation rule this organization applies to text meant for people
 - Incluiu no token efêmero a permissão `contents: write` exigida oficialmente pela API nativa de
   merge. O token continua restrito ao repositório e exposto somente ao passo `gh pr merge`, sem
   checkout nem execução de código do pull request.
+- Separou os contextos oficiais de evento: ações emitidas pelo Dependabot usam `pull_request`,
+  exclusivamente para `opened` e `synchronize`; `ready_for_review` e `reopened` usam exclusivamente
+  `pull_request_target`, carregam o workflow do branch base confiável e exigem o operador `lcv-leo`
+  por ID imutável e login do ator. Permanecem obrigatórios autor Dependabot, origem no próprio
+  repositório, pull request não draft e correspondência do SHA exato. A concorrência compartilhada
+  por PR serializa qualquer evento residual sem permitir cancelamento cruzado entre contextos.
+- Registrou a chave do App, sob o mesmo nome, nos stores de secrets de Actions e Dependabot. Cada
+  evento recebe a cópia cifrada correspondente ao seu ator, sem expor a chave em código ou logs. A
+  cópia de Actions ficou no environment `dependabot-automation`, restrito ao branch base `main`;
+  a cópia de Dependabot permanece no store próprio, que não oferece escopo por environment.
+- Passou a validar o head exato pela API oficial de commits antes da admissão, exigindo associação
+  ao Dependabot, committer `web-flow` e assinatura GitHub válida. Esse gate é defesa em profundidade;
+  os controles autoritativos são os senders permitidos por ação, a ruleset Enterprise ativa que
+  restringe atualizações em `dependabot/**` aos Apps aprovados e `--match-head-commit`.
 
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 
