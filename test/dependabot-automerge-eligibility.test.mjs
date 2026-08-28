@@ -28,6 +28,7 @@ const normalizedJobCondition = (jobId) => {
 
 const isEligible = ({
   action,
+  actor = "dependabot[bot]",
   author = 49699333,
   eventName = "pull_request",
   sender = 49699333,
@@ -40,21 +41,20 @@ const isEligible = ({
   draft === false &&
   ((eventName === "pull_request" &&
     sender === 49699333 &&
-    ["opened", "synchronize", "ready_for_review", "reopened"].includes(
-      action,
-    )) ||
+    ["opened", "synchronize"].includes(action)) ||
     (eventName === "pull_request_target" &&
-      sender !== 49699333 &&
+      sender === 268063598 &&
+      actor === "lcv-leo" &&
       ["ready_for_review", "reopened"].includes(action)));
 
 test("each event context has a fail-closed eligibility condition", () => {
   assert.equal(
     normalizedJobCondition("enable-dependabot"),
-    "github.event.pull_request.user.id == 49699333 && github.repository == github.event.pull_request.head.repo.full_name && github.event.pull_request.draft == false && github.event_name == 'pull_request' && github.event.sender.id == 49699333 && ( github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' || github.event.action == 'reopened' )",
+    "github.event.pull_request.user.id == 49699333 && github.repository == github.event.pull_request.head.repo.full_name && github.event.pull_request.draft == false && github.event_name == 'pull_request' && github.event.sender.id == 49699333 && ( github.event.action == 'opened' || github.event.action == 'synchronize' )",
   );
   assert.equal(
     normalizedJobCondition("enable-maintainer-transition"),
-    "github.event.pull_request.user.id == 49699333 && github.repository == github.event.pull_request.head.repo.full_name && github.event.pull_request.draft == false && github.event_name == 'pull_request_target' && github.event.sender.id != 49699333 && (github.event.action == 'ready_for_review' || github.event.action == 'reopened')",
+    "github.event.pull_request.user.id == 49699333 && github.repository == github.event.pull_request.head.repo.full_name && github.event.pull_request.draft == false && github.event_name == 'pull_request_target' && github.event.sender.id == 268063598 && github.actor == 'lcv-leo' && (github.event.action == 'ready_for_review' || github.event.action == 'reopened')",
   );
 });
 
@@ -62,16 +62,18 @@ test("maintainer eligibility transitions are admitted for Dependabot PRs", () =>
   assert.equal(
     isEligible({
       action: "ready_for_review",
+      actor: "lcv-leo",
       eventName: "pull_request_target",
-      sender: 1,
+      sender: 268063598,
     }),
     true,
   );
   assert.equal(
     isEligible({
       action: "reopened",
+      actor: "lcv-leo",
       eventName: "pull_request_target",
-      sender: 1,
+      sender: 268063598,
     }),
     true,
   );
@@ -84,22 +86,34 @@ test("code-changing events still require Dependabot as the sender", () => {
   }
 });
 
-test("duplicate eligibility events consume credentials in exactly one context", () => {
+test("event triggers are disjoint and maintainer transitions use an exact allowlist", () => {
   for (const action of ["ready_for_review", "reopened"]) {
-    assert.equal(isEligible({ action }), true);
-    assert.equal(
-      isEligible({ action, eventName: "pull_request_target" }),
-      false,
-    );
+    assert.equal(isEligible({ action }), false);
     assert.equal(isEligible({ action, sender: 1 }), false);
     assert.equal(
-      isEligible({ action, eventName: "pull_request_target", sender: 1 }),
+      isEligible({
+        action,
+        actor: "lcv-leo",
+        eventName: "pull_request_target",
+        sender: 268063598,
+      }),
       true,
     );
+    assert.equal(
+      isEligible({
+        action,
+        actor: "someone-else",
+        eventName: "pull_request_target",
+        sender: 268063598,
+      }),
+      false,
+    );
   }
+  assert.match(workflow, /pull_request:\n    branches:[\s\S]*?types:\n      - opened\n      - synchronize\n  pull_request_target:/);
+  assert.match(workflow, /pull_request_target:\n    branches:[\s\S]*?types:\n      - ready_for_review\n      - reopened\n/);
   assert.match(
     workflow,
-    /group: dependabot-automerge-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event_name \}\}/,
+    /group: dependabot-automerge-\$\{\{ github\.event\.pull_request\.number \}\}\n/,
   );
 });
 
@@ -107,9 +121,10 @@ test("all events preserve author, origin, draft, action, and exact-head guards",
   assert.equal(
     isEligible({
       action: "reopened",
+      actor: "lcv-leo",
       author: 1,
       eventName: "pull_request_target",
-      sender: 1,
+      sender: 268063598,
     }),
     false,
   );
@@ -117,9 +132,10 @@ test("all events preserve author, origin, draft, action, and exact-head guards",
     isEligible(
       {
         action: "reopened",
+        actor: "lcv-leo",
         eventName: "pull_request_target",
         headRepository: "attacker/fork",
-        sender: 1,
+        sender: 268063598,
       },
     ),
     false,
@@ -127,9 +143,10 @@ test("all events preserve author, origin, draft, action, and exact-head guards",
   assert.equal(
     isEligible({
       action: "reopened",
+      actor: "lcv-leo",
       draft: true,
       eventName: "pull_request_target",
-      sender: 1,
+      sender: 268063598,
     }),
     false,
   );

@@ -30,18 +30,19 @@ presentation rule this organization applies to text meant for people
   merge. O token continua restrito ao repositório e exposto somente ao passo `gh pr merge`, sem
   checkout nem execução de código do pull request.
 - Separou os contextos oficiais de evento: ações emitidas pelo Dependabot usam `pull_request`,
-  enquanto `ready_for_review` e `reopened` emitidos por mantenedores usam `pull_request_target` e
-  carregam o workflow do branch base confiável. A condição faz o evento duplicado no outro contexto
-  pular antes do consumo de credenciais. Permanecem obrigatórios autor Dependabot, origem no próprio
-  repositório, pull request não draft e correspondência do SHA exato.
+  exclusivamente para `opened` e `synchronize`; `ready_for_review` e `reopened` usam exclusivamente
+  `pull_request_target`, carregam o workflow do branch base confiável e exigem o operador `lcv-leo`
+  por ID imutável e login do ator. Permanecem obrigatórios autor Dependabot, origem no próprio
+  repositório, pull request não draft e correspondência do SHA exato. A concorrência compartilhada
+  por PR serializa qualquer evento residual sem permitir cancelamento cruzado entre contextos.
 - Registrou a chave do App, sob o mesmo nome, nos stores de secrets de Actions e Dependabot. Cada
   evento recebe a cópia cifrada correspondente ao seu ator, sem expor a chave em código ou logs. A
   cópia de Actions ficou no environment `dependabot-automation`, restrito ao branch base `main`;
   a cópia de Dependabot permanece no store próprio, que não oferece escopo por environment.
-- Passou a validar a proveniência do head exato pela API oficial de commits antes da admissão,
-  exigindo autoria Dependabot, committer `web-flow` e assinatura GitHub válida. A defesa em
-  profundidade complementa a ruleset Enterprise ativa que restringe atualizações em
-  `dependabot/**` aos Apps aprovados.
+- Passou a validar o head exato pela API oficial de commits antes da admissão, exigindo associação
+  ao Dependabot, committer `web-flow` e assinatura GitHub válida. Esse gate é defesa em profundidade;
+  os controles autoritativos são os senders permitidos por ação, a ruleset Enterprise ativa que
+  restringe atualizações em `dependabot/**` aos Apps aprovados e `--match-head-commit`.
 
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 
