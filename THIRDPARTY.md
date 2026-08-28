@@ -14,7 +14,7 @@ policy wrapper of its own.
 Versions and licenses below were read from each package's own published manifest or from its
 upstream repository, not inferred. Versions are the ones actually resolved by the committed
 lockfile, not the ranges declared in the manifest: the root `package.json` requests `commonmark`
-as `0.31.2`, `prettier` as `^3.9.6`, and `wrangler` as `4.124.0`; the lockfile resolves those
+as `0.31.2`, `prettier` as `^3.9.6`, and `wrangler` as `4.125.0`; the lockfile resolves those
 same versions.
 
 ## Repository root — `package.json`
@@ -23,7 +23,7 @@ same versions.
 | ---------- | ------- | ----------------- | ----------- | ---------------------------------------- |
 | commonmark | 0.31.2  | BSD-2-Clause      | development | https://www.npmjs.com/package/commonmark |
 | prettier   | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier   |
-| wrangler   | 4.124.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler   |
+| wrangler   | 4.125.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler   |
 
 ## GitHub Actions
 
@@ -37,8 +37,9 @@ Action references used by `actions/upload-pages-artifact` and
 | `actions/checkout`                 | v7.0.1  | `3d3c42e5aac5ba805825da76410c181273ba90b1` | [MIT](https://github.com/actions/checkout/blob/3d3c42e5aac5ba805825da76410c181273ba90b1/LICENSE)                         | Read repository content and complete Git history                          |
 | `actions/setup-node`               | v7.0.0  | `820762786026740c76f36085b0efc47a31fe5020` | [MIT](https://github.com/actions/setup-node/blob/820762786026740c76f36085b0efc47a31fe5020/LICENSE)                       | Install the Node.js runtime used by public-site validation and deployment |
 | `cloudflare/wrangler-action`       | v4.0.0  | `ebbaa1584979971c8614a24965b4405ff95890e0` | [Apache-2.0](https://github.com/cloudflare/wrangler-action/blob/a61fbea3226347cc885c6d1b26b3f47b48e6c0f8/LICENSE-APACHE) | Deploy the organization site to Cloudflare Pages                          |
-| `github/codeql-action`             | v4.37.8 | `db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28` | [MIT](https://github.com/github/codeql-action/blob/db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28/LICENSE)                     | Initialize and analyze CodeQL and upload Scorecard SARIF                  |
+| `github/codeql-action`             | v4.37.9 | `cdf488f595d80d6e07e03d4674febd5ab45fa938` | [MIT](https://github.com/github/codeql-action/blob/cdf488f595d80d6e07e03d4674febd5ab45fa938/LICENSE)                     | Initialize and analyze CodeQL and upload Scorecard SARIF                  |
 | `actions/dependency-review-action` | v5.0.0  | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | [MIT](https://github.com/actions/dependency-review-action/blob/a1d282b36b6f3519aa1f3fc636f609c47dddb294/LICENSE)         | Review dependency changes on pull requests and merge groups               |
+| `actions/create-github-app-token`  | v3.2.0  | `bcd2ba49218906704ab6c1aa796996da409d3eb1` | [MIT](https://github.com/actions/create-github-app-token/blob/bcd2ba49218906704ab6c1aa796996da409d3eb1/LICENSE)         | Mint a short-lived repository-scoped token for native Dependabot auto-merge |
 | `linear/linear-release-action`     | v0.16.0 | `0a25abab892a91062ebf42260dbb2ce6277aa205` | [MIT](https://github.com/linear/linear-release-action/blob/0a25abab892a91062ebf42260dbb2ce6277aa205/LICENSE)             | Create repository releases in the corresponding Linear pipeline           |
 | `actions/configure-pages`          | v6.0.0  | `45bfe0192ca1faeb007ade9deae92b16b8254a0d` | [MIT](https://github.com/actions/configure-pages/blob/45bfe0192ca1faeb007ade9deae92b16b8254a0d/LICENSE)                  | Configure the GitHub Pages build                                          |
 | `actions/deploy-pages`             | v5.0.0  | `cd2ce8fcbc39b97be8ca5fce6e763baed58fa128` | [MIT](https://github.com/actions/deploy-pages/blob/cd2ce8fcbc39b97be8ca5fce6e763baed58fa128/LICENSE)                     | Deploy the trusted GitHub Pages artifact                                  |
