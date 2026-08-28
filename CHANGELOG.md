@@ -24,6 +24,12 @@ presentation rule this organization applies to text meant for people
   lockfile pelo Dependabot hospedado continua dependente do experimento nativo do GitHub; nenhum
   reparador de lockfile próprio foi introduzido.
 
+### Fixed
+
+- Incluiu no token efêmero a permissão `contents: write` exigida oficialmente pela API nativa de
+  merge. O token continua restrito ao repositório e exposto somente ao passo `gh pr merge`, sem
+  checkout nem execução de código do pull request.
+
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 
 ### Fixed
