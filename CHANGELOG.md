@@ -12,6 +12,17 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 28/08/2026 — Automerge nativo e independente do Dependabot ([#299](https://github.com/LCV-Ideas-Software/.github/issues/299))
+
+### Added
+
+- Adicionou um workflow local que habilita o auto-merge nativo do GitHub somente para pull requests
+  criados pelo `dependabot[bot]`. A admissão usa um token efêmero e limitado ao repositório da App
+  dedicada, preserva o SHA exato do head e deixa checks, aprovações e merge queue decidirem o merge.
+- Registrou a única Action oficial usada pelo fluxo no `actions.lock`. A atualização automática do
+  lockfile pelo Dependabot hospedado continua dependente do experimento nativo do GitHub; nenhum
+  reparador de lockfile próprio foi introduzido.
+
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 
 ### Fixed
