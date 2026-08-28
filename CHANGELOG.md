@@ -29,9 +29,10 @@ presentation rule this organization applies to text meant for people
 - Incluiu no token efêmero a permissão `contents: write` exigida oficialmente pela API nativa de
   merge. O token continua restrito ao repositório e exposto somente ao passo `gh pr merge`, sem
   checkout nem execução de código do pull request.
-- Removeu a exigência incorreta de que o ator do evento também fosse o Dependabot. O workflow agora
-  aceita `ready_for_review` e `reopened` acionados por mantenedores sem deixar de exigir autor
-  Dependabot, origem no próprio repositório, pull request não draft e correspondência do SHA exato.
+- Restringiu a validação do ator do evento à criação e à atualização de código. O workflow agora
+  aceita `ready_for_review` e `reopened` acionados por mantenedores, mas `opened` e `synchronize`
+  continuam exigindo o Dependabot como ator. Permanecem obrigatórios autor Dependabot, origem no
+  próprio repositório, pull request não draft e correspondência do SHA exato.
 
 ## 26/08/2026 — Correções da review tardia do perfil ([#291](https://github.com/LCV-Ideas-Software/.github/issues/291))
 

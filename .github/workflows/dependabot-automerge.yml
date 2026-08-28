@@ -28,7 +28,15 @@ jobs:
     if: >-
       github.event.pull_request.user.id == 49699333 &&
       github.repository == github.event.pull_request.head.repo.full_name &&
-      github.event.pull_request.draft == false
+      github.event.pull_request.draft == false &&
+      (
+        github.event.action == 'ready_for_review' ||
+        github.event.action == 'reopened' ||
+        (
+          (github.event.action == 'opened' || github.event.action == 'synchronize') &&
+          github.event.sender.id == 49699333
+        )
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
