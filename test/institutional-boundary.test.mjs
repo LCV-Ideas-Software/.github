@@ -33,6 +33,7 @@ const migratedOperationalPaths = [
 const retainedPublicPaths = [
   ".github/workflows/cloudflare-pages.yml",
   ".github/workflows/codeql.yml",
+  ".github/workflows/dependabot-automerge.yml",
   ".github/workflows/dependency-review.yml",
   ".github/workflows/linear-release.yml",
   ".github/workflows/pages.yml",
@@ -102,6 +103,7 @@ test("only active public workflows and their lockfile remain versioned", () => {
     "actions.lock",
     "cloudflare-pages.yml",
     "codeql.yml",
+    "dependabot-automerge.yml",
     "dependency-review.yml",
     "linear-release.yml",
     "pages.yml",

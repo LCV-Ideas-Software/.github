@@ -21,13 +21,14 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build.
 - CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard invoke their official Actions directly, pinned by full commit SHA. Repository-owned SARIF gates, policy manifests, workflow-contract validators, and scanner wrappers are intentionally absent.
 - Linear Release uses Linear's official Action, pinned to the immutable commit of `v0.16.0`, to mirror every `main` commit into the continuous `.github-org` pipeline. This does not introduce a numbered artifact or an organization-wide controller; it records only this repository's own releases. The upstream installer still lacks cryptographic authentication of the downloaded CLI bytes, as documented in [`THIRDPARTY.md`](./THIRDPARTY.md#accepted-upstream-linear-release-installer-exception).
-- Pull requests reach `main` only through squash and GitHub's native merge queue. Human-authored changes require authorized human admission. Canonical same-repository Dependabot pull requests are handled by **Dependabot Custom Auto-merge**, operated exclusively from `github-operations`; it pins every mutation to the observed head SHA and cannot bypass queue checks.
+- Pull requests reach `main` only through squash and GitHub's native merge queue. Human-authored changes require authorized human admission. Each repository independently enables GitHub native auto-merge for canonical same-repository Dependabot pull requests on the exact event head SHA, using a short-lived repository-scoped GitHub App token; the queue still enforces every required check.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
 
-Operational systems, reusable actions, controllers, schedulers, canaries, and private runbooks are
-intentionally absent from this public institutional repository. Their implementation and operation
-belong in `github-operations`. The workflows retained here act only on this repository's public
-institutional surfaces and security posture; they are not organization-wide control systems.
+Organization-wide operational systems, reusable actions, controllers, schedulers, canaries, and
+private runbooks are intentionally absent from this public institutional repository. Their
+implementation and operation belong in `github-operations`. The workflows retained here act only
+on this repository's own pull requests, public institutional surfaces, and security posture; they
+are not organization-wide control systems.
 
 Changes from 11/08/2026 onward are recorded in [`CHANGELOG.md`](./CHANGELOG.md), grouped by date, each linked to the pull request that carried it or, for changes that are repository settings rather than files, to the issue holding their execution trail. Earlier work is not summarized there; the commit history remains its record.
 
