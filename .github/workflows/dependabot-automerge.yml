@@ -45,12 +45,10 @@ jobs:
     environment:
       name: dependabot-automation
       deployment: false
-    # Read-only metadata access is required to authenticate the source run and
-    # the exact pull-request head before any short-lived App token is created.
     permissions:
-      actions: read
-      contents: read
-      pull-requests: read
+      actions: read # Authenticate the source workflow run before creating an App token.
+      contents: read # Resolve the trusted workflow file and commit metadata.
+      pull-requests: read # Re-read the exact PR head and complete file inventory.
     steps:
       - name: Verify trusted workflow run, pull request, and exact head
         id: provenance
