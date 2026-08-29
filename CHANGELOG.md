@@ -12,6 +12,27 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 29/08/2026 — Fronteira confiável do automerge Dependabot ([#213](https://github.com/LCV-Ideas-Software/github-operations/issues/213))
+
+### Security
+
+- Separou a admissão automática em dois workflows locais: um sinal `pull_request` sem permissões,
+  segredo, Action ou conteúdo controlado pelo PR e um mutador `workflow_run` carregado de `main`.
+  A chave da GitHub App passa a ser lida somente depois da validação do workflow por ID/path, do
+  run exato, dos atores, do PR e do head assinado.
+- Tratou o comportamento live em que GitHub omite `workflow_run.pull_requests`: o mutador resolve
+  o PR pelo endpoint oficial de associação ao commit, exige exatamente um candidato aberto e
+  cruza a identidade quando a lista do evento está preenchida. Nenhuma lista vazia é aceita como
+  evidência de identidade.
+- Passou a rejeitar automaticamente qualquer adição, alteração, renomeação ou remoção sob
+  `.github/workflows/**`, a paginar o inventário completo e a reler PR e arquivos antes de
+  `gh pr merge --auto --squash --match-head-commit`. O fluxo continua local a este repositório e
+  não introduz controlador central, checkout, cache, artefato, reparo de branch ou lockfile.
+- Isolou a concorrência automática por run e tentativa de origem, impedindo que um rerun rejeitado
+  cancele o mutador legítimo da primeira tentativa no mesmo head. O Required Workflow Enterprise
+  sem bypass permanece como autorização obrigatória de cada novo head, inclusive quando um pedido
+  de auto-merge anterior continua armado; o workflow-fonte passa a proteger também o novo sinal.
+
 ## 28/08/2026 — Remoção do trigger privilegiado do automerge Dependabot
 
 ### Security

@@ -1,0 +1,38 @@
+# This workflow is managed by gh actions-lock.
+
+name: Dependabot admission signal
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+
+# This stage is intentionally non-privileged. It consumes no secret, action,
+# checkout, cache, artifact, or pull-request-controlled command.
+permissions: {}
+
+concurrency:
+  group: dependabot-admission-signal-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  signal:
+    name: Verify canonical Dependabot event
+    if: >-
+      github.event.pull_request.user.id == 49699333 &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.repository == github.event.pull_request.head.repo.full_name &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/') &&
+      github.event.pull_request.draft == false &&
+      github.event.sender.id == 49699333 &&
+      github.event.sender.login == 'dependabot[bot]' &&
+      (github.event.action == 'opened' || github.event.action == 'synchronize')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Complete non-privileged admission signal
+        shell: bash
+        run: ":"
