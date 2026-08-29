@@ -45,6 +45,8 @@ jobs:
     environment:
       name: dependabot-automation
       deployment: false
+    # Read-only metadata access is required to authenticate the source run and
+    # the exact pull-request head before any short-lived App token is created.
     permissions:
       actions: read
       contents: read
