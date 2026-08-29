@@ -1,0 +1,6 @@
+{
+  "name": "Dependency Review (LCV Ideas & Software)",
+  "description": "Blocks pull requests that introduce vulnerable or disallowed dependencies, on both pull_request and merge_group. Run gh actions-lock and commit the regenerated actions.lock in the same pull request.",
+  "iconName": "octicon package-dependencies",
+  "categories": ["Code Scanning", "Utilities"]
+}

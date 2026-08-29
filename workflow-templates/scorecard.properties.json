@@ -1,0 +1,6 @@
+{
+  "name": "OpenSSF Scorecard (LCV Ideas & Software)",
+  "description": "Runs the OpenSSF Scorecard supply-chain analysis and uploads the result to code scanning. Run gh actions-lock and commit the regenerated actions.lock in the same pull request.",
+  "iconName": "octicon shield-check",
+  "categories": ["Code Scanning", "Utilities"]
+}
