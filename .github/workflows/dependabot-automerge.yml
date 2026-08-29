@@ -3,12 +3,11 @@
 name: Dependabot Auto-merge
 
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_run: # zizmor: ignore[dangerous-triggers] The source stage has no secret, action, checkout, cache, artifact, or untrusted command.
+    workflows:
+      - Dependabot admission signal
     types:
-      - opened
-      - synchronize
+      - completed
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -16,33 +15,187 @@ on:
         required: true
         type: number
 
-# Automatic runs use the event head; dispatch runs resolve the live PR. Only the short-lived App token mutates state.
+# Automatic mutation is loaded from main only after an unprivileged signal.
+# Dispatch is an explicit operator-only fallback loaded from main.
 permissions: {}
 
 concurrency:
-  group: dependabot-automerge-${{ github.event.pull_request.number || inputs.pull_request_number || github.run_id }}
+  # A rejected source rerun must not cancel the legitimate first attempt for
+  # the same head. Source run id + source attempt isolate those executions;
+  # operator dispatches remain serialized by pull request number.
+  group: dependabot-automerge-${{ github.event.workflow_run.id || inputs.pull_request_number || github.run_id }}-${{ github.event.workflow_run.run_attempt || github.run_attempt }}
   cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  enable-dependabot: # zizmor: ignore[secrets-outside-env] Dedicated Dependabot secrets are the documented pull_request pattern; no repository content is checked out.
-    name: Enable native auto-merge (Dependabot event)
+  enable-dependabot:
+    name: Enable native auto-merge (trusted follow-up)
     if: >-
-      github.event.pull_request.user.id == 49699333 &&
-      github.repository == github.event.pull_request.head.repo.full_name &&
-      startsWith(github.event.pull_request.head.ref, 'dependabot/') &&
-      github.event.pull_request.draft == false &&
-      github.event_name == 'pull_request' &&
-      github.event.sender.id == 49699333 &&
-      (
-        github.event.action == 'opened' ||
-        github.event.action == 'synchronize'
-      )
+      github.repository == 'LCV-Ideas-Software/.github' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.actor.id == 49699333 &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    environment:
+      name: dependabot-automation
+      deployment: false
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
     steps:
+      - name: Verify trusted workflow run, pull request, and exact head
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readonly workflow_path=".github/workflows/dependabot-automerge-signal.yml"
+          repository_json="$(gh api "repos/${REPOSITORY}")"
+          repository_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"$repository_json")"
+          expected_workflow_json="$(gh api "repos/${REPOSITORY}/actions/workflows/dependabot-automerge-signal.yml")"
+          expected_workflow_id="$(
+            jq -er --arg path "$workflow_path" '
+              select(.path == $path and .state == "active") | .id
+            ' <<<"$expected_workflow_json"
+          )"
+
+          source_run_json="$(gh api "repos/${REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")"
+          jq -e \
+            --argjson run_id "$SOURCE_RUN_ID" \
+            --argjson workflow_id "$expected_workflow_id" \
+            --argjson repository_id "$repository_id" \
+            --arg path "$workflow_path" \
+            --arg repository "$REPOSITORY" '
+              .id == $run_id and
+              .workflow_id == $workflow_id and
+              .path == $path and
+              .event == "pull_request" and
+              .status == "completed" and
+              .conclusion == "success" and
+              .run_attempt == 1 and
+              .actor.id == 49699333 and
+              .actor.login == "dependabot[bot]" and
+              .triggering_actor.id == 49699333 and
+              .triggering_actor.login == "dependabot[bot]" and
+              .repository.id == $repository_id and
+              .repository.full_name == $repository and
+              .head_repository.id == $repository_id and
+              .head_repository.full_name == $repository and
+              (.head_branch | startswith("dependabot/")) and
+              (.head_sha | test("^[0-9a-f]{40}$")) and
+              (.pull_requests | length) <= 1
+            ' <<<"$source_run_json" >/dev/null
+
+          source_head_sha="$(jq -er '.head_sha' <<<"$source_run_json")"
+          source_head_branch="$(jq -er '.head_branch' <<<"$source_run_json")"
+
+          associated_pages="$(
+            gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${source_head_sha}/pulls?per_page=100"
+          )"
+          associated_json="$(jq -ce '[.[][]]' <<<"$associated_pages")"
+          jq -e 'length > 0 and length <= 1000' <<<"$associated_json" >/dev/null
+          candidates_json="$(
+            jq -ce \
+              --arg repository "$REPOSITORY" \
+              --arg head_branch "$source_head_branch" \
+              --arg head_sha "$source_head_sha" '[
+                .[] |
+                select(
+                  .state == "open" and
+                  .draft == false and
+                  .base.ref == "main" and
+                  .base.repo.full_name == $repository and
+                  .head.repo.full_name == $repository and
+                  .head.ref == $head_branch and
+                  .head.sha == $head_sha and
+                  .user.id == 49699333 and
+                  .user.login == "dependabot[bot]"
+                )
+              ]' <<<"$associated_json"
+          )"
+          jq -e 'length == 1' <<<"$candidates_json" >/dev/null
+          pr_number="$(jq -er '.[0].number | select(type == "number" and . > 0)' <<<"$candidates_json")"
+
+          # GitHub may legitimately omit workflow_run.pull_requests. When it is
+          # present, require it to identify the same PR and head resolved by the
+          # official commit-association endpoint.
+          jq -e \
+            --argjson pr_number "$pr_number" \
+            --arg head_sha "$source_head_sha" '
+              (.pull_requests | length) == 0 or
+              (
+                (.pull_requests | length) == 1 and
+                .pull_requests[0].number == $pr_number and
+                .pull_requests[0].head.sha == $head_sha and
+                .pull_requests[0].base.ref == "main"
+              )
+            ' <<<"$source_run_json" >/dev/null
+
+          pr_json="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"
+          jq -e \
+            --argjson number "$pr_number" \
+            --arg repository "$REPOSITORY" \
+            --arg head_branch "$source_head_branch" \
+            --arg head_sha "$source_head_sha" '
+              .number == $number and
+              .state == "open" and
+              .draft == false and
+              .user.id == 49699333 and
+              .user.login == "dependabot[bot]" and
+              .head.repo.full_name == $repository and
+              .base.repo.full_name == $repository and
+              .base.ref == "main" and
+              .head.ref == $head_branch and
+              .head.sha == $head_sha and
+              .changed_files > 0 and
+              .changed_files <= 3000
+            ' <<<"$pr_json" >/dev/null
+
+          changed_files="$(jq -er '.changed_files' <<<"$pr_json")"
+          files_pages="$(
+            gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/${pr_number}/files?per_page=100"
+          )"
+          files_json="$(jq -ce '[.[][]]' <<<"$files_pages")"
+          jq -e --argjson expected "$changed_files" '
+            length == $expected and
+            all(.[ ];
+              ((.filename | type) == "string") and
+              ((.filename | startswith(".github/workflows/")) | not) and
+              (((.previous_filename? // "") | startswith(".github/workflows/")) | not)
+            )
+          ' <<<"$files_json" >/dev/null
+
+          commit_json="$(gh api "repos/${REPOSITORY}/commits/${source_head_sha}")"
+          jq -e --arg sha "$source_head_sha" '
+            .sha == $sha and
+            .author.id == 49699333 and
+            .author.login == "dependabot[bot]" and
+            .committer.id == 19864447 and
+            .committer.login == "web-flow" and
+            .commit.verification.verified == true and
+            .commit.verification.reason == "valid"
+          ' <<<"$commit_json" >/dev/null
+
+          {
+            echo "head_sha=$source_head_sha"
+            echo "pr_number=$pr_number"
+            echo "pr_url=https://github.com/${REPOSITORY}/pull/${pr_number}"
+            echo "changed_files=$changed_files"
+          } >>"$GITHUB_OUTPUT"
+
       - name: Create the repository-scoped GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -53,30 +206,54 @@ jobs:
           permission-pull-requests: write
           permission-merge-queues: write
 
-      - name: Verify Dependabot provenance of the exact head
+      - name: Re-read invariants and enable GitHub native auto-merge
         env:
+          CHANGED_FILES: ${{ steps.provenance.outputs.changed_files }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.provenance.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.provenance.outputs.pr_number }}
+          PR_URL: ${{ steps.provenance.outputs.pr_url }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          commit_json="$(gh api "repos/${REPOSITORY}/commits/${HEAD_SHA}")"
-          jq -e --arg sha "$HEAD_SHA" '
-            .sha == $sha and
-            .author.id == 49699333 and
-            .author.login == "dependabot[bot]" and
-            .committer.login == "web-flow" and
-            .commit.verification.verified == true and
-            .commit.verification.reason == "valid"
-          ' <<<"$commit_json" >/dev/null
 
-      - name: Enable GitHub native auto-merge
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --match-head-commit "$HEAD_SHA" "$PR_URL"
+          pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --argjson number "$PR_NUMBER" \
+            --argjson changed_files "$CHANGED_FILES" \
+            --arg repository "$REPOSITORY" \
+            --arg head_sha "$HEAD_SHA" '
+              .number == $number and
+              .state == "open" and
+              .draft == false and
+              .user.id == 49699333 and
+              .user.login == "dependabot[bot]" and
+              .head.repo.full_name == $repository and
+              .base.repo.full_name == $repository and
+              .base.ref == "main" and
+              .head.sha == $head_sha and
+              (.head.ref | startswith("dependabot/")) and
+              .changed_files == $changed_files and
+              .changed_files > 0 and
+              .changed_files <= 3000
+            ' <<<"$pr_json" >/dev/null
+
+          files_pages="$(
+            gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100"
+          )"
+          files_json="$(jq -ce '[.[][]]' <<<"$files_pages")"
+          jq -e --argjson expected "$CHANGED_FILES" '
+            length == $expected and
+            all(.[ ];
+              ((.filename | type) == "string") and
+              ((.filename | startswith(".github/workflows/")) | not) and
+              (((.previous_filename? // "") | startswith(".github/workflows/")) | not)
+            )
+          ' <<<"$files_json" >/dev/null
+
+          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
 
   enable-operator-dispatch:
     name: Enable native auto-merge (operator dispatch)
@@ -141,6 +318,7 @@ jobs:
             .sha == $sha and
             .author.id == 49699333 and
             .author.login == "dependabot[bot]" and
+            .committer.id == 19864447 and
             .committer.login == "web-flow" and
             .commit.verification.verified == true and
             .commit.verification.reason == "valid"
@@ -151,4 +329,4 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           HEAD_SHA: ${{ steps.pull-request.outputs.head_sha }}
           PR_URL: ${{ steps.pull-request.outputs.pr_url }}
-        run: gh pr merge --auto --match-head-commit "$HEAD_SHA" "$PR_URL"
+        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
