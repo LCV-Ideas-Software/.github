@@ -38,7 +38,7 @@ jobs:
       # linear/linear-release-action#59 and documented in THIRDPARTY.md.
       - name: Create Linear release with the official action
         id: linear_release
-        uses: linear/linear-release-action@0a25abab892a91062ebf42260dbb2ce6277aa205 # v0.16.0
+        uses: linear/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4 # v0.17.1
         with:
           access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
-          cli_version: v0.16.0
+          cli_version: v0.17.1
