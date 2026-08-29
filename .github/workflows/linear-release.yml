@@ -32,10 +32,10 @@ jobs:
       # Fail-closed mirror: a Linear outage fails this workflow so post-merge
       # verification and the normal workflow alerting surface the interruption.
       #
-      # The official Action is pinned to the commit for v0.16.0 and selects the
-      # same CLI version. Its installer still downloads the CLI without
-      # authenticating the bytes; the accepted upstream gap is tracked in
-      # linear/linear-release-action#59 and documented in THIRDPARTY.md.
+      # The official Action is pinned to the commit for v0.17.1 and selects the
+      # same CLI version. Since v0.16.1 the installer verifies the downloaded
+      # CLI against a published SHA-256 checksum before executing it, closing
+      # the gap tracked in linear/linear-release-action#59.
       - name: Create Linear release with the official action
         id: linear_release
         uses: linear/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4 # v0.17.1
