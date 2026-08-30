@@ -6,7 +6,7 @@
   <img src="https://readme-typing-svg.demolab.com?font=Poppins&weight=600&size=30&duration=3200&pause=1000&color=2563EB&center=true&vCenter=true&width=860&lines=Independent+software+studio;Cloudflare+Pages+%E2%80%A2+Workers+%E2%80%A2+D1;Six-model+adversarial+review+gates;Fail+closed+%E2%80%A2+Test+first+%E2%80%A2+Ship+through+CI" alt="Independent software studio — Cloudflare Pages, Workers and D1 — six-model adversarial review gates — fail closed, test first, ship through CI" />
 </h1>
 
-<h3 align="center">LCV Ideas &amp; Software</h3>
+<h3 align="center">LCV Ideas &amp; Software — Organization overview</h3>
 
 <p align="center">
   <em>Public web apps, operator tooling and AI agent infrastructure on Cloudflare's edge.</em><br>
@@ -238,16 +238,6 @@ Public delivery repositories for the Android editions. Each currently carries th
 | [**.github**](https://github.com/LCV-Ideas-Software/.github)                         | Public     | Organization profile, community-health defaults, public policy documentation, and public Pages/Sponsors surfaces.                                                                                                                                                                                                                                                                                   |
 | [**actions-lock-policy**](https://github.com/LCV-Ideas-Software/actions-lock-policy) | Public     | Public trust root for the Required Workflow that validates `.github/workflows/actions.lock` across the governed fleet. Public visibility is an architectural requirement: GitHub matches Required Workflow visibility against the repositories it applies to, so only a public source covers public, internal and private repositories alike. It holds no secrets, credentials or operational data. |
 
-### Archived / discontinued
-
-| Repository            | Status                          | Note                                                                                                                                                                                                                                                                                                                                                                                           |
-| --------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`apphub`**          | Archived · private              | Discontinued because it no longer provided useful organizational value. The organization website at [www.lcv.dev](https://www.lcv.dev) is now the canonical public entry point.                                                                                                                                                                                                                |
-| **`adminapps`**       | Archived · private              | Discontinued after all admin surfaces were consolidated into [admin-app](https://github.com/LCV-Ideas-Software/admin-app). Continuing `adminapps` no longer makes operational sense.                                                                                                                                                                                                           |
-| **`cross-review-v1`** | Archived · private · 15/05/2026 | Discontinued in favor of [`cross-review`](https://github.com/LCV-Ideas-Software/cross-review). The CLI-only MCP server was the first incarnation; the API-first rewrite under the canonical package name is the implementation going forward. npm `@lcv-ideas-software/cross-review-v1@1.12.11` remains published for historical use but is marked deprecated and receives no further updates. |
-| **`grok-cli`**        | Archived · private · 15/05/2026 | Discontinued. The npm package `@lcv-ideas-software/grok-cli` is published through version `1.6.5` and marked deprecated on npm; the private GitHub repository is read-only. Existing installs continue to function as-is.                                                                                                                                                                      |
-| **`deepseek-cli`**    | Archived · private · 15/05/2026 | Discontinued. The npm package `@lcv-ideas-software/deepseek-cli` is published through version `0.3.3` and marked deprecated on npm; the private GitHub repository is read-only. Existing installs continue to function as-is.                                                                                                                                                                  |
-
 <img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
 ## 🌐 Shared platform
@@ -292,8 +282,6 @@ Desktop      Tauri 2 (Maestro)
 | Proprietary — all rights reserved                               | `.github`, `actions-lock-policy`                                                                                                                                                                     |
 
 The AGPL-3.0 **network-service trigger** applies to the repositories in the AGPL row: if a modified version lets users interact with it remotely through a computer network, those users must be offered its Corresponding Source under AGPL-3.0. The proprietary repositories are public because GitHub requires public visibility for their platform role — the organization profile and the Required Workflow trust root — and that visibility grants no rights beyond those provided by the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service). Public software repositories ship a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
-
-Archived repositories are recorded under the terms they carried when they were archived: `apphub` and `adminapps` under AGPL-3.0-or-later; `cross-review-v1`, `grok-cli` and `deepseek-cli` under Apache-2.0.
 
 ## 📋 Conventions
 
