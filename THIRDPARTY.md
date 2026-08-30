@@ -1,8 +1,10 @@
 # Third-Party Components
 
 Scope of this inventory: every **direct** dependency declared by a manifest committed to this
-repository, every third-party script loaded at runtime by a page this repository publishes, and
-every third-party brand asset vendored into this repository and served by its published site.
+repository, every third-party script loaded at runtime by a page this repository publishes, and the
+third-party brand assets recorded in the sections below. The published site also embeds the GitHub
+mark as inline SVG path data in `site/index.html`; that asset is not yet inventoried and is tracked
+separately in GITHORG-97, so this statement does not yet claim to cover every vendored brand asset.
 
 Transitive dependencies are not listed individually; they are pinned by the committed lockfiles.
 Dependabot covers each declared ecosystem, and the official GitHub Dependency Review action evaluates
@@ -119,9 +121,14 @@ affiliation is implied or claimed.
 | RGB assets are for digital use, web pages included                     | package terms sheet | rendered by `site/sponsor/index.html`                          |
 | PNG may be used at the supplied size or smaller, never enlarged        | package terms sheet | supplied 1049×426, rendered 69×28                              |
 | Do not condense, stretch, or deform; keep the iso-to-logo proportion   | brand page          | 1049 ÷ 426 = 2.4624; 69 ÷ 28 = 2.4643                          |
-| Do not alter colours or typography, and apply no shadows or effects    | brand page          | file is byte-identical to the official one                     |
-| Colour versions may be placed on a white background                    | brand page          | `.mp-logo` sets `background: rgba(255, 255, 255, 0.92)`        |
-| Never on institutional cyan, institutional blue, or non-brand colours  | brand page          | none of those is used behind the mark                          |
+| Do not alter colours or typography, and apply no shadows or effects    | brand page          | file byte-identical, and `.mp-logo` carries no shadow or effect |
+| Colour versions may be placed on a white background                    | brand page          | `.mp-logo` sets `background: #ffffff`, fully opaque            |
+| Never on institutional cyan, institutional blue, or non-brand colours  | brand page          | the opaque badge is the only surface behind the mark           |
+
+Byte identity settles the stored artwork, not what the browser paints. The last three rows are
+therefore evidenced from the page's own rules rather than from the file digest: `.mp-logo` applies
+no `box-shadow`, `filter`, `opacity`, or other effect, and its background is fully opaque, so the
+dark panel gradient behind the panel never shows through under the mark.
 
 The asset is vendored rather than hot-linked because Mercado Pago's CDN answers HTTP 403 to
 requests for it from outside its own properties, so the published page cannot reference it
