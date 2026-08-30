@@ -40,7 +40,7 @@ Action references used by `actions/upload-pages-artifact` and
 | `github/codeql-action`             | v4.37.9 | `cdf488f595d80d6e07e03d4674febd5ab45fa938` | [MIT](https://github.com/github/codeql-action/blob/cdf488f595d80d6e07e03d4674febd5ab45fa938/LICENSE)                     | Initialize and analyze CodeQL and upload Scorecard SARIF                  |
 | `actions/dependency-review-action` | v5.0.0  | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | [MIT](https://github.com/actions/dependency-review-action/blob/a1d282b36b6f3519aa1f3fc636f609c47dddb294/LICENSE)         | Review dependency changes on pull requests and merge groups               |
 | `actions/create-github-app-token`  | v3.2.0  | `bcd2ba49218906704ab6c1aa796996da409d3eb1` | [MIT](https://github.com/actions/create-github-app-token/blob/bcd2ba49218906704ab6c1aa796996da409d3eb1/LICENSE)         | Mint a short-lived repository-scoped token for native Dependabot auto-merge |
-| `linear/linear-release-action`     | v0.16.0 | `0a25abab892a91062ebf42260dbb2ce6277aa205` | [MIT](https://github.com/linear/linear-release-action/blob/0a25abab892a91062ebf42260dbb2ce6277aa205/LICENSE)             | Create repository releases in the corresponding Linear pipeline           |
+| `linear/linear-release-action`     | v0.17.1 | `3f31fcf14c110cc53579fcc3575a26d469c413b4` | [MIT](https://github.com/linear/linear-release-action/blob/3f31fcf14c110cc53579fcc3575a26d469c413b4/LICENSE)             | Create repository releases in the corresponding Linear pipeline           |
 | `actions/configure-pages`          | v6.0.0  | `45bfe0192ca1faeb007ade9deae92b16b8254a0d` | [MIT](https://github.com/actions/configure-pages/blob/45bfe0192ca1faeb007ade9deae92b16b8254a0d/LICENSE)                  | Configure the GitHub Pages build                                          |
 | `actions/deploy-pages`             | v5.0.0  | `cd2ce8fcbc39b97be8ca5fce6e763baed58fa128` | [MIT](https://github.com/actions/deploy-pages/blob/cd2ce8fcbc39b97be8ca5fce6e763baed58fa128/LICENSE)                     | Deploy the trusted GitHub Pages artifact                                  |
 | `actions/upload-pages-artifact`    | v5.0.0  | `fc324d3547104276b827a68afc52ff2a11cc49c9` | [MIT](https://github.com/actions/upload-pages-artifact/blob/fc324d3547104276b827a68afc52ff2a11cc49c9/LICENSE)            | Package and upload the public-site artifact                               |
@@ -77,23 +77,6 @@ where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when 
 What is verifiable here is the shape of the integration, not a justification for it: both scripts
 are fetched at runtime from unversioned provider endpoints, so neither carries a version this
 repository can pin, and neither is vendored.
-
-## Accepted upstream Linear Release installer exception
-
-The repository uses the official `linear/linear-release-action` `v0.16.0`, pinned in the workflow
-and Actions lockfile to immutable commit `0a25abab892a91062ebf42260dbb2ce6277aa205`
-([release](https://github.com/linear/linear-release-action/releases/tag/v0.16.0),
-[commit](https://github.com/linear/linear-release-action/commit/0a25abab892a91062ebf42260dbb2ce6277aa205),
-[MIT license](https://github.com/linear/linear-release-action/blob/0a25abab892a91062ebf42260dbb2ce6277aa205/LICENSE)).
-The workflow also selects CLI `v0.16.0` explicitly.
-
-The pin authenticates the Action source but not the CLI executable downloaded later by the
-Action's installer. The installer currently executes that asset without validating a checksum,
-signature, artifact attestation, or immutable-release guarantee. This accepted residual risk is
-tracked in [`linear/linear-release-action#59`](https://github.com/linear/linear-release-action/issues/59)
-and Linear's `LIN-82854`. Remove this exception only after an official release fails closed on
-missing or mismatched integrity metadata; then update the exact Action commit, CLI version,
-lockfile, and Actions allowlist together.
 
 ## This repository
 
