@@ -12,6 +12,24 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 30/08/2026 — Separação entre o perfil da organização e o perfil Enterprise
+
+### Changed
+
+- O cabeçalho do perfil público passa a nomear a própria superfície:
+  `LCV Ideas &amp; Software — Organization overview`. Antes trazia apenas o nome
+  do estúdio, o que deixava o perfil da organização indistinguível do overview
+  Enterprise mantido em `.github-private`.
+
+### Removed
+
+- Removida a seção "Archived / discontinued" e a frase de licenciamento que
+  registrava os termos de `apphub`, `adminapps`, `cross-review-v1`, `grok-cli`
+  e `deepseek-cli`. A API não encontra nenhum dos cinco e a organização não
+  reporta repositório arquivado, de modo que a seção afirmava um estado
+  presente que deixou de ser verdadeiro. Os pacotes npm depreciados seguem
+  publicados e não foram afetados.
+
 ## 29/08/2026 — Fronteira confiável do automerge Dependabot ([#213](https://github.com/LCV-Ideas-Software/github-operations/issues/213))
 
 ### Security
