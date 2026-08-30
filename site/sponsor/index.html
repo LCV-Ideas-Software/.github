@@ -232,13 +232,16 @@
         margin-bottom: 6px;
         flex-wrap: wrap;
       }
+      /* The background is fully opaque white and the badge carries no
+       * shadow: MP's brand rules allow the colour logo on white, forbid
+       * shadows and effects, and forbid non-brand colours behind the mark.
+       * A translucent white would let the dark panel gradient through. */
       .mp-logo {
         display: inline-flex;
         align-items: center;
         padding: 6px 10px;
         border-radius: 10px;
-        background: rgba(255, 255, 255, 0.92);
-        box-shadow: 0 4px 12px var(--shadow);
+        background: #ffffff;
       }
       .mp-logo img {
         height: 28px;

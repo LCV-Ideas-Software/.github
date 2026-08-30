@@ -1,7 +1,10 @@
 # Third-Party Components
 
 Scope of this inventory: every **direct** dependency declared by a manifest committed to this
-repository, plus every third-party script loaded at runtime by a page this repository publishes.
+repository, every third-party script loaded at runtime by a page this repository publishes, and the
+third-party brand assets recorded in the sections below. The published site also embeds the GitHub
+mark as inline SVG path data in `site/index.html`; that asset is not yet inventoried and is tracked
+separately in GITHORG-97, so this statement does not yet claim to cover every vendored brand asset.
 
 Transitive dependencies are not listed individually; they are pinned by the committed lockfiles.
 Dependabot covers each declared ecosystem, and the official GitHub Dependency Review action evaluates
@@ -77,6 +80,70 @@ where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when 
 What is verifiable here is the shape of the integration, not a justification for it: both scripts
 are fetched at runtime from unversioned provider endpoints, so neither carries a version this
 repository can pin, and neither is vendored.
+
+## Vendored brand asset — `site/sponsor/assets/mercadopago-oficial.png`
+
+This is a trademark surface, not a software-license surface. The file carries no open-source
+license, and the absence of one is not a defect to be repaired by attaching a license: its use is
+governed by the mark owner's own brand terms, recorded below.
+
+| Component          | Variant                                    | Terms                                                                                | Scope                     | Immutable source                                                                                            |
+| ------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------ | ------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Mercado Pago logo  | `MP_RGB_HANDSHAKE_color_horizontal.png`    | Proprietary — Mercado Pago brand terms, *Versión Marzo 2025*, shipped inside the package | published on sponsor page | https://http2.mlstatic.com/storage/pog-cm-admin/calm-assets/Logos%20Mercado%20Pago%202025--fb6f16c9.zip |
+
+### Provenance is proven, not asserted
+
+The committed file is byte-identical to the file of the same name inside the official package:
+
+- committed file: SHA-256 `863719a51c238ef136f6ad53b9c25e3589846e06930bce6c6df5282cd4c1340f`, 35,745 bytes, 1049×426
+- official package: SHA-256 `bc096531b45de70a4e005bbff5183fb2a5b46a1aca6966c7be1610e5461c71b1`, retrieved 30 August 2026 from the brand page https://www.mercadopago.com.br/mp/logo-oficial
+- matching path inside the package: `Logos Mercado Pago 2025/Uso digital - RGB/PNGs/MP_RGB_HANDSHAKE_color_horizontal.png`
+
+The horizontal colour variant is the one the brand page designates as the primary version and
+recommends for most cases.
+
+### Basis for use
+
+The brand page is Mercado Pago's own official distribution point for the mark and states that the
+materials are supplied so that the logo can be used correctly on third-party sites and
+communications. The package's own terms sheet restricts the RGB folder to digital use and names web
+pages among the intended cases.
+
+Use here is descriptive. The logo identifies the payment processor that actually processes the
+contribution; it links to `https://www.mercadopago.com.br`; and its `title` and `aria-label` both
+read *Pagamento processado por Mercado Pago*. No sponsorship, endorsement, partnership, or
+affiliation is implied or claimed.
+
+### Compliance with the published rules, verified at this SHA
+
+| Rule                                                                  | Source              | State at this SHA                                              |
+| --------------------------------------------------------------------- | ------------------- | -------------------------------------------------------------- |
+| RGB assets are for digital use, web pages included                     | package terms sheet | rendered by `site/sponsor/index.html`                          |
+| PNG may be used at the supplied size or smaller, never enlarged        | package terms sheet | supplied 1049×426, rendered 69×28                              |
+| Do not condense, stretch, or deform; keep the iso-to-logo proportion   | brand page          | 1049 ÷ 426 = 2.4624; 69 ÷ 28 = 2.4643                          |
+| Do not alter colours or typography, and apply no shadows or effects    | brand page          | file byte-identical, and `.mp-logo` carries no shadow or effect |
+| Colour versions may be placed on a white background                    | brand page          | `.mp-logo` sets `background: #ffffff`, fully opaque            |
+| Never on institutional cyan, institutional blue, or non-brand colours  | brand page          | the opaque badge is the only surface behind the mark           |
+
+Byte identity settles the stored artwork, not what the browser paints. The last three rows are
+therefore evidenced from the page's own rules rather than from the file digest: `.mp-logo` applies
+no `box-shadow`, `filter`, `opacity`, or other effect, and its background is fully opaque, so the
+dark panel gradient behind the panel never shows through under the mark.
+
+The asset is vendored rather than hot-linked because Mercado Pago's CDN answers HTTP 403 to
+requests for it from outside its own properties, so the published page cannot reference it
+remotely.
+
+### One published rule could not be checked
+
+The brand page describes a minimum size and a maximum reduction, but presents both only as a
+figure. On 30 August 2026 that figure's URL served the same image as the logo-versions figure —
+confirmed by downloading both at two resolutions and comparing digests, which matched. No numeric
+minimum is therefore published at the official source. The binding rule from the package's own
+terms sheet, which states no minimum and forbids only enlargement, is satisfied.
+
+Copyright © 2026 Mercado Pago Instituição de Pagamento Ltda., CNPJ 10.573.521/0001-91. The mark
+belongs to its owner; nothing in this repository transfers, licenses, or sublicenses it.
 
 ## This repository
 
