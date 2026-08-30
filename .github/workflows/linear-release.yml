@@ -32,13 +32,14 @@ jobs:
       # Fail-closed mirror: a Linear outage fails this workflow so post-merge
       # verification and the normal workflow alerting surface the interruption.
       #
-      # The official Action is pinned to the commit for v0.16.0 and selects the
-      # same CLI version. Its installer still downloads the CLI without
-      # authenticating the bytes; the accepted upstream gap is tracked in
-      # linear/linear-release-action#59 and documented in THIRDPARTY.md.
+      # Action oficial da Linear, pinada ao commit da release v0.17.1, com a
+      # versão do CLI selecionada explicitamente. Desde a v0.16.1 o instalador
+      # verifica o CLI baixado contra um checksum SHA-256 publicado antes de
+      # executá-lo, fechando a lacuna rastreada em
+      # linear/linear-release-action#59.
       - name: Create Linear release with the official action
         id: linear_release
-        uses: linear/linear-release-action@0a25abab892a91062ebf42260dbb2ce6277aa205 # v0.16.0
+        uses: linear/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4 # v0.17.1
         with:
           access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
-          cli_version: v0.16.0
+          cli_version: v0.17.1
