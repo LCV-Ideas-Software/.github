@@ -68,6 +68,39 @@ commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` and Git blob
 | --- | --- | --- | --- | --- |
 | GitHub Invertocat (`mark-github-16`) | Octicons `v19.33.0` | Octicons code: MIT; GitHub mark: [GitHub Logo Policy](https://docs.github.com/en/site-policy/other-site-policies/github-logo-policy) and [Brand Toolkit](https://brand.github.com/foundations/logo) | organization link in the primary navigation; GitHub followers indicator in the organization card | https://github.com/primer/octicons/blob/cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85/icons/mark-github-16.svg |
 
+### Octicons MIT license notice
+
+The following is the complete, unmodified `LICENSE` text from immutable Octicons
+commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` (Git blob
+`aa1fa80ed83cf856fb31c22ba56557c42ca84488`, SHA-256
+`da259c8bd0de62713ccdcf88910aebca810644f98c2c912bad814fc79ea778df`):
+
+```text
+MIT License
+
+Copyright (c) 2026 GitHub Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Separate GitHub mark terms
+
 The Octicons repository directs users of GitHub logos to the GitHub logo
 guidelines; its MIT code license does not replace the separate trademark and
 brand conditions for the mark. The primary-navigation use accompanies an

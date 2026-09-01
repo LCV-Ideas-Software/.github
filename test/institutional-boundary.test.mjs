@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,6 +95,18 @@ test("the published GitHub marks retain exact official provenance and color", ()
       block.includes(`d="${officialMarkPath}"`),
       "the brand-color class must be attached to the official GitHub Mark path",
     );
+    assert.ok(
+      block.includes('fill="currentColor"'),
+      "each GitHub Mark must inherit the constrained brand color",
+    );
+    assert.ok(
+      block.includes('viewBox="0 0 16 16"'),
+      "each GitHub Mark must retain the official 16-pixel coordinate system",
+    );
+    assert.ok(
+      block.includes('aria-hidden="true"'),
+      "each decorative GitHub Mark must remain hidden from assistive technology",
+    );
   }
   assert.match(styles, /svg\.github-mark\s*\{\s*color:\s*#fff;\s*\}/);
   assert.ok(
@@ -106,6 +119,29 @@ test("the published GitHub marks retain exact official provenance and color", ()
     thirdParty,
     /cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85/,
   );
+  const octiconsLicense = thirdParty.match(
+    /### Octicons MIT license notice[\s\S]*?```text\n([\s\S]*?)\n```/,
+  )?.[1];
+  assert.ok(octiconsLicense, "the complete Octicons MIT notice must remain vendored");
+  assert.equal(
+    createHash("sha256")
+      .update(`${octiconsLicense}\n`, "utf8")
+      .digest("hex"),
+    "da259c8bd0de62713ccdcf88910aebca810644f98c2c912bad814fc79ea778df",
+    "the vendored Octicons MIT notice must match the immutable upstream bytes",
+  );
+  assert.ok(thirdParty.includes("Copyright (c) 2026 GitHub Inc."));
+  assert.ok(
+    thirdParty.includes(
+      'Permission is hereby granted, free of charge, to any person obtaining a copy',
+    ),
+  );
+  assert.ok(
+    thirdParty.includes(
+      'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR',
+    ),
+  );
+  assert.ok(thirdParty.includes("### Separate GitHub mark terms"));
   assert.ok(thirdParty.includes("outbound link to the GitHub organization"));
   assert.ok(thirdParty.includes("non-interactive metric indicator"));
 });
