@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +68,82 @@ test("main retains the public institutional surface", () => {
       `${path} must remain`,
     );
   }
+});
+
+test("the published GitHub marks retain exact official provenance and color", () => {
+  const site = readFileSync(join(repositoryRoot, "site", "index.html"), "utf8");
+  const styles = readFileSync(join(repositoryRoot, "site", "styles.css"), "utf8");
+  const thirdParty = readFileSync(join(repositoryRoot, "THIRDPARTY.md"), "utf8");
+  const officialMarkPath =
+    "M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656";
+
+  assert.equal(
+    site.split(officialMarkPath).length - 1,
+    2,
+    "both inline marks must match the immutable v19.33.0 Octicons asset",
+  );
+  const brandedMarkBlocks = [
+    ...site.matchAll(/<svg\s+class="github-mark"[\s\S]*?<\/svg\s*>/g),
+  ].map((match) => match[0]);
+  assert.equal(
+    brandedMarkBlocks.length,
+    2,
+    "only the two GitHub marks receive the brand-color class",
+  );
+  for (const block of brandedMarkBlocks) {
+    assert.ok(
+      block.includes(`d="${officialMarkPath}"`),
+      "the brand-color class must be attached to the official GitHub Mark path",
+    );
+    assert.ok(
+      block.includes('fill="currentColor"'),
+      "each GitHub Mark must inherit the constrained brand color",
+    );
+    assert.ok(
+      block.includes('viewBox="0 0 16 16"'),
+      "each GitHub Mark must retain the official 16-pixel coordinate system",
+    );
+    assert.ok(
+      block.includes('aria-hidden="true"'),
+      "each decorative GitHub Mark must remain hidden from assistive technology",
+    );
+  }
+  assert.match(styles, /svg\.github-mark\s*\{\s*color:\s*#fff;\s*\}/);
+  assert.ok(
+    styles.indexOf("svg.github-mark") >
+      styles.indexOf(".orgcard__items svg"),
+    "the exact brand color must override the generic card icon color",
+  );
+  assert.match(thirdParty, /Octicons `v19\.33\.0`/);
+  assert.match(
+    thirdParty,
+    /cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85/,
+  );
+  const octiconsLicense = thirdParty.match(
+    /### Octicons MIT license notice[\s\S]*?```text\n([\s\S]*?)\n```/,
+  )?.[1];
+  assert.ok(octiconsLicense, "the complete Octicons MIT notice must remain vendored");
+  assert.equal(
+    createHash("sha256")
+      .update(`${octiconsLicense}\n`, "utf8")
+      .digest("hex"),
+    "da259c8bd0de62713ccdcf88910aebca810644f98c2c912bad814fc79ea778df",
+    "the vendored Octicons MIT notice must match the immutable upstream bytes",
+  );
+  assert.ok(thirdParty.includes("Copyright (c) 2026 GitHub Inc."));
+  assert.ok(
+    thirdParty.includes(
+      'Permission is hereby granted, free of charge, to any person obtaining a copy',
+    ),
+  );
+  assert.ok(
+    thirdParty.includes(
+      'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR',
+    ),
+  );
+  assert.ok(thirdParty.includes("### Separate GitHub mark terms"));
+  assert.ok(thirdParty.includes("outbound link to the GitHub organization"));
+  assert.ok(thirdParty.includes("non-interactive metric indicator"));
 });
 
 test("Linear Release remains a repository-local official writer", () => {

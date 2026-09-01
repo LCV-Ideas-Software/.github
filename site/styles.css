@@ -406,6 +406,7 @@ img { max-width: 100%; }
   color: var(--emerald); font-size: .88rem;
 }
 .orgcard__items svg { color: var(--cyan); flex: none; }
+svg.github-mark { color: #fff; }
 
 /* ============ CONNECT ============ */
 .section--connect { padding-bottom: 1rem; }

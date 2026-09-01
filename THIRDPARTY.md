@@ -2,9 +2,7 @@
 
 Scope of this inventory: every **direct** dependency declared by a manifest committed to this
 repository, every third-party script loaded at runtime by a page this repository publishes, and the
-third-party brand assets recorded in the sections below. The published site also embeds the GitHub
-mark as inline SVG path data in `site/index.html`; that asset is not yet inventoried and is tracked
-separately in GITHORG-97, so this statement does not yet claim to cover every vendored brand asset.
+third-party brand assets vendored by the published pages.
 
 Transitive dependencies are not listed individually; they are pinned by the committed lockfiles.
 Dependabot covers each declared ecosystem, and the official GitHub Dependency Review action evaluates
@@ -58,6 +56,63 @@ source parent contains the immutable Apache-2.0 license linked above.
 the CodeQL CLI bundle selected by the Action is separately governed by the
 [GitHub CodeQL Terms and Conditions](https://github.com/github/codeql-cli-binaries/blob/0d65148c254764ec294892a35e644accd5677ed5/LICENSE.md)
 and the Enterprise GitHub Code Security entitlement.
+
+## Vendored GitHub brand asset — inline `mark-github-16`
+
+The two inline SVG paths in `site/index.html` are byte-for-byte copies of the
+official `mark-github-16.svg` path from Primer Octicons `v19.33.0`, at immutable
+commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` and Git blob
+`0e55a8ef2db1913cb35f81ae09ffdb58b5422319`.
+
+| Component | Version | Code license and brand terms | Scope | Immutable source |
+| --- | --- | --- | --- | --- |
+| GitHub Invertocat (`mark-github-16`) | Octicons `v19.33.0` | Octicons code: MIT; GitHub mark: [GitHub Logo Policy](https://docs.github.com/en/site-policy/other-site-policies/github-logo-policy) and [Brand Toolkit](https://brand.github.com/foundations/logo) | organization link in the primary navigation; GitHub followers indicator in the organization card | https://github.com/primer/octicons/blob/cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85/icons/mark-github-16.svg |
+
+### Octicons MIT license notice
+
+The following is the complete, unmodified `LICENSE` text from immutable Octicons
+commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` (Git blob
+`aa1fa80ed83cf856fb31c22ba56557c42ca84488`, SHA-256
+`da259c8bd0de62713ccdcf88910aebca810644f98c2c912bad814fc79ea778df`):
+
+```text
+MIT License
+
+Copyright (c) 2026 GitHub Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### Separate GitHub mark terms
+
+The Octicons repository directs users of GitHub logos to the GitHub logo
+guidelines; its MIT code license does not replace the separate trademark and
+brand conditions for the mark. The primary-navigation use accompanies an
+outbound link to the GitHub organization. The organization-card use is a
+non-interactive metric indicator identifying GitHub as the source and context
+of the adjacent follower count. Both remain secondary to the LCV Ideas &
+Software identity and do not imply GitHub affiliation or endorsement.
+
+At this revision, `svg.github-mark` fixes both marks to pure white (`#fff`), one
+of the explicitly permitted colors and the highest-contrast option on their
+dark backgrounds. The path geometry, proportions and aspect ratio are the
+official asset; no gradient, shadow, distortion or other effect is applied.
 
 ## Externally hosted scripts — `site/sponsor/index.html`
 
