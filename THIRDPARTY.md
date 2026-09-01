@@ -70,10 +70,11 @@ commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` and Git blob
 
 The Octicons repository directs users of GitHub logos to the GitHub logo
 guidelines; its MIT code license does not replace the separate trademark and
-brand conditions for the mark. Both uses are referential links to the GitHub
-organization, which the Brand Toolkit lists as permitted link/social-button
-uses. They are secondary to the LCV Ideas & Software identity and do not imply
-GitHub affiliation or endorsement.
+brand conditions for the mark. The primary-navigation use accompanies an
+outbound link to the GitHub organization. The organization-card use is a
+non-interactive metric indicator identifying GitHub as the source and context
+of the adjacent follower count. Both remain secondary to the LCV Ideas &
+Software identity and do not imply GitHub affiliation or endorsement.
 
 At this revision, `svg.github-mark` fixes both marks to pure white (`#fff`), one
 of the explicitly permitted colors and the highest-contrast option on their

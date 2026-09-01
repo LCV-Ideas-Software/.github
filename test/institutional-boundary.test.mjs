@@ -107,6 +107,8 @@ test("the published GitHub marks retain exact official provenance and color", ()
     /cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85/,
   );
   assert.ok(thirdParty.includes("https://brand.github.com/foundations/logo"));
+  assert.ok(thirdParty.includes("outbound link to the GitHub organization"));
+  assert.ok(thirdParty.includes("non-interactive metric indicator"));
 });
 
 test("Linear Release remains a repository-local official writer", () => {
