@@ -2,9 +2,7 @@
 
 Scope of this inventory: every **direct** dependency declared by a manifest committed to this
 repository, every third-party script loaded at runtime by a page this repository publishes, and the
-third-party brand assets recorded in the sections below. The published site also embeds the GitHub
-mark as inline SVG path data in `site/index.html`; that asset is not yet inventoried and is tracked
-separately in GITHORG-97, so this statement does not yet claim to cover every vendored brand asset.
+third-party brand assets vendored by the published pages.
 
 Transitive dependencies are not listed individually; they are pinned by the committed lockfiles.
 Dependabot covers each declared ecosystem, and the official GitHub Dependency Review action evaluates
@@ -58,6 +56,29 @@ source parent contains the immutable Apache-2.0 license linked above.
 the CodeQL CLI bundle selected by the Action is separately governed by the
 [GitHub CodeQL Terms and Conditions](https://github.com/github/codeql-cli-binaries/blob/0d65148c254764ec294892a35e644accd5677ed5/LICENSE.md)
 and the Enterprise GitHub Code Security entitlement.
+
+## Vendored GitHub brand asset — inline `mark-github-16`
+
+The two inline SVG paths in `site/index.html` are byte-for-byte copies of the
+official `mark-github-16.svg` path from Primer Octicons `v19.33.0`, at immutable
+commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` and Git blob
+`0e55a8ef2db1913cb35f81ae09ffdb58b5422319`.
+
+| Component | Version | Code license and brand terms | Scope | Immutable source |
+| --- | --- | --- | --- | --- |
+| GitHub Invertocat (`mark-github-16`) | Octicons `v19.33.0` | Octicons code: MIT; GitHub mark: [GitHub Logo Policy](https://docs.github.com/en/site-policy/other-site-policies/github-logo-policy) and [Brand Toolkit](https://brand.github.com/foundations/logo) | organization link in the primary navigation; GitHub followers indicator in the organization card | https://github.com/primer/octicons/blob/cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85/icons/mark-github-16.svg |
+
+The Octicons repository directs users of GitHub logos to the GitHub logo
+guidelines; its MIT code license does not replace the separate trademark and
+brand conditions for the mark. Both uses are referential links to the GitHub
+organization, which the Brand Toolkit lists as permitted link/social-button
+uses. They are secondary to the LCV Ideas & Software identity and do not imply
+GitHub affiliation or endorsement.
+
+At this revision, `svg.github-mark` fixes both marks to pure white (`#fff`), one
+of the explicitly permitted colors and the highest-contrast option on their
+dark backgrounds. The path geometry, proportions and aspect ratio are the
+official asset; no gradient, shadow, distortion or other effect is applied.
 
 ## Externally hosted scripts — `site/sponsor/index.html`
 

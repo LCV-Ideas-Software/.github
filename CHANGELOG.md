@@ -12,6 +12,16 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 31/08/2026 — Proveniência e cor da marca GitHub ([#314](https://github.com/LCV-Ideas-Software/.github/issues/314), GITHORG-97)
+
+### Fixed
+
+- As duas marcas GitHub embutidas no site passam a usar o caminho oficial exato
+  do Octicons `v19.33.0` e branco puro, removendo a geometria antiga e a cor
+  ciano fora das diretrizes atuais.
+- O inventário registra origem imutável, licença do Octicons, termos de marca e
+  a finalidade referencial de cada uso.
+
 ## 30/08/2026 — Separação entre o perfil da organização e o perfil Enterprise
 
 ### Changed
