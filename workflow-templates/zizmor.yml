@@ -1,21 +1,12 @@
 # Organization workflow template — zizmor static analysis of workflow files.
 #
-# AFTER CREATING THIS WORKFLOW, BEFORE OPENING THE PULL REQUEST:
-#   1. Install the lock tool once: `gh extension install github/gh-actions-lock`
-#   2. Run `gh actions-lock` in the repository root.
-#   3. Commit the regenerated `.github/workflows/actions.lock` IN THE SAME pull
-#      request, or the Enterprise required workflow "Validate actions.lock"
-#      fails the pull request.
-#
 # Move the cron minute and hour so repositories do not all scan at once. Only
-# $default-branch, $protected-branches and $cron-daily are substituted when a
-# workflow is created from a template, so the schedule below is a literal value.
+# $default-branch is substituted when a workflow is created from a template, so
+# the schedule below is a literal value.
 #
 # INFORMATIVE, NOT BLOCKING: with SARIF output (advanced-security defaults to
 # true) zizmor exits 0 even when it reports findings; the findings appear under
-# Security > Code scanning. To make the workflow block instead, set
-# `advanced-security: false` on the step below, which restores the non-zero
-# exit code — the findings then stop appearing in code scanning.
+# Security > Code scanning.
 
 name: Zizmor
 
@@ -25,19 +16,16 @@ on:
       - $default-branch
   pull_request:
     branches:
-      - $default-branch
-  merge_group:
-    types:
-      - checks_requested
+      - "**"
   schedule:
-    - cron: "13 9 * * 3"
+    - cron: "13 9 * * 1"
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: zizmor-${{ github.workflow }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: zizmor-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   zizmor:
@@ -45,17 +33,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      actions: read # Required by upload-sarif on private and internal repositories.
-      contents: read # Authenticated checkout on private and internal repositories.
       security-events: write # Publish the zizmor SARIF to code scanning.
+      contents: read # Check out the repository.
+      actions: read # Read workflow metadata for the upload.
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Run Zizmor
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
-        with:
-          collect: all
-          persona: auditor
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3

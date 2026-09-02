@@ -8,14 +8,14 @@ Transitive dependencies are not listed individually; they are pinned by the comm
 Dependabot covers each declared ecosystem, and the official GitHub Dependency Review action evaluates
 manifest and lockfile changes. The public-site workflows install the committed npm lockfile with
 lifecycle scripts disabled and run npm signature and advisory checks. GitHub Actions are listed below,
-pinned by full commit SHA, recorded in `.github/workflows/actions.lock`, and updated through Dependabot.
+pinned by full commit SHA and updated through Dependabot.
 The repository intentionally has no parallel scanner, pin auditor, containerized Zizmor runtime, or
 policy wrapper of its own.
 
 Versions and licenses below were read from each package's own published manifest or from its
 upstream repository, not inferred. Versions are the ones actually resolved by the committed
 lockfile, not the ranges declared in the manifest: the root `package.json` requests `commonmark`
-as `0.31.2`, `prettier` as `^3.9.6`, and `wrangler` as `4.125.0`; the lockfile resolves those
+as `0.31.2`, `prettier` as `^3.9.6`, and `wrangler` as `4.126.0`; the lockfile resolves those
 same versions.
 
 ## Repository root — `package.json`
@@ -24,30 +24,27 @@ same versions.
 | ---------- | ------- | ----------------- | ----------- | ---------------------------------------- |
 | commonmark | 0.31.2  | BSD-2-Clause      | development | https://www.npmjs.com/package/commonmark |
 | prettier   | 3.9.6   | MIT               | development | https://www.npmjs.com/package/prettier   |
-| wrangler   | 4.125.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler   |
+| wrangler   | 4.126.0 | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler   |
 
 ## GitHub Actions
 
 The table lists each external Action repository invoked directly by the
-versioned workflows. The lockfile additionally records the exact transitive
-Action references used by `actions/upload-pages-artifact` and
-`zizmorcore/zizmor-action`.
+versioned workflows.
 
 | Component                          | Version | Commit SHA                                 | License                                                                                                                  | Purpose                                                                   |
 | ---------------------------------- | ------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
 | `actions/checkout`                 | v7.0.1  | `3d3c42e5aac5ba805825da76410c181273ba90b1` | [MIT](https://github.com/actions/checkout/blob/3d3c42e5aac5ba805825da76410c181273ba90b1/LICENSE)                         | Read repository content and complete Git history                          |
 | `actions/setup-node`               | v7.0.0  | `820762786026740c76f36085b0efc47a31fe5020` | [MIT](https://github.com/actions/setup-node/blob/820762786026740c76f36085b0efc47a31fe5020/LICENSE)                       | Install the Node.js runtime used by public-site validation and deployment |
 | `cloudflare/wrangler-action`       | v4.0.0  | `ebbaa1584979971c8614a24965b4405ff95890e0` | [Apache-2.0](https://github.com/cloudflare/wrangler-action/blob/a61fbea3226347cc885c6d1b26b3f47b48e6c0f8/LICENSE-APACHE) | Deploy the organization site to Cloudflare Pages                          |
-| `github/codeql-action`             | v4.37.9 | `cdf488f595d80d6e07e03d4674febd5ab45fa938` | [MIT](https://github.com/github/codeql-action/blob/cdf488f595d80d6e07e03d4674febd5ab45fa938/LICENSE)                     | Initialize and analyze CodeQL and upload Scorecard SARIF                  |
-| `actions/dependency-review-action` | v5.0.0  | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | [MIT](https://github.com/actions/dependency-review-action/blob/a1d282b36b6f3519aa1f3fc636f609c47dddb294/LICENSE)         | Review dependency changes on pull requests and merge groups               |
-| `actions/create-github-app-token`  | v3.2.0  | `bcd2ba49218906704ab6c1aa796996da409d3eb1` | [MIT](https://github.com/actions/create-github-app-token/blob/bcd2ba49218906704ab6c1aa796996da409d3eb1/LICENSE)         | Mint a short-lived repository-scoped token for native Dependabot auto-merge |
-| `linear/linear-release-action`     | v0.17.1 | `3f31fcf14c110cc53579fcc3575a26d469c413b4` | [MIT](https://github.com/linear/linear-release-action/blob/3f31fcf14c110cc53579fcc3575a26d469c413b4/LICENSE)             | Create repository releases in the corresponding Linear pipeline           |
+| `github/codeql-action`             | v4.37.9 | `cdf488f595d80d6e07e03d4674febd5ab45fa938` | [MIT](https://github.com/github/codeql-action/blob/cdf488f595d80d6e07e03d4674febd5ab45fa938/LICENSE)                     | Upload the Scorecard SARIF to code scanning                               |
+| `actions/dependency-review-action` | v5.0.0  | `a1d282b36b6f3519aa1f3fc636f609c47dddb294` | [MIT](https://github.com/actions/dependency-review-action/blob/a1d282b36b6f3519aa1f3fc636f609c47dddb294/LICENSE)         | Review dependency changes on pull requests                                |
+| `linear/linear-release-action`     | v0.17.2 | `53ad0f863963e7f8e270fba18426bbb55ef55384` | [MIT](https://github.com/linear/linear-release-action/blob/53ad0f863963e7f8e270fba18426bbb55ef55384/LICENSE)             | Create repository releases in the corresponding Linear pipeline           |
 | `actions/configure-pages`          | v6.0.0  | `45bfe0192ca1faeb007ade9deae92b16b8254a0d` | [MIT](https://github.com/actions/configure-pages/blob/45bfe0192ca1faeb007ade9deae92b16b8254a0d/LICENSE)                  | Configure the GitHub Pages build                                          |
-| `actions/deploy-pages`             | v5.0.0  | `cd2ce8fcbc39b97be8ca5fce6e763baed58fa128` | [MIT](https://github.com/actions/deploy-pages/blob/cd2ce8fcbc39b97be8ca5fce6e763baed58fa128/LICENSE)                     | Deploy the trusted GitHub Pages artifact                                  |
+| `actions/deploy-pages`             | v5.0.1  | `368f82528645a54fb793d4d04e342629a3f51346` | [MIT](https://github.com/actions/deploy-pages/blob/368f82528645a54fb793d4d04e342629a3f51346/LICENSE)                     | Deploy the trusted GitHub Pages artifact                                  |
 | `actions/upload-pages-artifact`    | v5.0.0  | `fc324d3547104276b827a68afc52ff2a11cc49c9` | [MIT](https://github.com/actions/upload-pages-artifact/blob/fc324d3547104276b827a68afc52ff2a11cc49c9/LICENSE)            | Package and upload the public-site artifact                               |
 | `actions/upload-artifact`          | v7.0.1  | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | [MIT](https://github.com/actions/upload-artifact/blob/043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/LICENSE)                  | Retain the Scorecard SARIF artifact                                       |
 | `ossf/scorecard-action`            | v2.4.4  | `2d1146689b8cda280b9bc96326124645441f03bc` | [Apache-2.0](https://github.com/ossf/scorecard-action/blob/2d1146689b8cda280b9bc96326124645441f03bc/LICENSE)             | Assess supply-chain posture                                               |
-| `zizmorcore/zizmor-action`         | v0.6.2  | `3dc1ecc9bcb9e94e9b2c709687979e1298497054` | [MIT](https://github.com/zizmorcore/zizmor-action/blob/3dc1ecc9bcb9e94e9b2c709687979e1298497054/LICENSE)                 | Audit GitHub Actions and upload SARIF                                     |
+| `zizmorcore/zizmor-action`         | v0.6.3  | `70fb788f84895a7701f5643d103d587e460b5c99` | [MIT](https://github.com/zizmorcore/zizmor-action/blob/70fb788f84895a7701f5643d103d587e460b5c99/LICENSE)                 | Audit GitHub Actions and upload SARIF                                     |
 
 The pinned `cloudflare/wrangler-action` distribution commit contains the
 packaged Action rather than the repository's license file; its immediate

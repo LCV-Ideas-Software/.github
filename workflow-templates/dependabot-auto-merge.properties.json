@@ -1,0 +1,6 @@
+{
+  "name": "Dependabot auto-merge (LCV Ideas & Software)",
+  "description": "Enables GitHub native auto-merge (squash) on every Dependabot pull request, using a fine-grained personal access token stored as the Dependabot secret DEPENDABOT_AUTOMERGE_TOKEN. Runs no Action and cannot bypass rulesets or required checks.",
+  "iconName": "octicon git-merge",
+  "categories": ["Automation", "Utilities"]
+}

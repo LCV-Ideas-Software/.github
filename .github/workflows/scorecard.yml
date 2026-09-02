@@ -1,14 +1,12 @@
-# This workflow is managed by gh actions-lock.
-
 name: Scorecard supply-chain security
 
 on:
-  branch_protection_rule:
-  schedule:
-    - cron: "37 8 * * *"
   push:
     branches:
       - main
+  schedule:
+    - cron: "37 8 * * 1"
+  workflow_dispatch:
 
 permissions: {}
 
@@ -19,7 +17,6 @@ concurrency:
 jobs:
   analysis:
     name: Scorecard analysis
-    if: ${{ github.event.repository.default_branch == github.ref_name || github.event_name == 'branch_protection_rule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

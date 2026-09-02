@@ -1,5 +1,3 @@
-# This workflow is managed by gh actions-lock.
-
 name: Linear Release
 on:
   push:
@@ -32,14 +30,12 @@ jobs:
       # Fail-closed mirror: a Linear outage fails this workflow so post-merge
       # verification and the normal workflow alerting surface the interruption.
       #
-      # Action oficial da Linear, pinada ao commit da release v0.17.1, com a
-      # versão do CLI selecionada explicitamente. Desde a v0.16.1 o instalador
-      # verifica o CLI baixado contra um checksum SHA-256 publicado antes de
-      # executá-lo, fechando a lacuna rastreada em
-      # linear/linear-release-action#59.
+      # Official Linear action, pinned to the release commit of v0.17.2, with
+      # the CLI version selected explicitly. The installer verifies the
+      # downloaded CLI against a published SHA-256 checksum before executing it.
       - name: Create Linear release with the official action
         id: linear_release
-        uses: linear/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4 # v0.17.1
+        uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
         with:
           access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
-          cli_version: v0.17.1
+          cli_version: v0.17.2

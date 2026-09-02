@@ -12,6 +12,36 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 02/09/2026 — Governança nativa do repositório ([#323](https://github.com/LCV-Ideas-Software/.github/issues/323), GITHORG-101)
+
+### Removed
+
+- O lockfile `.github/workflows/actions.lock`, os cabeçalhos "managed by gh actions-lock" e os
+  gatilhos `merge_group`: a organização deixou de usar lockfile de Actions e merge queue.
+- O workflow `codeql.yml`, substituído pelo default setup do code scanning do GitHub, e o starter
+  workflow correspondente em `workflow-templates/`.
+- Os workflows `dependabot-automerge.yml` e `dependabot-automerge-signal.yml`, que dependiam de uma
+  GitHub App própria, e o teste `test/dependabot-automerge-eligibility.test.mjs`.
+
+### Added
+
+- `.github/workflows/dependabot-auto-merge.yml`, o padrão oficial do GitHub para auto-merge de PRs
+  do Dependabot: sem Action, sem checkout, armando `gh pr merge --auto --squash` com um token pessoal
+  guardado como segredo do Dependabot (`DEPENDABOT_AUTOMERGE_TOKEN`).
+- `SUPPORT.md`, arquivo-padrão de saúde comunitária que faltava, e o starter workflow
+  `dependabot-auto-merge` para os demais repositórios.
+
+### Changed
+
+- `dependabot.yml` semanal (segunda-feira, 06:00 em Brasília), com um grupo de minor e patch por
+  ecossistema, majors separados e rebase automático.
+- `zizmor.yml` alinhado ao exemplo oficial (zizmor-action v0.6.3, agenda semanal); `scorecard.yml`
+  agendado semanalmente; `pages.yml` com deploy-pages v5.0.1; `linear-release.yml` com
+  linear-release-action v0.17.2; `dependency-review.yml` só em `pull_request`.
+- Starter workflows reescritos sem instruções de lockfile e `README.md`, `profile/README.md`,
+  `SECURITY.md`, `CONTRIBUTING.md` e `THIRDPARTY.md` sem referências ao trust root
+  `actions-lock-policy`, à merge queue, ao controlador de automerge e ao CodeQL Advanced Setup.
+
 ## 31/08/2026 — Proveniência e cor da marca GitHub ([#314](https://github.com/LCV-Ideas-Software/.github/issues/314), GITHORG-97)
 
 ### Fixed

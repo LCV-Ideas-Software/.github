@@ -32,10 +32,9 @@ const migratedOperationalPaths = [
 ];
 
 const retainedPublicPaths = [
+  ".github/CODEOWNERS",
   ".github/workflows/cloudflare-pages.yml",
-  ".github/workflows/codeql.yml",
-  ".github/workflows/dependabot-automerge.yml",
-  ".github/workflows/dependabot-automerge-signal.yml",
+  ".github/workflows/dependabot-auto-merge.yml",
   ".github/workflows/dependency-review.yml",
   ".github/workflows/linear-release.yml",
   ".github/workflows/pages.yml",
@@ -44,10 +43,20 @@ const retainedPublicPaths = [
   ".github/ISSUE_TEMPLATE",
   ".github/DISCUSSION_TEMPLATE",
   "profile/README.md",
+  "quality/code-quality-probe.js",
   "site/index.html",
   "site/sponsor/index.html",
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  ".github/FUNDING.yml",
   "INBOUND.md",
+  "LICENSE",
+  "NOTICE",
+  "README.md",
   "SECURITY.md",
+  "SUPPORT.md",
+  "THIRDPARTY.md",
 ];
 
 test("main contains no migrated operational implementation", () => {
@@ -163,7 +172,7 @@ test("Linear Release remains a repository-local official writer", () => {
   assert.doesNotMatch(workflow, /continue-on-error:/);
   assert.match(
     workflow,
-    /linear\/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4/,
+    /linear\/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384/,
   );
   assert.doesNotMatch(workflow, /workflow_call:/);
   assert.doesNotMatch(workflow, /\b(?:curl|wget|Invoke-WebRequest)\b/);
@@ -173,16 +182,13 @@ test("Linear Release remains a repository-local official writer", () => {
   );
 });
 
-test("only active public workflows and their lockfile remain versioned", () => {
+test("only active public workflows remain versioned", () => {
   const workflows = readdirSync(
     join(repositoryRoot, ".github", "workflows"),
   ).sort();
   assert.deepEqual(workflows, [
-    "actions.lock",
     "cloudflare-pages.yml",
-    "codeql.yml",
-    "dependabot-automerge-signal.yml",
-    "dependabot-automerge.yml",
+    "dependabot-auto-merge.yml",
     "dependency-review.yml",
     "linear-release.yml",
     "pages.yml",

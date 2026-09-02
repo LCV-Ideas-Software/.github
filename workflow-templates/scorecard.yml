@@ -1,23 +1,16 @@
 # Organization workflow template — OpenSSF Scorecard supply-chain analysis.
 #
-# AFTER CREATING THIS WORKFLOW, BEFORE OPENING THE PULL REQUEST:
-#   1. Install the lock tool once: `gh extension install github/gh-actions-lock`
-#   2. Run `gh actions-lock` in the repository root.
-#   3. Commit the regenerated `.github/workflows/actions.lock` IN THE SAME pull
-#      request, or the Enterprise required workflow "Validate actions.lock"
-#      fails the pull request.
-#
 # Move the cron minute and hour so repositories do not all scan at once.
+# Scorecard only produces meaningful results for the default branch.
 
 name: Scorecard supply-chain security
 
 on:
-  branch_protection_rule:
-  schedule:
-    - cron: "37 8 * * 1"
   push:
     branches:
       - $default-branch
+  schedule:
+    - cron: "37 8 * * 1"
   workflow_dispatch:
 
 permissions: {}
@@ -29,10 +22,6 @@ concurrency:
 jobs:
   analysis:
     name: Scorecard analysis
-    # Scorecard only produces meaningful results for the default branch.
-    if: >-
-      github.ref == 'refs/heads/$default-branch' ||
-      github.event_name == 'branch_protection_rule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

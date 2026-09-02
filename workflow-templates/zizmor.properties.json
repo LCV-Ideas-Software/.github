@@ -1,6 +1,6 @@
 {
   "name": "Zizmor (LCV Ideas & Software)",
-  "description": "Static security analysis of the repository's GitHub Actions workflow files, published to code scanning. Informative by default. Run gh actions-lock and commit the regenerated actions.lock in the same pull request.",
+  "description": "Static security analysis of the repository's GitHub Actions workflow files with the official zizmor Action, published to code scanning. Informative by default.",
   "iconName": "octicon shield-lock",
   "categories": ["Code Scanning", "Utilities"]
 }
