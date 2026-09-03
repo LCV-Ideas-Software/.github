@@ -201,7 +201,11 @@ test("Dependabot auto-merge stays credential-minimal", () => {
       /ready_for_review|pull_request_target|workflow_run|workflow_dispatch/,
       `${label} must not add person-initiated or privileged triggers`,
     );
-    assert.match(workflow, /github\.actor == 'dependabot\[bot\]'/, label);
+    assert.doesNotMatch(
+      workflow,
+      /github\.actor|github\.triggering_actor/,
+      `${label} uses no spoofable actor context (zizmor bot-conditions)`,
+    );
     assert.match(
       workflow,
       /github\.event\.pull_request\.user\.login == 'dependabot\[bot\]'/,
@@ -220,7 +224,12 @@ test("Dependabot auto-merge stays credential-minimal", () => {
     );
     assert.match(
       workflow,
-      /run: gh pr merge --auto --squash --match-head-commit "\$HEAD_SHA" "\$PR_URL"$/m,
+      /^\s*if \[ -z "\$GH_TOKEN" \]; then\n[^\n]*\n\s*exit 0\n\s*fi\n/m,
+      `${label} ends without arming when the run carries no Dependabot secret`,
+    );
+    assert.match(
+      workflow,
+      /^\s*gh pr merge --auto --squash --match-head-commit "\$HEAD_SHA" "\$PR_URL"$/m,
       `${label} arms native auto-merge bound to the event head`,
     );
     assert.match(
