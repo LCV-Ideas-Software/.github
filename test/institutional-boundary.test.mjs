@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -153,111 +153,6 @@ test("the published GitHub marks retain exact official provenance and color", ()
   assert.ok(thirdParty.includes("### Separate GitHub mark terms"));
   assert.ok(thirdParty.includes("outbound link to the GitHub organization"));
   assert.ok(thirdParty.includes("non-interactive metric indicator"));
-});
-
-test("Linear Release remains a repository-local official writer", () => {
-  const workflow = readFileSync(
-    join(repositoryRoot, ".github", "workflows", "linear-release.yml"),
-    "utf8",
-  );
-
-  assert.match(workflow, /push:\s*\n\s*branches:\s*\n\s*- main/);
-  assert.match(workflow, /^permissions: \{\}$/m);
-  assert.match(workflow, /environment: linear-release/);
-  assert.match(workflow, /contents: read/);
-  assert.match(workflow, /fetch-depth: 0/);
-  assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /queue: max/);
-  assert.doesNotMatch(workflow, /cancel-in-progress:/);
-  assert.doesNotMatch(workflow, /continue-on-error:/);
-  assert.match(
-    workflow,
-    /linear\/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384/,
-  );
-  assert.doesNotMatch(workflow, /workflow_call:/);
-  assert.doesNotMatch(workflow, /\b(?:curl|wget|Invoke-WebRequest)\b/);
-  assert.doesNotMatch(
-    workflow,
-    /(?:github-slack|github-linear|reconciliation)/i,
-  );
-});
-
-test("Dependabot auto-merge stays credential-minimal", () => {
-  for (const segments of [
-    [".github", "workflows", "dependabot-auto-merge.yml"],
-    ["workflow-templates", "dependabot-auto-merge.yml"],
-  ]) {
-    const label = segments.join("/");
-    const workflow = readFileSync(join(repositoryRoot, ...segments), "utf8");
-
-    assert.match(workflow, /^permissions: \{\}$/m, `${label} grants no token scope`);
-    assert.match(
-      workflow,
-      /types:\n\s*- opened\n\s*- reopened\n\s*- synchronize\n/,
-      `${label} listens only to Dependabot lifecycle events`,
-    );
-    assert.doesNotMatch(
-      workflow,
-      /ready_for_review|pull_request_target|workflow_run|workflow_dispatch/,
-      `${label} must not add person-initiated or privileged triggers`,
-    );
-    assert.doesNotMatch(
-      workflow,
-      /github\.actor|github\.triggering_actor/,
-      `${label} uses no spoofable actor context (zizmor bot-conditions)`,
-    );
-    assert.match(
-      workflow,
-      /github\.event\.pull_request\.user\.login == 'dependabot\[bot\]'/,
-      label,
-    );
-    assert.match(
-      workflow,
-      /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
-      label,
-    );
-    assert.doesNotMatch(workflow, /^\s*uses:/m, `${label} runs no Action`);
-    assert.doesNotMatch(
-      workflow,
-      /GITHUB_TOKEN|github\.token/,
-      `${label} never uses the GITHUB_TOKEN`,
-    );
-    assert.match(
-      workflow,
-      /^\s*if \[ -z "\$GH_TOKEN" \]; then\n[^\n]*\n\s*exit 0\n\s*fi\n/m,
-      `${label} ends without arming when the run carries no Dependabot secret`,
-    );
-    assert.match(
-      workflow,
-      /^\s*gh pr merge --auto --squash --match-head-commit "\$HEAD_SHA" "\$PR_URL"$/m,
-      `${label} arms native auto-merge bound to the event head`,
-    );
-    assert.match(
-      workflow,
-      /GH_TOKEN: \$\{\{ secrets\.DEPENDABOT_AUTOMERGE_TOKEN \}\}/,
-      `${label} reads only the Dependabot secret`,
-    );
-    assert.equal(
-      (workflow.match(/^\s*- name:/gm) ?? []).length,
-      1,
-      `${label} has exactly one step`,
-    );
-  }
-});
-
-test("only active public workflows remain versioned", () => {
-  const workflows = readdirSync(
-    join(repositoryRoot, ".github", "workflows"),
-  ).sort();
-  assert.deepEqual(workflows, [
-    "cloudflare-pages.yml",
-    "dependabot-auto-merge.yml",
-    "dependency-review.yml",
-    "linear-release.yml",
-    "pages.yml",
-    "scorecard.yml",
-    "zizmor.yml",
-  ]);
 });
 
 test("proprietary terms preserve external ownership and stay repository-scoped", () => {

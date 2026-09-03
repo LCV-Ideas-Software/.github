@@ -6,35 +6,9 @@
 # job that does not need it.
 #
 # This starter records a release on every push to the default branch. A
-# repository that deploys with a workflow named "Deploy" adapts it so that a
-# release is recorded only after a successful deployment: replace the `push`
-# trigger by
-#
-#   on:
-#     workflow_run:
-#       workflows:
-#         - Deploy
-#       types:
-#         - completed
-#
-# add to the job
-#
-#   if: >-
-#     github.event.workflow_run.event == 'push' &&
-#     github.event.workflow_run.conclusion == 'success' &&
-#     github.event.workflow_run.head_branch == '$default-branch' &&
-#     github.event.workflow_run.head_repository.full_name == github.repository
-#
-# (the event and head-repository conditions keep a pull-request run of a
-# fork, whose head branch may carry the default branch name, from being
-# recorded as a release)
-#
-# set `ref: ${{ github.event.workflow_run.head_sha }}` on the checkout step, so
-# that the release describes the revision that was deployed and not a newer
-# tip of the default branch, and key the concurrency group by
-# `github.event.workflow_run.head_branch` and
-# `github.event.workflow_run.conclusion`, so that a failed deployment never
-# replaces a pending successful one.
+# repository that deploys with a workflow named "Deploy" uses the companion
+# starter "Linear Release after Deploy" instead, which records a release only
+# after a successful deployment.
 
 name: Linear Release
 

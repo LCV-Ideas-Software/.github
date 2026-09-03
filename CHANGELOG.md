@@ -30,6 +30,10 @@ presentation rule this organization applies to text meant for people
   guardado como segredo do Dependabot (`DEPENDABOT_AUTOMERGE_TOKEN`).
 - `SUPPORT.md`, arquivo-padrão de saúde comunitária que faltava, e o starter workflow
   `dependabot-auto-merge` para os demais repositórios.
+- O starter workflow `linear-release-after-deploy`, variante completa do Linear Release para os
+  repositórios que publicam com um workflow chamado `Deploy`: a release só é registrada após um
+  deploy bem-sucedido da branch padrão. Substitui a receita em comentários que o starter
+  `linear-release` carregava.
 
 ### Changed
 
@@ -38,6 +42,15 @@ presentation rule this organization applies to text meant for people
 - `zizmor.yml` alinhado ao exemplo oficial (zizmor-action v0.6.3, agenda semanal); `scorecard.yml`
   agendado semanalmente; `pages.yml` com deploy-pages v5.0.1; `linear-release.yml` com
   linear-release-action v0.17.2; `dependency-review.yml` só em `pull_request`.
+- `cloudflare-pages.yml` com guarda de branch `main` no job de deploy: um disparo manual a partir de
+  outra ref nunca publica em produção, o que torna verdadeira a frase do site sobre pull requests.
+- `test/institutional-boundary.test.mjs` restrito à superfície pública (paths, marca, licença). Os
+  validadores de forma de workflow saíram: um teste que fixa o SHA de uma action dentro de um check
+  obrigatório impediria o Dependabot de mergear o bump seguinte, e a governança é imposta pelo
+  GitHub (rulesets, code scanning, CODEOWNERS), não por teste do repositório.
+- `THIRDPARTY.md` lista dependências por nome, licença e fonte; versões e SHAs vivem só no
+  manifesto, no lockfile e nos workflows, e o grafo de dependências do GitHub é o inventário
+  versionado, sem deriva a cada bump.
 - Starter workflows reescritos sem instruções de lockfile e `README.md`, `profile/README.md`,
   `SECURITY.md`, `CONTRIBUTING.md` e `THIRDPARTY.md` sem referências ao trust root
   `actions-lock-policy`, à merge queue, ao controlador de automerge e ao CodeQL Advanced Setup.
