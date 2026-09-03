@@ -7,9 +7,9 @@ vendored by the published pages.
 
 The versioned inventory is the repository's **dependency graph** (Insights → Dependency graph),
 which GitHub maintains from the committed manifest, lockfile and workflow files and exports as an
-SBOM on request. Exact versions and immutable commit pins live only in `package.json`,
-`package-lock.json` and the workflow files, where Dependabot updates them; this document
-deliberately does not repeat them, so it can never drift from those sources. Transitive
+SBOM on request. Versions, version ranges and immutable commit pins live only in
+`package.json`, `package-lock.json` and the workflow files, where Dependabot updates them; this
+document deliberately does not repeat them, so it can never drift from those sources. Transitive
 dependencies are pinned by the committed lockfile. The official GitHub Dependency Review action
 evaluates manifest and lockfile changes on every pull request to `main`, the Enterprise license-compliance
 rule validates licenses, and the public-site workflows install the committed npm lockfile with

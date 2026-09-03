@@ -232,9 +232,9 @@ Public delivery repositories for the Android editions. Each currently carries th
 
 ### 🏛️ Organization infrastructure
 
-| Repository                                                                           | Visibility | What it does                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------------------------------------------------------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**.github**](https://github.com/LCV-Ideas-Software/.github)                         | Public     | Organization profile, community-health defaults, starter workflows, public policy documentation, and public Pages/Sponsors surfaces.                                                                                                                                                                                                                                                                |
+| Repository                                                   | Visibility | What it does                                                                                                                         |
+| ------------------------------------------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| [**.github**](https://github.com/LCV-Ideas-Software/.github) | Public     | Organization profile, community-health defaults, starter workflows, public policy documentation, and public Pages/Sponsors surfaces. |
 
 <img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
