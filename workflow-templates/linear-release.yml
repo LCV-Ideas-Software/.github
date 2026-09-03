@@ -21,11 +21,14 @@
 #
 #   if: >-
 #     github.event.workflow_run.conclusion == 'success' &&
-#     github.event.workflow_run.head_branch == 'main'
+#     github.event.workflow_run.head_branch == '$default-branch'
 #
-# and key the concurrency group by `github.event.workflow_run.head_branch`
-# and `github.event.workflow_run.conclusion`, so that a failed deployment
-# never replaces a pending successful one.
+# set `ref: ${{ github.event.workflow_run.head_sha }}` on the checkout step, so
+# that the release describes the revision that was deployed and not a newer
+# tip of the default branch, and key the concurrency group by
+# `github.event.workflow_run.head_branch` and
+# `github.event.workflow_run.conclusion`, so that a failed deployment never
+# replaces a pending successful one.
 
 name: Linear Release
 
