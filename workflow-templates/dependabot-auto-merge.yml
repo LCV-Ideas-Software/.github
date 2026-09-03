@@ -49,7 +49,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::DEPENDABOT_AUTOMERGE_TOKEN is not available in this run: either the Dependabot secret is not configured, or this event was initiated by a person and received Actions secrets (a manual re-run of a Dependabot-initiated run keeps that run's Dependabot secrets, so it reaches this message only when the secret is not configured). Auto-merge is armed again on the next Dependabot synchronization or after '@dependabot recreate'."
+            echo "::error::DEPENDABOT_AUTOMERGE_TOKEN is not available in this run: either the Dependabot secret is not configured, or this event was initiated by a person and received Actions secrets (a manual re-run of a Dependabot-initiated run keeps that run's Dependabot secrets, so the re-run reaches this message only when the secret is not configured). Auto-merge is armed again on the next Dependabot synchronization or after '@dependabot recreate'."
             exit 1
           fi
           gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
