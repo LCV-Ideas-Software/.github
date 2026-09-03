@@ -5,9 +5,27 @@
 # run. The secret lives in a dedicated environment so it is never exposed to a
 # job that does not need it.
 #
-# Repositories that deploy with a workflow named "Deploy" trigger this workflow
-# with `workflow_run` on that workflow instead of `push`, so that a release is
-# recorded only after a successful deployment.
+# This starter records a release on every push to the default branch. A
+# repository that deploys with a workflow named "Deploy" adapts it so that a
+# release is recorded only after a successful deployment: replace the `push`
+# trigger by
+#
+#   on:
+#     workflow_run:
+#       workflows:
+#         - Deploy
+#       types:
+#         - completed
+#
+# add to the job
+#
+#   if: >-
+#     github.event.workflow_run.conclusion == 'success' &&
+#     github.event.workflow_run.head_branch == 'main'
+#
+# and key the concurrency group by `github.event.workflow_run.head_branch`
+# and `github.event.workflow_run.conclusion`, so that a failed deployment
+# never replaces a pending successful one.
 
 name: Linear Release
 
