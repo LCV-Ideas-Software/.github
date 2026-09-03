@@ -41,12 +41,16 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
 - direct, SHA-pinned official Dependency Review, Zizmor, and OpenSSF Scorecard Actions. CodeQL default setup remains the native merge-protection signal; Zizmor and Scorecard publish SARIF for stateful security visibility without repository-owned gates, baselines, wrappers, lockfiles, or workflow-contract validators;
 - the official Zizmor Action does not yet expose `--strict-collection` ([upstream #141](https://github.com/zizmorcore/zizmor-action/issues/141)), so collection syntax or schema errors can remain warnings. This accepted upstream limitation is tracked without adding a repository-owned executor or gate;
-- external credentials assigned by purpose to protected environments restricted to `main`. GitHub
-  does not inject these values automatically: an authorized job receives a secret only when its
-  workflow explicitly references it. The Dependabot auto-merge workflow reads a fine-grained
-  personal access token from the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`, grants no
-  `GITHUB_TOKEN` permission, and runs no Action, checkout, cache, artifact, or
-  pull-request-controlled command. Fork and non-Dependabot runs receive no user-managed secret;
+- external credentials assigned by purpose to protected environments restricted to `main`, with one
+  documented exception: the Dependabot auto-merge workflow reads a fine-grained personal access
+  token (Contents, Pull requests and Workflows, read and write) from the Dependabot secret
+  `DEPENDABOT_AUTOMERGE_TOKEN`, because a workflow triggered by a Dependabot pull request can read
+  Dependabot secrets only. GitHub does not inject these values automatically: an authorized job
+  receives a secret only when its workflow explicitly references it. The auto-merge workflow runs
+  only for events initiated by Dependabot, grants no `GITHUB_TOKEN` permission, binds the request
+  to the exact event head, and runs no Action, checkout, cache, artifact, or
+  pull-request-controlled command. Fork, person-initiated and non-Dependabot runs receive no
+  user-managed secret;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by the effective Enterprise and repository rulesets;
 - no long-lived secrets in source control.
 

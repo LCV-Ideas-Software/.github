@@ -6,7 +6,6 @@ on:
       - opened
       - reopened
       - synchronize
-      - ready_for_review
 
 permissions: {}
 
@@ -17,18 +16,26 @@ concurrency:
 jobs:
   auto-merge:
     name: Enable auto-merge for Dependabot
-    # Only Dependabot pull requests opened against this repository. The token
-    # is a fine-grained personal access token stored as a Dependabot secret; the
-    # GITHUB_TOKEN is never used, so the merge performed later by GitHub
-    # triggers the default-branch workflows normally.
+    # Runs only for events that Dependabot itself initiated on its own pull
+    # requests in this repository. Dependabot-initiated runs receive Dependabot
+    # secrets; a run initiated by a person would receive Actions secrets and
+    # find no token. A pull request reopened by a person is armed again on the
+    # next Dependabot synchronization (or after "@dependabot recreate").
     if: >-
+      github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # The token is a fine-grained personal access token stored as a Dependabot
+      # secret (Contents, Pull requests and Workflows: read and write). The
+      # built-in Actions token is never used, so the merge performed later by
+      # GitHub triggers the default-branch workflows normally.
+      # --match-head-commit binds the request to the exact head of this event.
       - name: Enable GitHub native auto-merge with squash
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}

@@ -23,9 +23,9 @@
     [[P, "  "], [K, "edge"], [P, ":  ["], [S, "CF Pages, Workers, D1, R2, Access"], [P, "]"]],
     [[P, "  "], [K, "front"], [P, ": ["], [S, "React 19, Vite 8, TypeScript"], [P, "]"]],
     [[P, "  "], [K, "ai"], [P, ":    ["], [S, "6 modelos independentes em review"], [P, "]"]],
-    [[P, "  "], [K, "gates"], [P, ": ["], [S, "unanimidade, merge queue, SHA pins"], [P, "]"]],
+    [[P, "  "], [K, "gates"], [P, ": ["], [S, "unanimidade, rulesets, SHA pins"], [P, "]"]],
     [[K, "lema"], [P, ": >-"]],
-    [[P, "  "], [S, "\"Fail closed, test first, ship through the queue.\""]],
+    [[P, "  "], [S, "\"Fail closed, test first, ship through pull requests.\""]],
   ];
 
   const code = document.getElementById("editor-code");
@@ -117,7 +117,7 @@
     "Transformando Ideias em Software",
     "React 19 • Cloudflare Edge • Rust/Tauri",
     "6 agentes de AI revisam cada deploy",
-    "Fail closed, test first, ship through the queue",
+    "Fail closed, test first, ship through pull requests",
   ];
   const roleEl = document.getElementById("role-type");
   if (roleEl && !reduceMotion) {

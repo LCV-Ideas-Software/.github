@@ -6,7 +6,6 @@ on:
       - main
   schedule:
     - cron: "37 8 * * 1"
-  workflow_dispatch:
 
 permissions: {}
 

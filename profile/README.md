@@ -41,7 +41,7 @@ homepage: https://www.lcv.dev
 location: Brazil
 model: single-operator studio, multi-agent engineering
 surface:
-  public_repositories: 15
+  public_repositories: 14
   live_products: 4 web apps + 3 operator services + 3 developer tools
   android_portfolio: 3 delivery repositories (governance baseline stage)
 stack:

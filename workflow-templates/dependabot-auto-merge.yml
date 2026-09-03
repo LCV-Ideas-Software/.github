@@ -2,9 +2,12 @@
 #
 # INFRASTRUCTURE PREREQUISITE: a Dependabot secret named
 # DEPENDABOT_AUTOMERGE_TOKEN holding a fine-grained personal access token with
-# "Contents" and "Pull requests" write access to this repository. Workflows
-# triggered by Dependabot see Dependabot secrets only, never Actions secrets.
-# A personal token is used on purpose: a merge performed with the GITHUB_TOKEN
+# "Contents", "Pull requests" and "Workflows" read and write access to this
+# repository. Workflows is required because Dependabot's github-actions
+# updates change files under .github/workflows. Workflows triggered by
+# Dependabot see Dependabot secrets only, never Actions secrets, which is why
+# the job runs only for events that Dependabot itself initiated. A personal
+# token is used on purpose: a merge performed with the built-in Actions token
 # would not trigger the default-branch workflows (deploy, release, Pages).
 #
 # This workflow runs no Action and checks out nothing. GitHub performs the
@@ -18,7 +21,6 @@ on:
       - opened
       - reopened
       - synchronize
-      - ready_for_review
 
 permissions: {}
 
@@ -30,13 +32,15 @@ jobs:
   auto-merge:
     name: Enable auto-merge for Dependabot
     if: >-
+      github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Enable GitHub native auto-merge with squash
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}

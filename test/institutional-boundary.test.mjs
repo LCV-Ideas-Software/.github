@@ -182,6 +182,60 @@ test("Linear Release remains a repository-local official writer", () => {
   );
 });
 
+test("Dependabot auto-merge stays credential-minimal", () => {
+  for (const segments of [
+    [".github", "workflows", "dependabot-auto-merge.yml"],
+    ["workflow-templates", "dependabot-auto-merge.yml"],
+  ]) {
+    const label = segments.join("/");
+    const workflow = readFileSync(join(repositoryRoot, ...segments), "utf8");
+
+    assert.match(workflow, /^permissions: \{\}$/m, `${label} grants no token scope`);
+    assert.match(
+      workflow,
+      /types:\n\s*- opened\n\s*- reopened\n\s*- synchronize\n/,
+      `${label} listens only to Dependabot lifecycle events`,
+    );
+    assert.doesNotMatch(
+      workflow,
+      /ready_for_review|pull_request_target|workflow_run|workflow_dispatch/,
+      `${label} must not add person-initiated or privileged triggers`,
+    );
+    assert.match(workflow, /github\.actor == 'dependabot\[bot\]'/, label);
+    assert.match(
+      workflow,
+      /github\.event\.pull_request\.user\.login == 'dependabot\[bot\]'/,
+      label,
+    );
+    assert.match(
+      workflow,
+      /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+      label,
+    );
+    assert.doesNotMatch(workflow, /^\s*uses:/m, `${label} runs no Action`);
+    assert.doesNotMatch(
+      workflow,
+      /GITHUB_TOKEN|github\.token/,
+      `${label} never uses the GITHUB_TOKEN`,
+    );
+    assert.match(
+      workflow,
+      /run: gh pr merge --auto --squash --match-head-commit "\$HEAD_SHA" "\$PR_URL"$/m,
+      `${label} arms native auto-merge bound to the event head`,
+    );
+    assert.match(
+      workflow,
+      /GH_TOKEN: \$\{\{ secrets\.DEPENDABOT_AUTOMERGE_TOKEN \}\}/,
+      `${label} reads only the Dependabot secret`,
+    );
+    assert.equal(
+      (workflow.match(/^\s*- name:/gm) ?? []).length,
+      1,
+      `${label} has exactly one step`,
+    );
+  }
+});
+
 test("only active public workflows remain versioned", () => {
   const workflows = readdirSync(
     join(repositoryRoot, ".github", "workflows"),
