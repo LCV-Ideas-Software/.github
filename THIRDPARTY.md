@@ -11,7 +11,7 @@ SBOM on request. Exact versions and immutable commit pins live only in `package.
 `package-lock.json` and the workflow files, where Dependabot updates them; this document
 deliberately does not repeat them, so it can never drift from those sources. Transitive
 dependencies are pinned by the committed lockfile. The official GitHub Dependency Review action
-evaluates manifest and lockfile changes on every pull request, the Enterprise license-compliance
+evaluates manifest and lockfile changes on every pull request to `main`, the Enterprise license-compliance
 rule validates licenses, and the public-site workflows install the committed npm lockfile with
 lifecycle scripts disabled and run npm signature and advisory checks. The repository intentionally
 has no parallel scanner, pin auditor, containerized Zizmor runtime, or policy wrapper of its own.
