@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -32,10 +32,9 @@ const migratedOperationalPaths = [
 ];
 
 const retainedPublicPaths = [
+  ".github/CODEOWNERS",
   ".github/workflows/cloudflare-pages.yml",
-  ".github/workflows/codeql.yml",
-  ".github/workflows/dependabot-automerge.yml",
-  ".github/workflows/dependabot-automerge-signal.yml",
+  ".github/workflows/dependabot-auto-merge.yml",
   ".github/workflows/dependency-review.yml",
   ".github/workflows/linear-release.yml",
   ".github/workflows/pages.yml",
@@ -44,10 +43,20 @@ const retainedPublicPaths = [
   ".github/ISSUE_TEMPLATE",
   ".github/DISCUSSION_TEMPLATE",
   "profile/README.md",
+  "quality/code-quality-probe.js",
   "site/index.html",
   "site/sponsor/index.html",
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  ".github/FUNDING.yml",
   "INBOUND.md",
+  "LICENSE",
+  "NOTICE",
+  "README.md",
   "SECURITY.md",
+  "SUPPORT.md",
+  "THIRDPARTY.md",
 ];
 
 test("main contains no migrated operational implementation", () => {
@@ -144,51 +153,6 @@ test("the published GitHub marks retain exact official provenance and color", ()
   assert.ok(thirdParty.includes("### Separate GitHub mark terms"));
   assert.ok(thirdParty.includes("outbound link to the GitHub organization"));
   assert.ok(thirdParty.includes("non-interactive metric indicator"));
-});
-
-test("Linear Release remains a repository-local official writer", () => {
-  const workflow = readFileSync(
-    join(repositoryRoot, ".github", "workflows", "linear-release.yml"),
-    "utf8",
-  );
-
-  assert.match(workflow, /push:\s*\n\s*branches:\s*\n\s*- main/);
-  assert.match(workflow, /^permissions: \{\}$/m);
-  assert.match(workflow, /environment: linear-release/);
-  assert.match(workflow, /contents: read/);
-  assert.match(workflow, /fetch-depth: 0/);
-  assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /queue: max/);
-  assert.doesNotMatch(workflow, /cancel-in-progress:/);
-  assert.doesNotMatch(workflow, /continue-on-error:/);
-  assert.match(
-    workflow,
-    /linear\/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4/,
-  );
-  assert.doesNotMatch(workflow, /workflow_call:/);
-  assert.doesNotMatch(workflow, /\b(?:curl|wget|Invoke-WebRequest)\b/);
-  assert.doesNotMatch(
-    workflow,
-    /(?:github-slack|github-linear|reconciliation)/i,
-  );
-});
-
-test("only active public workflows and their lockfile remain versioned", () => {
-  const workflows = readdirSync(
-    join(repositoryRoot, ".github", "workflows"),
-  ).sort();
-  assert.deepEqual(workflows, [
-    "actions.lock",
-    "cloudflare-pages.yml",
-    "codeql.yml",
-    "dependabot-automerge-signal.yml",
-    "dependabot-automerge.yml",
-    "dependency-review.yml",
-    "linear-release.yml",
-    "pages.yml",
-    "scorecard.yml",
-    "zizmor.yml",
-  ]);
 });
 
 test("proprietary terms preserve external ownership and stay repository-scoped", () => {

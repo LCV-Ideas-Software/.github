@@ -1,5 +1,3 @@
-# This workflow is managed by gh actions-lock.
-
 name: Cloudflare Pages
 on:
   push:
@@ -19,6 +17,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
+    # A manual dispatch may be started from any ref; only the default branch
+    # is ever published as production.
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
     name: Deploy org-site

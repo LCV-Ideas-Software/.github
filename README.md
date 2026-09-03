@@ -6,7 +6,6 @@
 
 [![Pages](https://github.com/LCV-Ideas-Software/.github/actions/workflows/pages.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/pages.yml)
 [![Cloudflare Pages](https://github.com/LCV-Ideas-Software/.github/actions/workflows/cloudflare-pages.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/cloudflare-pages.yml)
-[![CodeQL](https://github.com/LCV-Ideas-Software/.github/actions/workflows/codeql.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/codeql.yml)
 [![license: proprietary](https://img.shields.io/badge/license-proprietary-lightgrey.svg)](./LICENSE)
 Institutional repository for the organization profile and shared community-health defaults across LCV Ideas & Software repositories.
 
@@ -17,11 +16,11 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - The org-profile content lives in [`profile/README.md`](./profile/README.md). GitHub renders it on the organization landing page automatically.
 - The static organization site lives in [`site/`](./site/) and is deployed with the official Wrangler Action as the root of the Cloudflare Pages project `org-site`, whose canonical public domain is <https://www.lcv.dev>.
 - The sponsor landing page lives in [`site/sponsor/`](./site/sponsor/) and renders MercadoPago.js V2 Card Payment Brick secure fields backed by the dedicated `sponsor-motor` Worker at `https://sponsor-motor.lcv.app.br`.
-- Dependabot checks GitHub Actions and npm daily and automatically rebases its pull requests. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and npm apply a seven-day cooldown to ordinary version updates. The cooldown does not apply to security updates.
+- Dependabot checks GitHub Actions and npm weekly, groups minor and patch updates per ecosystem, and automatically rebases its pull requests. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and npm apply a seven-day cooldown to ordinary version updates. The cooldown does not apply to security updates.
 - The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build.
-- CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard invoke their official Actions directly, pinned by full commit SHA. Repository-owned SARIF gates, policy manifests, workflow-contract validators, and scanner wrappers are intentionally absent.
-- Linear Release uses Linear's official Action, pinned to the immutable commit of `v0.17.1`, to mirror every `main` commit into the continuous `.github-org` pipeline. This does not introduce a numbered artifact or an organization-wide controller; it records only this repository's own releases. Since `v0.16.1` the upstream installer verifies the downloaded CLI against a published SHA-256 checksum before executing it.
-- Pull requests reach `main` only through squash and GitHub's native merge queue. Human-authored changes require authorized human admission. This repository independently enables GitHub native auto-merge for canonical same-repository Dependabot pull requests: an unprivileged `pull_request` signal is followed by a secret-bearing `workflow_run` loaded from `main`, which admits only the verified exact head with a short-lived repository-scoped GitHub App token. The queue still enforces every required check.
+- CodeQL runs through GitHub's code scanning default setup, without a workflow file. Dependency Review, Zizmor, and OpenSSF Scorecard invoke their official Actions directly, pinned by full commit SHA. Repository-owned SARIF gates, policy manifests, lockfiles, workflow-contract validators, and scanner wrappers are intentionally absent.
+- Linear Release uses Linear's official Action, pinned to the immutable commit of `v0.17.2`, to mirror every `main` commit into the continuous `.github-org` pipeline. This does not introduce a numbered artifact or an organization-wide controller; it records only this repository's own releases. The upstream installer verifies the downloaded CLI against a published SHA-256 checksum before executing it.
+- Pull requests reach `main` only through squash, under the Enterprise rulesets. Dependabot pull requests receive GitHub's native auto-merge from `.github/workflows/dependabot-auto-merge.yml`, a repository-local workflow that runs no Action and uses a fine-grained personal access token stored as the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`; GitHub performs the merge only once every rule and check is satisfied. There is no merge queue, GitHub App, or organization-wide controller.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
 
 Organization-wide operational systems, reusable actions, controllers, schedulers, canaries, and
@@ -42,6 +41,7 @@ For product-specific documentation, see each repository in the [organization lis
 - **Code of conduct**: see [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
 - **Contributing**: see [CONTRIBUTING.md](./CONTRIBUTING.md).
 - **Inbound rights for this repository**: see [INBOUND.md](./INBOUND.md).
+- **Support**: see [SUPPORT.md](./SUPPORT.md).
 - **Sponsorship**: see this repository's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor/).
 - **Action pinning**: all external GitHub Actions are pinned by full commit SHA per supply-chain hardening baseline.
 - **Code owners**: [.github/CODEOWNERS](.github/CODEOWNERS).

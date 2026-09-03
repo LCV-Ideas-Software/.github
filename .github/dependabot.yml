@@ -3,9 +3,10 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "01:00"
-      timezone: "America/Los_Angeles"
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
     cooldown:
       default-days: 7
       exclude:
@@ -14,24 +15,12 @@ updates:
     rebase-strategy: auto
     labels:
       - "dependencies"
-      - "github-actions"
     commit-message:
       prefix: "deps"
       include: "scope"
     open-pull-requests-limit: 10
     groups:
-      codeql-action:
-        applies-to: version-updates
-        patterns:
-          - "github/codeql-action*"
-        update-types:
-          - "minor"
-          - "patch"
-      codeql-action-security-updates:
-        applies-to: security-updates
-        patterns:
-          - "github/codeql-action*"
-      github-actions-non-breaking:
+      minor-e-patch:
         applies-to: version-updates
         patterns:
           - "*"
@@ -42,30 +31,25 @@ updates:
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "01:00"
-      timezone: "America/Los_Angeles"
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Sao_Paulo"
     cooldown:
       default-days: 7
     rebase-strategy: auto
     labels:
       - "dependencies"
-      - "npm"
     commit-message:
       prefix: "deps"
       include: "scope"
     versioning-strategy: increase
-    groups:
-      public-format-tooling:
-        patterns:
-          - "prettier"
-        update-types:
-          - "minor"
-          - "patch"
-      cloudflare-tooling:
-        patterns:
-          - "wrangler"
-        update-types:
-          - "minor"
-          - "patch"
     open-pull-requests-limit: 10
+    groups:
+      minor-e-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

@@ -1,13 +1,6 @@
 # Organization workflow template — publish a static site with GitHub Pages.
 #
-# AFTER CREATING THIS WORKFLOW, BEFORE OPENING THE PULL REQUEST:
-#   1. Install the lock tool once: `gh extension install github/gh-actions-lock`
-#   2. Run `gh actions-lock` in the repository root.
-#   3. Commit the regenerated `.github/workflows/actions.lock` IN THE SAME pull
-#      request, or the Enterprise required workflow "Validate actions.lock"
-#      fails the pull request.
-#
-# ALSO REQUIRED:
+# REQUIRED:
 #   - GitHub Pages must already be enabled for the repository with the
 #     "GitHub Actions" build type. This workflow does not enable it.
 #   - Replace "site" with the directory holding the published files, both in
@@ -25,9 +18,14 @@ on:
   pull_request:
     branches:
       - $default-branch
-  merge_group:
+    # `edited` covers a pull request retargeted to the default branch;
+    # without it a required check would not run until the next push.
     types:
-      - checks_requested
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
   workflow_dispatch:
 
 permissions: {}
@@ -80,4 +78,4 @@ jobs:
     steps:
       - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

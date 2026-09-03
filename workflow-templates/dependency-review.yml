@@ -1,11 +1,4 @@
 # Organization workflow template — dependency review on pull requests.
-#
-# AFTER CREATING THIS WORKFLOW, BEFORE OPENING THE PULL REQUEST:
-#   1. Install the lock tool once: `gh extension install github/gh-actions-lock`
-#   2. Run `gh actions-lock` in the repository root.
-#   3. Commit the regenerated `.github/workflows/actions.lock` IN THE SAME pull
-#      request, or the Enterprise required workflow "Validate actions.lock"
-#      fails the pull request.
 
 name: Dependency Review
 
@@ -13,18 +6,21 @@ on:
   pull_request:
     branches:
       - $default-branch
-  merge_group:
+    # `edited` covers a pull request retargeted to the default branch;
+    # without it this required check would not run until the next push.
     types:
-      - checks_requested
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
 
 # No scope granted at workflow level; each job declares the minimum grant.
 permissions: {}
 
 concurrency:
-  group: dependency-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
-  # Cancel pull_request runs only. Cancelling a merge_group run drops the pull
-  # request from the merge queue.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   dependency-review:
@@ -40,17 +36,7 @@ jobs:
           persist-credentials: false
 
       - name: Review pull request dependencies
-        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          fail-on-severity: low
-          fail-on-scopes: runtime, development, unknown
-
-      - name: Review merge-group dependencies
-        if: ${{ github.event_name == 'merge_group' }}
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          base-ref: ${{ github.event.merge_group.base_sha }}
-          head-ref: ${{ github.event.merge_group.head_sha }}
           fail-on-severity: low
           fail-on-scopes: runtime, development, unknown

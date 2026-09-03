@@ -1,6 +1,6 @@
 {
   "name": "GitHub Pages (LCV Ideas & Software)",
-  "description": "Builds a static directory and deploys it to GitHub Pages from the default branch. Requires Pages enabled with the GitHub Actions build type, and a regenerated actions.lock in the same pull request.",
+  "description": "Builds a static directory and deploys it to GitHub Pages from the default branch with GitHub's official Pages Actions. Requires Pages enabled with the GitHub Actions build type.",
   "iconName": "octicon browser",
   "categories": ["Deployment", "Pages"]
 }

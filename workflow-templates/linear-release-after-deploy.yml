@@ -1,0 +1,71 @@
+# Organization workflow template — Linear release synchronization after a
+# successful deployment.
+#
+# Use this starter in a repository whose deployment workflow is named "Deploy".
+# A release is recorded only when that workflow succeeds on the default branch,
+# so the Linear pipeline describes what reached production, not what was
+# merged. A repository without a deployment workflow uses the "Linear Release"
+# starter instead.
+#
+# INFRASTRUCTURE PREREQUISITE: an environment named `linear-release` holding the
+# environment secret `LINEAR_ACCESS_KEY`. Without it the job fails on its first
+# run. The secret lives in a dedicated environment so it is never exposed to a
+# job that does not need it.
+
+name: Linear Release
+
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows:
+      - Deploy
+    types:
+      - completed
+
+permissions: {}
+
+# Each successful deployment records its own release. `queue: max` keeps every
+# pending run instead of replacing it, and the conclusion in the group keeps
+# failed runs, which the job skips, apart from successful ones.
+concurrency:
+  group: linear-release-${{ github.event.workflow_run.head_branch }}-${{ github.event.workflow_run.conclusion }}
+  queue: max
+
+jobs:
+  linear_release:
+    name: Linear Release
+    # zizmor flags workflow_run because it runs with the privileges of the
+    # default branch. This job admits only a successful push-triggered run of
+    # the "Deploy" workflow on the default branch of this repository, checks
+    # out exactly the revision that run published, runs with contents: read
+    # and passes no run-controlled value to a shell.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == '$default-branch' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: linear-release
+    permissions:
+      contents: read # The CLI reads commit history to associate issues with the release.
+    steps:
+      - name: Check out the deployed revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }} # The revision the Deploy workflow published.
+          fetch-depth: 0 # Full history: the CLI scans commits since the last release.
+          persist-credentials: false
+
+      # Linear's official action, pinned to the full-length SHA of v0.17.2. The
+      # CLI version is selected explicitly so a future rebuild of the action
+      # cannot change the tool that runs. The installer verifies the downloaded
+      # CLI against a published SHA-256 checksum before executing it.
+      #
+      # Fail-closed: an outage, a CLI error or an expired secret leaves the run
+      # red instead of hiding a divergence between GitHub and Linear.
+      - name: Create Linear release with the official action
+        id: linear_release
+        uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
+        with:
+          access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
+          cli_version: v0.17.2

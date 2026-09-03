@@ -1,6 +1,0 @@
-{
-  "name": "CodeQL (LCV Ideas & Software)",
-  "description": "Organization CodeQL analysis with the security-and-quality query suite. After creating it, run gh actions-lock and commit the regenerated actions.lock in the same pull request.",
-  "iconName": "octicon shield-check",
-  "categories": ["Code Scanning", "JavaScript", "TypeScript"]
-}

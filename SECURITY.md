@@ -36,29 +36,29 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 
 - GitHub secret scanning and push protection;
 - Dependabot alerts and security updates;
-- versioned CodeQL Advanced Setup workflows in public repositories containing code;
+- GitHub code scanning default setup for CodeQL with the extended query suite;
 - external GitHub Actions pinned by full commit SHA;
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
-- direct, SHA-pinned official CodeQL, Dependency Review, Zizmor, and OpenSSF Scorecard Actions. CodeQL remains the native merge-protection signal; Zizmor and Scorecard publish SARIF for stateful security visibility without repository-owned gates, baselines, wrappers, or workflow-contract validators;
+- direct, SHA-pinned official Dependency Review, Zizmor, and OpenSSF Scorecard Actions. CodeQL default setup remains the native merge-protection signal; Zizmor and Scorecard publish SARIF for stateful security visibility without repository-owned gates, baselines, wrappers, lockfiles, or workflow-contract validators;
 - the official Zizmor Action does not yet expose `--strict-collection` ([upstream #141](https://github.com/zizmorcore/zizmor-action/issues/141)), so collection syntax or schema errors can remain warnings. This accepted upstream limitation is tracked without adding a repository-owned executor or gate;
-- external credentials assigned by purpose to protected environments restricted to `main`. GitHub
-  does not inject these values automatically: an authorized job receives a secret only when its
-  workflow explicitly references it. The repository-local Dependabot admission App key is
-  referenced only from the `dependabot-automation` Actions environment by workflows loaded from
-  the default branch. The automatic `pull_request` stage is an unprivileged signal with no token
-  permission, secret, Action, checkout, cache, artifact, or pull-request-controlled command. No
-  workflow references a Dependabot-store copy of the App key; any legacy copy is an external
-  configuration defect to remove after rollout. Fork and non-Dependabot runs receive no
-  user-managed secret;
-- pull requests, squash-only merges, resolved conversations, and required checks enforced by effective rulesets and GitHub's native merge queue;
+- external credentials assigned by purpose to protected environments restricted to `main`, with one
+  documented exception: the Dependabot auto-merge workflow reads a fine-grained personal access
+  token (Contents, Pull requests and Workflows, read and write) from the Dependabot secret
+  `DEPENDABOT_AUTOMERGE_TOKEN`, because a workflow triggered by a Dependabot pull request can read
+  Dependabot secrets only. GitHub does not inject these values automatically: an authorized job
+  receives a secret only when its workflow explicitly references it. The auto-merge workflow runs
+  only on Dependabot's own pull requests from this repository, grants no `GITHUB_TOKEN`
+  permission, binds the arming request to the exact event head, fails visibly when the run carries no
+  Dependabot secret (the secret is not configured, or the event was initiated by a person), and
+  runs no Action, checkout, cache, artifact, or pull-request-controlled command. Fork and
+  non-Dependabot pull requests never run it;
+- pull requests, squash-only merges, resolved conversations, and required checks enforced by the effective Enterprise and repository rulesets;
 - no long-lived secrets in source control.
 
 ## Automation policy
 
-Dependabot checks every supported ecosystem daily, automatically rebases its pull requests, and relies on GitHub's post-merge branch deletion. Official Actions under `actions/*` and `github/*` are evaluated immediately, so that a release can be adopted as soon as its provenance, security, and compatibility are validated; third-party GitHub Actions and every other ecosystem apply a seven-day cooldown to ordinary version updates for stability. Dependabot security updates are exempt from that delay. Required security and quality checks are never bypassed.
+Dependabot checks every supported ecosystem weekly, groups minor and patch updates per ecosystem, automatically rebases its pull requests, and relies on GitHub's post-merge branch deletion. Official Actions under `actions/*` and `github/*` are evaluated immediately, so that a release can be adopted as soon as its provenance, security, and compatibility are validated; third-party GitHub Actions and every other ecosystem apply a seven-day cooldown to ordinary version updates for stability. Dependabot security updates are exempt from that delay. Required security and quality checks are never bypassed.
 
-Queue admission is human for human-authored pull requests. Canonical same-repository pull requests authored by `dependabot[bot]` are the deliberate exception. Dependabot-emitted `opened` and `synchronize` events execute only an unprivileged `pull_request` signal. A `workflow_run` follow-up loaded from `main` authenticates the registered signal by workflow ID and path, validates the exact source run and actors, and resolves exactly one live pull request through GitHub's official commit-association API. Before the App key is read, it requires an open, non-draft, same-repository PR to `main`, a `dependabot/**` head, the exact event SHA, the Dependabot account, GitHub's `web-flow` committer, a valid GitHub signature, a complete paginated file inventory, and no added, changed, renamed, or removed file under `.github/workflows/**`. GitHub may omit `workflow_run.pull_requests`; an empty list is never treated as identity evidence and is resolved fail-closed through the commit endpoint. Immediately before admission, the mutator rereads the PR and file inventory and uses `gh pr merge --auto --squash --match-head-commit`.
+Dependabot pull requests are the only automatically admitted change. The repository-local workflow `.github/workflows/dependabot-auto-merge.yml` runs on Dependabot's own `pull_request` events with no `GITHUB_TOKEN` permission, no Action, and no checkout, and enables GitHub's native auto-merge (squash) on the pull request with a fine-grained personal access token stored as the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`. GitHub performs the merge only after every rule of the effective rulesets and every required check is satisfied; the workflow cannot bypass rules, merge directly, update branches, repair lockfiles, or process forks or any other author. There is no GitHub App, merge queue, organization-wide controller, or scheduler.
 
-Dependabot auto-merge is intentionally independent per repository and uses GitHub's native auto-merge and merge queue rather than an organization-wide controller or scheduler. The App key is consumed only from the protected `dependabot-automation` Actions environment after the trusted follow-up has proved provenance. It is exchanged at runtime for a short-lived token limited to pull-request, merge-queue, and repository-content merge operations, as required by GitHub's native merge API. A rare ready/reopen transition requires another Dependabot synchronization or the explicit `workflow_dispatch` fallback loaded from `main` and restricted to the sole operator `lcv-leo` by immutable account ID. Neither path checks out or executes repository content, and neither updates branches nor repairs lockfiles. The native merge queue still runs every required check on its synthetic `merge_group` revision; the automation cannot bypass rules, merge directly, or process forks, drafts, conflicting heads, or any other author.
-
-`--match-head-commit` pins the admission operation to the verified head, but GitHub documents automatic cancellation after a later push only for actors without write permission. The no-bypass Enterprise Required Workflow `Dependabot head authorization` is therefore the authoritative per-head control: it runs again for every pull-request snapshot, validates the live actor, sender, PR and exact signed head, and prevents the merge queue from accepting a later unauthorized update even if a prior auto-merge request remains armed. The repository-local signal and mutator provide safe admission; the Required Workflow provides continuous head authorization. Repository-local workflows may secure and publish only this repository's own institutional surfaces. Enterprise or organization rules, settings, applications, and secrets require separate explicit operator consent before any change.
+Repository-local workflows may secure and publish only this repository's own institutional surfaces. Enterprise or organization rules, settings, applications, and secrets require separate explicit operator consent before any change.

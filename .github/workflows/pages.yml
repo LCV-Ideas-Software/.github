@@ -1,5 +1,3 @@
-# This workflow is managed by gh actions-lock.
-
 name: Pages
 
 on:
@@ -12,10 +10,16 @@ on:
       - "package.json"
       - "site/**"
   pull_request:
-    branches: ["main"]
-  merge_group:
+    branches:
+      - main
+    # `edited` covers a pull request retargeted to main; without it the
+    # required check would not run until the next push.
     types:
-      - checks_requested
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
   workflow_dispatch:
 
 permissions: {}

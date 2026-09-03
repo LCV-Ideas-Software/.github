@@ -1,6 +1,6 @@
 {
   "name": "Linear Release (LCV Ideas & Software)",
-  "description": "Records each default-branch push as a Linear release using Linear's official action. Requires the linear-release environment with the LINEAR_ACCESS_KEY secret, and a regenerated actions.lock in the same pull request.",
+  "description": "Records each default-branch push as a Linear release using Linear's official action. Requires the linear-release environment with the LINEAR_ACCESS_KEY secret.",
   "iconName": "octicon rocket",
   "categories": ["Continuous integration", "Utilities"]
 }

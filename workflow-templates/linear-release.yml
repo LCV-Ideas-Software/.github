@@ -1,16 +1,14 @@
 # Organization workflow template — Linear release synchronization.
 #
-# AFTER CREATING THIS WORKFLOW, BEFORE OPENING THE PULL REQUEST:
-#   1. Install the lock tool once: `gh extension install github/gh-actions-lock`
-#   2. Run `gh actions-lock` in the repository root.
-#   3. Commit the regenerated `.github/workflows/actions.lock` IN THE SAME pull
-#      request, or the Enterprise required workflow "Validate actions.lock"
-#      fails the pull request.
-#
 # INFRASTRUCTURE PREREQUISITE: an environment named `linear-release` holding the
 # environment secret `LINEAR_ACCESS_KEY`. Without it the job fails on its first
 # run. The secret lives in a dedicated environment so it is never exposed to a
 # job that does not need it.
+#
+# This starter records a release on every push to the default branch. A
+# repository that deploys with a workflow named "Deploy" uses the companion
+# starter "Linear Release after Deploy" instead, which records a release only
+# after a successful deployment.
 
 name: Linear Release
 
@@ -44,16 +42,16 @@ jobs:
           fetch-depth: 0 # Full history: the CLI scans commits since the last release.
           persist-credentials: false
 
-      # Linear's official action, pinned to the full-length SHA of v0.17.1. The
+      # Linear's official action, pinned to the full-length SHA of v0.17.2. The
       # CLI version is selected explicitly so a future rebuild of the action
-      # cannot change the tool that runs. v0.17.1 verifies the downloaded CLI
-      # against a published SHA-256 checksum before executing it.
+      # cannot change the tool that runs. The installer verifies the downloaded
+      # CLI against a published SHA-256 checksum before executing it.
       #
       # Fail-closed: an outage, a CLI error or an expired secret leaves the run
       # red instead of hiding a divergence between GitHub and Linear.
       - name: Create Linear release with the official action
         id: linear_release
-        uses: linear/linear-release-action@3f31fcf14c110cc53579fcc3575a26d469c413b4 # v0.17.1
+        uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
         with:
           access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
-          cli_version: v0.17.1
+          cli_version: v0.17.2

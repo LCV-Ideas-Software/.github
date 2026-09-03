@@ -1,0 +1,6 @@
+{
+  "name": "Linear Release after Deploy (LCV Ideas & Software)",
+  "description": "Records a Linear release only after the workflow named Deploy succeeds on the default branch, using Linear's official action. Requires the linear-release environment with the LINEAR_ACCESS_KEY secret.",
+  "iconName": "octicon rocket",
+  "categories": ["Continuous integration", "Deployment", "Utilities"]
+}

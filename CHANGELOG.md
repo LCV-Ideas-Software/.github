@@ -12,6 +12,49 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 02/09/2026 — Governança nativa do repositório ([#323](https://github.com/LCV-Ideas-Software/.github/issues/323), GITHORG-101)
+
+### Removed
+
+- O lockfile `.github/workflows/actions.lock`, os cabeçalhos "managed by gh actions-lock" e os
+  gatilhos `merge_group`: a organização deixou de usar lockfile de Actions e merge queue.
+- O workflow `codeql.yml`, substituído pelo default setup do code scanning do GitHub, e o starter
+  workflow correspondente em `workflow-templates/`.
+- Os workflows `dependabot-automerge.yml` e `dependabot-automerge-signal.yml`, que dependiam de uma
+  GitHub App própria, e o teste `test/dependabot-automerge-eligibility.test.mjs`.
+
+### Added
+
+- `.github/workflows/dependabot-auto-merge.yml`, o padrão oficial do GitHub para auto-merge de PRs
+  do Dependabot: sem Action, sem checkout, armando `gh pr merge --auto --squash` com um token pessoal
+  guardado como segredo do Dependabot (`DEPENDABOT_AUTOMERGE_TOKEN`).
+- `SUPPORT.md`, arquivo-padrão de saúde comunitária que faltava, e o starter workflow
+  `dependabot-auto-merge` para os demais repositórios.
+- O starter workflow `linear-release-after-deploy`, variante completa do Linear Release para os
+  repositórios que publicam com um workflow chamado `Deploy`: a release só é registrada após um
+  deploy bem-sucedido da branch padrão. Substitui a receita em comentários que o starter
+  `linear-release` carregava.
+
+### Changed
+
+- `dependabot.yml` semanal (segunda-feira, 06:00 em Brasília), com um grupo de minor e patch por
+  ecossistema, majors separados e rebase automático.
+- `zizmor.yml` alinhado ao exemplo oficial (zizmor-action v0.6.3, agenda semanal); `scorecard.yml`
+  agendado semanalmente; `pages.yml` com deploy-pages v5.0.1; `linear-release.yml` com
+  linear-release-action v0.17.2; `dependency-review.yml` só em `pull_request`.
+- `cloudflare-pages.yml` com guarda de branch `main` no job de deploy: um disparo manual a partir de
+  outra ref nunca publica em produção, o que torna verdadeira a frase do site sobre pull requests.
+- `test/institutional-boundary.test.mjs` restrito à superfície pública (paths, marca, licença). Os
+  validadores de forma de workflow saíram: um teste que fixa o SHA de uma action dentro de um check
+  obrigatório impediria o Dependabot de mergear o bump seguinte, e a governança é imposta pelo
+  GitHub (rulesets, code scanning, CODEOWNERS), não por teste do repositório.
+- `THIRDPARTY.md` lista dependências por nome, licença e fonte; versões e SHAs vivem só no
+  manifesto, no lockfile e nos workflows, e o grafo de dependências do GitHub é o inventário
+  versionado, sem deriva a cada bump.
+- Starter workflows reescritos sem instruções de lockfile e `README.md`, `profile/README.md`,
+  `SECURITY.md`, `CONTRIBUTING.md` e `THIRDPARTY.md` sem referências ao trust root
+  `actions-lock-policy`, à merge queue, ao controlador de automerge e ao CodeQL Advanced Setup.
+
 ## 31/08/2026 — Proveniência e cor da marca GitHub ([#314](https://github.com/LCV-Ideas-Software/.github/issues/314), GITHORG-97)
 
 ### Fixed
