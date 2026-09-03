@@ -6,6 +6,14 @@ on:
   pull_request:
     branches:
       - $default-branch
+    # `edited` covers a pull request retargeted to the default branch;
+    # without it this required check would not run until the next push.
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
 
 # No scope granted at workflow level; each job declares the minimum grant.
 permissions: {}

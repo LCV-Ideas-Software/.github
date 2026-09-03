@@ -4,6 +4,14 @@ on:
   pull_request:
     branches:
       - main
+    # `edited` covers a pull request retargeted to the default branch;
+    # without it this required check would not run until the next push.
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
 
 permissions: {}
 
