@@ -48,10 +48,10 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   Dependabot secrets only. GitHub does not inject these values automatically: an authorized job
   receives a secret only when its workflow explicitly references it. The auto-merge workflow runs
   only on Dependabot's own pull requests from this repository, grants no `GITHUB_TOKEN`
-  permission, binds the arming request to the exact event head, ends without arming anything
-  when the run carries no Dependabot secret (an event initiated by a person), and runs no Action,
-  checkout, cache, artifact, or pull-request-controlled command. Fork and non-Dependabot pull
-  requests never run it;
+  permission, binds the arming request to the exact event head, fails visibly when the run carries no
+  Dependabot secret (the secret is not configured, or the event was initiated by a person), and
+  runs no Action, checkout, cache, artifact, or pull-request-controlled command. Fork and
+  non-Dependabot pull requests never run it;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by the effective Enterprise and repository rulesets;
 - no long-lived secrets in source control.
 

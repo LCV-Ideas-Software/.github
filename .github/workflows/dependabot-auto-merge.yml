@@ -6,6 +6,8 @@ on:
       - opened
       - reopened
       - synchronize
+    branches:
+      - main
 
 permissions: {}
 
@@ -16,12 +18,12 @@ concurrency:
 jobs:
   auto-merge:
     name: Enable auto-merge for Dependabot
-    # Runs only on Dependabot's own pull requests from this repository. The
-    # pull request author is the condition recommended by zizmor: the actor
-    # contexts are spoofable. Dependabot-initiated runs receive Dependabot
-    # secrets; a run initiated by a person receives Actions secrets, finds no
-    # token and ends without arming anything. Such a pull request is armed
-    # again on the next Dependabot synchronization (or "@dependabot recreate").
+    # Runs only on Dependabot's own pull requests from this repository against
+    # the default branch. The pull request author is the condition recommended
+    # by zizmor: the actor contexts are spoofable. Dependabot-initiated runs
+    # receive Dependabot secrets; a run initiated by a person receives Actions
+    # secrets and finds no token, and so does a run in a repository where the
+    # Dependabot secret was never configured. Both cases fail visibly below.
     if: >-
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -33,7 +35,10 @@ jobs:
       # built-in Actions token is never used, so the merge performed later by
       # GitHub triggers the default-branch workflows normally.
       # --match-head-commit binds the arming request to the exact head of this
-      # event.
+      # event. A missing token fails the job instead of passing silently, so a
+      # rollout error is visible; a pull request whose run was initiated by a
+      # person is armed again on the next Dependabot synchronization or after
+      # "@dependabot recreate".
       - name: Enable GitHub native auto-merge with squash
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -41,7 +46,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::No Dependabot secret in this run: the event was not initiated by Dependabot. Nothing armed."
-            exit 0
+            echo "::error::DEPENDABOT_AUTOMERGE_TOKEN is not available in this run: either the Dependabot secret is not configured, or this event was initiated by a person and received Actions secrets. Auto-merge is armed again on the next Dependabot synchronization or after '@dependabot recreate'."
+            exit 1
           fi
           gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"

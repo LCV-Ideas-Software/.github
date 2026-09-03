@@ -6,10 +6,11 @@
 # repository. Workflows is required because Dependabot's github-actions
 # updates change files under .github/workflows. Workflows triggered by
 # Dependabot see Dependabot secrets only, never Actions secrets; a run
-# initiated by a person receives Actions secrets, finds no token and ends
-# without arming anything. A personal token is used on purpose: a merge
-# performed with the built-in Actions token would not trigger the
-# default-branch workflows (deploy, release, Pages).
+# initiated by a person receives Actions secrets and finds no token, and so
+# does a repository where the secret was never configured: both fail visibly.
+# A personal token is used on purpose: a merge performed with the built-in
+# Actions token would not trigger the default-branch workflows (deploy,
+# release, Pages).
 #
 # This workflow runs no Action and checks out nothing. GitHub performs the
 # squash merge only after every effective rule and required check passes.
@@ -22,6 +23,8 @@ on:
       - opened
       - reopened
       - synchronize
+    branches:
+      - $default-branch
 
 permissions: {}
 
@@ -45,7 +48,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::No Dependabot secret in this run: the event was not initiated by Dependabot. Nothing armed."
-            exit 0
+            echo "::error::DEPENDABOT_AUTOMERGE_TOKEN is not available in this run: either the Dependabot secret is not configured, or this event was initiated by a person and received Actions secrets. Auto-merge is armed again on the next Dependabot synchronization or after '@dependabot recreate'."
+            exit 1
           fi
           gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
