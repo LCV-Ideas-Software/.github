@@ -12,6 +12,14 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## 05/09/2026 — Aviso de licença dos ícones publicados
+
+### Fixed
+
+- Publicado o texto MIT integral e inalterado do Octicons junto ao site, com link
+  no rodapé. O aviso já existia no inventário da raiz, mas não acompanhava as duas
+  marcas GitHub no artefato de Pages, que contém somente `site/`.
+
 ## 02/09/2026 — Governança nativa do repositório ([#323](https://github.com/LCV-Ideas-Software/.github/issues/323), GITHORG-101)
 
 ### Removed
