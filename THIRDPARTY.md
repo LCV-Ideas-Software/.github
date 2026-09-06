@@ -65,6 +65,10 @@ commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` and Git blob
 
 ### Octicons MIT license notice
 
+The unchanged notice is also published at
+[`site/OCTICONS-LICENSE.txt`](site/OCTICONS-LICENSE.txt), linked from the site
+footer, so it accompanies both inline GitHub marks in the Pages artifact.
+
 The following is the complete, unmodified `LICENSE` text from immutable Octicons
 commit `cc4e12df6ff8292447ba9141eaa2a6f6e1c59a85` (Git blob
 `aa1fa80ed83cf856fb31c22ba56557c42ca84488`, SHA-256
