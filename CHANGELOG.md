@@ -14,6 +14,12 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+### Fixed
+
+- Corrigida a dependência transitiva Sharp afetada por GHSA-rgj7-g3m4-5g8c com
+  a configuração oficial `overrides` do npm, limitada ao Miniflare. O lockfile
+  foi regenerado pelo npm, preservando os gates de segurança existentes.
+
 ### Changed
 
 - Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.0 e do
