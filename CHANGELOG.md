@@ -12,6 +12,13 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## Unreleased
+
+### Changed
+
+- Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.0 e do
+  zizmor-action para v0.6.4, com os SHAs completos das respectivas releases.
+
 ## 05/09/2026 — Aviso de licença dos ícones publicados
 
 ### Fixed
