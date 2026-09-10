@@ -12,6 +12,19 @@ an unversioned repository. Dates are written `DD/MM/AAAA` in Brasília time (UTC
 presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
+## Unreleased
+
+### Fixed
+
+- Corrigida a dependência transitiva Sharp afetada por GHSA-rgj7-g3m4-5g8c com
+  a configuração oficial `overrides` do npm, limitada ao Miniflare. O lockfile
+  foi regenerado pelo npm, preservando os gates de segurança existentes.
+
+### Changed
+
+- Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.0 e do
+  zizmor-action para v0.6.4, com os SHAs completos das respectivas releases.
+
 ## 05/09/2026 — Aviso de licença dos ícones publicados
 
 ### Fixed

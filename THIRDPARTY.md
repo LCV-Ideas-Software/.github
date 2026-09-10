@@ -19,6 +19,17 @@ has no parallel scanner, pin auditor, containerized Zizmor runtime, or policy wr
 Licenses below were read from each package's own published manifest or from its upstream
 repository, not inferred.
 
+## Scoped security resolution
+
+The root manifest uses the official npm `overrides` field only for Sharp under Miniflare,
+selecting the patched upstream package for
+[GHSA-rgj7-g3m4-5g8c](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c).
+The exact version and integrity remain in the manifest and npm-generated lockfile.
+Remove this scoped resolution once the selected official Wrangler release includes the
+patched Sharp dependency and the existing advisory and build checks pass without it.
+See the [npm documentation](https://docs.npmjs.com/cli/v12/configuring-npm/package-json/#overrides)
+and the [merged upstream correction](https://github.com/cloudflare/workers-sdk/pull/15580).
+
 ## Repository root — `package.json`
 
 | Component  | License           | Scope       | Source                                   |
