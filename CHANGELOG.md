@@ -28,7 +28,7 @@ presentation rule this organization applies to text meant for people
 - `profile/README.md` alinhado ao estado medido do GitHub e da Cloudflare, após
   auditoria adversarial do texto do perfil Enterprise. Corrigidos: a separação
   das bases D1 — `mtasts-motor`, `sponsor-motor` e `tlsrpt-motor` compartilham
-  `bigdata_db`, e a base dedicada é a do relay Slack —, a origem da exigência
+  `bigdata_db`, e a base dedicada pertence a um sistema operacional interno —, a origem da exigência
   de pin por SHA, que é a política de Actions da Enterprise e da organização e
   não uma allowlist por repositório, o alcance da ausência de bypass, válido
   para os rulesets de branch e tag, a verificação de assinatura de pacotes nos

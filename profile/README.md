@@ -243,7 +243,7 @@ Public delivery repositories for the Android editions. Each currently carries th
 ```
 Frontend     React 19 + Vite 8 + TypeScript
 Runtime      Cloudflare Pages (static + SSR) + Cloudflare Workers (Hono)
-Database     Cloudflare D1 (`bigdata_db` shared; `maestro_db` and `github-slack-alerts-db` dedicated)
+Database     Cloudflare D1 (`bigdata_db` shared; `maestro_db` for optional Maestro configuration)
 Storage      Cloudflare R2 (`mainsite-media`, shared by MainSite and Admin)
 Auth         Cloudflare Access (Zero Trust JWT) — operator surfaces
 AI           Claude Code · ChatGPT Codex · Gemini CLI · DeepSeek · Grok · Perplexity
@@ -253,7 +253,7 @@ Anti-abuse   Cloudflare Turnstile + GCP Natural Language
 Desktop      Tauri 2 (Maestro)
 ```
 
-- **D1 separation.** Consumer products, the operator control plane and the public Workers (`mtasts-motor`, `sponsor-motor`, `tlsrpt-motor`) share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; the internal GitHub→Slack alert relay keeps its own `github-slack-alerts-db`. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
+- **D1 separation.** Consumer products, the operator control plane and the public Workers (`mtasts-motor`, `sponsor-motor`, `tlsrpt-motor`) share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; internal operational systems keep their own dedicated database. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
 - **One media bucket.** `mainsite-media` is shared by `mainsite-app` and `admin-app`. Upload handling uses magic-byte sniffing, allowlisted MIME types, a 10 MiB cap, and a sandboxed legacy SVG fallback.
 - **Defense in depth.** Cloudflare Access gates _who_ enters admin surfaces; CSP gates _what_ the browser can execute on public surfaces; Turnstile gates form anti-abuse; GCP Natural Language scores comment moderation.
 
