@@ -51,7 +51,7 @@ stack:
   desktop: [Tauri 2 (Rust)]
   ai: [MCP servers, Claude, Codex, Gemini, DeepSeek, Grok, Perplexity]
   payments: [Mercado Pago Checkout Transparente (Orders API + 3DS)]
-  quality: [Vitest, Zod, Biome, CodeQL, Zizmor, OpenSSF Scorecard]
+  quality: [Vitest, Zod, Biome, CodeQL, Code Quality, Zizmor, OpenSSF Scorecard]
   ops: [GitHub Actions, Wrangler, Dependabot, Linear]
 discipline: "Fail closed, test first, ship through pull requests."
 ```
@@ -201,7 +201,7 @@ The organization maintains **14 active public repositories**, including its inst
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [**mainsite-app**](https://github.com/LCV-Ideas-Software/mainsite-app)             | [www.reflexosdaalma.blog](https://www.reflexosdaalma.blog/)             | _Reflexos da Alma_ — public content site + companion services. React 19 + Vite 8 SPA on Cloudflare Pages + Hono Worker. Post reader with smart polling, comments and ratings with GCP NL sentiment moderation, Gemini AI public chatbot, share-by-email, SSR OG and JSON-LD metadata, R2 media. Sponsor/payment handling lives outside MainSite in `sponsor-motor`. |
 | [**astrologo-app**](https://github.com/LCV-Ideas-Software/astrologo-app)           | [mapa-astral.lcv.app.br](https://mapa-astral.lcv.app.br/)               | _Oráculo Celestial_ — birth chart generator and esoteric analysis via Gemini AI. React 19 + Vite 8 on Cloudflare Pages with D1 backing store. Deterministic astrometric calculation + AI narrative; throttling, optional auth, share-by-email.                                                                                                                      |
-| [**calculadora-app**](https://github.com/LCV-Ideas-Software/calculadora-app)       | [calculadora.lcv.app.br](https://calculadora.lcv.app.br/)               | _Calculadora Financeira_ — international FX simulator (credit card vs. multi-currency account) with AI-driven contextual analysis. React 19 + Vite 8 on Cloudflare Pages + D1. Integrates PTAX (BCB), Spot (AwesomeAPI), and Gemini AI. Modeled on Itaú's published methodology.                                                                                    |
+| [**calculadora-app**](https://github.com/LCV-Ideas-Software/calculadora-app)       | [calculadora.lcv.app.br](https://calculadora.lcv.app.br/)               | _Calculadora Financeira_ — international FX simulator (credit card vs. multi-currency account) with AI-driven contextual analysis. React 19 + Vite 8 on Cloudflare Pages + D1. Integrates PTAX (BCB), Spot (AwesomeAPI), and Gemini AI.                                                                                    |
 | [**oraculo-financeiro**](https://github.com/LCV-Ideas-Software/oraculo-financeiro) | [oraculo-financeiro.lcv.app.br](https://oraculo-financeiro.lcv.app.br/) | _Oráculo Financeiro_ — IPCA-indexed fixed-income analysis dashboard (LCI/CDB IPCA+, Tesouro IPCA+) with Gemini contextual insights. React 19 + Vite 8 on Cloudflare Pages + D1 + Cron Worker for daily IPCA rate pre-warming.                                                                                                                                       |
 
 ### 🛠️ Operator infrastructure
@@ -243,7 +243,7 @@ Public delivery repositories for the Android editions. Each currently carries th
 ```
 Frontend     React 19 + Vite 8 + TypeScript
 Runtime      Cloudflare Pages (static + SSR) + Cloudflare Workers (Hono)
-Database     Cloudflare D1 (`bigdata_db` for product services; dedicated infrastructure databases)
+Database     Cloudflare D1 (`bigdata_db` shared; `maestro_db` for optional Maestro configuration)
 Storage      Cloudflare R2 (`mainsite-media`, shared by MainSite and Admin)
 Auth         Cloudflare Access (Zero Trust JWT) — operator surfaces
 AI           Claude Code · ChatGPT Codex · Gemini CLI · DeepSeek · Grok · Perplexity
@@ -253,7 +253,7 @@ Anti-abuse   Cloudflare Turnstile + GCP Natural Language
 Desktop      Tauri 2 (Maestro)
 ```
 
-- **D1 separation.** Consumer products and the operator control plane share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; infrastructure services use dedicated databases. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
+- **D1 separation.** Consumer products, the operator control plane and the public Workers (`mtasts-motor`, `sponsor-motor`, `tlsrpt-motor`) share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; internal operational systems keep their own dedicated database. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
 - **One media bucket.** `mainsite-media` is shared by `mainsite-app` and `admin-app`. Upload handling uses magic-byte sniffing, allowlisted MIME types, a 10 MiB cap, and a sandboxed legacy SVG fallback.
 - **Defense in depth.** Cloudflare Access gates _who_ enters admin surfaces; CSP gates _what_ the browser can execute on public surfaces; Turnstile gates form anti-abuse; GCP Natural Language scores comment moderation.
 
@@ -263,11 +263,11 @@ Desktop      Tauri 2 (Maestro)
 
 - **Structured reasoning and independent review.** Substantive operator-authored engineering changes use `ultrabrain` for structured reasoning and the `cross-review` MCP for independent review before they are declared complete. Caller/reviewer self-review is invalid. This is an operator-process control, not a required GitHub merge check.
 - **Repository-specific quality gates.** Each change must pass the checks defined by the affected repository — formatting, linting, type checking, tests, builds, and security checks as applicable. Toolchains vary; there is no universal four-check chain.
-- **CodeQL default setup.** Every active repository runs GitHub's code scanning default setup with the extended query suite on a weekly schedule and on every pull request to the default branch. The Enterprise ruleset requires a CodeQL analysis before a revision reaches `main`; alerts are triaged in the repository's Security tab.
-- **GitHub-native PR governance.** A pull request is required for every change to the default branch. Squash is the only merge method. Dependabot pull requests receive GitHub's native auto-merge from a repository-local workflow; every other pull request is merged by the maintainer once the effective rules and required checks are satisfied. GitHub creates a signed, single-parent squash. Default branches cannot be deleted or force-pushed, review conversations that exist must be resolved, and no actor has a ruleset bypass.
-- **`cross-review` anti-drift checks.** In the `cross-review` repository, push CI verifies package/runtime version consistency and the expected release markers in `README.md`, `SECURITY.md`, and `CHANGELOG.md`.
+- **CodeQL default setup.** Every active repository runs GitHub's code scanning default setup with the extended query suite on a weekly schedule and on every pull request to the default branch. The Enterprise ruleset requires a CodeQL analysis before a revision reaches `main`, alongside GitHub Code Quality and license-compliance scanning; alerts are triaged in the repository's Security tab.
+- **GitHub-native PR governance.** A pull request is required for every change to the default branch, and the active Enterprise branch and tag rulesets carry no bypass actor. Squash is the only permitted merge method and linear history is required, so GitHub creates a signed, single-parent squash; commits and tags must be signed. Dependabot pull requests receive GitHub's native auto-merge from a repository-local workflow; every other pull request is merged by the maintainer once the effective rules and required checks are satisfied. Review conversations that exist must be resolved, unattributed changes require an extra approval, and Copilot code review is requested on pull requests and on every push. Default branches cannot be deleted or force-pushed.
+- **`cross-review` anti-drift checks.** In the `cross-review` repository, push CI verifies package/runtime version consistency and the expected release markers in `SECURITY.md` and `CHANGELOG.md`.
 - **Agent-instruction parity.** Program-wide directives are mirrored across the active agent environments as an operator process; GitHub does not enforce this parity.
-- **Supply-chain baseline.** External GitHub Actions are pinned by full commit SHA, and the Actions policy of every repository requires that pin. Cloudflare deployment workflows use exact Wrangler versions from committed manifests and lockfiles, verify package signatures and audit results, and rely on weekly Dependabot checks with automatic rebasing. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and ordinary version updates in every other ecosystem observe a seven-day stability cooldown. Security updates are not delayed by it.
+- **Supply-chain baseline.** External GitHub Actions are pinned by full commit SHA, and that pin is required by the enterprise and organization Actions policy rather than by per-repository allowlists. Cloudflare deployment workflows use exact Wrangler versions from committed manifests and lockfiles, several of them gate on `npm audit` results, the organization-site deploy additionally verifies package signatures, and all of them rely on weekly Dependabot checks with automatic rebasing. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and ordinary version updates in every other ecosystem observe a seven-day stability cooldown. Security updates are not delayed by it.
 
 <img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
@@ -304,7 +304,7 @@ The AGPL-3.0 **network-service trigger** applies to the repositories in the AGPL
 - **Contributing**: see [CONTRIBUTING.md](https://github.com/LCV-Ideas-Software/.github/blob/main/CONTRIBUTING.md).
 - **Inbound rights**: see [INBOUND.md](https://github.com/LCV-Ideas-Software/.github/blob/main/INBOUND.md).
 - **Sponsorship**: see the relevant repository's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor/).
-- **Action pinning**: all external GitHub Actions are pinned by full commit SHA per supply-chain hardening baseline.
+- **Action pinning**: all external GitHub Actions are pinned by full commit SHA; the enterprise and organization Actions policy requires that pin.
 - **Code owners**: [.github/CODEOWNERS](https://github.com/LCV-Ideas-Software/.github/blob/main/.github/CODEOWNERS).
 
 ## 🔗 Links
