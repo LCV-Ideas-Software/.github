@@ -25,6 +25,22 @@ presentation rule this organization applies to text meant for people
 - Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.0 e do
   zizmor-action para v0.6.4, com os SHAs completos das respectivas releases.
 
+- `profile/README.md` alinhado ao estado medido do GitHub e da Cloudflare, após
+  auditoria adversarial do texto do perfil Enterprise. Corrigidos: a separação
+  das bases D1 — `mtasts-motor`, `sponsor-motor` e `tlsrpt-motor` compartilham
+  `bigdata_db`, e a base dedicada é a do relay Slack —, a origem da exigência
+  de pin por SHA, que é a política de Actions da Enterprise e da organização e
+  não uma allowlist por repositório, o alcance da ausência de bypass, válido
+  para os rulesets de branch e tag, a verificação de assinatura de pacotes nos
+  deploys Cloudflare, restrita ao deploy do site institucional, e os marcadores
+  de release aferidos pelo CI do `cross-review`, que não lê `README.md`. Os
+  itens de governança de PR e de code scanning passaram a nomear as regras que
+  o ruleset Enterprise de fato impõe, e `Code Quality` entrou na lista de
+  ferramentas de qualidade.
+- Removida da célula do `calculadora-app` a frase final que atribuía a
+  modelagem do produto a uma metodologia publicada por terceiro, sem lastro em
+  qualquer artefato daquele repositório.
+
 ## 05/09/2026 — Aviso de licença dos ícones publicados
 
 ### Fixed
