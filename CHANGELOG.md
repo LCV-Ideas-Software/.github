@@ -23,7 +23,7 @@ presentation rule this organization applies to text meant for people
 ### Changed
 
 - Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.0 e do
-  zizmor-action para v0.6.4, com os SHAs completos das respectivas releases.
+  zizmor-action para v0.6.4, nos workflows locais e nos starter workflows, com os SHAs completos das respectivas releases.
 
 - `profile/README.md` alinhado ao estado medido do GitHub e da Cloudflare, após
   auditoria adversarial do texto do perfil Enterprise. Corrigidos: a separação
