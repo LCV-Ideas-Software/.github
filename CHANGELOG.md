@@ -16,6 +16,11 @@ presentation rule this organization applies to text meant for people
 
 ### Fixed
 
+- Atualizadas a Action oficial Linear Release e a CLI para v0.18.0 no workflow
+  local e nos dois starter workflows, com pin por SHA completo e versão da CLI
+  explícita. A atualização incorpora a correção upstream na execução dos comandos
+  Git e mantém o comportamento padrão de identificação das issues.
+
 - Corrigida a dependência transitiva Sharp afetada por GHSA-rgj7-g3m4-5g8c com
   a configuração oficial `overrides` do npm, limitada ao Miniflare. O lockfile
   foi regenerado pelo npm, preservando os gates de segurança existentes.
