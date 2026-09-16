@@ -455,6 +455,8 @@ svg.github-mark { color: #fff; }
   -webkit-text-fill-color: transparent;
 }
 .footer__legal { color: var(--muted); font-size: .8rem; line-height: 1.65; }
+.footer__store { margin-top: 1.4rem; }
+.footer__store img { height: 56px; width: auto; }
 
 /* ============ REVEAL ============ */
 .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s ease; }

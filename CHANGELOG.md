@@ -14,6 +14,19 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+### Added
+
+- Acrescentado o Número D‑U‑N‑S® 583149431 à linha de identificação da empresa no
+  rodapé, ao lado do CNPJ e da Inscrição Municipal, nas quatro superfícies
+  publicadas deste repositório: perfil da organização, README da raiz, site e
+  página de apoio.
+- Publicado o badge oficial "Disponível no Google Play" logo abaixo dessa linha
+  nas mesmas quatro superfícies, apontando para a página do desenvolvedor da
+  organização. O artefato oficial do Google é versionado em `profile/assets/` e
+  `site/assets/`, e sua procedência, base de uso e conformidade regra a regra
+  estão registradas em [THIRDPARTY.md](./THIRDPARTY.md), incluindo a única regra
+  publicada que ainda não é satisfeita.
+
 ### Fixed
 
 - Atualizadas a Action oficial Linear Release e a CLI para v0.18.0 no workflow

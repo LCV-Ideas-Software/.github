@@ -210,6 +210,62 @@ terms sheet, which states no minimum and forbids only enlargement, is satisfied.
 Copyright © 2026 Mercado Pago Instituição de Pagamento Ltda., CNPJ 10.573.521/0001-91. The mark
 belongs to its owner; nothing in this repository transfers, licenses, or sublicenses it.
 
+## Vendored brand asset — `profile/assets/google-play-oficial.png` and `site/assets/google-play-oficial.png`
+
+This is a trademark surface, not a software-license surface. The file carries no open-source
+license, and the absence of one is not a defect to be repaired by attaching a license: its use is
+governed by the mark owner's own brand terms, recorded below.
+
+| Component         | Variant                       | Terms                                       | Scope                                                                            | Immutable source                                                                           |
+| ----------------- | ----------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Google Play badge | `pt-br_badge_web_generic.png` | Proprietary — Google Play badge guidelines | published in the organization profile, this repository's README, and both site pages | https://play.google.com/intl/pt-BR/badges/static/images/badges/pt-br_badge_web_generic.png |
+
+### Provenance is proven, not asserted
+
+- committed file: SHA-256 `e1ad5e03f636d94b05448c1f156e39b012b9e1d772b730d9e27d066695531a6b`, 17,728 bytes, 646×250, 8-bit RGBA
+- retrieved 16 September 2026 from Google's own badge endpoint, which answered HTTP 200
+- the two committed copies are byte-identical to that download and to each other
+
+The Portuguese variant is the one matching the language of every surface that renders it.
+`https://play.google.com/intl/en_us/badges/` redirects to the Partner Marketing Hub badge page
+(`https://partnermarketinghub.withgoogle.com/brands/google-play/google-play/lockups-icons-badges/`),
+which publishes the rules verified below.
+
+### Basis for use
+
+Use here is descriptive. The badge identifies the store that distributes the organization's Android
+editions and links to the organization's own developer page,
+`https://play.google.com/store/apps/dev?id=8615566246127797211`. No sponsorship, endorsement,
+partnership, or affiliation is implied or claimed.
+
+### Compliance with the published rules, verified at this SHA
+
+| Rule                                                            | Source               | State at this SHA                                                                     |
+| --------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------- |
+| Digital badge height must be at least 28 px                     | Partner Marketing Hub | rendered at `height="56"` on all four surfaces                                        |
+| Do not change the badge colour                                  | Partner Marketing Hub | file byte-identical; no `filter`, `opacity`, or colour rule applies to it             |
+| Do not remove, rearrange, or otherwise adjust the badge         | Partner Marketing Hub | file byte-identical; scaling is uniform, `width: auto` against the fixed height       |
+| Clear space of at least one quarter of the badge height (14 px) | Partner Marketing Hub | site 22.4 px above and 40 px below; sponsor page 20 px above and 24 px below          |
+| Always use current artwork from Partner Marketing Hub           | Partner Marketing Hub | downloaded 16 September 2026; digest recorded above                                   |
+
+Byte identity settles the stored artwork, not what the browser paints. The colour and clear-space
+rows are therefore evidenced from the pages' own rules: `.footer__store` and `.footer-store` carry
+only margin and sizing, and each badge is the sole element of a centred block, so the horizontal
+clear space is the remaining width of a footer far wider than the rendered 145 px. On the two
+Markdown surfaces the badge occupies its own centred paragraph and receives GitHub's default
+paragraph spacing, which exceeds the 14 px minimum.
+
+### One published rule is not yet satisfied
+
+The badge exists to drive downloads or pre-registration on Google Play. At this SHA the developer
+page carries the organization profile but lists no application, because the Android editions are
+still at the governance baseline stage, so the badge resolves to a catalogue with nothing yet to
+download or pre-register. This is recorded rather than claimed as compliant; it resolves itself
+when the first Android edition publishes.
+
+Google Play and the Google Play logo are trademarks of Google LLC. The mark belongs to its owner;
+nothing in this repository transfers, licenses, or sublicenses it.
+
 ## This repository
 
 The original content of this repository owned by LCV Ideas & Software is
