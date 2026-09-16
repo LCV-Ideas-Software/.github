@@ -68,4 +68,6 @@ public license. See the
 
 ---
 
-<p align="center"><strong>Copyright © 2026 LCV Ideas &amp; Software</strong><br><sub>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713 - Pinheiros<br>São Paulo - SP - CEP 05424-150<br>CNPJ: 66.584.678/0001-77 - IM: 3039854</sub></p>
+<p align="center"><strong>Copyright © 2026 LCV Ideas &amp; Software</strong><br><sub>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br>Rua Pais Leme, 215 Conj 1713 - Pinheiros<br>São Paulo - SP - CEP 05424-150<br>CNPJ: 66.584.678/0001-77 - IM: 3039854 - Número D‑U‑N‑S® 583149431</sub></p>
+
+<p align="center"><a href="https://play.google.com/store/apps/dev?id=8615566246127797211"><img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/google-play-oficial.png" alt="Disponível no Google Play" height="56"></a></p>
