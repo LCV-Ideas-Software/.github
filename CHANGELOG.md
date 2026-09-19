@@ -16,6 +16,18 @@ presentation rule this organization applies to text meant for people
 
 ### Added
 
+- Publicada a página pública de **Política de Privacidade** dos aplicativos
+  Android em `site/privacy/index.html`, servida em
+  <https://www.lcv.dev/privacy/> pelo mesmo projeto `org-site` do Cloudflare
+  Pages que publica o site (GITHORG-111 / mainsite-app#575). A página segue a
+  folha de estilo, o cabeçalho e o rodapé do site; o texto, em português do
+  Brasil, tem parágrafos justificados com recuo de primeira linha e títulos
+  maiores em negrito, e cobre o que a política de Dados do Usuário do Google
+  Play exige: responsável e contato, aplicativos cobertos, dados
+  tratados, compartilhamento, retenção e exclusão, direitos da LGPD e a
+  declaração coerente com o formulário de segurança dos dados. A home ganha o
+  link "Privacidade" no rodapé e o teste de fronteira pública passa a exigir a
+  página.
 - Acrescentado o Número D‑U‑N‑S® 583149431 à linha de identificação da empresa no
   rodapé, ao lado do CNPJ e da Inscrição Municipal, nas quatro superfícies
   publicadas deste repositório: perfil da organização, README da raiz, site e

@@ -46,6 +46,7 @@ const retainedPublicPaths = [
   "quality/code-quality-probe.js",
   "site/index.html",
   "site/sponsor/index.html",
+  "site/privacy/index.html",
   "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",

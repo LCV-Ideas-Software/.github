@@ -15,6 +15,7 @@ This repository hosts the **organization profile** rendered at <https://github.c
 
 - The org-profile content lives in [`profile/README.md`](./profile/README.md). GitHub renders it on the organization landing page automatically.
 - The static organization site lives in [`site/`](./site/) and is deployed with the official Wrangler Action as the root of the Cloudflare Pages project `org-site`, whose canonical public domain is <https://www.lcv.dev>.
+- The privacy policy of the organization's Android apps lives in [`site/privacy/`](./site/privacy/) and is served at <https://www.lcv.dev/privacy/>, the address declared in the Google Play Console for each app.
 - The sponsor landing page lives in [`site/sponsor/`](./site/sponsor/) and renders MercadoPago.js V2 Card Payment Brick secure fields backed by the dedicated `sponsor-motor` Worker at `https://sponsor-motor.lcv.app.br`.
 - Dependabot checks GitHub Actions and npm every day at 05h (UTC−03:00), including weekends, groups minor and patch version updates and security updates separately per ecosystem, and automatically rebases its pull requests. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and npm apply a seven-day cooldown to ordinary version updates. The cooldown does not apply to security updates.
 - The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build.
