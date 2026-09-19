@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Política de Privacidade — LCV Ideas &amp; Software</title>
+    <meta
+      name="description"
+      content="Política de privacidade dos aplicativos Android publicados por LCV Ideas &amp; Software no Google Play."
+    />
+    <link rel="canonical" href="https://www.lcv.dev/privacy/" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="../assets/lcv-ideas-software-mark.svg"
+    />
+    <meta property="og:type" content="article" />
+    <meta
+      property="og:title"
+      content="Política de Privacidade — LCV Ideas &amp; Software"
+    />
+    <meta
+      property="og:description"
+      content="Política de privacidade dos aplicativos Android publicados por LCV Ideas &amp; Software no Google Play."
+    />
+    <meta property="og:url" content="https://www.lcv.dev/privacy/" />
+    <meta
+      property="og:image"
+      content="https://www.lcv.dev/assets/lcv-ideas-software-logo.svg"
+    />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../styles.css" />
+    <style>
+      /* Página de texto corrido: parágrafos justificados com recuo de primeira
+         linha e títulos maiores em negrito (exigência registrada na
+         GITHORG-111). A última linha de cada parágrafo fica alinhada à
+         esquerda; sem isso, motores de renderização esticam linhas curtas de
+         margem a margem. */
+      .legal {
+        max-width: 76ch;
+        margin: 0 auto;
+        padding: 3.2rem var(--pad) 4rem;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .legal__eyebrow {
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        letter-spacing: 0.04em;
+        color: var(--cyan);
+        margin: 0 0 0.6rem;
+      }
+      .legal h1 {
+        font-size: clamp(2rem, 4.5vw, 2.8rem);
+        font-weight: 700;
+        margin: 0 0 0.6rem;
+      }
+      .legal h2 {
+        font-size: clamp(1.45rem, 3vw, 1.75rem);
+        font-weight: 700;
+        margin: 2.4rem 0 0.9rem;
+        padding-top: 1.2rem;
+        border-top: 1px solid var(--border);
+      }
+      .legal h3 {
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin: 1.7rem 0 0.6rem;
+      }
+      .legal p,
+      .legal li {
+        font-size: 1.05rem;
+        line-height: 1.7;
+        color: var(--fg-soft);
+      }
+      .legal p {
+        text-align: justify;
+        text-align-last: left;
+        text-indent: 2em;
+        hyphens: auto;
+        -webkit-hyphens: auto;
+        margin: 0 0 1rem;
+      }
+      .legal p.legal__meta,
+      .legal p.legal__eyebrow,
+      .legal p.legal__lead {
+        text-indent: 0;
+      }
+      .legal p.legal__eyebrow,
+      .legal p.legal__meta {
+        text-align: left;
+      }
+      .legal__meta {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .legal ul {
+        margin: 0 0 1.1rem 2em;
+        padding: 0;
+      }
+      .legal li {
+        margin: 0 0 0.45rem;
+        text-align: justify;
+        text-align-last: left;
+        hyphens: auto;
+        -webkit-hyphens: auto;
+      }
+      .legal strong {
+        color: var(--fg);
+      }
+      .legal a {
+        color: var(--sky);
+        text-decoration: underline;
+        text-underline-offset: 0.15em;
+      }
+      .legal a:hover {
+        color: var(--fg);
+      }
+      .legal code {
+        overflow-wrap: anywhere;
+        font-family: var(--font-mono);
+        font-size: 0.92em;
+        color: var(--fg);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.05em 0.4em;
+      }
+      .legal table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        margin: 0.4rem 0 1.4rem;
+        font-size: 0.98rem;
+      }
+      .legal th,
+      .legal td {
+        text-align: left;
+        vertical-align: top;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid var(--border);
+        color: var(--fg-soft);
+      }
+      .legal th {
+        color: var(--fg);
+        font-family: var(--font-display);
+        font-weight: 600;
+      }
+      .legal th:first-child {
+        width: 46%;
+      }
+      /* Em telas estreitas a tabela rola na horizontal em vez de espremer e
+         quebrar os nomes das fontes no meio. */
+      @media (max-width: 640px) {
+        .legal table {
+          display: block;
+          overflow-x: auto;
+          table-layout: auto;
+        }
+        .legal th:first-child {
+          width: auto;
+          min-width: 16rem;
+        }
+        .legal th,
+        .legal td {
+          min-width: 9rem;
+        }
+      }
+      .legal__box {
+        background: var(--grad-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.1rem 1.3rem;
+        margin: 1.2rem 0 1.4rem;
+      }
+      .legal__box p {
+        text-indent: 0;
+        margin-bottom: 0.5rem;
+      }
+      .legal__box p:last-child {
+        margin-bottom: 0;
+      }
+    </style>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#conteudo">Ir para o conteúdo</a>
+
+    <header class="nav" id="top">
+      <div class="nav__inner">
+        <a class="nav__brand" href="/">
+          <img src="../assets/lcv-ideas-software-mark.svg" alt="" />
+          <span>LCV Ideas &amp; Software</span>
+        </a>
+        <nav class="nav__links" aria-label="Seções">
+          <a href="/#products">Produtos</a>
+          <a href="/#connect">Sobre</a>
+          <a href="/sponsor/">Apoiar</a>
+          <a href="/privacy/" aria-current="page">Privacidade</a>
+        </nav>
+        <a
+          class="nav__cta"
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub
+        </a>
+      </div>
+    </header>
+
+    <main id="conteudo">
+      <article class="legal">
+        <p class="legal__eyebrow">Aplicativos Android · Google Play</p>
+        <h1>Política de Privacidade</h1>
+        <p class="legal__meta">Versão 1.0 · Em vigor desde 19/09/2026</p>
+
+        <p class="legal__lead">
+          Esta política explica, em linguagem direta, como os aplicativos
+          Android publicados por <strong>LCV Ideas &amp; Software</strong> no
+          Google Play tratam os dados de quem os usa. A resposta curta é
+          simples: <strong>os aplicativos não coletam dados pessoais</strong>,
+          não exigem cadastro, não contêm anúncios nem ferramentas de
+          rastreamento, e nada do que você digita neles sai do seu aparelho para
+          os nossos servidores &mdash; porque não há servidores nossos por trás
+          deles. O restante desta página detalha essa afirmação, aplicativo por
+          aplicativo, na forma que a
+          <a
+            href="https://support.google.com/googleplay/android-developer/topic/9877467"
+            target="_blank"
+            rel="noopener noreferrer"
+            >política de Dados do Usuário do Google Play</a
+          >
+          exige de todo desenvolvedor.
+        </p>
+
+        <h2 id="quem">1. Quem é o responsável</h2>
+        <p>
+          O responsável pelos aplicativos e por esta política é
+          <strong>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA</strong
+          >, que atua sob o nome <strong>LCV Ideas &amp; Software</strong>,
+          inscrita no CNPJ sob o n.º 66.584.678/0001-77, com sede na Rua Pais
+          Leme, 215, Conj. 1713, Pinheiros, São Paulo &ndash; SP, CEP 05424-150,
+          Brasil. Esse é o mesmo nome que aparece como desenvolvedor na
+          <a
+            href="https://play.google.com/store/apps/dev?id=8615566246127797211"
+            target="_blank"
+            rel="noopener noreferrer"
+            >página da organização no Google Play</a
+          >.
+        </p>
+        <p>
+          Para qualquer assunto relacionado a privacidade e a esta política, o
+          canal de contato é o e-mail
+          <a href="mailto:contato@lcv.dev">contato@lcv.dev</a>. Questões de
+          segurança da informação podem ser enviadas, em caráter reservado, a
+          <a href="mailto:security@lcv.dev">security@lcv.dev</a>.
+        </p>
+
+        <h2 id="escopo">2. A quais aplicativos esta política se aplica</h2>
+        <p>
+          Esta política cobre todos os aplicativos Android publicados por LCV
+          Ideas &amp; Software no Google Play. São eles:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Aplicativo</th>
+              <th scope="col">Situação</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Calculadora &mdash; cartão de crédito × conta global</td>
+              <td>seção 5 desta política</td>
+            </tr>
+            <tr>
+              <td>Astrólogo</td>
+              <td>em desenvolvimento; seção 6</td>
+            </tr>
+            <tr>
+              <td>Maestro</td>
+              <td>em desenvolvimento; seção 6</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          As regras gerais das seções 3 e 4 valem para todos eles. As seções 5 e
+          6 descrevem o que cada aplicativo faz de específico. Antes de qualquer
+          novo aplicativo ser publicado, esta página é atualizada com a seção
+          correspondente e a data de vigência acima é revisada.
+        </p>
+
+        <h2 id="compromissos">3. O que vale para todos os aplicativos</h2>
+        <div class="legal__box">
+          <p><strong>Não coletamos dados pessoais.</strong></p>
+          <p>
+            <strong>Não há cadastro, conta, login ou senha.</strong> Nenhum
+            aplicativo pede nome, e-mail, telefone, documento, localização,
+            contatos, fotos, arquivos, microfone ou câmera.
+          </p>
+          <p>
+            <strong>Não há anúncios, analytics nem rastreamento.</strong> Os
+            aplicativos não incluem kits de publicidade, de análise de uso, de
+            medição de audiência ou de relatório de falhas de terceiros, e não
+            criam nem armazenam identificadores persistentes próprios para
+            reconhecer o aparelho ou a pessoa (nenhuma forma de
+            <em>fingerprinting</em>).
+          </p>
+          <p>
+            <strong>Não há servidores nossos.</strong> Os aplicativos não enviam
+            dados a LCV Ideas &amp; Software. Tudo o que você digita e tudo o
+            que o aplicativo guarda fica no seu aparelho, sob o controle do
+            sistema Android.
+          </p>
+          <p>
+            <strong>Não vendemos nem compartilhamos dados</strong>, porque não
+            os temos.
+          </p>
+        </div>
+        <p>
+          Quando um aplicativo precisa de informação pública da internet &mdash;
+          por exemplo, uma cotação de moeda &mdash;, ele a busca
+          <strong>diretamente na fonte oficial ou pública</strong>, pela conexão
+          do seu aparelho, sem passar por nenhum intermediário nosso. Toda
+          conexão desse tipo usa HTTPS, isto é,
+          <strong>criptografia em trânsito</strong>. Como em qualquer acesso à
+          internet, o servidor consultado recebe o endereço IP da conexão e um
+          cabeçalho de identificação do programa que fez o pedido; o nosso
+          identifica honestamente o aplicativo e a sua versão, e nada mais.
+          Esses servidores são operados por terceiros, e o tratamento que eles
+          dão aos seus registros de acesso é regido pelas políticas deles,
+          nomeadas na seção de cada aplicativo.
+        </p>
+        <p>
+          Os aplicativos não são dirigidos a crianças e não contêm conteúdo
+          destinado a menores de 13 anos; como não coletam dado algum, não
+          coletam dados de crianças.
+        </p>
+
+        <h2 id="direitos">4. Seus dados, seus direitos e como apagar tudo</h2>
+        <p>
+          Os dados que um aplicativo guarda no aparelho &mdash; preferências,
+          caches e históricos de uso descritos na seção de cada aplicativo
+          &mdash; existem apenas para o aplicativo funcionar e podem ser
+          eliminados por você a qualquer momento, sem pedir a ninguém:
+          <strong>desinstalar o aplicativo apaga tudo o que ele guardou</strong
+          >, e a opção <em>Limpar armazenamento</em> nas configurações do
+          Android tem o mesmo efeito sem desinstalar. Não há cópia desses dados
+          fora do aparelho, portanto não há nada a apagar do nosso lado.
+        </p>
+        <p>
+          A Lei Geral de Proteção de Dados Pessoais (Lei n.º 13.709/2018)
+          garante a toda pessoa os direitos de confirmação, acesso, correção,
+          eliminação, portabilidade e informação sobre o tratamento de seus
+          dados pessoais. Como LCV Ideas &amp; Software não trata dados pessoais
+          por meio destes aplicativos, não há dados sobre os quais exercer esses
+          direitos junto a nós; ainda assim, qualquer pedido ou dúvida pode ser
+          enviado a
+          <a href="mailto:contato@lcv.dev">contato@lcv.dev</a> e será
+          respondido.
+        </p>
+
+        <h2 id="calculadora">5. Calculadora</h2>
+        <p>
+          A Calculadora é um simulador que compara, para quem está no Brasil,
+          quanto custa comprar moeda estrangeira pelo cartão de crédito e por
+          uma conta global, a partir das cotações oficiais e de mercado do dia.
+          A única permissão que o aplicativo declara ao Android é o
+          <strong>acesso à internet</strong>, necessário para buscar as
+          cotações.
+        </p>
+        <h3>5.1 O que é enviado pela internet, e para quem</h3>
+        <p>
+          Para obter as cotações, o aplicativo faz pedidos diretos a quatro
+          fontes públicas. Em cada pedido vão apenas o
+          <strong>código da moeda</strong> (por exemplo, USD) e, quando
+          aplicável, a <strong>data da cotação</strong> pedida. O valor da
+          compra, os parâmetros que você ajusta e qualquer outro dado do
+          formulário nunca são enviados; a simulação é calculada no aparelho.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Fonte</th>
+              <th scope="col">Para quê</th>
+              <th scope="col">O que recebe</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Banco Central do Brasil</td>
+              <td>cotação PTAX oficial do dia</td>
+              <td>código da moeda e data</td>
+            </tr>
+            <tr>
+              <td>AwesomeAPI</td>
+              <td>cotação de mercado (spot)</td>
+              <td>código da moeda</td>
+            </tr>
+            <tr>
+              <td>Yahoo Finance</td>
+              <td>cotação de mercado de contingência</td>
+              <td>código da moeda</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          O aplicativo não usa chave de acesso nem identificação de usuário em
+          nenhuma dessas fontes. Como explicado na seção 3, cada fonte recebe,
+          pela própria natureza da conexão, o endereço IP do aparelho e o
+          cabeçalho de identificação do aplicativo, e trata esses registros de
+          acesso conforme as suas próprias políticas: a do
+          <a
+            href="https://www.bcb.gov.br/acessoinformacao/politicaprivacidade"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Banco Central do Brasil</a
+          >, a da
+          <a
+            href="https://docs.awesomeapi.com.br/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >AwesomeAPI</a
+          >
+          e a do
+          <a
+            href="https://legal.yahoo.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Yahoo</a
+          >. LCV Ideas &amp; Software não recebe, não vê e não controla esses
+          registros.
+        </p>
+        <h3>5.2 O que fica guardado no aparelho</h3>
+        <ul>
+          <li>
+            <strong>Cotações já consultadas</strong>, para não repetir pedidos:
+            a PTAX de cada dia e moeda e a última cotação de mercado obtida.
+          </li>
+          <li>
+            <strong>Uma série de acompanhamento da própria calibragem</strong>
+            do simulador: a cada simulação, o aplicativo registra a diferença
+            entre a cotação de mercado prevista e a PTAX observada, para exibir
+            a qualidade da calibragem nos últimos sete dias. Essa série contém
+            apenas cotações, datas e percentuais; não contém valores digitados
+            por você e é apagada automaticamente após trinta dias.
+          </li>
+        </ul>
+        <p>
+          Nada disso identifica você, nada disso sai do aparelho, e tudo isso
+          desaparece ao desinstalar o aplicativo ou limpar o seu armazenamento.
+        </p>
+        <h3>
+          5.3 Declaração para a seção "Segurança dos dados" do Google Play
+        </h3>
+        <p>
+          Coerente com o exposto, o formulário de segurança dos dados da
+          Calculadora no Google Play declara:
+          <strong>nenhum dado coletado</strong> e
+          <strong>nenhum dado compartilhado</strong> com terceiros; os dados
+          trafegam <strong>criptografados</strong> (HTTPS); e não há mecanismo
+          de solicitação de exclusão porque não há dado nosso a excluir &mdash;
+          a exclusão é feita pela própria pessoa, no aparelho, como descrito na
+          seção 4.
+        </p>
+
+        <h2 id="outros">6. Astrólogo e Maestro</h2>
+        <p>
+          Estes aplicativos estão em desenvolvimento e ainda não foram
+          publicados. Eles nascem sob os mesmos compromissos da seção 3: sem
+          cadastro, sem anúncios, sem analytics, sem rastreamento, sem
+          identificadores persistentes e sem servidores nossos. Antes de cada um
+          ser publicado no Google Play, esta política receberá uma seção
+          própria, nos moldes da seção 5, descrevendo exatamente o que ele envia
+          pela internet, para quem, e o que guarda no aparelho, e o formulário
+          de segurança dos dados de cada um será preenchido em coerência com
+          ela.
+        </p>
+
+        <h2 id="alteracoes">7. Alterações desta política</h2>
+        <p>
+          Esta política pode ser revisada quando um aplicativo mudar de
+          comportamento ou quando a lei ou as regras do Google Play exigirem. A
+          versão vigente é sempre a publicada neste endereço,
+          <a href="https://www.lcv.dev/privacy/">https://www.lcv.dev/privacy/</a
+          >, com o número de versão e a data de vigência indicados no topo da
+          página.
+        </p>
+      </article>
+    </main>
+
+    <footer class="footer">
+      <div class="footer__row">
+        <a
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+          >GitHub</a
+        >
+        <a href="mailto:contato@lcv.dev" aria-label="Contato por email"
+          >Contato</a
+        >
+        <a href="/sponsor/">Apoiar</a>
+        <a href="/privacy/">Privacidade</a>
+        <a href="../OCTICONS-LICENSE.txt">Licença dos ícones GitHub</a>
+      </div>
+      <div class="footer__legal">
+        <span class="footer__brand"
+          >Copyright © <span id="year">2026</span> LCV Ideas &amp;
+          Software</span
+        >
+        LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br />Rua Pais
+        Leme, 215 Conj 1713&nbsp;&nbsp;- Pinheiros<br />São Paulo - SP<br />CEP
+        05424-150<br />CNPJ: 66.584.678/0001-77 - IM: 3039854 - Número D‑U‑N‑S®
+        583149431
+      </div>
+      <div class="footer__store">
+        <a
+          href="https://play.google.com/store/apps/dev?id=8615566246127797211"
+          target="_blank"
+          rel="noopener noreferrer"
+          ><img
+            src="../assets/google-play-oficial.png"
+            alt="Disponível no Google Play"
+            height="56"
+        /></a>
+      </div>
+    </footer>
+  </body>
+</html>
