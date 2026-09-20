@@ -42,13 +42,14 @@ location: Brazil
 model: single-operator studio, multi-agent engineering
 surface:
   public_repositories: 14
-  live_products: 4 web apps + 3 operator services + 3 developer tools
-  android_portfolio: 3 delivery repositories (governance baseline stage)
+  live_products: 4 web apps + 1 Android app + 3 operator services + 3 developer tools
+  android_portfolio: 1 app published on Google Play, 2 editions started
 stack:
-  languages: [TypeScript, JavaScript, Rust, Python, SQL]
+  languages: [TypeScript, JavaScript, Kotlin, Rust, Python, SQL]
   frontend: [React 19, Vite 8, TipTap, PWA/Workbox, DOMPurify]
   edge: [Cloudflare Pages, Workers, Hono, D1, R2, Secrets Store, Cron Triggers]
   desktop: [Tauri 2 (Rust)]
+  mobile: [Kotlin, Jetpack Compose, Material 3, Hilt, Room, Retrofit/OkHttp, Gradle]
   ai: [MCP servers, Claude, Codex, Gemini, DeepSeek, Grok, Perplexity]
   payments: [Mercado Pago Checkout Transparente (Orders API + 3DS)]
   quality: [Vitest, Zod, Biome, CodeQL, Code Quality, Zizmor, OpenSSF Scorecard]
@@ -71,7 +72,7 @@ A small, opinionated portfolio organized in four layers, with its web services c
 1. **Public products** — consumer-facing web apps with AI assistance, deployed on Cloudflare Pages with Worker backends.
 2. **Operator infrastructure** — the single-tenant control plane and supporting services that govern the public products.
 3. **Developer tooling** — open-source MCP servers and editorial workbenches built around multi-agent AI convergence.
-4. **Android portfolio** — public delivery repositories for the Android editions, currently carrying the reviewed governance, security and release baseline ahead of their application code.
+4. **Android portfolio** — native Android editions of the products, written in Kotlin with Jetpack Compose. The _Calculadora_ shipped **v1.0.0 to Google Play** on 20/09/2026; the _Astrólogo_ and _Maestro_ editions are started, with their Gradle projects open.
 
 The organization maintains **14 active public repositories**, including its institutional `.github` repository. Product and tooling repositories expose public project surfaces or operational endpoints over HTTPS on custom domains. Engineering work follows strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL default setup on every repository, Secret Scanning push protection, and SHA-pinned external GitHub Actions.
 
@@ -162,6 +163,33 @@ The organization maintains **14 active public repositories**, including its inst
 </tr>
 </table>
 
+### Mobile (Android)
+
+<table>
+<tr>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/kotlin/kotlin-original.svg" width="46" height="46" alt="Kotlin" />
+    <br><sub><b>Kotlin</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/android/android-original.svg" width="46" height="46" alt="Android" />
+    <br><sub><b>Android</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/jetpackcompose/jetpackcompose-original.svg" width="46" height="46" alt="Jetpack Compose" />
+    <br><sub><b>Jetpack Compose</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/Material_3-6750A4?style=flat-square&logo=materialdesign&logoColor=white" alt="Material 3" />
+    <br><sub><b>Material 3</b></sub>
+  </td>
+  <td align="center" width="105">
+    <img src="https://img.shields.io/badge/Gradle-02303A?style=flat-square&logo=gradle&logoColor=white" alt="Gradle" />
+    <br><sub><b>Gradle</b></sub>
+  </td>
+</tr>
+</table>
+
 ### AI &amp; Quality gates
 
 <table>
@@ -222,13 +250,13 @@ The organization maintains **14 active public repositories**, including its inst
 
 ### 📱 Android portfolio
 
-Public delivery repositories for the Android editions. Each currently carries the reviewed governance, security, observability and publication baseline; the Gradle project, signing configuration and application code are introduced only in a reviewed change, never as scaffolding placed to satisfy automation.
+Native Android editions of the products — Kotlin and Jetpack Compose, not web wrappers. The first one is published; the other two have their Gradle projects open and no application code yet. Nothing is presented as more than it is, and no scaffolding is ever placed merely to satisfy automation.
 
 | Repository                                                                           | Project page                                                        | What it does                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**maestro-android**](https://github.com/LCV-Ideas-Software/maestro-android)         | [maestro-android.lcv.dev](https://maestro-android.lcv.dev/)         | Public governance and automation baseline for the future Android edition of _Maestro Editorial AI_. Tracked in [Project #20](https://github.com/orgs/LCV-Ideas-Software/projects/20). |
-| [**calculadora-android**](https://github.com/LCV-Ideas-Software/calculadora-android) | [calculadora-android.lcv.dev](https://calculadora-android.lcv.dev/) | Public delivery repository for the Android edition of the _Calculadora_ — no AI and no tracking by design. Target package name `dev.lcv.calculadora`.                                 |
-| [**astrologo-android**](https://github.com/LCV-Ideas-Software/astrologo-android)     | [astrologo-android.lcv.dev](https://astrologo-android.lcv.dev/)     | Public delivery repository for the Android edition of the astrology product. Tracked in [Project #19](https://github.com/orgs/LCV-Ideas-Software/projects/19).                        |
+| [**maestro-android**](https://github.com/LCV-Ideas-Software/maestro-android)         | [maestro-android.lcv.dev](https://maestro-android.lcv.dev/)         | Android edition of _Maestro Editorial AI_ — **started**: Gradle project and application skeleton open, native port ahead. Tracked in [Project #20](https://github.com/orgs/LCV-Ideas-Software/projects/20). |
+| [**calculadora-android**](https://github.com/LCV-Ideas-Software/calculadora-android) | [calculadora-android.lcv.dev](https://calculadora-android.lcv.dev/) | **v1.0.0 published on Google Play** (20/09/2026). Native Kotlin port of the _Calculadora_: Jetpack Compose with Material 3, the calculation engine as pure Kotlin in `:core:calc`, quote sources behind Retrofit/OkHttp with a Room cache, Hilt for injection. No AI, no tracking, no ads, no account; AGPL-3.0. Package `dev.lcv.calculadora`. |
+| [**astrologo-android**](https://github.com/LCV-Ideas-Software/astrologo-android)     | [astrologo-android.lcv.dev](https://astrologo-android.lcv.dev/)     | Android edition of the astrology product — **started**: Gradle project and application skeleton open, native port ahead. Tracked in [Project #19](https://github.com/orgs/LCV-Ideas-Software/projects/19). |
 
 ### 🏛️ Organization infrastructure
 

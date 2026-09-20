@@ -16,6 +16,21 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- O portfólio Android deixou de ser descrito como estágio de baseline. A
+  **Calculadora Android publicou a v1.0.0 na Google Play em 20/09/2026** — port
+  nativo em Kotlin com Jetpack Compose e Material 3, motor de cálculo em Kotlin
+  puro, cache em Room, injeção com Hilt, sem IA, sem rastreamento, sem anúncio e
+  sem conta, sob AGPL-3.0. As edições Android do Astrólogo e do Maestro constam
+  como **iniciadas**: projeto Gradle aberto e nenhuma linha de Kotlin escrita.
+  O perfil da organização afirmava, em quatro pontos, que os três repositórios
+  carregavam apenas governança "ahead of their application code", o que deixou
+  de ser verdade (LCV-203).
+
+- A vitrine de tecnologias do perfil ganhou a linha **Mobile (Android)** com
+  Kotlin, Android e Jetpack Compose, e a página passou a declarar a camada móvel
+  na Plataforma Compartilhada e a trazer o cartão do aplicativo publicado — até
+  aqui o site não mencionava Android em lugar nenhum (LCV-203).
+
 - A publicação do `www.lcv.dev` na Cloudflare Pages saiu deste repositório. O
   operador renomeou o projeto de `org-site` para `enterprise-site` e determinou
   que a origem passasse a ser o `.github-private`, que serve o mesmo `site/`
