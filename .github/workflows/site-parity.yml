@@ -1,0 +1,53 @@
+# The site published from here must stay byte-identical to the copy in the
+# .github repository, which publishes org.lcv.dev. Nothing compares the two
+# unless something reaches across, so this is the check that does it.
+name: Site Parity
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/site-manifest.mjs"
+      - "scripts/site-parity-check.mjs"
+      - "test/site-manifest.test.mjs"
+      - "test/site-parity.test.mjs"
+      - "site/**"
+      - ".github/workflows/site-parity.yml"
+  schedule:
+    - cron: "23 10 * * *" # daily, 07:23 in Brasília, after both Pages deploys
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: site-parity
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    name: Compare the two published copies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # Read this repository's site/ and its recorded manifest.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+
+      # Offline: the recorded manifest must describe this repository's site/.
+      - name: Verify the manifest describes this site
+        run: node --test test/site-manifest.test.mjs test/site-parity.test.mjs
+
+      # Networked: only on trusted refs, so review never depends on the other
+      # site being reachable at that moment.
+      - name: Compare with the counterpart published manifest
+        if: github.event_name != 'pull_request'
+        run: node scripts/site-parity-check.mjs

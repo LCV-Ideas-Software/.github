@@ -33,11 +33,11 @@ const migratedOperationalPaths = [
 
 const retainedPublicPaths = [
   ".github/CODEOWNERS",
-  ".github/workflows/cloudflare-pages.yml",
   ".github/workflows/dependabot-auto-merge.yml",
   ".github/workflows/dependency-review.yml",
   ".github/workflows/linear-release.yml",
   ".github/workflows/pages.yml",
+  ".github/workflows/site-parity.yml",
   ".github/workflows/scorecard.yml",
   ".github/workflows/zizmor.yml",
   ".github/ISSUE_TEMPLATE",
@@ -45,6 +45,9 @@ const retainedPublicPaths = [
   "profile/README.md",
   "quality/code-quality-probe.js",
   "site/index.html",
+  "site/site-manifest.json",
+  "scripts/site-manifest.mjs",
+  "scripts/site-parity-check.mjs",
   "site/sponsor/index.html",
   "site/privacy/index.html",
   "CHANGELOG.md",
