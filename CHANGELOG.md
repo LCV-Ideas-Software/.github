@@ -14,7 +14,25 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+### Changed
+
+- A publicação do `www.lcv.dev` na Cloudflare Pages saiu deste repositório. O
+  operador renomeou o projeto de `org-site` para `enterprise-site` e determinou
+  que a origem passasse a ser o `.github-private`, que serve o mesmo `site/`
+  também ao `enterprise.lcv.dev` no GitHub Pages. Aqui, o GitHub Pages segue
+  publicando `site/` — agora em `org.lcv.dev`. Com o deploy, saíram o
+  `cloudflare/wrangler-action`, a dependência `wrangler` e a resolução escopada
+  de Sharp sob Miniflare, que existia por causa dela: inventário que descreve o
+  que não está mais aqui deixa de ser inventário (LCV-204).
+
 ### Added
+
+- As duas cópias de `site/` precisam permanecer idênticas, e nada compara dois
+  repositórios sozinho. Cada um passa a registrar um manifesto SHA-256 do
+  próprio `site/` em `site/site-manifest.json`, e o workflow `Site Parity`
+  compara diariamente com o manifesto que o outro publica, reprovando com o
+  nome do arquivo divergente. Em pull request roda só a metade offline, para
+  que a revisão não dependa de o outro site estar no ar (LCV-204).
 
 - Publicada a página pública de **Política de Privacidade** dos aplicativos
   Android em `site/privacy/index.html`, servida em

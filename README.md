@@ -5,7 +5,7 @@
 # `.github` — LCV Ideas &amp; Software
 
 [![Pages](https://github.com/LCV-Ideas-Software/.github/actions/workflows/pages.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/pages.yml)
-[![Cloudflare Pages](https://github.com/LCV-Ideas-Software/.github/actions/workflows/cloudflare-pages.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/cloudflare-pages.yml)
+[![Site Parity](https://github.com/LCV-Ideas-Software/.github/actions/workflows/site-parity.yml/badge.svg)](https://github.com/LCV-Ideas-Software/.github/actions/workflows/site-parity.yml)
 [![license: proprietary](https://img.shields.io/badge/license-proprietary-lightgrey.svg)](./LICENSE)
 Institutional repository for the organization profile and shared community-health defaults across LCV Ideas & Software repositories.
 
@@ -14,8 +14,10 @@ Institutional repository for the organization profile and shared community-healt
 This repository hosts the **organization profile** rendered at <https://github.com/LCV-Ideas-Software> and any community health files (issue templates, code of conduct, contributing guides, etc.) shared as defaults across the organization.
 
 - The org-profile content lives in [`profile/README.md`](./profile/README.md). GitHub renders it on the organization landing page automatically.
-- The static organization site lives in [`site/`](./site/) and is deployed with the official Wrangler Action as the root of the Cloudflare Pages project `org-site`, whose canonical public domain is <https://www.lcv.dev>.
-- The privacy policy of the organization's Android apps lives in [`site/privacy/`](./site/privacy/) and is served at <https://www.lcv.dev/privacy/>, the address declared in the Google Play Console for each app.
+- The static organization site lives in [`site/`](./site/) and is published by [`pages.yml`](./.github/workflows/pages.yml) to GitHub Pages at <https://org.lcv.dev>.
+- Since LCV-204 this repository no longer deploys to Cloudflare Pages. The canonical public site <https://www.lcv.dev> is published from [`LCV-Ideas-Software/.github-private`](https://github.com/LCV-Ideas-Software/.github-private), which serves the same `site/` to the Cloudflare Pages project `enterprise-site` and to <https://enterprise.lcv.dev> on GitHub Pages.
+- The two copies of `site/` must stay byte-identical. Each repository records a SHA-256 manifest of its own copy in [`site/site-manifest.json`](./site/site-manifest.json), and [`site-parity.yml`](./.github/workflows/site-parity.yml) compares it daily with the manifest the counterpart publishes.
+- The privacy policy of the organization's Android apps lives in [`site/privacy/`](./site/privacy/) and is served at <https://www.lcv.dev/privacy/>, the address declared in the Google Play Console for each app. That address is now served from the counterpart repository; this copy is the one the parity gate holds it to.
 - The sponsor landing page lives in [`site/sponsor/`](./site/sponsor/) and renders MercadoPago.js V2 Card Payment Brick secure fields backed by the dedicated `sponsor-motor` Worker at `https://sponsor-motor.lcv.app.br`.
 - Dependabot checks GitHub Actions and npm every day at 05h (UTC−03:00), including weekends, groups minor and patch version updates and security updates separately per ecosystem, and automatically rebases its pull requests. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and npm apply a seven-day cooldown to ordinary version updates. The cooldown does not apply to security updates.
 - The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build.

@@ -19,24 +19,12 @@ has no parallel scanner, pin auditor, containerized Zizmor runtime, or policy wr
 Licenses below were read from each package's own published manifest or from its upstream
 repository, not inferred.
 
-## Scoped security resolution
-
-The root manifest uses the official npm `overrides` field only for Sharp under Miniflare,
-selecting the patched upstream package for
-[GHSA-rgj7-g3m4-5g8c](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c).
-The exact version and integrity remain in the manifest and npm-generated lockfile.
-Remove this scoped resolution once the selected official Wrangler release includes the
-patched Sharp dependency and the existing advisory and build checks pass without it.
-See the [npm documentation](https://docs.npmjs.com/cli/v12/configuring-npm/package-json/#overrides)
-and the [merged upstream correction](https://github.com/cloudflare/workers-sdk/pull/15580).
-
 ## Repository root — `package.json`
 
 | Component  | License           | Scope       | Source                                   |
 | ---------- | ----------------- | ----------- | ---------------------------------------- |
 | commonmark | BSD-2-Clause      | development | https://www.npmjs.com/package/commonmark |
 | prettier   | MIT               | development | https://www.npmjs.com/package/prettier   |
-| wrangler   | MIT OR Apache-2.0 | development | https://www.npmjs.com/package/wrangler   |
 
 ## GitHub Actions
 
@@ -47,7 +35,6 @@ versioned workflows.
 | ---------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------- |
 | `actions/checkout`                 | [MIT](https://github.com/actions/checkout/blob/main/LICENSE)                         | https://github.com/actions/checkout                 | Read repository content and complete Git history                          |
 | `actions/setup-node`               | [MIT](https://github.com/actions/setup-node/blob/main/LICENSE)                       | https://github.com/actions/setup-node               | Install the Node.js runtime used by public-site validation and deployment |
-| `cloudflare/wrangler-action`       | [Apache-2.0](https://github.com/cloudflare/wrangler-action/blob/main/LICENSE-APACHE) | https://github.com/cloudflare/wrangler-action       | Deploy the organization site to Cloudflare Pages                          |
 | `github/codeql-action`             | [MIT](https://github.com/github/codeql-action/blob/main/LICENSE)                     | https://github.com/github/codeql-action             | Upload the Scorecard SARIF to code scanning                               |
 | `actions/dependency-review-action` | [MIT](https://github.com/actions/dependency-review-action/blob/main/LICENSE)         | https://github.com/actions/dependency-review-action | Review dependency changes on pull requests                                |
 | `linear/linear-release-action`     | [MIT](https://github.com/linear/linear-release-action/blob/main/LICENSE)             | https://github.com/linear/linear-release-action     | Create repository releases in the corresponding Linear pipeline           |

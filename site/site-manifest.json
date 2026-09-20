@@ -1,0 +1,15 @@
+{
+  "files": {
+    ".nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "app.js": "c0dc565600affa54a16d493d34b7ec7d8fa2c7ab31f5c4c8c540c92a51b5f9cb",
+    "assets/google-play-oficial.png": "e1ad5e03f636d94b05448c1f156e39b012b9e1d772b730d9e27d066695531a6b",
+    "assets/lcv-ideas-software-logo.svg": "70631f32e8b4c01d794a3af5016484dd09d51beb0c26abf3a80a9355db179f27",
+    "assets/lcv-ideas-software-mark.svg": "e5761198e95f5f6011e1ba24261c267e7b310bf00ff074f84aa0978e44abe2db",
+    "index.html": "15217a010288f1d8fa240f8fa935c24c0b0c52820bbf2280f6fd019be151102e",
+    "OCTICONS-LICENSE.txt": "da259c8bd0de62713ccdcf88910aebca810644f98c2c912bad814fc79ea778df",
+    "privacy/index.html": "36129605e5169e46ec8c80f9ddafe36827225dcd29875d65006904c96afbcc74",
+    "sponsor/assets/mercadopago-oficial.png": "863719a51c238ef136f6ad53b9c25e3589846e06930bce6c6df5282cd4c1340f",
+    "sponsor/index.html": "e3a14e5eae799b0cb57cf2654f53d89a53453f9b19ef449e24ea6936fc33d19f",
+    "styles.css": "95af6f951c2378ce13a5a9710fd0537172a0307df8898b4b9b139c72ed0f3c6a"
+  }
+}
