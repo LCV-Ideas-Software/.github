@@ -16,6 +16,9 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- Alinhado o pin oficial do upload de SARIF no starter workflow do Scorecard
+  com o CodeQL Action v4.38.2 já usado pelo workflow deste repositório.
+
 - O portfólio Android deixou de ser descrito como estágio de baseline. A
   **Calculadora Android publicou a v1.0.0 na Google Play em 20/09/2026** — port
   nativo em Kotlin com Jetpack Compose e Material 3, motor de cálculo em Kotlin
