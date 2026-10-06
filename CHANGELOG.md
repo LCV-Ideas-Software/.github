@@ -16,6 +16,12 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- Atualizados o README, o perfil e o site compartilhado para os repositórios
+  `admin-app`, `sponsor-motor` e `mtasts-motor` com código-fonte privado: o
+  inventário passa a 11 públicos, 2 internos e 4 privados, e as superfícies
+  públicas deixam de oferecer links de código sem acesso. Os termos de licença
+  existentes e a paridade por bytes entre os dois sites são preservados (LCV-316).
+
 - Alinhado o pin oficial do upload de SARIF no starter workflow do Scorecard
   com o CodeQL Action v4.38.2 já usado pelo workflow deste repositório.
 

@@ -36,6 +36,12 @@ Changes from 11/08/2026 onward are recorded in [`CHANGELOG.md`](./CHANGELOG.md),
 
 For product-specific documentation, see each repository in the [organization listing](https://github.com/orgs/LCV-Ideas-Software/repositories).
 
+The organization currently has **11 public, 2 internal and 4 private repositories**.
+The operator-service source repositories `admin-app`, `sponsor-motor` and
+`mtasts-motor` are private. The public profile and shared site identify that
+visibility without linking visitors to source they cannot access. Deployed
+service access and existing license terms remain governed separately.
+
 ## Repository conventions
 
 - **License**: proprietary — **All rights reserved**. Public visibility exists for GitHub's special `.github` features and grants no rights beyond those provided by the applicable [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) through the platform.
