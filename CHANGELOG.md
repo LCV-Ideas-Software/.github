@@ -16,6 +16,23 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- Privacy policy 1.1 (`site/privacy/index.html`): the Maestro app gets its own
+  section (6) before its first publication on Google Play: what the app sends
+  and to whom (the AI providers the user enables, with the user's own keys,
+  each provider's API data terms and retention, the Gemini unpaid tier and
+  DeepSeek's downstream duties; the sites cited in the text and Google Public
+  DNS; Crossref and OpenAlex, with their request logs), what stays on the
+  device, and the Data safety declaration in the form's vocabulary
+  (collection required and optional, purposes, the sharing exception for the
+  user's own action, approximate location inferred from the IP). The general
+  promises of sections 1 to 4 carry the Maestro exception, and section 4
+  gains the rights flow for what the user sends to those providers. Astrologo
+  moves to section 7 and the amendments clause to section 8; section 5.1
+  says that the AwesomeAPI publishes no privacy policy the developer could
+  find, instead of presenting its documentation as one; the site manifest
+  is regenerated and the copy is byte-identical in both site repositories
+  (maestro-android#100).
+
 - Update the official Linear Release Action to v0.18.1 at its full commit SHA,
   select the official CLI v0.18.0 explicitly and retain upstream checksum
   verification (LCV-316).
