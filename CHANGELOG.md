@@ -16,6 +16,10 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- Update the official Linear Release Action to v0.18.1 at its full commit SHA,
+  select the official CLI v0.18.0 explicitly and retain upstream checksum
+  verification (LCV-316).
+
 - Atualizados o README, o perfil e o site compartilhado para os repositórios
   `admin-app`, `sponsor-motor` e `mtasts-motor` com código-fonte privado: o
   inventário passa a 11 públicos, 2 internos e 4 privados, e as superfícies
