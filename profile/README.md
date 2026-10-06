@@ -17,7 +17,7 @@
   <a href="https://github.com/LCV-Ideas-Software"><img src="https://img.shields.io/badge/org-LCV--Ideas--Software-38bdf8.svg?style=flat-square" alt="GitHub organization"></a>
   <a href="https://www.lcv.dev"><img src="https://img.shields.io/badge/homepage-www.lcv.dev-2563eb.svg?style=flat-square" alt="www.lcv.dev"></a>
   <img src="https://img.shields.io/badge/location-Brazil-34d399.svg?style=flat-square" alt="Brazil">
-  <img src="https://img.shields.io/badge/repos-14%20public-7dd3fc.svg?style=flat-square" alt="14 public repositories">
+  <img src="https://img.shields.io/badge/repos-11%20public-7dd3fc.svg?style=flat-square" alt="11 public repositories">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg?style=flat-square" alt="Cloudflare Pages and Workers">
   <img src="https://img.shields.io/badge/AI-6%20model%20review%20panel-34d399.svg?style=flat-square" alt="Six-model review panel">
 </p>
@@ -41,7 +41,7 @@ homepage: https://www.lcv.dev
 location: Brazil
 model: single-operator studio, multi-agent engineering
 surface:
-  public_repositories: 14
+  public_repositories: 11
   live_products: 4 web apps + 1 Android app + 3 operator services + 3 developer tools
   android_portfolio: 1 app published on Google Play, 2 editions started
 stack:
@@ -74,7 +74,7 @@ A small, opinionated portfolio organized in four layers, with its web services c
 3. **Developer tooling** — open-source MCP servers and editorial workbenches built around multi-agent AI convergence.
 4. **Android portfolio** — native Android editions of the products, written in Kotlin with Jetpack Compose. The _Calculadora_ shipped **v1.0.0 to Google Play** on 20/09/2026; the _Astrólogo_ and _Maestro_ editions are started, with their Gradle projects open.
 
-The organization maintains **14 active public repositories**, including its institutional `.github` repository. Product and tooling repositories expose public project surfaces or operational endpoints over HTTPS on custom domains. Engineering work follows strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL default setup on every repository, Secret Scanning push protection, and SHA-pinned external GitHub Actions.
+The organization maintains **11 active public repositories**, including its institutional `.github` repository. Product and tooling repositories expose public project surfaces or operational endpoints over HTTPS on custom domains. Engineering work follows strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL default setup on every repository, Secret Scanning push protection, and SHA-pinned external GitHub Actions.
 
 <img src="https://raw.githubusercontent.com/LCV-Ideas-Software/.github/main/profile/assets/section-divider.svg" alt="" width="100%" />
 
@@ -234,11 +234,13 @@ The organization maintains **14 active public repositories**, including its inst
 
 ### 🛠️ Operator infrastructure
 
+The source repositories for these three services are **private**. Access to the deployed services follows their own controls; public service availability does not make the source repository public.
+
 | Repository                                                               | Product / service endpoint                                    | What it does                                                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**admin-app**](https://github.com/LCV-Ideas-Software/admin-app)         | [admin.lcv.app.br](https://admin.lcv.app.br/)                 | Operator admin dashboard for the multi-app Cloudflare workspace. Single-tenant by design. React 19 + Vite 8 on Pages + Hono Worker, gated by Cloudflare Access (Zero Trust JWT). Modules include post editor, AI model selection, DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT ingestion, and operational telemetry.   |
-| [**mtasts-motor**](https://github.com/LCV-Ideas-Software/mtasts-motor)   | [mtasts-motor.lcv.dev](https://mtasts-motor.lcv.dev)          | Cloudflare Worker serving dynamic [MTA-STS](https://datatracker.ietf.org/doc/html/rfc8461) policies from a D1 backing store. Designed for multi-domain operators behind the `mta-sts.<domain>` subdomain convention (RFC 8461).                                                                                                   |
-| [**sponsor-motor**](https://github.com/LCV-Ideas-Software/sponsor-motor) | [sponsor-motor.lcv.app.br](https://sponsor-motor.lcv.app.br/) | Dedicated Cloudflare Worker for the organization sponsor flow. Processes Mercado Pago Checkout Transparente orders through the official backend SDK, records minimal `sponsor_*` audit data in `bigdata_db`, validates signed webhooks, and backs the secure sponsor page at [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor/). |
+| **admin-app** (private source)         | [admin.lcv.app.br](https://admin.lcv.app.br/)                 | Operator admin dashboard for the multi-app Cloudflare workspace. Single-tenant by design. React 19 + Vite 8 on Pages + Hono Worker, gated by Cloudflare Access (Zero Trust JWT). Modules include post editor, AI model selection, DNS CRUD, Pages and Workers lifecycle, MTA-STS, TLS-RPT ingestion, and operational telemetry.   |
+| **mtasts-motor** (private source)   | [mtasts-motor.lcv.dev](https://mtasts-motor.lcv.dev)          | Cloudflare Worker serving dynamic [MTA-STS](https://datatracker.ietf.org/doc/html/rfc8461) policies from a D1 backing store. Designed for multi-domain operators behind the `mta-sts.<domain>` subdomain convention (RFC 8461).                                                                                                   |
+| **sponsor-motor** (private source) | [sponsor-motor.lcv.app.br](https://sponsor-motor.lcv.app.br/) | Dedicated Cloudflare Worker for the organization sponsor flow. Processes Mercado Pago Checkout Transparente orders through the official backend SDK, records minimal `sponsor_*` audit data in `bigdata_db`, validates signed webhooks, and backs the secure sponsor page at [www.lcv.dev/sponsor](https://www.lcv.dev/sponsor/). |
 
 ### 🤖 Developer tooling
 
@@ -281,7 +283,7 @@ Anti-abuse   Cloudflare Turnstile + GCP Natural Language
 Desktop      Tauri 2 (Maestro)
 ```
 
-- **D1 separation.** Consumer products, the operator control plane and the public Workers (`mtasts-motor`, `sponsor-motor`, `tlsrpt-motor`) share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; internal operational systems keep their own dedicated database. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
+- **D1 separation.** Consumer products, the operator control plane and the Workers (`mtasts-motor`, `sponsor-motor`, `tlsrpt-motor`) share `bigdata_db`; optional Maestro remote configuration uses `maestro_db`; internal operational systems keep their own dedicated database. Cross-app reads use Cloudflare bindings in-place, never public URLs between sibling apps.
 - **One media bucket.** `mainsite-media` is shared by `mainsite-app` and `admin-app`. Upload handling uses magic-byte sniffing, allowlisted MIME types, a 10 MiB cap, and a sandboxed legacy SVG fallback.
 - **Defense in depth.** Cloudflare Access gates _who_ enters admin surfaces; CSP gates _what_ the browser can execute on public surfaces; Turnstile gates form anti-abuse; GCP Natural Language scores comment moderation.
 
@@ -301,7 +303,9 @@ Desktop      Tauri 2 (Maestro)
 
 ## ⚖️ Licensing
 
-| License                                                         | Public repositories                                                                                                                                                                                  |
+Repository visibility and license terms are separate. The private source repositories `admin-app`, `mtasts-motor` and `sponsor-motor` remain listed under their existing licenses; their GitHub contents require authorized access.
+
+| License                                                         | Software repositories                                                                                                                                                                                  |
 | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `admin-app`, `mtasts-motor`, `sponsor-motor`, `maestro-app`, `maestro-android`, `calculadora-android`, `astrologo-android` |
 | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)       | `ultrabrain-mcp`, `cross-review`                                                                                                                                                                     |
