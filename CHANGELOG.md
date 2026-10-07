@@ -16,6 +16,11 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- Atualizado o telefone fixo institucional para +55 (11) 5229-0077 e seu
+  link do WhatsApp. O site compartilhado exibe os dois telefones no cartão da
+  organização e em cards individuais do WhatsApp, preservando a paridade entre
+  os dois repositórios.
+
 - Privacy policy 1.1 (`site/privacy/index.html`): the Maestro app gets its own
   section (6) before its first publication on Google Play: what the app sends
   and to whom (the AI providers the user enables, with the user's own keys,
