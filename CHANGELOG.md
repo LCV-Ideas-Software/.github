@@ -14,7 +14,7 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
-- Clarify the official Gemini eligibility and abuse retention terms, Google DNS uses and Crossref log retention in the shared privacy policy (LCV-334).
+- Clarify official Gemini eligibility for developers building for professional or business purposes, excluding consumer use, and abuse retention terms; distinguish page URLs, DNS names and connection IPs, and clarify Google DNS uses and Crossref log retention in the shared privacy policy (LCV-334).
 - Update the official `actions/upload-artifact` to v7.0.2 at complete commit SHAs (LCV-334).
 
 ### Changed
