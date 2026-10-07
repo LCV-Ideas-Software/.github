@@ -220,7 +220,7 @@
       <article class="legal">
         <p class="legal__eyebrow">Aplicativos Android · Google Play</p>
         <h1>Política de Privacidade</h1>
-        <p class="legal__meta">Versão 1.1 · Em vigor desde 06/10/2026</p>
+        <p class="legal__meta">Versão 1.2 · Em vigor desde 06/10/2026</p>
 
         <p class="legal__lead">
           Esta política explica, em linguagem direta, como os aplicativos
@@ -541,12 +541,20 @@
           O Maestro é um aplicativo de redação em que assistentes de
           inteligência artificial de seis empresas diferentes escrevem e revisam
           um texto seu, em rodadas, usando as chaves de acesso que você mesmo
-          obteve em cada empresa. As permissões que o aplicativo declara ao
-          Android são o <strong>acesso à internet</strong>, para falar com essas
+          obteve em cada empresa. As permissões do Android que o aplicativo usa
+          são o <strong>acesso à internet</strong>, para falar com essas
           empresas e conferir os links do texto; as
           <strong>notificações</strong>, opcionais, para avisar o andamento de
-          uma sessão em segundo plano; e a <strong>biometria</strong>, para
-          confirmar a sua identidade antes de usar as chaves guardadas.
+          uma sessão em segundo plano; a <strong>biometria</strong>, para
+          confirmar a sua identidade antes de usar as chaves guardadas (a trava
+          de tela do aparelho, como o PIN, também serve); e o
+          <strong>serviço em primeiro plano</strong> do tipo sincronização de
+          dados, para a sessão continuar quando você sai do aplicativo. A
+          WorkManager, a biblioteca oficial do Android que agenda esse trabalho,
+          acrescenta três permissões que o Android concede na instalação, sem
+          perguntar: manter o processador ativo enquanto a sessão roda,
+          consultar o estado da conexão e reagendar o trabalho pendente depois
+          que o aparelho reinicia.
         </p>
         <div class="legal__box">
           <p>
