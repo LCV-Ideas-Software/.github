@@ -14,6 +14,8 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update the official `actions/upload-artifact` to v7.0.2 at complete commit SHAs (LCV-334).
+
 ### Changed
 
 - Atualizado o telefone fixo institucional para +55 (11) 5229-0077 e seu
