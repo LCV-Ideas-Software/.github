@@ -21,6 +21,16 @@ presentation rule this organization applies to text meant for people
   organização e em cards individuais do WhatsApp, preservando a paridade entre
   os dois repositórios.
 
+- Privacy policy 1.2 (`site/privacy/index.html`): the Maestro section lists
+  every Android permission the app uses. Version 1.1 named only internet
+  access, notifications and biometrics; the 1.0.0 APK also uses the
+  foreground service of the data-sync type, and WorkManager, the official
+  Android library that schedules the session, adds three permissions Android
+  grants at install time (keeping the processor awake while the session runs,
+  reading the connection state, and rescheduling pending work after a
+  reboot). The identity check also accepts the device screen lock. Counted
+  with `aapt2 dump permissions` on 06/10/2026 (#368; twin
+  LCV-Ideas-Software/.github-private#143).
 - Privacy policy 1.1 (`site/privacy/index.html`): the Maestro app gets its own
   section (6) before its first publication on Google Play: what the app sends
   and to whom (the AI providers the user enables, with the user's own keys,
