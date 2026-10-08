@@ -14,6 +14,8 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update the official CodeQL SARIF upload Action to v4.38.3 at its complete release commit SHA (LCV-336).
+
 - Publish privacy policy 1.4 (`site/privacy/index.html`, in force from 08/10/2026): the Data safety statements match the forms exported from the Play Console for both apps, which declare that they neither collect nor share user data; every statement that nothing reaches LCV Ideas & Software is limited to what the apps send, since a report the user chooses to email does reach us; section 4 states who is responsible for each part and the legal basis for the reports and rights requests sent to us; and the earlier versions 1.0 to 1.3 stay available unchanged at permanent addresses under `site/privacy/<version>/` (LCV-334).
 - Clarify official Gemini eligibility for developers building for professional or business purposes, excluding consumer use, and abuse retention terms; distinguish page URLs, DNS names and connection IPs, and clarify Google DNS uses and Crossref log retention in the shared privacy policy (LCV-334).
 - Update the official `actions/upload-artifact` to v7.0.2 at complete commit SHAs (LCV-334).
@@ -63,7 +65,7 @@ presentation rule this organization applies to text meant for people
   existentes e a paridade por bytes entre os dois sites são preservados (LCV-316).
 
 - Alinhado o pin oficial do upload de SARIF no starter workflow do Scorecard
-  com o CodeQL Action v4.38.2 já usado pelo workflow deste repositório.
+  com o CodeQL Action v4.38.3 já usado pelo workflow deste repositório.
 
 - O portfólio Android deixou de ser descrito como estágio de baseline. A
   **Calculadora Android publicou a v1.0.0 na Google Play em 20/09/2026** — port
@@ -134,7 +136,7 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
-- Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.1 e do
+- Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.3 e do
   zizmor-action para v0.6.4, nos workflows locais e nos starter workflows, com os SHAs completos das respectivas releases.
 
 - `profile/README.md` alinhado ao estado medido do GitHub e da Cloudflare, após
