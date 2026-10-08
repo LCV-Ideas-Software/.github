@@ -14,6 +14,7 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish privacy policy 1.4 (`site/privacy/index.html`, in force from 08/10/2026): the Data safety statements match the forms exported from the Play Console for both apps, which declare that they neither collect nor share user data; every statement that nothing reaches LCV Ideas & Software is limited to what the apps send, since a report the user chooses to email does reach us; section 4 states who is responsible for each part and the legal basis for the reports and rights requests sent to us; and the earlier versions 1.0 to 1.3 stay available unchanged at permanent addresses under `site/privacy/<version>/` (LCV-334).
 - Clarify official Gemini eligibility for developers building for professional or business purposes, excluding consumer use, and abuse retention terms; distinguish page URLs, DNS names and connection IPs, and clarify Google DNS uses and Crossref log retention in the shared privacy policy (LCV-334).
 - Update the official `actions/upload-artifact` to v7.0.2 at complete commit SHAs (LCV-334).
 

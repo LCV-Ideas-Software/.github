@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>
+      Política de Privacidade, versão 1.3 (arquivada) — LCV Ideas &amp; Software
+    </title>
+    <meta
+      name="description"
+      content="Política de privacidade dos aplicativos Android publicados por LCV Ideas &amp; Software no Google Play."
+    />
+    <link rel="canonical" href="https://www.lcv.dev/privacy/1.3/" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="../../assets/lcv-ideas-software-mark.svg"
+    />
+    <meta property="og:type" content="article" />
+    <meta
+      property="og:title"
+      content="Política de Privacidade — LCV Ideas &amp; Software"
+    />
+    <meta
+      property="og:description"
+      content="Política de privacidade dos aplicativos Android publicados por LCV Ideas &amp; Software no Google Play."
+    />
+    <meta property="og:url" content="https://www.lcv.dev/privacy/1.3/" />
+    <meta
+      property="og:image"
+      content="https://www.lcv.dev/assets/lcv-ideas-software-logo.svg"
+    />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../../styles.css" />
+    <style>
+      /* Página de texto corrido: parágrafos justificados com recuo de primeira
+         linha e títulos maiores em negrito (exigência registrada na
+         GITHORG-111). A última linha de cada parágrafo fica alinhada à
+         esquerda; sem isso, motores de renderização esticam linhas curtas de
+         margem a margem. */
+      .legal {
+        max-width: 76ch;
+        margin: 0 auto;
+        padding: 3.2rem var(--pad) 4rem;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .legal__eyebrow {
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        letter-spacing: 0.04em;
+        color: var(--cyan);
+        margin: 0 0 0.6rem;
+      }
+      .legal h1 {
+        font-size: clamp(2rem, 4.5vw, 2.8rem);
+        font-weight: 700;
+        margin: 0 0 0.6rem;
+      }
+      .legal h2 {
+        font-size: clamp(1.45rem, 3vw, 1.75rem);
+        font-weight: 700;
+        margin: 2.4rem 0 0.9rem;
+        padding-top: 1.2rem;
+        border-top: 1px solid var(--border);
+      }
+      .legal h3 {
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin: 1.7rem 0 0.6rem;
+      }
+      .legal p,
+      .legal li {
+        font-size: 1.05rem;
+        line-height: 1.7;
+        color: var(--fg-soft);
+      }
+      .legal p {
+        text-align: justify;
+        text-align-last: left;
+        text-indent: 2em;
+        hyphens: auto;
+        -webkit-hyphens: auto;
+        margin: 0 0 1rem;
+      }
+      .legal p.legal__meta,
+      .legal p.legal__eyebrow,
+      .legal p.legal__lead {
+        text-indent: 0;
+      }
+      .legal p.legal__eyebrow,
+      .legal p.legal__meta {
+        text-align: left;
+      }
+      .legal__meta {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .legal ul {
+        margin: 0 0 1.1rem 2em;
+        padding: 0;
+      }
+      .legal li {
+        margin: 0 0 0.45rem;
+        text-align: justify;
+        text-align-last: left;
+        hyphens: auto;
+        -webkit-hyphens: auto;
+      }
+      .legal strong {
+        color: var(--fg);
+      }
+      .legal a {
+        color: var(--sky);
+        text-decoration: underline;
+        text-underline-offset: 0.15em;
+      }
+      .legal a:hover {
+        color: var(--fg);
+      }
+      .legal code {
+        overflow-wrap: anywhere;
+        font-family: var(--font-mono);
+        font-size: 0.92em;
+        color: var(--fg);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.05em 0.4em;
+      }
+      .legal table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        margin: 0.4rem 0 1.4rem;
+        font-size: 0.98rem;
+      }
+      .legal th,
+      .legal td {
+        text-align: left;
+        vertical-align: top;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid var(--border);
+        color: var(--fg-soft);
+      }
+      .legal th {
+        color: var(--fg);
+        font-family: var(--font-display);
+        font-weight: 600;
+      }
+      .legal th:first-child {
+        width: 46%;
+      }
+      /* Em telas estreitas a tabela rola na horizontal em vez de espremer e
+         quebrar os nomes das fontes no meio. */
+      @media (max-width: 640px) {
+        .legal table {
+          display: block;
+          overflow-x: auto;
+          table-layout: auto;
+        }
+        .legal th:first-child {
+          width: auto;
+          min-width: 16rem;
+        }
+        .legal th,
+        .legal td {
+          min-width: 9rem;
+        }
+      }
+      .legal__box {
+        background: var(--grad-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.1rem 1.3rem;
+        margin: 1.2rem 0 1.4rem;
+      }
+      .legal__box p {
+        text-indent: 0;
+        margin-bottom: 0.5rem;
+      }
+      .legal__box p:last-child {
+        margin-bottom: 0;
+      }
+    </style>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#conteudo">Ir para o conteúdo</a>
+
+    <header class="nav" id="top">
+      <div class="nav__inner">
+        <a class="nav__brand" href="/">
+          <img src="../../assets/lcv-ideas-software-mark.svg" alt="" />
+          <span>LCV Ideas &amp; Software</span>
+        </a>
+        <nav class="nav__links" aria-label="Seções">
+          <a href="/#products">Produtos</a>
+          <a href="/#connect">Sobre</a>
+          <a href="/sponsor/">Apoiar</a>
+          <a href="/privacy/" aria-current="page">Privacidade</a>
+        </nav>
+        <a
+          class="nav__cta"
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub
+        </a>
+      </div>
+    </header>
+
+    <main id="conteudo">
+      <article class="legal">
+        <p class="legal__eyebrow">Aplicativos Android · Google Play</p>
+        <h1>Política de Privacidade</h1>
+        <p class="legal__meta">Versão 1.3 · Em vigor desde 07/10/2026</p>
+        <div class="legal__box">
+          <p>
+            <strong>Versão arquivada.</strong> Esta é a versão 1.3 desta
+            política, em vigor desde 07/10/2026 e substituída em 08/10/2026 pela
+            versão 1.4. A versão em vigor está na
+            <a href="/privacy/">página da Política de Privacidade</a>.
+          </p>
+        </div>
+
+        <p class="legal__lead">
+          Esta política explica, em linguagem direta, como os aplicativos
+          Android publicados por <strong>LCV Ideas &amp; Software</strong> no
+          Google Play tratam os dados de quem os usa. A resposta curta é
+          simples: <strong>nós não coletamos dados pessoais</strong>. Nada do
+          que você digita sai do seu aparelho para os nossos servidores &mdash;
+          porque não há servidores nossos por trás dos aplicativos &mdash;, eles
+          não exigem cadastro e não contêm anúncios nem ferramentas de
+          rastreamento. A única coisa sua que pode chegar a nós é um e-mail que
+          você mesmo nos envie, pelo seu aplicativo de e-mail, para reportar
+          conteúdo ofensivo no Maestro (seção 6.1). Isso não quer dizer que nada
+          saia do aparelho: um dos aplicativos, o Maestro, envia o que você
+          escreve a terceiros, o que no vocabulário do Google Play é coleta e
+          compartilhamento com terceiros, e está declarado como tal na seção
+          6.3. Ele envia às empresas de inteligência artificial que você mesmo
+          escolhe e contrata, com as suas próprias chaves, e, na conferência dos
+          links e na busca de evidências, aos sites citados no texto, ao serviço
+          de nomes do Google, ao Crossref e ao OpenAlex, como a seção 6
+          descreve. O restante desta página detalha essa afirmação, aplicativo
+          por aplicativo, na forma que a
+          <a
+            href="https://support.google.com/googleplay/android-developer/topic/9877467"
+            target="_blank"
+            rel="noopener noreferrer"
+            >política de Dados do Usuário do Google Play</a
+          >
+          exige de todo desenvolvedor.
+        </p>
+
+        <h2 id="quem">1. Quem é o responsável</h2>
+        <p>
+          O responsável pelos aplicativos e por esta política é
+          <strong>LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA</strong
+          >, que atua sob o nome <strong>LCV Ideas &amp; Software</strong>,
+          inscrita no CNPJ sob o n.º 66.584.678/0001-77, com sede na Rua Pais
+          Leme, 215, Conj. 1713, Pinheiros, São Paulo &ndash; SP, CEP 05424-150,
+          Brasil. Esse é o mesmo nome que aparece como desenvolvedor na
+          <a
+            href="https://play.google.com/store/apps/dev?id=8615566246127797211"
+            target="_blank"
+            rel="noopener noreferrer"
+            >página da organização no Google Play</a
+          >.
+        </p>
+        <p>
+          Para qualquer assunto relacionado a privacidade e a esta política, o
+          canal de contato é o e-mail
+          <a href="mailto:contato@lcv.dev">contato@lcv.dev</a>. Questões de
+          segurança da informação podem ser enviadas, em caráter reservado, a
+          <a href="mailto:security@lcv.dev">security@lcv.dev</a>.
+        </p>
+
+        <h2 id="escopo">2. A quais aplicativos esta política se aplica</h2>
+        <p>
+          Esta política cobre todos os aplicativos Android publicados por LCV
+          Ideas &amp; Software no Google Play. São eles:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Aplicativo</th>
+              <th scope="col">Situação</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Calculadora &mdash; cartão de crédito × conta global</td>
+              <td>seção 5 desta política</td>
+            </tr>
+            <tr>
+              <td>Maestro</td>
+              <td>seção 6 desta política</td>
+            </tr>
+            <tr>
+              <td>Astrólogo</td>
+              <td>em desenvolvimento; seção 7</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          As regras gerais das seções 3 e 4 valem para todos eles. As seções 5 a
+          7 descrevem o que cada aplicativo faz de específico. Antes de qualquer
+          novo aplicativo ser publicado, esta página é atualizada com a seção
+          correspondente e a data de vigência acima é revisada.
+        </p>
+
+        <h2 id="compromissos">3. O que vale para todos os aplicativos</h2>
+        <div class="legal__box">
+          <p>
+            <strong>Não coletamos dados pessoais.</strong> A única exceção, em
+            todos os aplicativos, é o e-mail que você mesmo nos mande para
+            reportar conteúdo ofensivo no Maestro, tratado como a seção 6.1
+            descreve.
+          </p>
+          <p>
+            <strong>Não há cadastro, conta, login ou senha.</strong> Nenhum
+            aplicativo pede nome, telefone, documento, localização, contatos,
+            fotos, microfone ou câmera. O Maestro é a exceção em dois pontos,
+            descritos na seção 6: pede, opcionalmente, um e-mail de contato, que
+            vai só ao Crossref, e lê os arquivos que você mesmo escolhe anexar a
+            uma sessão.
+          </p>
+          <p>
+            <strong>Não há anúncios, analytics nem rastreamento.</strong> Os
+            aplicativos não incluem kits de publicidade, de análise de uso, de
+            medição de audiência ou de relatório de falhas de terceiros, e não
+            criam nem armazenam identificadores persistentes próprios para
+            reconhecer o aparelho ou a pessoa (nenhuma forma de
+            <em>fingerprinting</em>).
+          </p>
+          <p>
+            <strong>Não há servidores nossos.</strong> Os aplicativos não enviam
+            dados a LCV Ideas &amp; Software. Tudo o que o aplicativo guarda
+            fica no seu aparelho, sob o controle do sistema Android, e tudo o
+            que você digita fica nele também, com a exceção do Maestro (seção
+            6): nele, o que você escreve vai às empresas de inteligência
+            artificial que você ativou; a consulta que você digita, ou o trecho
+            do texto em torno do link, ao pedir propostas de correção vai ao
+            Crossref e ao OpenAlex, e o e-mail de contato opcional vai só ao
+            Crossref; e os endereços citados no texto vão aos próprios sites e
+            ao serviço de nomes do Google.
+          </p>
+          <p>
+            <strong>Não vendemos nem compartilhamos dados</strong>, porque não
+            os temos. O Maestro envia o que você escreve às empresas de
+            inteligência artificial que você mesmo ativa, com as suas próprias
+            chaves, e o que a seção 6 descreve aos demais serviços: é um envio
+            feito pelo seu aparelho, para o trabalho que você pediu, e nada dele
+            passa por nós. No formulário de segurança dos dados do Google Play
+            esse envio aparece como dados compartilhados com terceiros (seção
+            6.3), porque o formulário descreve o que o aplicativo faz com os
+            seus dados, não o que nós guardamos.
+          </p>
+        </div>
+        <p>
+          Quando um aplicativo precisa de informação pública da internet &mdash;
+          por exemplo, uma cotação de moeda &mdash;, ele a busca
+          <strong>diretamente na fonte oficial ou pública</strong>, pela conexão
+          do seu aparelho, sem passar por nenhum intermediário nosso. Toda
+          conexão desse tipo usa HTTPS, isto é,
+          <strong>criptografia em trânsito</strong>. Como em qualquer acesso à
+          internet, o servidor consultado recebe o endereço IP da conexão e um
+          cabeçalho de identificação do programa que fez o pedido; o nosso
+          identifica honestamente o aplicativo e a sua versão, e nada mais.
+          Esses servidores são operados por terceiros, e o tratamento que eles
+          dão aos seus registros de acesso é regido pelas políticas deles,
+          nomeadas na seção de cada aplicativo.
+        </p>
+        <p>
+          Os aplicativos não são dirigidos a crianças e não contêm conteúdo
+          destinado a menores de 13 anos. Nós não coletamos dado algum, de
+          ninguém, fora o e-mail de relato da seção 6.1; e o Maestro, o único
+          que envia o que você escreve a terceiros, só funciona com chaves de
+          acesso que você mesmo contrata junto às empresas de inteligência
+          artificial, nos termos delas. Para a integração com a API Gemini, os
+          termos da Google exigem usuários com 18 anos ou mais e proíbem
+          clientes dirigidos a menores de 18 anos ou com probabilidade de serem
+          acessados por eles.
+        </p>
+
+        <h2 id="direitos">4. Seus dados, seus direitos e como apagar tudo</h2>
+        <p>
+          Os dados que um aplicativo guarda no aparelho &mdash; preferências,
+          caches e históricos de uso descritos na seção de cada aplicativo
+          &mdash; existem apenas para o aplicativo funcionar e podem ser
+          eliminados por você a qualquer momento, sem pedir a ninguém:
+          <strong>desinstalar o aplicativo apaga tudo o que ele guardou</strong
+          >, e a opção <em>Limpar armazenamento</em> nas configurações do
+          Android tem o mesmo efeito sem desinstalar. Não há cópia desses dados
+          fora do aparelho, portanto não há nada a apagar do nosso lado. A
+          exceção é o que você mesmo envia a terceiros pelo Maestro (seção 6):
+          essas cópias ficam com as empresas que você escolheu, sob as regras e
+          os controles delas, não os nossos.
+        </p>
+        <p>
+          A Lei Geral de Proteção de Dados Pessoais (Lei n.º 13.709/2018)
+          garante a toda pessoa os direitos de confirmação, acesso, correção,
+          eliminação, portabilidade e informação sobre o tratamento de seus
+          dados pessoais. LCV Ideas &amp; Software não recebe nem guarda dados
+          pessoais por meio destes aplicativos; o que o Maestro transmite a
+          terceiros por ordem sua é tratamento de dados no sentido da LGPD (art.
+          5.º, X), e o parágrafo seguinte diz como os direitos se exercem sobre
+          ele. O único dado seu que pode estar conosco é um e-mail de relato de
+          conteúdo ofensivo que você mesmo tenha enviado (seção 6.1): sobre ele,
+          como sobre qualquer dúvida, o pedido vai a
+          <a href="mailto:contato@lcv.dev">contato@lcv.dev</a> e será
+          respondido, e o relato é apagado assim que for tratado, no máximo em
+          90 dias, ou antes, se você pedir.
+        </p>
+        <p>
+          Isso não vale para o que você mesmo envia a terceiros pelo Maestro.
+          Essas cópias estão com as empresas que você ativou, e é nelas que os
+          direitos se exercem, pelos meios que cada uma oferece (seção 6.1).
+          Como quem desenvolve o aplicativo, assumimos perante você o dever de
+          informar previamente, nesta política, como esses dados são tratados e
+          com que base legal &mdash; o seu próprio ato de ativar cada empresa e
+          iniciar a sessão &mdash;, e de responder aos seus pedidos de acesso,
+          cópia, portabilidade, correção, eliminação e informação sobre
+          retenção, encaminhando-os à empresa que detém as cópias quando o
+          atendimento depender dela. Esse dever é explícito nos termos da
+          DeepSeek (itens 3.2 e 3.3) e nós o cumprimos para todas as empresas da
+          seção 6.1, pelo mesmo
+          <a href="mailto:contato@lcv.dev">contato@lcv.dev</a>.
+        </p>
+
+        <h2 id="calculadora">5. Calculadora</h2>
+        <p>
+          A Calculadora é um simulador que compara, para quem está no Brasil,
+          quanto custa comprar moeda estrangeira pelo cartão de crédito e por
+          uma conta global, a partir das cotações oficiais e de mercado do dia.
+          A única permissão que o aplicativo declara ao Android é o
+          <strong>acesso à internet</strong>, necessário para buscar as
+          cotações.
+        </p>
+        <h3>5.1 O que é enviado pela internet, e para quem</h3>
+        <p>
+          Para obter as cotações, o aplicativo faz pedidos diretos a três fontes
+          públicas (ao Banco Central do Brasil por dois endereços diferentes).
+          Em cada pedido vão apenas o
+          <strong>código da moeda</strong> (por exemplo, USD) e, quando
+          aplicável, a <strong>data da cotação</strong> pedida. O valor da
+          compra, os parâmetros que você ajusta e qualquer outro dado do
+          formulário nunca são enviados; a simulação é calculada no aparelho.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Fonte</th>
+              <th scope="col">Para quê</th>
+              <th scope="col">O que recebe</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Banco Central do Brasil</td>
+              <td>cotação PTAX oficial do dia</td>
+              <td>código da moeda e data</td>
+            </tr>
+            <tr>
+              <td>AwesomeAPI</td>
+              <td>cotação de mercado (spot)</td>
+              <td>código da moeda</td>
+            </tr>
+            <tr>
+              <td>Yahoo Finance</td>
+              <td>cotação de mercado de contingência</td>
+              <td>código da moeda</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          O aplicativo não usa chave de acesso nem identificação de usuário em
+          nenhuma dessas fontes. Como explicado na seção 3, cada fonte recebe,
+          pela própria natureza da conexão, o endereço IP do aparelho e o
+          cabeçalho de identificação do aplicativo, e trata esses registros de
+          acesso conforme as suas próprias políticas: a do
+          <a
+            href="https://www.bcb.gov.br/acessoinformacao/politicaprivacidade"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Banco Central do Brasil</a
+          >
+          e a do
+          <a
+            href="https://legal.yahoo.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Yahoo</a
+          >; a AwesomeAPI não publica política de privacidade que tenhamos
+          encontrado, e a
+          <a
+            href="https://docs.awesomeapi.com.br/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >documentação pública dela</a
+          >
+          é a única referência. LCV Ideas &amp; Software não recebe, não vê e
+          não controla esses registros.
+        </p>
+        <h3>5.2 O que fica guardado no aparelho</h3>
+        <ul>
+          <li>
+            <strong>Cotações já consultadas</strong>, para não repetir pedidos:
+            a PTAX de cada dia e moeda e a última cotação de mercado obtida.
+          </li>
+          <li>
+            <strong>Uma série de acompanhamento da própria calibragem</strong>
+            do simulador: a cada simulação, o aplicativo registra a diferença
+            entre a cotação de mercado prevista e a PTAX observada, para exibir
+            a qualidade da calibragem nos últimos sete dias. Essa série contém
+            apenas cotações, datas e percentuais; não contém valores digitados
+            por você e é apagada automaticamente após trinta dias.
+          </li>
+        </ul>
+        <p>
+          Nada disso identifica você, nada disso sai do aparelho, e tudo isso
+          desaparece ao desinstalar o aplicativo ou limpar o seu armazenamento.
+        </p>
+        <h3>
+          5.3 Declaração para a seção "Segurança dos dados" do Google Play
+        </h3>
+        <p>
+          Coerente com o exposto, o formulário de segurança dos dados da
+          Calculadora no Google Play declara:
+          <strong>nenhum dado coletado</strong> e
+          <strong>nenhum dado compartilhado</strong> com terceiros; os dados
+          trafegam <strong>criptografados</strong> (HTTPS); e não há mecanismo
+          de solicitação de exclusão porque não há dado nosso a excluir &mdash;
+          a exclusão é feita pela própria pessoa, no aparelho, como descrito na
+          seção 4. O endereço IP vai às três fontes pela própria natureza da
+          conexão, como a qualquer servidor, e o tratamento dele é o das
+          políticas delas (seção 5.1); o aplicativo não calcula nem pede
+          localização e não usa nenhum serviço intermediário escolhido por nós,
+          que é a diferença para o Maestro, que declara a localização aproximada
+          por causa do serviço de nomes do Google (seção 6.3).
+        </p>
+
+        <h2 id="maestro">6. Maestro</h2>
+        <p>
+          O Maestro é um aplicativo de redação em que assistentes de
+          inteligência artificial de seis empresas diferentes escrevem e revisam
+          um texto seu, em rodadas, usando as chaves de acesso que você mesmo
+          obteve em cada empresa. As permissões do Android que o aplicativo usa
+          são o <strong>acesso à internet</strong>, para falar com essas
+          empresas e conferir os links do texto; as
+          <strong>notificações</strong>, opcionais, para avisar o andamento de
+          uma sessão em segundo plano; a <strong>biometria</strong>, para
+          confirmar a sua identidade antes de usar as chaves guardadas (a trava
+          de tela do aparelho, como o PIN, também serve); e o
+          <strong>serviço em primeiro plano</strong> do tipo sincronização de
+          dados, para a sessão continuar quando você sai do aplicativo. A
+          WorkManager, a biblioteca oficial do Android que agenda esse trabalho,
+          acrescenta três permissões que o Android concede na instalação, sem
+          perguntar: manter o processador ativo enquanto a sessão roda,
+          consultar o estado da conexão e reagendar o trabalho pendente depois
+          que o aparelho reinicia.
+        </p>
+        <div class="legal__box">
+          <p>
+            <strong
+              >LCV Ideas &amp; Software não coleta nem retém nada do que você
+              escreve ou envia pelo Maestro.</strong
+            >
+            Nenhum texto, pedido, anexo, chave, consulta ou e-mail chega a nós
+            ou fica conosco: não há servidor nosso no caminho. A única exceção é
+            um e-mail que você mesmo nos mande pelo botão de reportar conteúdo
+            ofensivo, descrito na seção 6.1. Quem recebe o que você escreve, e
+            pode reter conforme as regras de cada um, são as empresas de
+            inteligência artificial que você mesmo ativou. Além delas, na
+            conferência automática dos links, os sites citados no texto (por
+            você ou pelos assistentes) recebem o endereço de cada página, e o
+            serviço de nomes do Google recebe o nome do site. Ambos recebem
+            também o endereço IP da conexão e o cabeçalho de identificação do
+            aplicativo, como descrito na seção 3. O Crossref e o OpenAlex
+            recebem a sua consulta, ou o trecho do texto em torno do link, só
+            quando você pede propostas de correção. Tudo isso está descrito a
+            seguir.
+          </p>
+        </div>
+        <h3>6.1 O que é enviado pela internet, e para quem</h3>
+        <p>
+          <strong
+            >Às empresas de inteligência artificial que você ativar.</strong
+          >
+          Quando você inicia uma sessão, o aplicativo envia, pela conexão do seu
+          aparelho e diretamente a cada empresa cujo assistente você escolheu, o
+          título e o pedido que você escreveu, o texto de partida e as versões
+          seguintes, os anexos da sessão (o manifesto de citações que você
+          anexar), as instruções de trabalho (o protocolo editorial) e a sua
+          chave de acesso daquela empresa, que é a credencial que ela exige; a
+          chave vai também à sua empresa quando você pede o teste das chaves,
+          numa chamada pequena a cada empresa com chave configurada, cobrada por
+          ela quando a sua faixa de uso é paga. Nada vai a uma empresa de
+          inteligência artificial que você não ativou, e nada passa por LCV
+          Ideas &amp; Software. Em cada pedido o aplicativo pede à empresa que
+          não guarde a conversa, nas quatro que oferecem essa opção (OpenAI,
+          Google, xAI e Perplexity); ainda assim, cada empresa aplica as
+          próprias regras de retenção e de uso ao que chega pela sua interface
+          de programação (API), e são essas regras, não as políticas das versões
+          de consumo, que valem aqui. A
+          <a
+            href="https://developers.openai.com/api/docs/guides/your-data"
+            target="_blank"
+            rel="noopener noreferrer"
+            >OpenAI</a
+          >
+          diz que não treina modelos com o que recebe pela API, salvo se o
+          cliente optar por compartilhar os dados com ela, e que guarda
+          registros para detectar abuso por até 30 dias, ou por mais tempo
+          quando a lei exigir ou for necessário para proteger o serviço; a
+          <a
+            href="https://www.anthropic.com/legal/commercial-terms"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Anthropic</a
+          >, nos termos comerciais, que não treina modelos com o conteúdo dos
+          clientes e, na
+          <a
+            href="https://privacy.claude.com/en/articles/7996866-how-long-do-you-store-my-organization-s-data"
+            target="_blank"
+            rel="noopener noreferrer"
+            >central de privacidade</a
+          >, que apaga entradas e saídas em até 30 dias, salvo o conteúdo
+          sinalizado por violação da política de uso, retido por até dois anos,
+          com as pontuações de classificação de segurança por até sete anos; o
+          <a
+            href="https://ai.google.dev/gemini-api/terms"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Google</a
+          >, nos termos da API Gemini, que no uso pago não usa os pedidos para
+          melhorar produtos. Na
+          <a
+            href="https://ai.google.dev/gemini-api/docs/usage-policies"
+            target="_blank"
+            rel="noopener noreferrer"
+            >política de monitoramento de abuso</a
+          >, informa que retém pedidos, contexto e respostas por 55 dias para
+          detectar e prevenir violações e cumprir exigências legais ou
+          regulatórias, com possível revisão por pessoal autorizado. Esse prazo
+          é do monitoramento de abuso; o uso gratuito tem também o tratamento
+          descrito no parágrafo seguinte. A
+          <a
+            href="https://docs.x.ai/developers/faq/security"
+            target="_blank"
+            rel="noopener noreferrer"
+            >xAI</a
+          >, que guarda pedidos e respostas por 30 dias para auditoria de abuso
+          e não treina com eles; a
+          <a
+            href="https://docs.perplexity.ai/guides/privacy-security"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Perplexity</a
+          >, que publica retenção zero para a API de conversa (Chat
+          Completions), guardando só as métricas de cobrança, mas não publica
+          prazo para a API de agentes, que é a que o aplicativo usa, com o
+          pedido de não guardar a conversa. A DeepSeek, nos
+          <a
+            href="https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            >termos da plataforma aberta</a
+          >
+          e na
+          <a
+            href="https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            >política de privacidade</a
+          >, diz que você mantém os direitos sobre o que envia, mas não publica
+          um prazo de retenção para o que chega pela API, e a API dela não
+          oferece a opção de não guardar a conversa: ao ativar a DeepSeek, você
+          aceita essa indefinição. O que cada pedido custa, quando custa &mdash;
+          há faixas gratuitas, como a do Gemini descrita a seguir &mdash;, é
+          cobrado por essas empresas na sua conta com elas, nunca por nós: não
+          intermediamos nem recebemos pagamento algum pelo uso delas.
+        </p>
+        <p>
+          <strong>A chave da API Gemini e suas condições de uso.</strong> Os
+          termos oficiais, em vigor desde 23/03/2026 e atualizados em
+          28/04/2026, restringem o uso a desenvolvedores que criam soluções com
+          os modelos da Google para fins profissionais ou empresariais e excluem
+          o uso de consumo. Essa restrição também vale com uma chave própria e
+          faturamento ativo. Nesta integração, o uso pago exige uma chave de
+          projeto do Google Cloud com faturamento ativo. No Espaço Econômico
+          Europeu, na Suíça e no Reino Unido, somente esse uso pago é permitido.
+          A regra regional que dá o tratamento de dados do uso pago à cota
+          gratuita não dispensa essa exigência. Fora dessas regiões, o uso sem
+          faturamento ativo segue o regime gratuito: a Google usa pedidos e
+          respostas para fornecer, melhorar e desenvolver seus produtos e
+          serviços, e revisores humanos podem ler, anotar e processar o
+          conteúdo. Não envie informações sensíveis, confidenciais ou pessoais
+          nesse regime. A chave é sua: antes de ativar o Gemini, confirme na
+          Google se a finalidade do seu uso atende a esses termos, o faturamento
+          e as condições aplicáveis à sua região.
+        </p>
+        <p>
+          <strong
+            >A DeepSeek e os seus direitos sobre o que foi enviado.</strong
+          >
+          Os termos da plataforma aberta da DeepSeek (itens 3.2 e 3.3) atribuem
+          a quem desenvolve o aplicativo o dever de informar as regras de
+          tratamento de dados pessoais antes de prestar o serviço, de ter
+          consentimento ou outra base legal para esse tratamento e de responder
+          aos pedidos de acesso, cópia, portabilidade, correção, eliminação e
+          informação sobre retenção. Esta política e a tela de chaves são essa
+          informação prévia; a base legal é o seu próprio ato de ativar a
+          DeepSeek e iniciar a sessão, que você pode desfazer a qualquer momento
+          removendo a chave; e, embora não exista cópia nossa de nada do que
+          você enviou, qualquer pedido desses pode ser enviado a
+          <a href="mailto:contato@lcv.dev">contato@lcv.dev</a> e será respondido
+          e encaminhado ao suporte da DeepSeek, que é quem detém as cópias e os
+          controles correspondentes. O mesmo canal vale para as demais empresas
+          desta seção.
+        </p>
+        <p>
+          <strong>Aos sites citados no texto.</strong> Antes de liberar o texto
+          final, o aplicativo visita, automaticamente, cada endereço citado no
+          texto, tenha sido citado por você ou por um dos assistentes, para
+          conferir se a página responde e registrar o que encontrou; esse acesso
+          leva apenas o endereço e o cabeçalho de identificação do aplicativo,
+          como qualquer navegador. Para descobrir o endereço numérico de cada
+          site, o aplicativo consulta o serviço de nomes do Google (DNS sobre
+          HTTPS, <code>dns.google</code>), que recebe o nome do site e o
+          endereço IP da conexão. Segundo a
+          <a
+            href="https://developers.google.com/speed/public-dns/privacy"
+            target="_blank"
+            rel="noopener noreferrer"
+            >política de privacidade do Google Public DNS</a
+          >, os registros temporários, que contêm o endereço IP e a consulta,
+          são apagados em 24 a 48 horas, salvo os que a Google precise guardar
+          por mais tempo para tratar de segurança ou abuso. Esses registros
+          servem também para manter e melhorar o serviço e gerar estatísticas de
+          uso. Os registros permanentes são uma amostra sem o endereço IP, com
+          os nomes consultados e a localização por cidade ou região, usada em
+          análises estatísticas.
+        </p>
+        <p>
+          <strong>Às bases de evidências Crossref e OpenAlex.</strong> Quando
+          você pede propostas de correção para um link, o aplicativo envia a
+          essas duas bases públicas de literatura científica a consulta que você
+          digitou ou o trecho do texto em torno do link. Se você preencher, nas
+          configurações, o e-mail de contato opcional, ele vai somente ao
+          Crossref, que o pede para identificar quem usa a base; nenhum e-mail
+          ou identificador nosso vai em pedido algum. As políticas dessas bases:
+          a do
+          <a
+            href="https://www.crossref.org/operations-and-sustainability/privacy/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Crossref</a
+          >
+          e a do
+          <a
+            href="https://openalex.org/OpenAlex_privacy_policy.pdf"
+            target="_blank"
+            rel="noopener noreferrer"
+            >OpenAlex</a
+          >. O OpenAlex registra cada pedido com o endereço completo da
+          consulta, inclusive os termos buscados, o endereço IP e, quando o
+          pedido traz um e-mail, o e-mail, o que este aplicativo nunca faz; usa
+          esses registros para operar, proteger e cobrar a API, corrigir
+          problemas e melhorar a busca; e os apaga depois de 90 dias. O OpenAlex
+          diz também que cada pedido à API passa pela Cloudflare, que recebe o
+          pedido inteiro, inclusive o endereço IP e os termos buscados, para
+          entregar e proteger o serviço, e que, para ordenar os resultados,
+          envia o texto da busca e o título, a fonte, o ano e o tipo dos
+          primeiros resultados à TypeSafe AI, sem a conta, a chave ou o endereço
+          IP de quem buscou. Na
+          <a
+            href="https://www.crossref.org/documentation/retrieve-metadata/"
+            target="_blank"
+            rel="noopener noreferrer"
+            >documentação de acesso à base</a
+          >, o Crossref informa que registra o endereço IP e o conteúdo da
+          consulta mesmo sem identificação; o e-mail opcional serve somente para
+          resolver problemas técnicos, não para marketing ou outro fim. Esses
+          registros são apagados após três meses.
+        </p>
+        <p>
+          <strong>A nós, só se você reportar conteúdo ofensivo.</strong> O botão
+          "Reportar conteúdo ofensivo", nas telas de sessão e de texto final, é
+          o canal do aplicativo para relatar aos desenvolvedores um texto
+          ofensivo produzido pelos assistentes: ele abre o aplicativo de e-mail
+          do seu aparelho com uma mensagem para contato@lcv.dev já preenchida
+          com o identificador e o título da sessão. Nada é enviado se você não
+          enviar a mensagem. O que você escrever e enviar chega a nós pelo seu
+          próprio aplicativo de e-mail, com o seu endereço de e-mail como
+          remetente; fica na nossa caixa de correio, protegida pela conta de
+          e-mail da LCV Ideas &amp; Software, é usado só para tratar o relato e
+          é apagado assim que o relato for tratado, no máximo em 90 dias, ou
+          antes, a seu pedido pelo mesmo endereço, que também atende aos pedidos
+          de acesso, correção e eliminação sobre ele.
+        </p>
+        <p>
+          Em todos esses casos vale o que diz a seção 3: cada serviço recebe o
+          endereço IP da conexão, do qual pode inferir a sua localização
+          aproximada (a cidade ou a região; o Google Public DNS, por exemplo,
+          guarda a localização por cidade ou região de forma anônima e
+          agregada), e o cabeçalho de identificação do aplicativo; LCV Ideas
+          &amp; Software não recebe, não vê e não controla esses registros.
+        </p>
+        <h3>6.2 O que fica guardado no aparelho</h3>
+        <ul>
+          <li>
+            <strong>As suas chaves de acesso</strong>, cifradas com uma chave
+            que o cofre de segurança do Android (Keystore) gera e não deixa sair
+            do aparelho, protegidas pela trava de tela. O aplicativo nunca as
+            mostra de volta e permite removê-las a qualquer momento.
+          </li>
+          <li>
+            <strong>As sessões</strong>: pedidos, textos e suas versões,
+            relatórios de revisão, eventos e custos, anexos e as evidências dos
+            links conferidos, além das configurações (teto de gasto, tarifas,
+            protocolo editorial e o e-mail de contato opcional).
+          </li>
+        </ul>
+        <p>
+          Nada disso sai do aparelho por obra nossa, nada entra no backup na
+          nuvem nem na transferência entre aparelhos, e tudo desaparece ao
+          desinstalar o aplicativo ou limpar o seu armazenamento. Isso apaga
+          apenas as cópias locais: o que você enviou a uma empresa de
+          inteligência artificial ou a outro serviço durante uma sessão fica sob
+          a política de retenção desse serviço e só pode ser apagado pelos meios
+          que ele oferece, em geral na conta que você tem com ele.
+        </p>
+        <h3>
+          6.3 Declaração para a seção "Segurança dos dados" do Google Play
+        </h3>
+        <p>
+          No vocabulário desse formulário, "coletar" é transmitir dados para
+          fora do aparelho, inclusive diretamente a um servidor de terceiro, e
+          "compartilhar" é transferir dados coletados a um terceiro. Como tudo o
+          que o Maestro envia sai do seu aparelho direto para empresas e
+          serviços que não somos nós, o formulário declara esses dados como
+          <strong>coletados e compartilhados com terceiros</strong>: é a
+          descrição do que o aplicativo faz, não do que nós guardamos, porque
+          LCV Ideas &amp; Software não recebe nem guarda nenhum deles (seção 6).
+          Os tipos declarados, no vocabulário do formulário, são: "outro
+          conteúdo gerado pelo usuário", isto é, o título, o pedido e o texto,
+          inclusive os endereços dos sites citados nele, por você ou pelos
+          assistentes, que a conferência automática dos links leva aos próprios
+          sites e ao serviço de nomes do Google; "IDs de usuário", isto é, as
+          chaves de acesso, porque cada chave identifica a sua conta na empresa
+          que a emitiu; "localização aproximada", que o aplicativo não calcula
+          nem pede, mas que um serviço usado por escolha nossa pode inferir do
+          endereço IP da conexão, como o serviço de nomes do Google documenta
+          fazer, por cidade ou região, e que o formulário manda declarar mesmo
+          quando inferida; "arquivos e documentos", isto é, os anexos de uma
+          sessão (o manifesto de citações), que vão às mesmas empresas;
+          "histórico de pesquisa no app", isto é, as consultas de correção que
+          vão ao Crossref e ao OpenAlex; e "endereço de e-mail", isto é, o
+          e-mail de contato opcional, que vai só ao Crossref. Os três primeiros
+          são <strong>coleta obrigatória</strong>, porque sem o conteúdo e as
+          chaves o aplicativo não funciona e o endereço IP acompanha toda
+          conexão; os três últimos são <strong>coleta opcional</strong>, porque
+          você usa o aplicativo sem fornecê-los: uma sessão sem anexo escreve o
+          texto do mesmo jeito, você pode nunca pedir propostas de correção e
+          pode deixar o e-mail em branco. As <strong>finalidades</strong> a
+          declarar no formulário são três: o
+          <strong>funcionamento do aplicativo</strong>, que é a razão de todo
+          esse envio e a única finalidade nossa; a
+          <strong>prevenção de fraude, segurança e conformidade</strong>, porque
+          parte das empresas da seção 6.1 (OpenAI, Anthropic, Google e xAI)
+          registra ou retém os pedidos por um prazo justamente para detectar
+          abuso, e o serviço de nomes do Google usa os domínios consultados e os
+          registros de localização para segurança; e a <strong>análise</strong>,
+          para as consultas de correção, porque o OpenAlex usa os registros das
+          consultas para corrigir problemas e melhorar a busca, para os domínios
+          citados e a localização aproximada, porque o serviço de nomes do
+          Google usa esses registros para melhorar o serviço e fazer análises
+          estatísticas, e para o conteúdo e os anexos, porque a Google, no
+          regime gratuito da API Gemini descrito na seção 6.1, usa pedidos e
+          respostas para melhorar e desenvolver seus produtos. O que cada
+          destinatário faz com o que recebe está na seção 6.1, e cada um recebe
+          também, como todo servidor, o endereço IP e o cabeçalho de
+          identificação do aplicativo (seção 3). Os dados trafegam
+          <strong>criptografados</strong> (HTTPS). Sobre a
+          <strong>exclusão</strong>: a dos dados no aparelho é feita por você,
+          como descrito na seção 4; o que cada serviço reteve segue a política e
+          os controles dele; e o formulário responde que há um canal para pedir
+          a exclusão, <a href="mailto:contato@lcv.dev">contato@lcv.dev</a>, pelo
+          qual respondemos e encaminhamos o pedido à empresa que detém a cópia
+          (seção 4).
+        </p>
+
+        <h2 id="astrologo">7. Astrólogo</h2>
+        <p>
+          O Astrólogo está em desenvolvimento e ainda não foi publicado. Ele
+          nasce sob os mesmos compromissos da seção 3: sem cadastro, sem
+          anúncios, sem analytics, sem rastreamento, sem identificadores
+          persistentes e sem servidores nossos. Antes de ser publicado no Google
+          Play, esta política receberá uma seção própria, nos moldes das seções
+          5 e 6, descrevendo exatamente o que ele envia pela internet, para
+          quem, e o que guarda no aparelho, e o formulário de segurança dos
+          dados será preenchido em coerência com ela.
+        </p>
+
+        <h2 id="alteracoes">8. Alterações desta política</h2>
+        <p>
+          Esta política pode ser revisada quando um aplicativo mudar de
+          comportamento ou quando a lei ou as regras do Google Play exigirem. A
+          versão vigente é sempre a publicada neste endereço,
+          <a href="https://www.lcv.dev/privacy/">https://www.lcv.dev/privacy/</a
+          >, com o número de versão e a data de vigência indicados no topo da
+          página.
+        </p>
+      </article>
+    </main>
+
+    <footer class="footer">
+      <div class="footer__row">
+        <a
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+          >GitHub</a
+        >
+        <a href="mailto:contato@lcv.dev" aria-label="Contato por email"
+          >Contato</a
+        >
+        <a href="/sponsor/">Apoiar</a>
+        <a href="/privacy/">Privacidade</a>
+        <a href="../../OCTICONS-LICENSE.txt">Licença dos ícones GitHub</a>
+      </div>
+      <div class="footer__legal">
+        <span class="footer__brand"
+          >Copyright © <span id="year">2026</span> LCV Ideas &amp;
+          Software</span
+        >
+        LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br />Rua Pais
+        Leme, 215 Conj 1713&nbsp;&nbsp;- Pinheiros<br />São Paulo - SP<br />CEP
+        05424-150<br />CNPJ: 66.584.678/0001-77 - IM: 3039854 - Número D‑U‑N‑S®
+        583149431
+      </div>
+      <div class="footer__store">
+        <a
+          href="https://play.google.com/store/apps/dev?id=8615566246127797211"
+          target="_blank"
+          rel="noopener noreferrer"
+          ><img
+            src="../../assets/google-play-oficial.png"
+            alt="Disponível no Google Play"
+            height="56"
+        /></a>
+      </div>
+    </footer>
+  </body>
+</html>
