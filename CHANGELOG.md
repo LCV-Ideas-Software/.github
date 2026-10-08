@@ -65,7 +65,7 @@ presentation rule this organization applies to text meant for people
   existentes e a paridade por bytes entre os dois sites são preservados (LCV-316).
 
 - Alinhado o pin oficial do upload de SARIF no starter workflow do Scorecard
-  com o CodeQL Action v4.38.3 já usado pelo workflow deste repositório.
+  com o CodeQL Action v4.38.2 já usado pelo workflow deste repositório.
 
 - O portfólio Android deixou de ser descrito como estágio de baseline. A
   **Calculadora Android publicou a v1.0.0 na Google Play em 20/09/2026** — port
@@ -136,7 +136,7 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
-- Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.3 e do
+- Atualizados os pins oficiais do upload de SARIF do CodeQL para v4.38.1 e do
   zizmor-action para v0.6.4, nos workflows locais e nos starter workflows, com os SHAs completos das respectivas releases.
 
 - `profile/README.md` alinhado ao estado medido do GitHub e da Cloudflare, após
