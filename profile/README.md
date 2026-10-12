@@ -269,12 +269,12 @@ Native Android editions of the products — Kotlin and Jetpack Compose, not web 
 
 Four private repositories have been created for future iOS development. The native inventory on 12 October 2026 confirms that all four are empty: no application code or `LICENSE` file is present. Platform-specific implementation and validation remain future work; repository creation is not an application release. Their GitHub Pages configuration is public, which does not establish that a site has been deployed.
 
-| Repository | Current Scope |
-| --- | --- |
-| **programa-ios** (private repository) | Coordination and planning for the future iOS portfolio. Repository created; no implementation committed. |
-| **calculadora-ios** (private repository) | Planned native iOS edition of Calculadora Financeira. Repository created; no implementation committed. |
-| **maestro-ios** (private repository) | Planned native iOS edition of Maestro AI. Repository created; no implementation committed. |
-| **astrologo-ios** (private repository) | Planned native iOS edition of the astrology product. Repository created; no implementation committed. |
+| Repository | Project Page | Current Scope |
+| --- | --- | --- |
+| **programa-ios** (private repository) | [programa-ios.lcv.dev](https://programa-ios.lcv.dev/) | Coordination and planning for the future iOS portfolio. Repository created; no implementation committed. |
+| **calculadora-ios** (private repository) | [calculadora-ios.lcv.dev](https://calculadora-ios.lcv.dev/) | Planned native iOS edition of Calculadora Financeira. Repository created; no implementation committed. |
+| **maestro-ios** (private repository) | [maestro-ios.lcv.dev](https://maestro-ios.lcv.dev/) | Planned native iOS edition of Maestro AI. Repository created; no implementation committed. |
+| **astrologo-ios** (private repository) | [astrologo-ios.lcv.dev](https://astrologo-ios.lcv.dev/) | Planned native iOS edition of the astrology product. Repository created; no implementation committed. |
 
 ### 🏛️ Organization infrastructure
 

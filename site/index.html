@@ -212,11 +212,11 @@
       <section class="section" id="products">
         <div class="section__head reveal">
           <p class="eyebrow mono">$ ls ~/produtos</p>
-          <h2>Aplicações Publicadas</h2>
+          <h2>Aplicações Publicadas e Em Teste</h2>
           <p class="section__note">
-            Web apps com assistência de AI embutida, rodando na edge da
-            Cloudflare — e, desde 20/09/2026, o primeiro aplicativo Android
-            nativo na Google Play.
+            Aplicações web na Cloudflare e aplicativos Android nativos.
+            Calculadora e Maestro estão publicados na Google Play; o Astrólogo
+            Android está disponível somente no teste interno.
           </p>
         </div>
         <div class="cards">
@@ -319,7 +319,7 @@
           <article class="card reveal" style="--accent: var(--emerald)">
             <div class="card__badges">
               <span class="chip chip--blue">App Android</span>
-              <span class="chip chip--green">v1.0.0 na Google Play</span>
+              <span class="chip chip--green">v1.0.8 na Google Play</span>
               <span class="chip chip--muted">Kotlin · Compose</span>
             </div>
             <h3>Calculadora Android</h3>
@@ -329,14 +329,63 @@
               e Material 3, motor de cálculo em Kotlin puro no módulo
               <code>:core:calc</code>, cotações atrás de Retrofit/OkHttp com
               cache em Room e injeção com Hilt. Sem IA, sem rastreamento, sem
-              anúncio e sem conta; AGPL-3.0. As edições Android do Astrólogo e
-              do Maestro estão iniciadas.
+              anúncio e sem conta. Versão publicada em produção.
             </p>
             <div class="card__links">
               <span>Repositório privado</span>
             </div>
           </article>
+          <article class="card reveal" style="--accent: var(--amber)">
+            <div class="card__badges">
+              <span class="chip chip--blue">App Android</span>
+              <span class="chip chip--green">v1.0.5 na Google Play</span>
+              <span class="chip chip--muted">Kotlin · Compose</span>
+            </div>
+            <h3>Maestro Android</h3>
+            <p class="card__repo">maestro-android</p>
+            <p>
+              Edição Android nativa do Maestro AI. A versão 1.0.5 está publicada
+              em produção na Google Play.
+            </p>
+            <div class="card__links">
+              <a
+                href="https://maestro-android.lcv.dev/"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Página do projeto ↗</a
+              >
+              <span>Repositório privado</span>
+            </div>
+          </article>
+          <article class="card reveal" style="--accent: var(--sky)">
+            <div class="card__badges">
+              <span class="chip chip--blue">App Android</span>
+              <span class="chip chip--amber">v0.2.0 · Teste Interno</span>
+              <span class="chip chip--muted">Kotlin · Compose</span>
+            </div>
+            <h3>Astrólogo Android</h3>
+            <p class="card__repo">astrologo-android</p>
+            <p>
+              Perfis de nascimento locais, mapas natais salvos e exportação
+              nativa de PDF. Esta versão está no teste interno da Google Play;
+              ainda não há publicação em produção nem análise por IA.
+            </p>
+            <div class="card__links">
+              <a
+                href="https://astrologo-android.lcv.dev/"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Página do projeto ↗</a
+              >
+              <span>Repositório privado</span>
+            </div>
+          </article>
         </div>
+        <p class="section__note">
+          Nas versões Android indicadas, o conteúdo próprio da LCV Ideas &amp;
+          Software usa licença proprietária. As licenças e os avisos de
+          terceiros e os direitos das versões anteriores permanecem preservados.
+        </p>
       </section>
 
       <!-- ============ INFRAESTRUTURA ============ -->
@@ -498,9 +547,10 @@
           <p class="eyebrow mono">$ cat plataforma.lock</p>
           <h2>Plataforma Compartilhada</h2>
           <p class="section__note">
-            Cada app do portfólio roda no mesmo edge stack da Cloudflare e
-            compartilha o D1 unificado — leituras cross-app via bindings, nunca
-            URLs públicas entre apps irmãos.
+            As aplicações web do portfólio rodam na Cloudflare e compartilham o
+            D1 unificado — leituras cross-app via bindings, nunca URLs públicas
+            entre apps irmãos. Os aplicativos Android são nativos e mantêm seus
+            dados locais no aparelho.
           </p>
         </div>
         <div class="stackgrid">
