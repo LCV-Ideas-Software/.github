@@ -225,7 +225,7 @@ The organization maintains **1 active public repository**, including its institu
 
 ### 🌐 Public-facing applications
 
-By the operator decision of 11/10/2026, only `.github` is public;
+By the operator decision of 11/10/2026 (11 October 2026), only `.github` is public;
 `.github-private` and `github-operations` are internal. All other organization
 repositories are private and require authorized access. Web applications,
 Play distribution, published packages and license obligations are separate.
