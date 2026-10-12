@@ -14,6 +14,8 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Reconcile the current inventory to 1 public, 2 internal and 14 private repositories; identify private product repositories and preserve identical public site content in both governance repositories.
+
 - Update the official CodeQL SARIF upload Action to v4.38.3 at its complete release commit SHA (LCV-336).
 
 - Publish privacy policy 1.6 (`site/privacy/index.html`, in force from 11/10/2026): the Maestro is now published on Google Play, so its row in the section 2 table points to section 6 of the policy, like the Calculadora's, instead of saying it is under review there; and version 1.5 stays available unchanged at its permanent address, `site/privacy/1.5/` (LCV-351).
