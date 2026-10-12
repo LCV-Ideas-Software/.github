@@ -42,8 +42,8 @@ location: Brazil
 model: single-operator studio, multi-agent engineering
 surface:
   public_repositories: 1
-  live_products: 4 web apps + 1 Android app + 3 operator services + 3 developer tools
-  android_portfolio: 1 app published on Google Play, 2 editions started
+  live_products: 4 web apps + 2 Android apps in production + 3 operator services + 3 developer tools
+  android_portfolio: 2 apps published in Google Play production, 1 app in internal testing
 stack:
   languages: [TypeScript, JavaScript, Kotlin, Rust, Python, SQL]
   frontend: [React 19, Vite 8, TipTap, PWA/Workbox, DOMPurify]
@@ -72,7 +72,7 @@ A small, opinionated portfolio organized in four layers, with its web services c
 1. **Public products** — consumer-facing web apps with AI assistance, deployed on Cloudflare Pages with Worker backends.
 2. **Operator infrastructure** — the single-tenant control plane and supporting services that govern the public products.
 3. **Developer tooling** — open-source MCP servers and editorial workbenches built around multi-agent AI convergence.
-4. **Android portfolio** — native Android editions of the products, written in Kotlin with Jetpack Compose. The _Calculadora_ shipped **v1.0.0 to Google Play** on 20/09/2026; the _Astrólogo_ and _Maestro_ editions are started, with their Gradle projects open.
+4. **Android portfolio** — native Android editions of the products, written in Kotlin with Jetpack Compose. As of 12 October 2026, _Calculadora_ **v1.0.8** and _Maestro_ **v1.0.5** are published in Google Play production; _Astrólogo_ **v0.2.0** is published only in internal testing.
 
 The organization maintains **1 active public repository**, including its institutional `.github` repository. Product and tooling repositories expose public project surfaces or operational endpoints over HTTPS on custom domains. Engineering work follows strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL default setup on every repository, Secret Scanning push protection, and SHA-pinned external GitHub Actions.
 
@@ -257,13 +257,24 @@ The source repositories for these three services are **private**. Access to the 
 
 ### 📱 Android portfolio
 
-Native Android editions of the products — Kotlin and Jetpack Compose, not web wrappers. The first one is published; the other two have their Gradle projects open and no application code yet. Nothing is presented as more than it is, and no scaffolding is ever placed merely to satisfy automation.
+Native Android editions of the products — Kotlin and Jetpack Compose, not web wrappers. As of 12 October 2026, Calculadora and Maestro are published in Google Play production. Astrólogo has a working native natal-chart and PDF-export foundation in internal testing; it has no public production release yet.
 
 | Repository                                                                           | Project page                                                        | What it does                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **maestro-android** (private repository)         | [maestro-android.lcv.dev](https://maestro-android.lcv.dev/)         | Android edition of _Maestro Editorial AI_ — **started**: Gradle project and application skeleton open, native port ahead. Tracked in [Project #20](https://github.com/orgs/LCV-Ideas-Software/projects/20). |
-| **calculadora-android** (private repository) | [calculadora-android.lcv.dev](https://calculadora-android.lcv.dev/) | **v1.0.0 published on Google Play** (20/09/2026). Native Kotlin port of the _Calculadora_: Jetpack Compose with Material 3, the calculation engine as pure Kotlin in `:core:calc`, quote sources behind Retrofit/OkHttp with a Room cache, Hilt for injection. No AI, no tracking, no ads, no account; AGPL-3.0. Package `dev.lcv.calculadora`. |
-| **astrologo-android** (private repository)     | [astrologo-android.lcv.dev](https://astrologo-android.lcv.dev/)     | Android edition of the astrology product — **started**: Gradle project and application skeleton open, native port ahead. Tracked in [Project #19](https://github.com/orgs/LCV-Ideas-Software/projects/19). |
+| **maestro-android** (private repository)         | [maestro-android.lcv.dev](https://maestro-android.lcv.dev/)         | Android edition of _Maestro Editorial AI_ — **v1.0.5 published in Google Play production**. The app's original content owned by LCV Ideas &amp; Software uses its proprietary license; third-party rights remain separate. Tracked in [Project #20](https://github.com/orgs/LCV-Ideas-Software/projects/20). |
+| **calculadora-android** (private repository) | [calculadora-android.lcv.dev](https://calculadora-android.lcv.dev/) | **v1.0.8 published in Google Play production** (12 October 2026). Native Kotlin port of the _Calculadora_: Jetpack Compose with Material 3, the calculation engine as pure Kotlin in `:core:calc`, quote sources behind Retrofit/OkHttp with a Room cache, Hilt for injection. No AI, no tracking, no ads, no account. The app's original content owned by LCV Ideas &amp; Software uses its proprietary license; third-party rights and prior grants remain preserved. Package `dev.lcv.calculadora`. |
+| **astrologo-android** (private repository)     | [astrologo-android.lcv.dev](https://astrologo-android.lcv.dev/)     | Android edition of the astrology product — **v0.2.0 in Google Play internal testing**, with local birth profiles, saved natal charts and native PDF export. Public production publication and paid AI analysis are not delivered by this version. Tracked in [Project #19](https://github.com/orgs/LCV-Ideas-Software/projects/19). |
+
+### 📱 iOS Portfolio
+
+Four private repositories have been created for future iOS development. The native inventory on 12 October 2026 confirms that all four are empty: no application code or `LICENSE` file is present. Platform-specific implementation and validation remain future work; repository creation is not an application release. Their GitHub Pages configuration is public, which does not establish that a site has been deployed.
+
+| Repository | Current Scope |
+| --- | --- |
+| **programa-ios** (private repository) | Coordination and planning for the future iOS portfolio. Repository created; no implementation committed. |
+| **calculadora-ios** (private repository) | Planned native iOS edition of Calculadora Financeira. Repository created; no implementation committed. |
+| **maestro-ios** (private repository) | Planned native iOS edition of Maestro AI. Repository created; no implementation committed. |
+| **astrologo-ios** (private repository) | Planned native iOS edition of the astrology product. Repository created; no implementation committed. |
 
 ### 🏛️ Organization infrastructure
 
@@ -312,11 +323,11 @@ Repository visibility and license terms are separate. The private source reposit
 
 | License                                                         | Software repositories                                                                                                                                                                                  |
 | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `admin-app`, `mtasts-motor`, `sponsor-motor`, `maestro-app`, `maestro-android`, `calculadora-android`, `astrologo-android` |
+| [AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) | `mainsite-app`, `astrologo-app`, `calculadora-app`, `oraculo-financeiro`, `admin-app`, `mtasts-motor`, `sponsor-motor`, `maestro-app` |
 | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)       | `ultrabrain-mcp`, `cross-review`                                                                                                                                                                     |
-| Proprietary — all rights reserved                               | `.github`                                                                                                                                                                                            |
+| Proprietary — all rights reserved                               | `.github`, `maestro-android`, `calculadora-android`, `astrologo-android`                                                                                                                                                                                            |
 
-The AGPL-3.0 **network-service trigger** applies to the repositories in the AGPL row: if a modified version lets users interact with it remotely through a computer network, those users must be offered its Corresponding Source under AGPL-3.0. The proprietary repository is public because GitHub requires public visibility for its platform role — the organization profile and the default community-health files — and that visibility grants no rights beyond those provided by the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service). Public software repositories ship a `THIRDPARTY.md` inventory and a `NOTICE` (where applicable). Forks are welcome under the respective license terms.
+The AGPL-3.0 **network-service trigger** applies to the repositories in the AGPL row: if a modified version lets users interact with it remotely through a computer network, those users must be offered its Corresponding Source under AGPL-3.0. The institutional `.github` repository is public because GitHub requires public visibility for its platform role — the organization profile and the default community-health files — and that visibility grants no rights beyond those provided by the [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service). The current Android releases use `LicenseRef-LCV-Ideas-And-Software-Proprietary` only for original code and materials owned by LCV Ideas &amp; Software. This does not replace third-party licenses or revoke earlier grants, including copies previously received under AGPL. The respective `LICENSE`, `NOTICE` and `THIRDPARTY.md` retain those boundaries. Repository visibility does not grant or revoke license rights.
 
 ## 📋 Conventions
 

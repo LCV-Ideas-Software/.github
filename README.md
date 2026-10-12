@@ -36,7 +36,7 @@ Changes from 11/08/2026 onward are recorded in [`CHANGELOG.md`](./CHANGELOG.md),
 
 For product-specific documentation, see each repository in the [organization listing](https://github.com/orgs/LCV-Ideas-Software/repositories).
 
-The organization currently has **1 public, 2 internal and 14 private repositories**.
+The organization currently has **1 public, 2 internal and 18 private repositories**.
 By the operator decision of 11/10/2026 (11 October 2026), only `.github` is public;
 `.github-private` and `github-operations` are internal, and all other organization
 repositories are private. All GitHub Pages sites remain public.

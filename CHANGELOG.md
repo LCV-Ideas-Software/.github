@@ -14,7 +14,7 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
-- Reconcile the current inventory to 1 public, 2 internal and 14 private repositories; identify private product repositories and preserve identical public site content in both governance repositories.
+- Reconcile the current inventory to 1 public, 2 internal and 18 private repositories; identify private product repositories and preserve identical public site content in both governance repositories. Update current Android product and license descriptions to the verified 12 October 2026 releases, distinguishing production from internal testing and preserving third-party rights and prior grants. Identify the four private, empty iOS repositories as future work without claiming implemented applications or licenses (LCV-358).
 
 - Update the official CodeQL SARIF upload Action to v4.38.3 at its complete release commit SHA (LCV-336).
 
