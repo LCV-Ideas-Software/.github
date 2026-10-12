@@ -56,6 +56,7 @@ const retainedPublicPaths = [
   "site/privacy/1.3/index.html",
   "site/privacy/1.4/index.html",
   "site/privacy/1.5/index.html",
+  "site/privacy/1.6/index.html",
   "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",
