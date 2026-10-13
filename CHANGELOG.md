@@ -14,6 +14,8 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish the approved Privacy 1.8, Terms of Services 1.0 and Security pages, dated 13 October 2026, at `/privacy/`, `/tos/` and `/security/`. Preserve the privacy 1.7 archive, justified paragraphs with a 1.5em first-line indent, institutional links and exact cross-site path/byte parity including manifests (LCV-397).
+
 - Correct both institutional Android site inventories and publish privacy policy 1.7 for Astro 0.2.0 internal testing, including manual birth data, local history, deletion, backup exclusions and user-selected PDF destinations. Preserve policy 1.6 at its permanent archive URL and regenerate identical site manifests (LCV-358; PR #380 review).
 
 - Reconcile the current inventory to 1 public, 2 internal and 18 private repositories; identify private product repositories and preserve identical public site content in both governance repositories. Update current Android product and license descriptions to the verified 12 October 2026 releases, distinguishing production from internal testing and preserving third-party rights and prior grants. Identify the four private, empty iOS repositories as future work without claiming implemented applications or licenses (LCV-358).
