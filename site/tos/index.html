@@ -33,8 +33,10 @@
         overflow-wrap: anywhere;
       }
       .legal h1 {
-        font-size: clamp(2rem, 4.5vw, 2.8rem);
+        font-size: clamp(1.65rem, 3.6vw, 2.4rem);
+        letter-spacing: -0.03em;
         font-weight: 700;
+        text-align: center;
         margin: 0 0 0.6rem;
       }
       .legal h2 {
@@ -64,12 +66,13 @@
         margin: 0 0 1rem;
       }
       .legal .publication-date {
-        text-align: left;
+        text-align: center;
+        text-align-last: center;
         text-indent: 0;
         color: var(--muted);
         font-size: 0.95rem;
       }
-      .legal :is(h1, h2, h3, li, th, td) {
+      .legal :is(h2, h3, li, th, td) {
         text-align: start;
         text-indent: 0;
       }
@@ -120,6 +123,12 @@
         padding: 0.55rem 0.7rem;
         border-bottom: 1px solid var(--border);
         color: var(--fg-soft);
+      }
+      .legal :is(th, td),
+      .legal :is(th, td) :is(p, li) {
+        text-align: justify;
+        text-align-last: left;
+        text-indent: 1.5em;
       }
       .legal th {
         color: var(--fg);
@@ -232,9 +241,7 @@
     </header>
 
     <main class="legal" id="conteudo">
-      <h1 id="termos-dos-servicos-lcv-ideas-software">
-        Termos dos Serviços — LCV Ideas &amp; Software
-      </h1>
+      <h1 id="termos-dos-servicos-lcv-ideas-software">Termos dos Serviços</h1>
       <p class="publication-date">
         <strong>Versão 1.0 — vigente a partir de 13 de outubro de 2026.</strong>
       </p>
