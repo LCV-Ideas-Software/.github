@@ -130,6 +130,12 @@
         text-align-last: left;
         text-indent: 1.5em;
       }
+      .legal :is(th, td) + :is(th, td) {
+        border-left: 1px solid var(--border);
+      }
+      .legal thead th {
+        border-bottom: 2px solid var(--border);
+      }
       .legal th {
         color: var(--fg);
         font-family: var(--font-display);
