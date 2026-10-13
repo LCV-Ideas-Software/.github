@@ -2,6 +2,7 @@
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
+    <meta name="color-scheme" content="dark" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
@@ -14,235 +15,245 @@
       href="/assets/lcv-ideas-software-mark.svg"
     />
     <title>Pol&#237;tica de Privacidade — LCV Ideas &amp; Software</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../styles.css" />
     <style>
-      :root {
-        color-scheme: light;
-        font-family: Georgia, "Times New Roman", serif;
-        font-size: 112.5%;
+      /* Mesma apresentação institucional da política 1.7; o texto aprovado
+         mantém justificação e recuo de primeira linha de 1.5em. */
+      .legal {
+        max-width: 76ch;
+        margin: 0 auto;
+        padding: 3.2rem var(--pad) 4rem;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .legal h1 {
+        font-size: clamp(1.65rem, 3.6vw, 2.4rem);
+        letter-spacing: -0.03em;
+        font-weight: 700;
+        text-align: center;
+        margin: 0 0 0.6rem;
+      }
+      .legal h2 {
+        font-size: clamp(1.45rem, 3vw, 1.75rem);
+        font-weight: 700;
+        margin: 2.4rem 0 0.9rem;
+        padding-top: 1.2rem;
+        border-top: 1px solid var(--border);
+      }
+      .legal h3 {
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin: 1.7rem 0 0.6rem;
+      }
+      .legal p,
+      .legal li {
+        font-size: 1.05rem;
         line-height: 1.7;
-        color: #17202a;
-        background: #f4f6f8;
+        color: var(--fg-soft);
       }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        padding: clamp(0.75rem, 3vw, 2rem);
-      }
-      .prose {
-        max-width: 82ch;
-        margin-inline: auto;
-        padding: clamp(1rem, 4vw, 3rem);
-        background: #fff;
-        border: 1px solid #d5dce3;
-        border-radius: 0.4rem;
-      }
-      .prose p {
-        margin-block: 0.8em;
+      .legal p {
         text-align: justify;
+        text-align-last: left;
         text-indent: 1.5em;
         hyphens: auto;
-        overflow-wrap: anywhere;
+        -webkit-hyphens: auto;
+        margin: 0 0 1rem;
       }
-      .prose :is(h1, h2, h3, h4, h5, h6) {
-        font-family:
-          system-ui,
-          -apple-system,
-          "Segoe UI",
-          sans-serif;
-        line-height: 1.25;
-        margin-block: 1.6em 0.7em;
-        text-align: start;
+      .legal .publication-date {
+        text-align: center;
+        text-align-last: center;
         text-indent: 0;
-        overflow-wrap: anywhere;
-        break-after: avoid-page;
+        color: var(--muted);
+        font-size: 0.95rem;
       }
-      .prose h1 {
-        font-size: 1.85rem;
-        margin-top: 0;
-      }
-      .prose h2 {
-        font-size: 1.4rem;
-      }
-      .prose h3 {
-        font-size: 1.15rem;
-      }
-      .prose :is(ul, ol) {
-        padding-inline-start: 1.6em;
-      }
-      .prose :is(li, th, td) {
-        text-align: start;
-        text-indent: 0;
-        overflow-wrap: anywhere;
-      }
-      .prose :is(li, th, td) p {
+      .legal :is(h2, h3, li, th, td) {
         text-align: start;
         text-indent: 0;
       }
-      .prose li {
-        margin-block: 0.45em;
+      .legal :is(li, th, td) p {
+        text-align: start;
+        text-indent: 0;
       }
-      .prose table {
-        display: block;
-        width: 100%;
-        max-width: 100%;
-        overflow-x: auto;
-        border-collapse: collapse;
-        margin-block: 1.3em;
+      .legal :is(ul, ol) {
+        margin: 0 0 1.1rem 1.6em;
+        padding: 0;
+      }
+      .legal li {
+        margin: 0 0 0.45rem;
+      }
+      .legal strong {
+        color: var(--fg);
+      }
+      .legal a,
+      .publication-note a {
+        color: var(--sky);
+        text-decoration: underline;
+        text-underline-offset: 0.15em;
+      }
+      .legal a:hover,
+      .publication-note a:hover {
+        color: var(--fg);
+      }
+      .legal code {
+        overflow-wrap: anywhere;
+        font-family: var(--font-mono);
         font-size: 0.92em;
-        line-height: 1.5;
-        text-indent: 0;
+        color: var(--fg);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.05em 0.4em;
       }
-      .prose :is(th, td) {
-        min-width: 10ch;
-        padding: 0.6em 0.75em;
+      .legal table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        margin: 0.4rem 0 1.4rem;
+        font-size: 0.98rem;
+      }
+      .legal th,
+      .legal td {
         vertical-align: top;
-        border: 1px solid #ccd5de;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid currentColor;
+        color: var(--fg-soft);
       }
-      .prose th {
-        background: #eef2f6;
-        font-weight: 700;
+      .legal :is(th, td),
+      .legal :is(th, td) :is(p, li) {
+        text-align: justify;
+        text-align-last: left;
+        text-indent: 1.5em;
       }
-      .prose a {
-        color: #07538e;
-        text-underline-offset: 0.15em;
-        overflow-wrap: anywhere;
+      .legal :is(th, td) + :is(th, td) {
+        border-left: 1px solid currentColor;
       }
-      .prose a:focus-visible {
-        outline: 3px solid #b34c00;
-        outline-offset: 3px;
+      .legal thead th {
+        border-bottom: 2px solid currentColor;
       }
-      .prose :is(pre, code) {
-        font-family: ui-monospace, Consolas, monospace;
-      }
-      .prose pre {
-        overflow-x: auto;
-        white-space: pre-wrap;
-        text-indent: 0;
-      }
-      .prose img {
-        max-width: 100%;
-        height: auto;
-      }
-      .prose blockquote {
-        margin-inline: 1em;
-        padding-inline-start: 1em;
-        border-left: 3px solid #ccd5de;
-      }
-      @media (max-width: 40rem) {
-        :root {
-          font-size: 100%;
-        }
-        body {
-          padding: 0.5rem;
-        }
-        .prose {
-          padding: 1rem;
-          border-radius: 0;
-        }
-        .prose h1 {
-          font-size: 1.55rem;
-        }
-        .prose :is(th, td) {
-          padding: 0.5em;
-        }
-      }
-      @media print {
-        :root {
-          background: #fff;
-          font-size: 11pt;
-        }
-        body {
-          padding: 0;
-        }
-        .prose {
-          max-width: none;
-          margin: 0;
-          padding: 0;
-          border: 0;
-        }
-        .prose table {
-          display: table;
-          table-layout: fixed;
-        }
-        .prose :is(p, li) {
-          orphans: 3;
-          widows: 3;
-        }
-        .prose tr {
-          break-inside: avoid;
-        }
-      }
-
-      .site-nav,
-      .site-footer,
-      .publication-note {
-        max-width: 82ch;
-        margin: 1rem auto;
-        font-family:
-          system-ui,
-          -apple-system,
-          "Segoe UI",
-          sans-serif;
-      }
-      .site-nav {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.65rem 1.25rem;
-        align-items: center;
-      }
-      .site-nav a,
-      .site-footer a {
-        color: #07538e;
-        text-underline-offset: 0.15em;
-      }
-      .site-nav a:focus-visible,
-      .site-footer a:focus-visible {
-        outline: 3px solid #b34c00;
-        outline-offset: 3px;
-      }
-      .site-nav a[aria-current="page"] {
-        font-weight: 700;
-      }
-      .site-footer {
-        font-size: 0.85rem;
-        overflow-wrap: anywhere;
-      }
-      .prose .publication-date {
-        text-align: start;
-        text-indent: 0;
+      .legal th {
+        color: var(--fg);
+        font-family: var(--font-display);
+        font-weight: 600;
       }
       .publication-note {
-        padding: 1rem;
-        border: 1px solid #d5dce3;
-        border-radius: 0.4rem;
-        background: #fff;
-        font-size: 0.9rem;
+        max-width: 76ch;
+        margin: 0 auto 2rem;
+        padding: 1.1rem var(--pad);
+        background: var(--grad-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow-wrap: anywhere;
       }
       .publication-note p {
         margin: 0.5em 0;
       }
+      .publication-note ul {
+        margin-left: 1.6em;
+      }
+      .nav__inner {
+        flex-wrap: wrap;
+      }
+      .nav__links a[aria-current="page"] {
+        color: var(--fg);
+      }
+      @media (max-width: 640px) {
+        .legal table {
+          display: block;
+          overflow-x: auto;
+          table-layout: auto;
+        }
+        .legal th,
+        .legal td {
+          min-width: 9rem;
+        }
+        .publication-note {
+          margin-inline: var(--pad);
+        }
+      }
       @media print {
-        .site-nav {
+        :root {
+          color-scheme: light;
+          --fg: #000;
+          --fg-soft: #222;
+          --muted: #444;
+          --sky: #000;
+          --border: #aaa;
+        }
+        body {
+          background: #fff;
+          font-size: 11pt;
+        }
+        .nav,
+        .skip-link {
           display: none;
+        }
+        .legal {
+          max-width: none;
+          padding: 0;
+        }
+        .legal table {
+          display: table;
+          table-layout: fixed;
+        }
+        .legal :is(p, li) {
+          orphans: 3;
+          widows: 3;
+        }
+        .legal tr {
+          break-inside: avoid;
+        }
+        .publication-note {
+          background: none;
+        }
+        .footer__brand {
+          background: none;
+          -webkit-text-fill-color: #000;
         }
       }
     </style>
   </head>
   <body>
-    <nav class="site-nav" aria-label="Navegação institucional">
-      <a href="/">LCV Ideas &amp; Software</a
-      ><a href="/privacy/" aria-current="page">Política de Privacidade</a
-      ><a href="/tos/">Termos dos Serviços</a><a href="/security/">Segurança</a>
-    </nav>
-    <main class="prose">
+    <a class="skip-link" href="#conteudo">Ir para o conteúdo</a>
+
+    <header class="nav" id="top">
+      <div class="nav__inner">
+        <a class="nav__brand" href="/">
+          <img src="../assets/lcv-ideas-software-mark.svg" alt="" />
+          <span>LCV Ideas &amp; Software</span>
+        </a>
+        <nav class="nav__links" aria-label="Seções">
+          <a href="/#products">Produtos</a>
+          <a href="/#connect">Sobre</a>
+          <a href="/sponsor/">Apoiar</a>
+          <a href="/privacy/" aria-current="page">Privacidade</a>
+          <a href="/tos/">Termos</a>
+          <a href="/security/">Segurança</a>
+        </nav>
+        <a
+          class="nav__cta"
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub
+        </a>
+      </div>
+    </header>
+
+    <main class="legal" id="conteudo">
       <h1 id="politica-de-privacidade-lcv-ideas-software">
-        Política de Privacidade — LCV Ideas &amp; Software
+        Política de Privacidade
       </h1>
       <p class="publication-date">
         <strong>Versão 1.8 — vigente a partir de 13 de outubro de 2026.</strong>
       </p>
+      <hr />
       <h2 id="responsavel-e-contatos">1. Responsável e contatos</h2>
       <p>
         A responsável é
@@ -1074,19 +1085,50 @@
         <li><a href="/privacy/1.0/">Versão 1.0</a></li>
       </ul>
     </aside>
-    <footer class="site-footer">
-      <p>© 2026 LCV Ideas &amp; Software</p>
-      <p>
-        LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA · CNPJ
-        66.584.678/0001-77<br />Rua Pais Leme, 215, Conj. 1713, Pinheiros, São
-        Paulo–SP, CEP 05424-150, Brasil.
-      </p>
-      <p>
-        <a href="mailto:suporte@lcv.dev">Suporte</a> ·
-        <a href="mailto:privacy@lcv.dev">Privacidade</a> ·
-        <a href="mailto:security@lcv.dev">Segurança</a> ·
+    <footer class="footer">
+      <div class="footer__row">
+        <a
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+          >GitHub</a
+        >
+        <a href="mailto:contato@lcv.dev" aria-label="Contato por email"
+          >Contato</a
+        >
+        <a href="/sponsor/">Apoiar</a>
+        <a href="/privacy/">Privacidade</a>
+        <a href="/tos/">Termos dos Serviços</a>
+        <a href="/security/">Segurança</a>
+        <a href="../OCTICONS-LICENSE.txt">Licença dos ícones GitHub</a>
+      </div>
+      <div class="footer__legal">
+        <span class="footer__brand"
+          >Copyright © <span id="year">2026</span> LCV Ideas &amp;
+          Software</span
+        >
+        LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br />Rua Pais
+        Leme, 215 Conj 1713&nbsp;&nbsp;- Pinheiros<br />São Paulo - SP - CEP
+        05424-150<br />CNPJ: 66.584.678/0001-77 - IM: 3039854 - D‑U‑N‑S®
+        583149431
+      </div>
+      <div class="footer__row">
+        <a href="mailto:suporte@lcv.dev">Suporte</a>
+        <a href="mailto:privacy@lcv.dev">Privacidade</a>
+        <a href="mailto:security@lcv.dev">Segurança</a>
         <a href="mailto:contato@lcv.dev">Contato geral</a>
-      </p>
+      </div>
+      <div class="footer__store">
+        <a
+          href="https://play.google.com/store/apps/dev?id=8615566246127797211"
+          target="_blank"
+          rel="noopener noreferrer"
+          ><img
+            src="../assets/google-play-oficial.png"
+            alt="Disponível no Google Play"
+            height="56"
+        /></a>
+      </div>
     </footer>
   </body>
 </html>
