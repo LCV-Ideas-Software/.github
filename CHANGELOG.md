@@ -13,6 +13,9 @@ presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
 ## Unreleased
+- Update the official OpenSSF Scorecard Action to v2.5.0 at its complete release
+  commit SHA, preserving workflow inputs and permissions (LCV-403).
+
 
 - Publish the approved Privacy 1.8, Terms of Services 1.0 and Security pages, dated 13 October 2026, at `/privacy/`, `/tos/` and `/security/`. Preserve the privacy 1.7 archive, justified paragraphs with a 1.5em first-line indent, institutional links and exact cross-site path/byte parity including manifests (LCV-397).
 
