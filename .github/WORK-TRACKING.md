@@ -30,12 +30,14 @@ quando a decisão de fechamento ainda não tiver sido tomada.
 
 ### Projects
 
-- [Project #17 — `LCV Ideas & Software Portfolio`](https://github.com/orgs/LCV-Ideas-Software/projects/17):
-  visão consolidada da organização.
+- [Project #24 — `.github`](https://github.com/orgs/LCV-Ideas-Software/projects/24):
+  quadro individual deste repositório.
 
-O quadro é **privado**. O link exige uma conta com acesso à organização; para quem lê este arquivo
-publicamente ele retorna 404. Trabalho operacional interno usa os Projects privados e o Linear
-correspondentes, não Issues ou Discussions públicas de `.github`.
+O antigo Project organizacional #17 foi excluído em 18/10/2026 e não será recriado. Cada
+repositório usa seu próprio Project privado e sua contraparte Linear; não existe outro quadro
+GitHub transversal. Os links dos Projects privados exigem uma conta com acesso à organização e
+retornam 404 para leitores públicos. Trabalho operacional interno não usa Issues ou Discussions
+públicas de `.github` como substituto desses quadros.
 
 A inclusão de novos itens é feita pelo workflow nativo **Auto-add to project** configurado no
 Project. A presença e o estado no quadro ainda devem ser conferidos explicitamente; itens anteriores

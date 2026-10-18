@@ -13,6 +13,10 @@ presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
 ## Unreleased
+- Retire o Project organizacional #17 depois de comprovar que todas as 5.522 Issues e pull
+  requests já pertenciam aos 21 Projects individuais. O #17 foi excluído em 18/10/2026 e não
+  será recriado; `.github` usa somente seu Project #24.
+
 - Update the official OpenSSF Scorecard Action to v2.5.0 at its complete release
   commit SHA, preserving workflow inputs and permissions (LCV-403).
 
@@ -371,8 +375,8 @@ presentation rule this organization applies to text meant for people
   Efeito colateral deliberado: reescrever o parágrafo reprova o teste. É texto
   jurídico — alterá-lo deve exigir mexer no guard e passar por revisão.
 
-- Atualizou a referência ao quadro `Project #17` em `.github/WORK-TRACKING.md`
-  para o nome atual do quadro.
+- Atualizou a referência então vigente ao `Project #17` em `.github/WORK-TRACKING.md`.
+  Registro histórico: esse Project foi excluído em 18/10/2026 e não será recriado.
 
 ## 26/08/2026 — Perfil da Organization reformado e titularidade escrita por extenso ([#288](https://github.com/LCV-Ideas-Software/.github/issues/288))
 
