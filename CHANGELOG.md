@@ -13,6 +13,9 @@ presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
 ## Unreleased
+- Ignore the operator-mandated repository-local `temp/` workspace so audit and
+  test artifacts cannot be committed (LCV-414).
+
 - Retire o Project organizacional #17 depois de comprovar que todas as 5.522 Issues e pull
   requests já pertenciam aos 21 Projects individuais. O #17 foi excluído em 18/10/2026 e não
   será recriado; `.github` usa somente seu Project #24.
