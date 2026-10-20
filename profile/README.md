@@ -72,7 +72,7 @@ A small, opinionated portfolio organized in four layers, with its web services c
 1. **Public products** — consumer-facing web apps with AI assistance, deployed on Cloudflare Pages with Worker backends.
 2. **Operator infrastructure** — the single-tenant control plane and supporting services that govern the public products.
 3. **Developer tooling** — open-source MCP servers and editorial workbenches built around multi-agent AI convergence.
-4. **Android portfolio** — native Android editions of the products, written in Kotlin with Jetpack Compose. As of 12 October 2026, _Calculadora_ **v1.0.8** and _Maestro_ **v1.0.5** are published in Google Play production; _Astrólogo_ **v0.2.0** is published only in internal testing.
+4. **Android portfolio** — native Android editions of the products, written in Kotlin with Jetpack Compose. As of 12 October 2026, _Calculadora_ **v1.0.8** and _Maestro_ **v1.0.5** are published in Google Play production. As of 19 October 2026, _Oráculo Celestial_ **v0.3.7** is published only in internal testing.
 
 The organization maintains **1 active public repository**, including its institutional `.github` repository. Product and tooling repositories expose public project surfaces or operational endpoints over HTTPS on custom domains. Engineering work follows strict **multi-peer cross-review discipline** with caller self-review prohibited, version-pinned baselines, CodeQL default setup on every repository, Secret Scanning push protection, and SHA-pinned external GitHub Actions.
 
@@ -257,13 +257,13 @@ The source repositories for these three services are **private**. Access to the 
 
 ### 📱 Android portfolio
 
-Native Android editions of the products — Kotlin and Jetpack Compose, not web wrappers. As of 12 October 2026, Calculadora and Maestro are published in Google Play production. Astrólogo has a working native natal-chart and PDF-export foundation in internal testing; it has no public production release yet.
+Native Android editions of the products — Kotlin and Jetpack Compose, not web wrappers. As of 12 October 2026, Calculadora and Maestro are published in Google Play production. As of 19 October 2026, Oráculo Celestial v0.3.7 is in internal testing with native natal charts, PDF export and the paid AI analysis flow; it has no public production release yet.
 
 | Repository                                                                           | Project page                                                        | What it does                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **maestro-android** (private repository)         | [maestro-android.lcv.dev](https://maestro-android.lcv.dev/)         | Android edition of _Maestro Editorial AI_ — **v1.0.5 published in Google Play production**. The app's original content owned by LCV Ideas &amp; Software uses its proprietary license; third-party rights remain separate. Tracked in [Project #20](https://github.com/orgs/LCV-Ideas-Software/projects/20). |
 | **calculadora-android** (private repository) | [calculadora-android.lcv.dev](https://calculadora-android.lcv.dev/) | **v1.0.8 published in Google Play production** (12 October 2026). Native Kotlin port of the _Calculadora_: Jetpack Compose with Material 3, the calculation engine as pure Kotlin in `:core:calc`, quote sources behind Retrofit/OkHttp with a Room cache, Hilt for injection. No AI, no tracking, no ads, no account. The app's original content owned by LCV Ideas &amp; Software uses its proprietary license; third-party rights and prior grants remain preserved. Package `dev.lcv.calculadora`. |
-| **astrologo-android** (private repository)     | [astrologo-android.lcv.dev](https://astrologo-android.lcv.dev/)     | Android edition of the astrology product — **v0.2.0 in Google Play internal testing**, with local birth profiles, saved natal charts and native PDF export. Public production publication and paid AI analysis are not delivered by this version. Tracked in [Project #19](https://github.com/orgs/LCV-Ideas-Software/projects/19). |
+| **astrologo-android** (private repository)     | [astrologo-android.lcv.dev](https://astrologo-android.lcv.dev/)     | Android edition of _Oráculo Celestial_ — **v0.3.7 in Google Play internal testing** (19 October 2026), with local birth profiles, saved natal charts, native PDF export and the paid AI analysis flow (Google Play purchase with Google sign-in). Paid sales are not open yet, and there is no public production publication. Tracked in [Project #19](https://github.com/orgs/LCV-Ideas-Software/projects/19). |
 
 ### 📱 iOS Portfolio
 
@@ -274,7 +274,7 @@ Four private repositories have been created for future iOS development. The nati
 | **programa-ios** (private repository) | [programa-ios.lcv.dev](https://programa-ios.lcv.dev/) | Coordination and planning for the future iOS portfolio. Repository created; no implementation committed. |
 | **calculadora-ios** (private repository) | [calculadora-ios.lcv.dev](https://calculadora-ios.lcv.dev/) | Planned native iOS edition of Calculadora Financeira. Repository created; no implementation committed. |
 | **maestro-ios** (private repository) | [maestro-ios.lcv.dev](https://maestro-ios.lcv.dev/) | Planned native iOS edition of Maestro AI. Repository created; no implementation committed. |
-| **astrologo-ios** (private repository) | [astrologo-ios.lcv.dev](https://astrologo-ios.lcv.dev/) | Planned native iOS edition of the astrology product. Repository created; no implementation committed. |
+| **astrologo-ios** (private repository) | [astrologo-ios.lcv.dev](https://astrologo-ios.lcv.dev/) | Planned native iOS edition of _Oráculo Celestial_. Repository created; no implementation committed. |
 
 ### 🏛️ Organization infrastructure
 
