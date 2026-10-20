@@ -13,7 +13,7 @@
     [[K, "modelo"], [P, ": "], [S, "vibe coding com portões determinísticos"]],
     [[K, "produtos"], [P, ":"]],
     [[P, "  - "], [T, "Reflexos da Alma"], [P, " "], [A, "→"], [S, " blog público + AI "], [P, "["], [T, "Live"], [P, "]"]],
-    [[P, "  - "], [T, "Astrólogo"], [P, " "], [A, "→"], [S, " mapas astrais + AI "], [P, "["], [T, "Live"], [P, "]"]],
+    [[P, "  - "], [T, "Oráculo Celestial"], [P, " "], [A, "→"], [S, " mapas astrais + AI "], [P, "["], [T, "Live"], [P, "]"]],
     [[P, "  - "], [T, "Calculadora"], [P, " "], [A, "→"], [S, " câmbio internacional "], [P, "["], [T, "Live"], [P, "]"]],
     [[P, "  - "], [T, "Oráculo Financeiro"], [P, " "], [A, "→"], [S, " renda fixa IPCA+ "], [P, "["], [T, "Live"], [P, "]"]],
     [[P, "  - "], [T, "cross-review"], [P, " "], [A, "→"], [S, " revisão por 6 AIs "], [P, "["], [T, "npm"], [P, "]"]],
