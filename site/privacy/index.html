@@ -251,7 +251,7 @@
         Política de Privacidade
       </h1>
       <p class="publication-date">
-        <strong>Versão 1.8 — vigente a partir de 13 de outubro de 2026.</strong>
+        <strong>Versão 1.9 — vigente a partir de 20 de outubro de 2026.</strong>
       </p>
       <hr />
       <h2 id="responsavel-e-contatos">1. Responsável e contatos</h2>
@@ -816,6 +816,72 @@
         absoluta para o atendimento nem substituem as opções da loja ou da
         legislação.
       </p>
+      <h3 id="google-user-data">
+        11.1 Dados de usuário do Google no aplicativo Oráculo Celestial
+      </h3>
+      <p>
+        O aplicativo Android <strong>Oráculo Celestial</strong> oferece “Entrar
+        com Google” somente para a análise paga do mapa natal. Perfis de
+        nascimento, mapas e relatórios funcionam sem login e ficam no aparelho.
+      </p>
+      <p>
+        <strong>Dados acessados.</strong> Ao entrar, com a autorização da
+        pessoa, o app recebe do Google as informações básicas da conta:
+        identificador da conta Google, endereço de e-mail, nome e foto de
+        perfil. O app não pede acesso a Gmail, Drive, Contatos, Agenda nem a
+        outros dados da conta Google, e não recebe a senha.
+      </p>
+      <p>
+        <strong>Uso.</strong> Esses dados servem apenas para identificar a conta
+        que comprou a análise, vincular a compra feita pelo Google Play a essa
+        conta e permitir verificar e recuperar esse direito com a mesma conta.
+        Não são usados para publicidade, criação de perfis ou treinamento de
+        modelos de inteligência artificial.
+      </p>
+      <p>
+        <strong>Armazenamento.</strong> A conta de acesso é criada e mantida
+        pelo Firebase Authentication, serviço do Google, onde esses dados ficam
+        guardados. O servidor do serviço verifica a comprovação de autenticação
+        a cada pedido e grava somente um resumo criptográfico irreversível
+        (SHA-256) do identificador da conta, associado aos registros de pedido
+        no Cloud Firestore. E-mail, nome e foto não são gravados nesses
+        registros.
+      </p>
+      <p>
+        <strong>Transferência e divulgação.</strong> Os dados de usuário do
+        Google não são vendidos nem transferidos a terceiros, salvo obrigação
+        legal. Os provedores de IA que produzem a análise não recebem e-mail,
+        nome, foto nem identificador da conta; recebem apenas o conteúdo da
+        análise descrito na seção 9.
+      </p>
+      <p>
+        <strong>Proteção.</strong> As comunicações usam conexões cifradas
+        (HTTPS). Cada pedido ao servidor exige uma comprovação de autenticação
+        válida, verificada inclusive quanto à revogação. O acesso administrativo
+        aos sistemas é restrito à responsável.
+      </p>
+      <p>
+        <strong>Retenção e exclusão.</strong> Os dados permanecem enquanto a
+        conta de acesso existir. A opção “Excluir conta de acesso”, no app,
+        inicia a exclusão no Firebase Authentication; segundo o fornecedor, a
+        remoção dos sistemas ativos e das cópias de segurança ocorre em até 180
+        dias. Sair do app não exclui a conta, e excluir a conta de acesso não
+        exclui a conta Google. A exclusão também pode ser pedida por
+        <strong>privacy@lcv.dev</strong>, e a autorização pode ser revogada a
+        qualquer momento nas configurações da conta Google. Registros
+        financeiros mínimos de pedido, que guardam apenas o resumo do
+        identificador e nunca e-mail ou nome, podem ser mantidos para obrigações
+        legais, conforme a seção 13.
+      </p>
+      <p>
+        <strong>Uso Limitado.</strong> O uso e a transferência, para qualquer
+        outro aplicativo, de informações recebidas das APIs do Google pelo
+        Oráculo Celestial obedecem à
+        <a
+          href="https://developers.google.com/terms/api-services-user-data-policy"
+          >Política de Dados do Usuário dos Serviços de API do Google</a
+        >, incluindo os requisitos de Uso Limitado.
+      </p>
       <h2 id="atendimento-e-relatos-de-conteudo">
         12. Atendimento e relatos de conteúdo
       </h2>
@@ -1067,14 +1133,16 @@
     </main>
     <aside class="publication-note" aria-label="Publicação e histórico">
       <p>
-        <strong>O que mudou na versão 1.8.</strong> A política passa a
-        distinguir os recursos locais, web e de processamento de IA, as contas e
-        compras, o atendimento e os fornecedores envolvidos nos aplicativos e
-        serviços da LCV Ideas &amp; Software. A publicação não significa que
-        todos os produtos ofereçam todos esses recursos.
+        <strong>O que mudou na versão 1.9.</strong> A nova subseção 11.1
+        descreve os dados de usuário do Google acessados pelo login do
+        aplicativo Oráculo Celestial: uso, armazenamento, transferência,
+        proteção, retenção e exclusão, além da observância da Política de Dados
+        do Usuário dos Serviços de API do Google, incluindo os requisitos de Uso
+        Limitado. As demais seções não mudam.
       </p>
       <p><strong>Versões anteriores:</strong></p>
       <ul>
+        <li><a href="/privacy/1.8/">Versão 1.8</a></li>
         <li><a href="/privacy/1.7/">Versão 1.7</a></li>
         <li><a href="/privacy/1.6/">Versão 1.6</a></li>
         <li><a href="/privacy/1.5/">Versão 1.5</a></li>
