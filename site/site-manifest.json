@@ -1,11 +1,11 @@
 {
   "files": {
     ".nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "app.js": "c0dc565600affa54a16d493d34b7ec7d8fa2c7ab31f5c4c8c540c92a51b5f9cb",
+    "app.js": "4e279b3b0ad520c0656f33ff0bd8532ee97a2fdd47a26f07aab058fa7c0116c7",
     "assets/google-play-oficial.png": "e1ad5e03f636d94b05448c1f156e39b012b9e1d772b730d9e27d066695531a6b",
     "assets/lcv-ideas-software-logo.svg": "70631f32e8b4c01d794a3af5016484dd09d51beb0c26abf3a80a9355db179f27",
     "assets/lcv-ideas-software-mark.svg": "e5761198e95f5f6011e1ba24261c267e7b310bf00ff074f84aa0978e44abe2db",
-    "index.html": "47cdf27a6a7efd8afc573cb78bcb8576ba8d5332009cb8c57f62d838124094dc",
+    "index.html": "a80bd7a5307507dd3382f81cbb484fdbd83fb41ce8862a339d87b397316ceb27",
     "OCTICONS-LICENSE.txt": "da259c8bd0de62713ccdcf88910aebca810644f98c2c912bad814fc79ea778df",
     "privacy/1.0/index.html": "8f59ce00ee83160886c2a525e56db9ac5aa5083eca8ee8262bd301c82ea20414",
     "privacy/1.1/index.html": "99bb5d8271592ea23dded27d2d459699ea89464b7f4d513772b94b2f64e5700d",
@@ -15,10 +15,11 @@
     "privacy/1.5/index.html": "9fa7551e815a77e854e84f1ebd07785033466fa4f69a94ecaade68b8521d32d7",
     "privacy/1.6/index.html": "536232d611e55369eab4b8cbe8b4272e95636bb17de6ac57f5fbb49bce49a59b",
     "privacy/1.7/index.html": "b27f45890daecc9e143f57fae000ff39ce34ca047f4a34f2e29bc09ed4ef8a1c",
-    "privacy/index.html": "eb954772c18fdce4c1b6931b439b4aa76c91685cd17f20b8b7a6ab4341f6173e",
+    "privacy/1.8/index.html": "429f700bab64e4c715f18d4313ff5aac9b753b950891509b56e6b2eb9cdd5ef1",
+    "privacy/index.html": "b735ff7297ab4ca777e6b5895b72fbcc08e9455c40fa8680fae3dbe7a15e8cf5",
     "security/index.html": "9d8bf994421430b7cdbe3a2f04b7a3de5f87129dd3bd2c3eb2cc85d301e45de3",
     "sponsor/assets/mercadopago-oficial.png": "863719a51c238ef136f6ad53b9c25e3589846e06930bce6c6df5282cd4c1340f",
-    "sponsor/index.html": "384df01677ca9ac9c099de502b4c4875c0010fdc3c886b9007bb8ee2d7caba8d",
+    "sponsor/index.html": "ccedbed35b34494f319f5cda2dc6418da36081bf2e4fe6ccbec4287d0a2d74e2",
     "styles.css": "95af6f951c2378ce13a5a9710fd0537172a0307df8898b4b9b139c72ed0f3c6a",
     "tos/index.html": "b82f85fbf9440e9d0210260bf3c0a66458479d1e41f8af0d8eb06bf02c7e68dd"
   }

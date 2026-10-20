@@ -13,6 +13,8 @@ presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
 ## Unreleased
+- Publish privacy policy 1.9 (`site/privacy/index.html`, in force from 19/10/2026): new subsection 11.1 (`#google-user-data`) describes the Google user data the Oráculo Celestial app receives through Sign in with Google — access, use, storage, transfer, protection, retention and deletion — and its adherence to the Google API Services User Data Policy, including the Limited Use requirements, as the OAuth brand verification requires. The homepage card names the app, its current internal-testing version and why it asks for a Google login. Every public product label (products intro, web card, terminal list and sponsor project list) now uses the commercial name Oráculo Celestial, and the organization profile lists Oráculo Celestial v0.3.7 in internal testing with the paid AI analysis flow instead of the superseded v0.2.0 state; repository names and URLs stay unchanged. Version 1.8 stays available unchanged at `site/privacy/1.8/` (LCV-421).
+
 - Ignore the operator-mandated repository-local `temp/` workspace so audit and
   test artifacts cannot be committed (LCV-414).
 
