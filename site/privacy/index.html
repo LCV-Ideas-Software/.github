@@ -252,7 +252,7 @@
       </h1>
       <p class="publication-date">
         <strong
-          >Versão 1.10 — vigente a partir de 20 de outubro de 2026.</strong
+          >Versão 1.11 — vigente a partir de 21 de outubro de 2026.</strong
         >
       </p>
       <hr />
@@ -369,6 +369,20 @@
             <td>
               Legítimo interesse, quando cabível e após avaliação dos direitos
               afetados, ou outra hipótese legal específica.
+            </td>
+          </tr>
+          <tr>
+            <td>
+              Diagnosticar falhas e melhorar a estabilidade e o desempenho dos
+              apps Android
+            </td>
+            <td>
+              Relatórios de falhas, métricas de desempenho e rede e
+              identificadores de instalação
+            </td>
+            <td>
+              Legítimo interesse, quando cabível e após avaliação dos direitos
+              afetados.
             </td>
           </tr>
           <tr>
@@ -570,6 +584,73 @@
         <a href="https://resend.com/legal/privacy-policy"
           >privacidade do Resend</a
         >.
+      </p>
+      <h3 id="diagnosticos-android">
+        7.1 Diagnósticos de falhas nos aplicativos Android
+      </h3>
+      <p>
+        Nas versões Android da Calculadora Financeira, do Maestro AI e do
+        Oráculo Celestial que integram o
+        <strong>Google Firebase Crashlytics</strong>, a coleta de relatórios de
+        falhas e de travamentos sem resposta (ANRs) é automática. O serviço
+        recebe detalhes técnicos do erro, como a sequência de chamadas do
+        programa e mensagens de exceção, o estado relevante do aplicativo, suas
+        versões e informações do aparelho e do sistema. Recebe também
+        identificadores da instalação (<strong
+          >Crashlytics Installation UUID</strong
+        >
+        e <strong>Firebase Installation ID</strong>), que não são dados
+        anônimos.
+      </p>
+      <p>
+        Esses dados são enviados ao Google para identificar falhas, avaliar sua
+        ocorrência e corrigir problemas de estabilidade. No Oráculo Celestial,
+        falhas no código nativo também podem gerar pequenos registros do erro e
+        da memória, chamados <em>minidumps</em>, mantidos temporariamente
+        durante o processamento e depois descartados.
+      </p>
+      <p>
+        O Google informa que conserva os relatórios, os dados extraídos dos
+        minidumps e os identificadores associados por noventa dias antes de
+        iniciar sua remoção dos sistemas ativos e das cópias de segurança.
+        Consulte a
+        <a href="https://firebase.google.com/support/privacy#crash-stored-info"
+          >privacidade e segurança do Firebase</a
+        >. As regras sobre direitos e pedidos de exclusão desta política também
+        se aplicam a esses dados.
+      </p>
+      <h3 id="desempenho-android">
+        7.2 Métricas de desempenho dos aplicativos Android
+      </h3>
+      <p>
+        Nas versões Android desses três aplicativos que integram o
+        <strong>Google Firebase Performance Monitoring</strong>, são coletadas
+        automaticamente métricas de inicialização, duração de operações e
+        requisições de rede, além de uso de recursos como CPU e memória. Os
+        registros incluem versões do aplicativo e do sistema, informações do
+        aparelho, estado da execução, tipo de rede, operadora, idioma, fuso
+        horário e país estimado pelo endereço IP, além de identificadores do
+        aplicativo, de instalação e de sessão. Esses dados são enviados ao
+        Google para identificar lentidão, falhas de conexão e outros problemas
+        de desempenho.
+      </p>
+      <p>
+        As medições de rede podem incluir o endereço da requisição sem seus
+        parâmetros e sem o conteúdo enviado ou recebido, códigos de resposta,
+        tamanhos em bytes e tempos de resposta. O Google informa retenção de
+        trinta dias para eventos associados a IP e de sessenta dias para os
+        registros de desempenho vinculados à instalação ou desidentificados,
+        antes de iniciar sua remoção dos sistemas ativos e das cópias de
+        segurança. Consulte os
+        <a
+          href="https://firebase.google.com/docs/android/play-data-disclosure#performance-monitoring"
+          >dados coletados pelo Performance Monitoring</a
+        >
+        e a
+        <a href="https://firebase.google.com/support/privacy"
+          >privacidade e segurança do Firebase</a
+        >. Esses registros não devem ser presumidos anônimos; os direitos e
+        canais desta política também se aplicam a eles.
       </p>
       <h2 id="inteligencia-artificial-com-suas-proprias-chaves">
         8. Inteligência artificial com suas próprias chaves
@@ -1143,14 +1224,15 @@
     </main>
     <aside class="publication-note" aria-label="Publicação e histórico">
       <p>
-        <strong>O que mudou na versão 1.10.</strong> O Google, por meio do
-        Vertex AI, passa a ser o primeiro provedor das análises pelo nosso
-        serviço, e a Anthropic passa a ser acessada por meio do Google Cloud,
-        com a guarda de entradas e respostas descrita na seção 10. As demais
-        seções não mudam.
+        <strong>O que mudou na versão 1.11.</strong> As seções 7.1 e 7.2
+        descrevem os diagnósticos de falhas e as métricas automáticas de
+        desempenho dos serviços Firebase nos aplicativos Android, os dados
+        enviados ao Google, suas finalidades e os diferentes prazos de retenção.
+        A versão 1.10 permanece arquivada.
       </p>
       <p><strong>Versões anteriores:</strong></p>
       <ul>
+        <li><a href="/privacy/1.10/">Versão 1.10</a></li>
         <li><a href="/privacy/1.9/">Versão 1.9</a></li>
         <li><a href="/privacy/1.8/">Versão 1.8</a></li>
         <li><a href="/privacy/1.7/">Versão 1.7</a></li>
