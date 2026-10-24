@@ -128,7 +128,7 @@ The two are not interchangeable and are not equally required. `MercadoPago.js V2
 builds the Card Payment Brick secure fields and, as a side effect of constructing
 `new MercadoPago(publicKey, ...)`, sets `window.MP_DEVICE_SESSION_ID` automatically. `security.js`
 is loaded with `output="deviceId"` and only populates `window.deviceId`, which the page uses as the
-**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1306-1307`,
+**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1348-1350`,
 where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when it is absent.
 
 | Component                  | Version               | License                    | Scope   | Source                                     |
@@ -139,6 +139,22 @@ where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when 
 What is verifiable here is the shape of the integration, not a justification for it: both scripts
 are fetched at runtime from unversioned provider endpoints, so neither carries a version this
 repository can pin, and neither is vendored.
+
+## Externally hosted script — Google tag (`gtag.js`) on every page
+
+Every `index.html` under `site/` opens its `<head>` with the official Google tag snippet for the
+Google Ads account `AW-18511303830`, placed immediately after `<head>` as Google's installation
+instructions require. The snippet loads `gtag.js` asynchronously from Google's own origin and then
+initializes it inline with `gtag("config", "AW-18511303830")`. The script is not **vendored** into
+this repository, carries no version pin addressable from here, and is governed by Google's terms
+rather than by an open-source license (LCV-450).
+
+| Component              | Version                 | License              | Scope                   | Source                                                       |
+| ---------------------- | ----------------------- | -------------------- | ----------------------- | ------------------------------------------------------------ |
+| Google tag (`gtag.js`) | live endpoint, unpinned | Proprietary — Google | runtime, every page     | https://www.googletagmanager.com/gtag/js?id=AW-18511303830   |
+
+The archived privacy policies under `site/privacy/1.x/` carry the same snippet in their `<head>`;
+their policy text is unchanged.
 
 ## Vendored brand asset — `site/sponsor/assets/mercadopago-oficial.png`
 

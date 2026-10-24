@@ -14,6 +14,7 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Install the official Google tag (`gtag.js`) for the Google Ads account `AW-18511303830` immediately after `<head>` on every page of the published site, archived privacy policies included (head only; their text is unchanged). Inventory the externally hosted script in `THIRDPARTY.md`, add a test that every published page loads it and that the inventory records it, correct the stale `site/sponsor/index.html` line reference for the device identifier precedence, and regenerate the site manifest, byte-identical to the `.github-private` copy (LCV-450).
 - Publish the `Claude Code` starter workflow (`workflow-templates/claude.yml` and `workflow-templates/claude.properties.json`): the organization's canonical workflow, unchanged below the standard organization-template header, with the official `anthropics/claude-code-action` v1.0.261 pinned by its full commit SHA. It answers `@claude` in issues and pull requests, except pull requests opened by Dependabot, and requires the Claude GitHub App and the `CLAUDE_CODE_OAUTH_TOKEN` secret. This repository does not run it itself; `THIRDPARTY.md` lists the Action and records that Dependabot does not maintain its starter-only pin (#398, GITHORG-120, LCV-441).
 - Publish privacy policy 1.11: describe automatic Firebase Crashlytics diagnostics and Performance Monitoring metrics in the Android apps, technical and network data, installation/session identifiers, Google processing and the distinct retention periods; retain version 1.10 at `site/privacy/1.10/` (#393).
 - Publish privacy policy 1.10 (`site/privacy/index.html`): Google, through Vertex AI, becomes the first provider of the analyses made through our service, and Anthropic is reached through Google Cloud, with the 30-day storage of inputs and outputs made available to Anthropic described in section 10, as the Oráculo Celestial 0.3.8 provider chain requires. Version 1.9 stays available unchanged at `site/privacy/1.9/` (LCV-424).
@@ -29,7 +30,6 @@ presentation rule this organization applies to text meant for people
 
 - Update the official OpenSSF Scorecard Action to v2.5.0 at its complete release
   commit SHA, preserving workflow inputs and permissions (LCV-403).
-
 
 - Publish the approved Privacy 1.8, Terms of Services 1.0 and Security pages, dated 13 October 2026, at `/privacy/`, `/tos/` and `/security/`. Preserve the privacy 1.7 archive, justified paragraphs with a 1.5em first-line indent, institutional links and exact cross-site path/byte parity including manifests (LCV-397).
 
