@@ -128,7 +128,7 @@ The two are not interchangeable and are not equally required. `MercadoPago.js V2
 builds the Card Payment Brick secure fields and, as a side effect of constructing
 `new MercadoPago(publicKey, ...)`, sets `window.MP_DEVICE_SESSION_ID` automatically. `security.js`
 is loaded with `output="deviceId"` and only populates `window.deviceId`, which the page uses as the
-**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1348-1350`,
+**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1349-1351`,
 where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when it is absent.
 
 | Component                  | Version               | License                    | Scope   | Source                                     |
@@ -142,12 +142,15 @@ repository can pin, and neither is vendored.
 
 ## Externally hosted script — Google tag (`gtag.js`) on every page
 
-Every `index.html` under `site/` opens its `<head>` with the official Google tag snippet for the
-Google Ads account `AW-18511303830`, placed immediately after `<head>` as Google's installation
-instructions require. The snippet loads `gtag.js` asynchronously from Google's own origin and then
-initializes it inline with `gtag("config", "AW-18511303830")`. The script is not **vendored** into
+Every `index.html` under `site/` opens its `<head>` with the official Google tag snippet, placed
+immediately after `<head>` as Google's installation instructions require. The snippet loads
+`gtag.js` asynchronously from Google's own origin and then configures two tag IDs inline:
+`gtag("config", "AW-18511303830")` for the Google Ads account and
+`gtag("config", "G-PK09C40XL5")` for the Google Analytics 4 property. Google documents that a single
+Google tag can carry several tag IDs and that a further ID is added as another `config` command,
+so both share one loader rather than loading `gtag.js` twice. The script is not **vendored** into
 this repository, carries no version pin addressable from here, and is governed by Google's terms
-rather than by an open-source license (LCV-450).
+rather than by an open-source license (LCV-450, LCV-451).
 
 | Component              | Version                 | License              | Scope                   | Source                                                       |
 | ---------------------- | ----------------------- | -------------------- | ----------------------- | ------------------------------------------------------------ |

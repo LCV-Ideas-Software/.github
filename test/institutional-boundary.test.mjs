@@ -99,6 +99,7 @@ test("main retains the public institutional surface", () => {
 test("every published page loads the Google tag the inventory records", () => {
   const googleTag = "https://www.googletagmanager.com/gtag/js?id=AW-18511303830";
   const googleTagConfig = 'gtag("config", "AW-18511303830");';
+  const analyticsConfig = 'gtag("config", "G-PK09C40XL5");';
   const thirdParty = readFileSync(join(repositoryRoot, "THIRDPARTY.md"), "utf8");
   assert.ok(thirdParty.includes(googleTag), `${googleTag} must be inventoried`);
 
@@ -111,6 +112,10 @@ test("every published page loads the Google tag the inventory records", () => {
     assert.ok(
       html.includes(googleTagConfig),
       `${page} is expected to configure the Google tag`,
+    );
+    assert.ok(
+      html.includes(analyticsConfig),
+      `${page} is expected to configure Google Analytics`,
     );
   }
 });
