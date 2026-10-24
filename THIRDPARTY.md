@@ -128,7 +128,7 @@ The two are not interchangeable and are not equally required. `MercadoPago.js V2
 builds the Card Payment Brick secure fields and, as a side effect of constructing
 `new MercadoPago(publicKey, ...)`, sets `window.MP_DEVICE_SESSION_ID` automatically. `security.js`
 is loaded with `output="deviceId"` and only populates `window.deviceId`, which the page uses as the
-**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1349-1351`,
+**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1373-1375`,
 where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when it is absent.
 
 | Component                  | Version               | License                    | Scope   | Source                                     |
@@ -142,8 +142,8 @@ repository can pin, and neither is vendored.
 
 ## Externally hosted script — Google tag (`gtag.js`) on every page
 
-Every `index.html` under `site/` opens its `<head>` with the official Google tag snippet, placed
-immediately after `<head>` as Google's installation instructions require. The snippet loads
+Every `index.html` under `site/` carries the official Google tag snippet at the top of its
+`<head>`, right after the Google Tag Manager loader described below. The snippet loads
 `gtag.js` asynchronously from Google's own origin and then configures two tag IDs inline:
 `gtag("config", "AW-18511303830")` for the Google Ads account and
 `gtag("config", "G-PK09C40XL5")` for the Google Analytics 4 property. Google documents that a single
@@ -158,6 +158,22 @@ rather than by an open-source license (LCV-450, LCV-451).
 
 The archived privacy policies under `site/privacy/1.x/` carry the same snippet in their `<head>`;
 their policy text is unchanged.
+
+## Externally hosted script — Google Tag Manager container on every page
+
+Every `index.html` under `site/` also carries the official Google Tag Manager snippets for the
+container `GTM-5W9M8KRM`, placed where Google's installation screen requires: the loader script as
+high as possible in `<head>` (the first script, ahead of the Google tag above), and the `<noscript>`
+iframe immediately after the opening `<body>` tag. Only `<meta charset="utf-8" />` precedes the
+loader, so the encoding declaration stays within the first 1024 bytes as the HTML standard requires. The loader fetches `gtm.js` asynchronously from Google's
+own origin; the iframe is requested only when JavaScript is unavailable. Neither is **vendored**
+into this repository, neither carries a version pin addressable from here, and both are governed by
+Google's terms rather than by an open-source license (LCV-452).
+
+| Component                     | Version                 | License              | Scope                         | Source                                                       |
+| ----------------------------- | ----------------------- | -------------------- | ----------------------------- | ------------------------------------------------------------ |
+| Google Tag Manager `gtm.js`   | live endpoint, unpinned | Proprietary — Google | runtime, every page           | https://www.googletagmanager.com/gtm.js?id=GTM-5W9M8KRM      |
+| Google Tag Manager `noscript` | live endpoint, unpinned | Proprietary — Google | no-JavaScript, every page     | https://www.googletagmanager.com/ns.html?id=GTM-5W9M8KRM     |
 
 ## Vendored brand asset — `site/sponsor/assets/mercadopago-oficial.png`
 
