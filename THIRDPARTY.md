@@ -43,7 +43,7 @@ versioned workflows.
 | `actions/upload-pages-artifact`    | [MIT](https://github.com/actions/upload-pages-artifact/blob/main/LICENSE)            | https://github.com/actions/upload-pages-artifact    | Package and upload the public-site artifact                               |
 | `actions/upload-artifact`          | [MIT](https://github.com/actions/upload-artifact/blob/main/LICENSE)                  | https://github.com/actions/upload-artifact          | Retain the Scorecard SARIF artifact                                       |
 | `ossf/scorecard-action`            | [Apache-2.0](https://github.com/ossf/scorecard-action/blob/main/LICENSE)             | https://github.com/ossf/scorecard-action            | Assess supply-chain posture                                               |
-| `zizmorcore/zizmor-action`         | [MIT](https://github.com/zizmorcore/zizmor-action/blob/main/LICENSE)                 | https://github.com/zizmorcore/zizmor-action         | Audit GitHub Actions and upload SARIF                                     |
+| `zizmorcore/zizmor-action`         | [MIT](https://github.com/zizmorcore/zizmor-action/blob/53290badfa369cb0bf7ad16342cb62c2fa47ac7b/LICENSE) | https://github.com/zizmorcore/zizmor-action         | Audit GitHub Actions and upload SARIF                                     |
 
 `github/codeql-action` is MIT-licensed, while the CodeQL CLI bundle selected by
 the Action is separately governed by the
