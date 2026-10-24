@@ -100,8 +100,18 @@ test("every published page loads the Google tag the inventory records", () => {
   const googleTag = "https://www.googletagmanager.com/gtag/js?id=AW-18511303830";
   const googleTagConfig = 'gtag("config", "AW-18511303830");';
   const analyticsConfig = 'gtag("config", "G-PK09C40XL5");';
+  const gtmLoader = '"https://www.googletagmanager.com/gtm.js?id="';
+  const gtmContainer = '"script", "dataLayer", "GTM-5W9M8KRM")';
+  const gtmNoscript =
+    "https://www.googletagmanager.com/ns.html?id=GTM-5W9M8KRM";
   const thirdParty = readFileSync(join(repositoryRoot, "THIRDPARTY.md"), "utf8");
   assert.ok(thirdParty.includes(googleTag), `${googleTag} must be inventoried`);
+  for (const source of [
+    "https://www.googletagmanager.com/gtm.js?id=GTM-5W9M8KRM",
+    gtmNoscript,
+  ]) {
+    assert.ok(thirdParty.includes(source), `${source} must be inventoried`);
+  }
 
   const pages = retainedPublicPaths.filter(
     (path) => path.startsWith("site/") && path.endsWith("index.html"),
@@ -116,6 +126,18 @@ test("every published page loads the Google tag the inventory records", () => {
     assert.ok(
       html.includes(analyticsConfig),
       `${page} is expected to configure Google Analytics`,
+    );
+    for (const snippet of [gtmLoader, gtmContainer, gtmNoscript]) {
+      assert.ok(
+        html.includes(snippet),
+        `${page} is expected to install the Tag Manager container`,
+      );
+    }
+    // The HTML standard requires the encoding declaration within the first 1024 bytes.
+    const charset = Buffer.from(html).indexOf('<meta charset="utf-8" />');
+    assert.ok(
+      charset >= 0 && charset + 24 <= 1024,
+      `${page} must declare its charset within 1024 bytes`,
     );
   }
 });
