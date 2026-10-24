@@ -1,9 +1,9 @@
 # Third-Party Components
 
 Scope of this inventory: every **direct** dependency declared by a manifest committed to this
-repository, every GitHub Action invoked directly by the versioned workflows, every third-party
-script loaded at runtime by a page this repository publishes, and the third-party brand assets
-vendored by the published pages.
+repository, every GitHub Action invoked directly by the versioned workflows or by the starter
+workflows in `workflow-templates/`, every third-party script loaded at runtime by a page this
+repository publishes, and the third-party brand assets vendored by the published pages.
 
 The versioned inventory is the repository's **dependency graph** (Insights → Dependency graph),
 which GitHub maintains from the committed manifest, lockfile and workflow files and exports as an
@@ -29,7 +29,7 @@ repository, not inferred.
 ## GitHub Actions
 
 The table lists each external Action repository invoked directly by the
-versioned workflows.
+versioned workflows or by the starter workflows in `workflow-templates/`.
 
 | Component                          | License                                                                              | Source                                              | Purpose                                                                   |
 | ---------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -44,6 +44,13 @@ versioned workflows.
 | `actions/upload-artifact`          | [MIT](https://github.com/actions/upload-artifact/blob/main/LICENSE)                  | https://github.com/actions/upload-artifact          | Retain the Scorecard SARIF artifact                                       |
 | `ossf/scorecard-action`            | [Apache-2.0](https://github.com/ossf/scorecard-action/blob/main/LICENSE)             | https://github.com/ossf/scorecard-action            | Assess supply-chain posture                                               |
 | `zizmorcore/zizmor-action`         | [MIT](https://github.com/zizmorcore/zizmor-action/blob/53290badfa369cb0bf7ad16342cb62c2fa47ac7b/LICENSE) | https://github.com/zizmorcore/zizmor-action         | Audit GitHub Actions and upload SARIF                                     |
+| `anthropics/claude-code-action`    | [MIT](https://github.com/anthropics/claude-code-action/blob/16f9f71ab9c490faf367f94dd294897edc25be33/LICENSE) | https://github.com/anthropics/claude-code-action    | Run Claude Code on `@claude` mentions (starter workflow only)             |
+
+`anthropics/claude-code-action` appears only in the starter workflow
+`workflow-templates/claude.yml`, which this repository does not run and whose
+pin Dependabot does not maintain, because the `github-actions` entry in
+`.github/dependabot.yml` uses `directory: "/"` and so covers only
+`.github/workflows`; that pin is updated by hand.
 
 `github/codeql-action` is MIT-licensed, while the CodeQL CLI bundle selected by
 the Action is separately governed by the
