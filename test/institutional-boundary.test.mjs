@@ -96,6 +96,25 @@ test("main retains the public institutional surface", () => {
   }
 });
 
+test("every published page loads the Google tag the inventory records", () => {
+  const googleTag = "https://www.googletagmanager.com/gtag/js?id=AW-18511303830";
+  const googleTagConfig = 'gtag("config", "AW-18511303830");';
+  const thirdParty = readFileSync(join(repositoryRoot, "THIRDPARTY.md"), "utf8");
+  assert.ok(thirdParty.includes(googleTag), `${googleTag} must be inventoried`);
+
+  const pages = retainedPublicPaths.filter(
+    (path) => path.startsWith("site/") && path.endsWith("index.html"),
+  );
+  for (const page of pages) {
+    const html = readFileSync(join(repositoryRoot, page), "utf8");
+    assert.ok(html.includes(googleTag), `${page} is expected to load the Google tag`);
+    assert.ok(
+      html.includes(googleTagConfig),
+      `${page} is expected to configure the Google tag`,
+    );
+  }
+});
+
 test("the published GitHub marks retain exact official provenance and color", () => {
   const site = readFileSync(join(repositoryRoot, "site", "index.html"), "utf8");
   const styles = readFileSync(join(repositoryRoot, "site", "styles.css"), "utf8");
