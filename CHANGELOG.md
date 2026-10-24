@@ -14,6 +14,7 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish the `Claude Code` starter workflow (`workflow-templates/claude.yml` and `workflow-templates/claude.properties.json`): the organization's canonical workflow, unchanged below the standard organization-template header, with the official `anthropics/claude-code-action` v1.0.261 pinned by its full commit SHA. It answers `@claude` in issues and pull requests, except pull requests opened by Dependabot, and requires the Claude GitHub App and the `CLAUDE_CODE_OAUTH_TOKEN` secret. This repository does not run it itself; `THIRDPARTY.md` lists the Action and records that Dependabot does not maintain its starter-only pin (#398, GITHORG-120, LCV-441).
 - Publish privacy policy 1.11: describe automatic Firebase Crashlytics diagnostics and Performance Monitoring metrics in the Android apps, technical and network data, installation/session identifiers, Google processing and the distinct retention periods; retain version 1.10 at `site/privacy/1.10/` (#393).
 - Publish privacy policy 1.10 (`site/privacy/index.html`): Google, through Vertex AI, becomes the first provider of the analyses made through our service, and Anthropic is reached through Google Cloud, with the 30-day storage of inputs and outputs made available to Anthropic described in section 10, as the Oráculo Celestial 0.3.8 provider chain requires. Version 1.9 stays available unchanged at `site/privacy/1.9/` (LCV-424).
 
