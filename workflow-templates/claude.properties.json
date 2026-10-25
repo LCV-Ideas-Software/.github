@@ -1,6 +1,6 @@
 {
   "name": "Claude Code (LCV Ideas & Software)",
-  "description": "Runs Claude Code with Anthropic's official claude-code-action when @claude is mentioned in an issue, pull request or review, never on pull requests opened by Dependabot. Requires the Claude GitHub App and the CLAUDE_CODE_OAUTH_TOKEN secret.",
+  "description": "Runs Claude Code with Anthropic's official claude-code-action when @claude is mentioned in an issue, pull request or review, never on pull requests opened by Dependabot. Requires the Claude GitHub App and the organization's Anthropic workload identity federation rule.",
   "iconName": "octicon code-review",
   "categories": ["Automation", "Utilities"]
 }
