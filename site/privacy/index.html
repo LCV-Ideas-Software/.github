@@ -291,7 +291,7 @@
       </h1>
       <p class="publication-date">
         <strong
-          >Versão 1.12 — vigente a partir de 25 de outubro de 2026.</strong
+          >Versão 1.13 — vigente a partir de 26 de outubro de 2026.</strong
         >
       </p>
       <hr />
@@ -630,8 +630,8 @@
       <p>
         Nas versões Android da Calculadora Financeira, do Maestro AI e do
         Oráculo Celestial que integram o
-        <strong>Google Firebase Crashlytics</strong>, a coleta de relatórios de
-        falhas e de travamentos sem resposta (ANRs) é automática. O serviço
+        <strong>Google Firebase Crashlytics</strong>, o envio de relatórios de
+        falhas e de travamentos sem resposta (ANRs) é automático. O serviço
         recebe detalhes técnicos do erro, como a sequência de chamadas do
         programa e mensagens de exceção, o estado relevante do aplicativo, suas
         versões e informações do aparelho e do sistema. Recebe também
@@ -663,15 +663,15 @@
       </h3>
       <p>
         Nas versões Android desses três aplicativos que integram o
-        <strong>Google Firebase Performance Monitoring</strong>, são coletadas
-        automaticamente métricas de inicialização, duração de operações e
-        requisições de rede, além de uso de recursos como CPU e memória. Os
-        registros incluem versões do aplicativo e do sistema, informações do
-        aparelho, estado da execução, tipo de rede, operadora, idioma, fuso
-        horário e país estimado pelo endereço IP, além de identificadores do
-        aplicativo, de instalação e de sessão. Esses dados são enviados ao
-        Google para identificar lentidão, falhas de conexão e outros problemas
-        de desempenho.
+        <strong>Google Firebase Performance Monitoring</strong>, são registradas
+        e enviadas automaticamente métricas de inicialização, duração de
+        operações e requisições de rede, além de uso de recursos como CPU e
+        memória. Os registros incluem versões do aplicativo e do sistema,
+        informações do aparelho, estado da execução, tipo de rede, operadora,
+        idioma, fuso horário e país estimado pelo endereço IP, além de
+        identificadores do aplicativo, de instalação e de sessão. Esses dados
+        são enviados ao Google para identificar lentidão, falhas de conexão e
+        outros problemas de desempenho.
       </p>
       <p>
         As medições de rede podem incluir o endereço da requisição sem seus
@@ -683,7 +683,7 @@
         segurança. Consulte os
         <a
           href="https://firebase.google.com/docs/android/play-data-disclosure#performance-monitoring"
-          >dados coletados pelo Performance Monitoring</a
+          >dados registrados pelo Performance Monitoring</a
         >
         e a
         <a href="https://firebase.google.com/support/privacy"
@@ -1204,19 +1204,6 @@
         comunicável nem garante ausência de incidentes.
       </p>
       <p>
-        Fornecedores de infraestrutura, autenticação, atendimento e IA podem
-        tratar dados em outros países. Os dados recebidos pelo serviço de
-        processamento dos recursos pagos do Oráculo Celestial para Android e os
-        registros de pedidos são tratados no Google Cloud, nos Estados Unidos,
-        conforme a seção 11. As transferências precisam observar o artigo 33 da
-        LGPD e as garantias aplicáveis da
-        <a
-          href="https://www.gov.br/anpd/pt-br/acesso-a-informacao/institucional/atos-normativos/regulamentacoes_anpd/resolucao-cd-anpd-no-19-de-23-de-agosto-de-2024"
-          >Resolução CD/ANPD nº 19/2024</a
-        >. Um link para a política do fornecedor, proteção da conexão ou
-        aceitação desta política não substituem os mecanismos exigidos pela lei.
-      </p>
-      <p>
         Lojas e sistemas operacionais executam controles próprios, como
         verificação de licença de instalação, distintos dos textos, simulações e
         mapas processados por nossas funções. As regras de idade dos serviços
@@ -1248,6 +1235,192 @@
         identificar tratamento indevido de dados de pessoa menor de idade, entre
         em contato pelo canal de privacidade.
       </p>
+      <p>
+        Fornecedores de infraestrutura, autenticação, verificação de compras,
+        diagnóstico, atendimento, envio de e-mail e IA tratam dados em outros
+        países. Os dados recebidos pelo serviço de processamento dos recursos
+        pagos do Oráculo Celestial para Android e os registros de pedidos são
+        tratados no Google Cloud, nos Estados Unidos, conforme a seção 11. As
+        transferências internacionais, seus fundamentos e suas garantias estão
+        descritos na <a href="#transferencias-internacionais">seção 15.1</a>.
+      </p>
+      <h3 id="transferencias-internacionais">
+        15.1 Transferências internacionais de dados
+      </h3>
+      <p>
+        Esta seção reúne, em destaque, as informações sobre os dados pessoais
+        enviados para fora do Brasil quando você usa os recursos dos aplicativos
+        listados abaixo: para onde vão, por quê, por quanto tempo e com quais
+        garantias, conforme o
+        <a
+          href="https://www.gov.br/anpd/pt-br/acesso-a-informacao/institucional/atos-normativos/regulamentacoes_anpd/resolucao-cd-anpd-no-19-de-23-de-agosto-de-2024"
+          >Regulamento aprovado pela Resolução CD/ANPD nº 19/2024</a
+        >. As consultas feitas pelos aplicativos a serviços externos (seção 6) e
+        os pedidos enviados com suas próprias chaves aos provedores de IA que
+        você escolhe (seção 8) seguem as regras dessas seções e as dos próprios
+        serviços. A responsável é a LCV Ideas &amp; Software, identificada na
+        seção 1, com contato em
+        <a href="mailto:privacy@lcv.dev">privacy@lcv.dev</a>.
+      </p>
+      <p>
+        <strong
+          >O que vai para fora do Brasil, para quê e por quanto tempo</strong
+        >
+      </p>
+      <ul>
+        <li>
+          <strong>Recursos pagos do Oráculo Celestial para Android.</strong> O
+          serviço de processamento da LCV Ideas &amp; Software funciona no
+          Google Cloud, nos Estados Unidos (região us-central1). Ele recebe o
+          conteúdo da análise pedida, a comprovação de login e os dados da
+          compra para executar a análise, verificar a compra e entregar o
+          resultado. O serviço não grava mapas, instruções nem relatórios: eles
+          passam por ele apenas durante a execução do pedido. Os registros de
+          pedido ficam no Cloud Firestore, na mesma região, com um resumo
+          criptográfico do identificador da conta e sem e-mail, nome ou foto,
+          pelo tempo necessário para vincular a compra, impedir uso duplicado e
+          tratar sua entrega; depois, apenas os registros financeiros mínimos
+          exigidos por obrigações legais são mantidos, conforme as seções 11.1 e
+          13.
+        </li>
+        <li>
+          <strong>Login Google.</strong> O identificador da conta Google, o
+          e-mail, o nome e a foto de perfil ficam na conta de acesso do Firebase
+          Authentication, com processamento de autenticação nos Estados Unidos,
+          para identificar a conta que comprou a análise e permitir verificar e
+          recuperar a compra, pelos prazos descritos nas seções 11 e 11.1.
+        </li>
+        <li>
+          <strong>Produção da análise por inteligência artificial.</strong> O
+          conteúdo da análise segue do nosso serviço para o provedor usado no
+          pedido, sem e-mail, nome, foto ou identificador da conta. No Google
+          Vertex AI, inclusive quando o modelo da Anthropic é usado por meio do
+          Google Cloud, o tratamento pode ocorrer em qualquer país onde o Google
+          ou seus subcontratados mantêm instalações, pelos prazos de cache e de
+          monitoramento de abuso descritos na seção 10. Nos modelos da Anthropic
+          em que o Google Cloud exige monitoramento de abuso, entradas e
+          respostas são guardadas por até trinta dias e disponibilizadas à
+          Anthropic. Na OpenAI, o tratamento ocorre nos países indicados nos
+          termos e na lista de subcontratados publicados por ela, pelos prazos
+          descritos na seção 10.
+        </li>
+        <li>
+          <strong>Verificação de compras.</strong> O Google Play confirma a
+          compra com os identificadores de conta e de pedido, para validar o
+          pagamento e a entrega. Os dados vão à empresa do Google contratada
+          para o Google Play, sediada nos Estados Unidos, na Irlanda ou em
+          Singapura, conforme o local de distribuição, que os trata segundo as
+          próprias regras e prazos.
+        </li>
+        <li>
+          <strong>Diagnósticos e desempenho dos aplicativos Android.</strong> Os
+          relatórios das seções 7.1 e 7.2 vão para o Google Firebase, para
+          identificar e corrigir falhas e problemas de desempenho, e podem ser
+          tratados em qualquer país onde o Google ou seus subcontratados mantêm
+          instalações, pelos prazos indicados nessas seções.
+        </li>
+        <li>
+          <strong>Atendimento.</strong> As mensagens enviadas aos endereços de
+          atendimento são organizadas no Linear, cujas operações principais
+          ocorrem nos Estados Unidos, segundo o fornecedor, pelo tempo
+          necessário ao atendimento e às obrigações aplicáveis (seção 13).
+        </li>
+        <li>
+          <strong>Envio de relatório por e-mail.</strong> O endereço de destino
+          e o conteúdo vão ao Resend, cujas operações principais ocorrem nos
+          Estados Unidos, segundo o fornecedor, pelo tempo necessário ao envio,
+          conforme as regras do fornecedor.
+        </li>
+      </ul>
+      <p><strong>Como cada transferência é feita</strong></p>
+      <ul>
+        <li>
+          Nos serviços do Google Cloud, incluídos o Firebase Authentication e o
+          Vertex AI, a Google Cloud Brasil Computação e Serviços de Dados Ltda.
+          atua como operadora, isto é, trata os dados em nome da LCV Ideas &amp;
+          Software e segundo as suas instruções. Ela transfere os dados à Google
+          LLC com base nas cláusulas-padrão contratuais (o contrato-modelo
+          aprovado pela Agência Nacional de Proteção de Dados, ANPD)
+          incorporadas ao Adendo de Tratamento de Dados do Google Cloud. Essa
+          transferência ocorre entre empresas do próprio Google que prestam o
+          serviço à LCV Ideas &amp; Software e não é repasse dos dados a
+          terceiros.
+        </li>
+        <li>
+          No Google Play, a transferência segue as cláusulas-padrão contratuais
+          aprovadas pela ANPD para relações entre controladores, nas quais a LCV
+          Ideas &amp; Software é a exportadora, isto é, quem envia os dados.
+        </li>
+        <li>
+          O envio do conteúdo da análise paga à Anthropic e à OpenAI é
+          necessário para executar o contrato da análise que você comprou (<a
+            href="https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709compilado.htm"
+            >LGPD, artigo 33, inciso IX, com o artigo 7º, inciso V</a
+          >).
+        </li>
+        <li>
+          O atendimento e o envio de relatório por e-mail só ocorrem a seu
+          pedido e são necessários para executar o que você pediu ou para o
+          exercício regular de direitos em processo judicial, administrativo ou
+          arbitral (LGPD, artigo 33, inciso IX, com o artigo 7º, incisos V e
+          VI).
+        </li>
+        <li>
+          Os diagnósticos e as métricas de desempenho seguem os
+          <a href="https://firebase.google.com/terms/data-processing-terms"
+            >termos de tratamento de dados do Firebase</a
+          >.
+        </li>
+      </ul>
+      <p><strong>Responsabilidades e segurança</strong></p>
+      <p>
+        A LCV Ideas &amp; Software decide as finalidades e os meios do
+        tratamento e responde por ele perante você. A Google Cloud Brasil e a
+        Google LLC atuam como operadoras nos serviços do Google Cloud, e o
+        Google atua conforme os termos do Firebase nos diagnósticos e no
+        desempenho. O Google Play atua como controlador independente. O Linear e
+        o Resend atuam como operadores, conforme os seus acordos de tratamento
+        de dados; a OpenAI atua conforme o seu acordo de tratamento de dados; e
+        a Anthropic recebe os dados por meio do Google Cloud, conforme as regras
+        do Google Cloud para os modelos da Anthropic. As comunicações usam
+        conexões cifradas (HTTPS), e cada pedido ao nosso serviço exige
+        comprovação de autenticação válida, verificada inclusive quanto à
+        revogação. Os dados guardados pelo serviço de processamento dos recursos
+        pagos e os registros de pedidos no Google Cloud são cifrados com chaves
+        de criptografia gerenciadas pela LCV Ideas &amp; Software. Não vendemos
+        dados pessoais.
+      </p>
+      <p><strong>Transferências posteriores</strong></p>
+      <p>
+        Os fornecedores podem repassar dados a subcontratados próprios, listados
+        por eles:
+        <a href="https://cloud.google.com/terms/subprocessors">Google Cloud</a>,
+        <a href="https://firebase.google.com/terms/subprocessors">Firebase</a>,
+        <a href="https://trust.anthropic.com/subprocessors">Anthropic</a>,
+        <a href="https://openai.com/policies/sub-processor-list/">OpenAI</a> e
+        <a href="https://resend.com/legal/subprocessors">Resend</a>. A lista de
+        subcontratados do Linear é fornecida por ele mediante solicitação e pode
+        ser pedida por <a href="mailto:privacy@lcv.dev">privacy@lcv.dev</a>.
+      </p>
+      <p><strong>Cópia das cláusulas e seus direitos</strong></p>
+      <p>
+        As cláusulas usadas estão publicadas pelo Google:
+        <a href="https://cloud.google.com/sccs/br-p2p-intra-group?hl=pt-br"
+          >cláusulas do Google Cloud</a
+        >
+        e
+        <a href="https://business.safety.google/lgpd/controllerterms/sccs/c2c/"
+          >cláusulas do Google Play</a
+        >. Você pode pedir a íntegra das cláusulas usadas nessas transferências
+        por <a href="mailto:privacy@lcv.dev">privacy@lcv.dev</a>, e
+        responderemos em até quinze dias, observados os segredos comercial e
+        industrial. Os direitos da seção 14 valem também para os dados
+        transferidos, pelo mesmo canal. Você tem ainda o direito de peticionar
+        em relação aos seus dados contra a LCV Ideas &amp; Software perante a
+        <a href="https://www.gov.br/anpd/pt-br"
+          >Agência Nacional de Proteção de Dados (ANPD)</a
+        >.
+      </p>
       <h2 id="alteracoes-e-informacoes-complementares">
         16. Alterações e informações complementares
       </h2>
@@ -1269,15 +1442,18 @@
     </main>
     <aside class="publication-note" aria-label="Publicação e histórico">
       <p>
-        <strong>O que mudou na versão 1.12.</strong> As seções 11 e 15 informam
-        que o serviço de processamento dos recursos pagos do Oráculo Celestial
-        para Android é executado no Google Cloud, nos Estados Unidos (região
-        us-central1), onde também ficam os registros de pedidos no Cloud
-        Firestore. As demais seções não mudam. A versão 1.11 permanece
+        <strong>O que mudou na versão 1.13.</strong> A nova
+        <a href="#transferencias-internacionais">seção 15.1</a> reúne as
+        informações sobre as transferências internacionais de dados pessoais dos
+        aplicativos, conforme o Regulamento aprovado pela Resolução CD/ANPD nº
+        19/2024, e a seção 15 passa a remeter a ela. Nas seções 7.1 e 7.2, a
+        descrição do envio automático dos relatórios foi ajustada, sem mudança
+        no funcionamento. As demais seções não mudam. A versão 1.12 permanece
         arquivada.
       </p>
       <p><strong>Versões anteriores:</strong></p>
       <ul>
+        <li><a href="/privacy/1.12/">Versão 1.12</a></li>
         <li><a href="/privacy/1.11/">Versão 1.11</a></li>
         <li><a href="/privacy/1.10/">Versão 1.10</a></li>
         <li><a href="/privacy/1.9/">Versão 1.9</a></li>
