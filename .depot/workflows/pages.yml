@@ -1,0 +1,106 @@
+# Depot CI Migration
+# Source: .github\workflows\pages.yml
+#
+# Changes made:
+# - Rewrote .github/ path references to .depot/
+# - Changed GitHub runs-on labels to their Depot equivalents
+
+name: Pages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".depot/workflows/pages.yml"
+      - ".npmrc"
+      - "package-lock.json"
+      - "package.json"
+      - "site/**"
+  pull_request:
+    branches:
+      - main
+    # `edited` covers a pull request retargeted to main; without it the
+    # required check would not run until the next push.
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_OPTIONS: "--no-deprecation"
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      pages: read # Reads the existing Pages configuration through configure-pages.
+    name: Build Pages artifact
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup latest Node.js 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          cache: npm
+
+      - name: Install dependencies from the canonical npm registry
+        run: |
+          set -euo pipefail
+          test "$(npm config get registry)" = "https://registry.npmjs.org/"
+          npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify dependency signatures and advisories
+        run: |
+          set -euo pipefail
+          npm audit signatures
+          npm audit --audit-level=low
+
+      - name: Verify public institutional boundary
+        run: npm test
+
+      - name: Check public page formatting
+        run: npm run format:public:check
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: build
+    permissions:
+      id-token: write # Issues the OIDC token consumed by deploy-pages.
+      pages: write # Creates and monitors the GitHub Pages deployment.
+    name: Deploy GitHub Pages
+    runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
