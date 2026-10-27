@@ -36,7 +36,7 @@
       {
         "hooks": [
           {
-            "command": "cmd /c \"entire-brain hook pre-edit --claude-hook || entire brain hook pre-edit --claude-hook || exit /b 0\"",
+            "command": "sh -c 'if command -v entire-brain >/dev/null 2>&1; then entire-brain hook pre-edit --claude-hook || true; elif command -v entire >/dev/null 2>&1; then entire brain hook pre-edit --claude-hook || true; fi'",
             "type": "command"
           }
         ],
