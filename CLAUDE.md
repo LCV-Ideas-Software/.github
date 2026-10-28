@@ -5,6 +5,12 @@ Read .entire/agent-guide.md for this repository's workflow, source inspection, a
 
 ## Entire and GitHub together (enterprise standard)
 
+This section applies to agent sessions on a local workstation with the Entire
+CLI installed. It does not apply to agents that run in GitHub Actions or in a
+provider's cloud, such as the `@claude` workflow, Codex cloud tasks or the
+Copilot coding agent: they commit through their own tools and follow their own
+instructions.
+
 Entire and GitHub run together, in parallel, at all times. GitHub remains the
 source of truth and the home of the controls (signed commits, rulesets, CodeQL,
 reviews); Entire captures a checkpoint when a commit is made and syncs it when
