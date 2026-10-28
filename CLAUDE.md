@@ -33,14 +33,19 @@ the commit is pushed. Work recorded in only one of them is incomplete.
    `git ls-remote origin 'refs/entire/*'` lists the ID from the commit trailer,
    and `entire checkpoint explain <id> --repo gh/<owner>/<repo> --json` answers.
 7. Once per pull request, after it is merged, generate a remote dispatch with
-   `entire dispatch --repos gh/<owner>/<repo> --since <time the PR was opened> --voice neutral`
+   `entire dispatch --repos gh/<owner>/<repo> --since <author time of the PR's first commit> --voice neutral`
+   (`gh pr view <number> --json commits -q '.commits[0].authoredDate'`): checkpoints
+   are created at commit time, before the PR exists. The window can also include
+   other work merged in the same period;
    and give it a title: the CLI has no title option, so take the newest setup
    for this repository from `entire api --to cell /api/v1/me/dispatch-setups`
    and run `entire api --to cell -X PATCH /api/v1/me/dispatch-setups/<setup-id> -f "name=<repo> — PR #<number>: <PR title>"`.
    Every dispatch must have a title. Post its markdown as a comment on the pull
    request, with the checkpoint IDs and the title. Entire allows one generation
    per minute per account: after a rate-limit
-   answer, wait 60 seconds and retry once. "No checkpoints" means step 6 failed;
+   answer, wait 60 seconds and retry once. The dispatch must cover the PR's own
+   checkpoint IDs, read from its commit trailers; "No checkpoints" for this
+   window means step 6 failed;
    never create an artificial commit to fill a dispatch.
 8. Report configuration, executed-and-proven evidence, and pending items
    separately.
