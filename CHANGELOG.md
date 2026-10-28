@@ -57,6 +57,12 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- Set Entire `commit_linking` to `always` and document the enterprise rule for
+  running Entire and GitHub together: agent commits link to their captured
+  session without a prompt, each push is followed by proof that its checkpoint
+  reached GitHub, and one remote dispatch is generated per pull request
+  (LCV-477).
+
 - Atualizado o telefone fixo institucional para +55 (11) 5229-0077 e seu
   link do WhatsApp. O site compartilhado exibe os dois telefones no cartão da
   organização e em cards individuais do WhatsApp, preservando a paridade entre
