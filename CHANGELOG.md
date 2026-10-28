@@ -57,6 +57,10 @@ presentation rule this organization applies to text meant for people
 
 ### Changed
 
+- Fix the Entire dispatch step: list and title each dispatch setup in the
+  jurisdiction that generated the dispatch, since each jurisdiction lists only
+  its own setups, and rewrite the step for clarity (LCV-477).
+
 - Set Entire `commit_linking` to `always` and document the enterprise rule for
   running Entire and GitHub together: agent commits link to their captured
   session without a prompt, each push is followed by proof that its checkpoint
