@@ -32,20 +32,25 @@ the commit is pushed. Work recorded in only one of them is incomplete.
 6. Push with `git push`, then prove that the checkpoint reached GitHub:
    `git ls-remote origin 'refs/entire/*'` lists the ID from the commit trailer,
    and `entire checkpoint explain <id> --repo gh/<owner>/<repo> --json` answers.
-7. Once per pull request, after it is merged, generate a remote dispatch with
-   `entire dispatch --repos gh/<owner>/<repo> --since <author time of the PR's first commit> --voice neutral`
-   (`gh pr view <number> --json commits -q '.commits[0].authoredDate'`): checkpoints
-   are created at commit time, before the PR exists. The window can also include
-   other work merged in the same period;
-   and give it a title: the CLI has no title option, so take the newest setup
-   for this repository from `entire api --to cell /api/v1/me/dispatch-setups`
-   and run `entire api --to cell -X PATCH /api/v1/me/dispatch-setups/<setup-id> -f "name=<repo> — PR #<number>: <PR title>"`.
-   Every dispatch must have a title. Post its markdown as a comment on the pull
-   request, with the checkpoint IDs and the title. Entire allows one generation
-   per minute per account: after a rate-limit
-   answer, wait 60 seconds and retry once. The dispatch must cover the PR's own
-   checkpoint IDs, read from its commit trailers; "No checkpoints" for this
-   window means step 6 failed;
-   never create an artificial commit to fill a dispatch.
+7. Once per pull request, after it is merged, generate a remote dispatch:
+   `entire dispatch --repos gh/<owner>/<repo> --since <author time of the PR's first commit> --voice neutral`.
+   Take that time from `gh pr view <number> --json commits -q '.commits[0].authoredDate'`:
+   checkpoints are created at commit time, before the PR exists. The window can
+   also include other work merged in the same period. Add `--jurisdiction <slug>`
+   when the repository is placed outside your home jurisdiction
+   (`entire auth status` shows the home one).
+   Every dispatch must have a title. The CLI has no title option, so take the
+   newest setup for this repository from
+   `entire api --jurisdiction <slug> /api/v1/me/dispatch-setups` and run
+   `entire api --jurisdiction <slug> -X PATCH /api/v1/me/dispatch-setups/<setup-id> -f "name=<repo> — PR #<number>: <PR title>"`.
+   Use the same jurisdiction slug that generated the dispatch in both commands:
+   each jurisdiction lists only its own setups. In Git Bash on Windows, prefix
+   `entire api` with `MSYS_NO_PATHCONV=1`, or the `/api/v1/...` path is rewritten
+   into a Windows path.
+   Post the dispatch title and markdown as a comment on the pull request, with
+   the PR's checkpoint IDs read from its commit trailers; the dispatch must cover
+   them. Entire allows one generation per minute per account: after a rate-limit
+   answer, wait 60 seconds and retry once. "No checkpoints" for this window means
+   step 6 failed; never create an artificial commit to fill a dispatch.
 8. Report configuration, executed-and-proven evidence, and pending items
    separately.
