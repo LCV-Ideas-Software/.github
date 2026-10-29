@@ -14,6 +14,10 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Enable native Google Antigravity CLI (`agy`) hooks in `.agents/hooks.json` and
+  document the Antigravity integration and MCP configuration in `docs/entire.md`
+  (LCV-477).
+
 - Configure official Entire Brain/Graph guidance and the Codex MCP; document
   repository-specific merge gates, required branch freshness, removal of the
   retired Depot gate, and the remaining checkpoint/Trail evidence (LCV-477).

@@ -4,7 +4,7 @@ Verified configuration: 27 October 2026. Tracking: [LCV-477](https://linear.app/
 
 ## Agent integration
 
-Entire CLI 0.12.2, Brain 0.3.0 and Graph 0.6.0 were verified locally. Native Codex and Git hooks are installed for session and checkpoint capture; execution evidence is distinguished below. The read-only MCP server is configured in `.codex/config.toml` as `entire mcp`; MCP retrieval does not replace capture. Start a new Codex session inside this repository or its linked worktree, not the parent workspace.
+Entire CLI 0.12.2, Brain 0.3.0 and Graph 0.6.0 were verified locally. Native Antigravity (`.agents/hooks.json` and the `entire hooks antigravity title-tee` token feed in `~/.gemini/antigravity-cli/settings.json`), Claude Code (`.claude/settings.json`), Codex (`.codex/hooks.json`), Copilot CLI (`.github/hooks/entire.json`) and Git hooks are installed for session and checkpoint capture; execution evidence is distinguished below. The read-only MCP server is configured in `.codex/config.toml` and `~/.gemini/config/mcp_config.json` as `entire mcp`; MCP retrieval does not replace capture. Start a new agent session (`agy`, `claude`, `codex` or `copilot`) inside this repository or its linked worktree, not the parent workspace.
 
 The official setup manages `.entire/agent-guide.md` and delimited blocks in AGENTS.md/CLAUDE.md. Operator instructions take precedence, including avoiding redundant queries, tests and analysis. Existing repository instructions and hooks are preserved. GitHub Actions remains the independent CI system; Depot is not adopted.
 
@@ -59,6 +59,7 @@ Entire subprocesses can create visible terminal windows on this Windows host. A 
 
 ## Official references
 
+- [Antigravity integration](https://docs.entire.com/agents/antigravity)
 - [Codex integration](https://docs.entire.com/agents/codex)
 - [Native MCP](https://docs.entire.com/cli-reference/mcp)
 - [Brain setup](https://docs.entire.com/guides/brain/quickstart)
