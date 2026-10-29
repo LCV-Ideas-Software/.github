@@ -1,10 +1,10 @@
 # Entire in `.github`
 
-Verified configuration: 27 October 2026. Tracking: [LCV-477](https://linear.app/lcv-ideas-software/issue/LCV-477).
+Verified configuration: 28 October 2026. Tracking: [LCV-477](https://linear.app/lcv-ideas-software/issue/LCV-477).
 
 ## Agent integration
 
-Entire CLI 0.12.2, Brain 0.3.0 and Graph 0.6.0 were verified locally. Native Codex and Git hooks are installed for session and checkpoint capture; execution evidence is distinguished below. The read-only MCP server is configured in `.codex/config.toml` as `entire mcp`; MCP retrieval does not replace capture. Start a new Codex session inside this repository or its linked worktree, not the parent workspace.
+Entire CLI 0.12.2, Brain 0.3.0 and Graph 0.6.0 were verified locally. In the repository, native Antigravity (`.agents/hooks.json`), Claude Code (`.claude/settings.json`), Codex (`.codex/hooks.json`), Copilot CLI (`.github/hooks/entire.json`) and Git hooks are configured for session and checkpoint capture; execution evidence is distinguished below. Because Antigravity (`agy`) runs hooks through `cmd.exe` on Windows and POSIX `sh` elsewhere—and `entire doctor` / `entire status` require `.agents/hooks.json` to match the host shell—the committed `.agents/hooks.json` is intentionally Windows-specific (`where.exe entire >nul 2>nul & if errorlevel 1 (ver>nul) else (...)`) for the Windows operator workstation; on macOS or Linux, run `entire agent add antigravity` to regenerate `.agents/hooks.json` for `sh`. Per-user workstation files outside the repository (`~/.gemini/antigravity-cli/settings.json` for the `entire hooks antigravity title-tee` token feed written by `entire agent add antigravity`, and `~/.gemini/config/mcp_config.json` for the user-level `entire mcp` registration) must be configured on each machine individually, whereas `.codex/config.toml` provides the repository-scoped read-only `entire mcp` entry for Codex; MCP retrieval does not replace capture. Start a new agent session (`agy`, `claude`, `codex` or `copilot`) inside this repository or its linked worktree, not the parent workspace.
 
 The official setup manages `.entire/agent-guide.md` and delimited blocks in AGENTS.md/CLAUDE.md. Operator instructions take precedence, including avoiding redundant queries, tests and analysis. Existing repository instructions and hooks are preserved. GitHub Actions remains the independent CI system; Depot is not adopted.
 
@@ -47,7 +47,7 @@ GitHub continues enforcing signatures, resolved review conversations, security, 
 ## Evidence and remaining verification
 
 - **Configured and confirmed:** native hooks, Brain/Graph setup and connection; gate definitions and GitHub freshness policy were read back after changes.
-- **Configuration only:** the project MCP entry is available to new Codex sessions; this does not prove that an already-running IDE host reloaded it.
+- **Configuration only:** the project MCP entry (`.codex/config.toml`) is available to new Codex sessions, and the per-user Antigravity files (`~/.gemini/antigravity-cli/settings.json` and `~/.gemini/config/mcp_config.json`) apply only on workstations where those user-level steps were performed; this does not prove that an already-running IDE host reloaded them or that another machine has the per-user files.
 - **Not yet proved for this delivery:** capture of a repository-scoped session that changes a real file, a signed commit with an Entire-Checkpoint trailer, its normal push, and remote retrieval of that checkpoint. Prove this during real work; never import another repository's conversation or manufacture a test-only change.
 - **Separate verification:** a successful gate configuration readback is not an approved Trail, passing CI, successful merge or application deployment.
 
@@ -59,6 +59,7 @@ Entire subprocesses can create visible terminal windows on this Windows host. A 
 
 ## Official references
 
+- [Antigravity integration](https://docs.entire.com/agents/antigravity)
 - [Codex integration](https://docs.entire.com/agents/codex)
 - [Native MCP](https://docs.entire.com/cli-reference/mcp)
 - [Brain setup](https://docs.entire.com/guides/brain/quickstart)
