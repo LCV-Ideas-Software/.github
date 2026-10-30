@@ -14,6 +14,16 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish privacy policy 1.14, Terms of Services 1.1 and Security 1.1 (`site/privacy/`, `site/tos/`,
+  `site/security/`, in force from 30/10/2026; previous versions archived at `site/privacy/1.13/`,
+  `site/tos/1.0/` and `site/security/1.0/`): the texts describe the six-month account library of the
+  paid Oráculo Celestial analysis, the profile content sent to the AI providers, Firebase Cloud
+  Messaging, Firebase App Check with Play Integrity, Mercado Pago on the web edition, the automatic
+  refund, the 18+ distribution and the current provider chain (Gemini via Vertex AI, Anthropic via its
+  own API, OpenAI). The organization profile and `site/index.html` record the three Android apps in
+  Google Play production (Calculadora 1.0.12, Maestro 1.0.11, Oráculo Celestial 1.0.0, 30/10/2026)
+  (LCV-464).
+
 - Update the official Linear Release Action to v0.18.2 and Claude Code Action
   to v1.0.265 at their complete immutable release commit SHAs, preserving the
   existing workflow inputs and official Linear CLI v0.18.0 (LCV-488).
