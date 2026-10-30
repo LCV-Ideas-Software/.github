@@ -997,8 +997,8 @@
         <strong>Transferência e divulgação.</strong> Os dados de usuário do
         Google não são vendidos nem transferidos a terceiros, salvo obrigação
         legal. Os provedores de IA que produzem a análise não recebem e-mail,
-        nome, foto nem identificador da conta; recebem apenas o conteúdo da
-        análise descrito na seção 9.
+        nome da conta Google, foto nem identificador da conta; recebem apenas o
+        conteúdo da análise descrito na seção 9.
       </p>
       <p>
         Recebem o conteúdo da análise: o nome que você deu ao perfil, a data, a
@@ -1030,12 +1030,15 @@
         inicia a exclusão no Firebase Authentication; segundo o fornecedor, a
         remoção dos sistemas ativos e das cópias de segurança ocorre em até 180
         dias. Sair do app não exclui a conta, e excluir a conta de acesso não
-        exclui a conta Google. A exclusão também pode ser pedida por
-        <strong>privacy@lcv.dev</strong>, e a autorização pode ser revogada a
-        qualquer momento nas configurações da conta Google. Registros
-        financeiros mínimos de pedido, que guardam apenas o resumo do
-        identificador e nunca e-mail ou nome, podem ser mantidos para obrigações
-        legais, conforme a seção 13.
+        exclui a conta Google. A opção do app, por si só, exclui a conta de
+        acesso; a remoção da análise guardada na biblioteca da conta e dos
+        registros associados no servidor é feita a pedido, por
+        <strong>privacy@lcv.dev</strong>, ou ao fim do prazo de seis meses. A
+        exclusão também pode ser pedida por <strong>privacy@lcv.dev</strong>, e
+        a autorização pode ser revogada a qualquer momento nas configurações da
+        conta Google. Registros financeiros mínimos de pedido, que guardam
+        apenas o resumo do identificador e nunca e-mail ou nome, podem ser
+        mantidos para obrigações legais, conforme a seção 13.
       </p>
       <p>
         <strong>Uso Limitado.</strong> O uso e a transferência, para qualquer
@@ -1310,14 +1313,14 @@
           seis meses contado do primeiro envio ao servidor, para que você a abra
           em qualquer aparelho em que entre com a mesma conta. Mapas, instruções
           e dados intermediários passam pelo serviço apenas durante a execução.
-          Ao fim do prazo, ou quando você exclui a conta de acesso, a análise é
-          removida da biblioteca; a cópia em PDF que você salvar permanece com
-          você. Os registros de pedido ficam no Cloud Firestore, na mesma
-          região, com um resumo criptográfico do identificador da conta e sem
-          e-mail, nome ou foto, pelo tempo necessário para vincular a compra,
-          impedir uso duplicado e tratar sua entrega; depois, apenas os
-          registros financeiros mínimos exigidos por obrigações legais são
-          mantidos, conforme as seções 11.1 e 13.
+          Ao fim do prazo, ou quando você pede a exclusão pelo canal de
+          privacidade (seção 11.1), a análise é removida da biblioteca; a cópia
+          em PDF que você salvar permanece com você. Os registros de pedido
+          ficam no Cloud Firestore, na mesma região, com um resumo criptográfico
+          do identificador da conta e sem e-mail, nome ou foto, pelo tempo
+          necessário para vincular a compra, impedir uso duplicado e tratar sua
+          entrega; depois, apenas os registros financeiros mínimos exigidos por
+          obrigações legais são mantidos, conforme as seções 11.1 e 13.
         </li>
         <li>
           <strong>Login Google.</strong> O identificador da conta Google, o
@@ -1329,15 +1332,15 @@
         <li>
           <strong>Produção da análise por inteligência artificial.</strong> O
           conteúdo da análise segue do nosso serviço para o provedor usado no
-          pedido, sem e-mail, nome, foto ou identificador da conta. No Google
-          Vertex AI, o tratamento pode ocorrer em qualquer país onde o Google ou
-          seus subcontratados mantêm instalações, pelos prazos de cache e de
-          monitoramento de abuso descritos na seção 10. Na Anthropic, o
-          tratamento segue o acordo de tratamento de dados e a lista de
-          subcontratados publicados por ela, pelos prazos da seção 10. Na
-          OpenAI, o tratamento ocorre nos países indicados nos termos e na lista
-          de subcontratados publicados por ela, pelos prazos descritos na seção
-          10.
+          pedido, sem e-mail, nome da conta Google, foto ou identificador da
+          conta. No Google Vertex AI, o tratamento pode ocorrer em qualquer país
+          onde o Google ou seus subcontratados mantêm instalações, pelos prazos
+          de cache e de monitoramento de abuso descritos na seção 10. Na
+          Anthropic, o tratamento segue o acordo de tratamento de dados e a
+          lista de subcontratados publicados por ela, pelos prazos da seção 10.
+          Na OpenAI, o tratamento ocorre nos países indicados nos termos e na
+          lista de subcontratados publicados por ela, pelos prazos descritos na
+          seção 10.
         </li>
         <li>
           <strong>Verificação de compras.</strong> O Google Play confirma a
@@ -1482,7 +1485,7 @@
         Oráculo Celestial: a análise completa entregue fica guardada por seis
         meses em armazenamento privado no Google Cloud, cifrada com chave
         gerenciada pela LCV Ideas &amp; Software, e é removida ao fim do prazo
-        ou com a exclusão da conta de acesso. A seção 11.1 passa a informar o
+        ou a pedido, pelo canal de privacidade. A seção 11.1 passa a informar o
         conteúdo do perfil enviado aos provedores de IA, o registro de
         notificações (Firebase Cloud Messaging) e a verificação de integridade
         do aplicativo (Firebase App Check com Play Integrity). A seção 11 passa

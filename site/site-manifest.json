@@ -5,7 +5,7 @@
     "assets/google-play-oficial.png": "e1ad5e03f636d94b05448c1f156e39b012b9e1d772b730d9e27d066695531a6b",
     "assets/lcv-ideas-software-logo.svg": "70631f32e8b4c01d794a3af5016484dd09d51beb0c26abf3a80a9355db179f27",
     "assets/lcv-ideas-software-mark.svg": "e5761198e95f5f6011e1ba24261c267e7b310bf00ff074f84aa0978e44abe2db",
-    "index.html": "928f1c2367e4c6ededbf2a3488d3a0e8027ebe5d2f4cbf57effd3487b713e59b",
+    "index.html": "2c157882f23f5e4924d14d9e5f7f40d10461ea0520e4f772067b5db3c0dcb1d7",
     "OCTICONS-LICENSE.txt": "da259c8bd0de62713ccdcf88910aebca810644f98c2c912bad814fc79ea778df",
     "privacy/1.0/index.html": "c40ef0c9a1fc70bff761a3a4a3b12c993cd48fa427303ab730e71a7c49526334",
     "privacy/1.1/index.html": "b5e0cfb56a0e95f555b7aade2a9235d271cf4e39e9551a359b648e30c3eb5e30",
@@ -21,13 +21,13 @@
     "privacy/1.7/index.html": "b51216d091923a96f0eb6e69ebec0c16ce1273017d807362b92eade0573499fb",
     "privacy/1.8/index.html": "b0f322abd9648fd8a3465b95c32ad5c4e1e2d3257e9e3202c5ceab0953dde661",
     "privacy/1.9/index.html": "d0568a77e12dae1479849133a33bfb58d5ac929b25dfe44084f5da21fdf533ea",
-    "privacy/index.html": "85129e8dec9628b79ef4d61544ea8a243b9cc4667372facce879dc3cd37a2c7a",
+    "privacy/index.html": "fa837338a55427f60167ec98de873114ae183569d9507b0f836ce6b555aca6d2",
     "security/1.0/index.html": "816573e238f79f7f7a18531a253677af701785d3090268e361357c70bc5cfb3f",
     "security/index.html": "c63d541c43013399e145ffd15392f3ba7d5011fc2ca7fbd23d573f42f3b2620c",
     "sponsor/assets/mercadopago-oficial.png": "863719a51c238ef136f6ad53b9c25e3589846e06930bce6c6df5282cd4c1340f",
     "sponsor/index.html": "8f154f40baaea8f3af1ea5e8472f25af3a95128e2bc225d3c043ad0083468b02",
     "styles.css": "95af6f951c2378ce13a5a9710fd0537172a0307df8898b4b9b139c72ed0f3c6a",
     "tos/1.0/index.html": "c3f34f1b44c460128f2e11d126a64a2e408d214fe39a546abf45d04091a8d8d0",
-    "tos/index.html": "e04cd5dbfc670221a6ef7244585197cf45a9838d6d205af71673cdd597a4bc3a"
+    "tos/index.html": "d561095abef30a59098af9aac51e951069a74b6ced38854be7e10af5f519a7a1"
   }
 }
