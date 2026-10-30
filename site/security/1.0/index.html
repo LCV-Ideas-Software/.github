@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Google Tag Manager -->
+    <script>
+      (function (w, d, s, l, i) {
+        w[l] = w[l] || [];
+        w[l].push({ "gtm.start": new Date().getTime(), event: "gtm.js" });
+        var f = d.getElementsByTagName(s)[0],
+          j = d.createElement(s),
+          dl = l != "dataLayer" ? "&l=" + l : "";
+        j.async = true;
+        j.src = "https://www.googletagmanager.com/gtm.js?id=" + i + dl;
+        f.parentNode.insertBefore(j, f);
+      })(window, document, "script", "dataLayer", "GTM-5W9M8KRM");
+    </script>
+    <!-- End Google Tag Manager -->
+    <!-- Google tag (gtag.js) -->
+    <script
+      async
+      src="https://www.googletagmanager.com/gtag/js?id=AW-18511303830"
+    ></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+
+      gtag("config", "AW-18511303830");
+      gtag("config", "G-PK09C40XL5");
+    </script>
+    <meta name="color-scheme" content="dark" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Segurança dos aplicativos e serviços da LCV Ideas &amp; Software."
+    />
+    <link rel="canonical" href="https://www.lcv.dev/security/1.0/" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="/assets/lcv-ideas-software-mark.svg"
+    />
+    <title>
+      Seguran&#231;a, versão 1.0 (arquivada) — LCV Ideas &amp; Software
+    </title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      /* Mesma apresentação institucional da política 1.7; o texto aprovado
+         mantém justificação e recuo de primeira linha de 1.5em. */
+      .legal {
+        max-width: 76ch;
+        margin: 0 auto;
+        padding: 3.2rem var(--pad) 4rem;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .legal h1 {
+        font-size: clamp(1.65rem, 3.6vw, 2.4rem);
+        letter-spacing: -0.03em;
+        font-weight: 700;
+        text-align: center;
+        margin: 0 0 0.6rem;
+      }
+      .legal h2 {
+        font-size: clamp(1.45rem, 3vw, 1.75rem);
+        font-weight: 700;
+        margin: 2.4rem 0 0.9rem;
+        padding-top: 1.2rem;
+        border-top: 1px solid var(--border);
+      }
+      .legal h3 {
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin: 1.7rem 0 0.6rem;
+      }
+      .legal p,
+      .legal li {
+        font-size: 1.05rem;
+        line-height: 1.7;
+        color: var(--fg-soft);
+      }
+      .legal p {
+        text-align: justify;
+        text-align-last: left;
+        text-indent: 1.5em;
+        hyphens: auto;
+        -webkit-hyphens: auto;
+        margin: 0 0 1rem;
+      }
+      .legal .publication-date {
+        text-align: center;
+        text-align-last: center;
+        text-indent: 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .legal :is(h2, h3, li, th, td) {
+        text-align: start;
+        text-indent: 0;
+      }
+      .legal :is(li, th, td) p {
+        text-align: start;
+        text-indent: 0;
+      }
+      .legal :is(ul, ol) {
+        margin: 0 0 1.1rem 1.6em;
+        padding: 0;
+      }
+      .legal li {
+        margin: 0 0 0.45rem;
+      }
+      .legal strong {
+        color: var(--fg);
+      }
+      .legal a,
+      .publication-note a {
+        color: var(--sky);
+        text-decoration: underline;
+        text-underline-offset: 0.15em;
+      }
+      .legal a:hover,
+      .publication-note a:hover {
+        color: var(--fg);
+      }
+      .legal code {
+        overflow-wrap: anywhere;
+        font-family: var(--font-mono);
+        font-size: 0.92em;
+        color: var(--fg);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.05em 0.4em;
+      }
+      .legal table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        margin: 0.4rem 0 1.4rem;
+        font-size: 0.98rem;
+      }
+      .legal th,
+      .legal td {
+        vertical-align: top;
+        padding: 0.55rem 0.7rem;
+        border-bottom: 1px solid currentColor;
+        color: var(--fg-soft);
+      }
+      .legal :is(th, td),
+      .legal :is(th, td) :is(p, li) {
+        text-align: justify;
+        text-align-last: left;
+        text-indent: 1.5em;
+      }
+      .legal :is(th, td) + :is(th, td) {
+        border-left: 1px solid currentColor;
+      }
+      .legal thead th {
+        border-bottom: 2px solid currentColor;
+      }
+      .legal th {
+        color: var(--fg);
+        font-family: var(--font-display);
+        font-weight: 600;
+      }
+      .publication-note {
+        max-width: 76ch;
+        margin: 0 auto 2rem;
+        padding: 1.1rem var(--pad);
+        background: var(--grad-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow-wrap: anywhere;
+      }
+      .publication-note p {
+        margin: 0.5em 0;
+      }
+      .publication-note ul {
+        margin-left: 1.6em;
+      }
+      .nav__inner {
+        flex-wrap: wrap;
+      }
+      .nav__links a[aria-current="page"] {
+        color: var(--fg);
+      }
+      @media (max-width: 640px) {
+        .legal table {
+          display: block;
+          overflow-x: auto;
+          table-layout: auto;
+        }
+        .legal th,
+        .legal td {
+          min-width: 9rem;
+        }
+        .publication-note {
+          margin-inline: var(--pad);
+        }
+      }
+      @media print {
+        :root {
+          color-scheme: light;
+          --fg: #000;
+          --fg-soft: #222;
+          --muted: #444;
+          --sky: #000;
+          --border: #aaa;
+        }
+        body {
+          background: #fff;
+          font-size: 11pt;
+        }
+        .nav,
+        .skip-link {
+          display: none;
+        }
+        .legal {
+          max-width: none;
+          padding: 0;
+        }
+        .legal table {
+          display: table;
+          table-layout: fixed;
+        }
+        .legal :is(p, li) {
+          orphans: 3;
+          widows: 3;
+        }
+        .legal tr {
+          break-inside: avoid;
+        }
+        .publication-note {
+          background: none;
+        }
+        .footer__brand {
+          background: none;
+          -webkit-text-fill-color: #000;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript
+      ><iframe
+        src="https://www.googletagmanager.com/ns.html?id=GTM-5W9M8KRM"
+        height="0"
+        width="0"
+        style="display: none; visibility: hidden"
+      ></iframe
+    ></noscript>
+    <!-- End Google Tag Manager (noscript) -->
+    <a class="skip-link" href="#conteudo">Ir para o conteúdo</a>
+
+    <header class="nav" id="top">
+      <div class="nav__inner">
+        <a class="nav__brand" href="/">
+          <img src="/assets/lcv-ideas-software-mark.svg" alt="" />
+          <span>LCV Ideas &amp; Software</span>
+        </a>
+        <nav class="nav__links" aria-label="Seções">
+          <a href="/#products">Produtos</a>
+          <a href="/#connect">Sobre</a>
+          <a href="/sponsor/">Apoiar</a>
+          <a href="/privacy/">Privacidade</a>
+          <a href="/tos/">Termos</a>
+          <a href="/security/" aria-current="page">Segurança</a>
+        </nav>
+        <a
+          class="nav__cta"
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub
+        </a>
+      </div>
+    </header>
+
+    <main class="legal" id="conteudo">
+      <h1 id="seguranca-lcv-ideas-software">Segurança</h1>
+      <p class="publication-date">
+        <strong>Versão 1.0 — vigente a partir de 13 de outubro de 2026.</strong>
+      </p>
+      <p class="publication-date">
+        <strong>Versão arquivada.</strong> Esta é a versão 1.0 desta página, em
+        vigor desde 13/10/2026 e substituída em 30/10/2026 pela versão 1.1. A
+        versão em vigor está na <a href="/security/">página de Segurança</a>.
+      </p>
+      <hr />
+      <h2 id="nosso-compromisso">1. Nosso compromisso</h2>
+      <p>
+        A LCV Ideas &amp; Software trata a segurança como parte do
+        desenvolvimento, da manutenção e do atendimento. Nosso objetivo é
+        reduzir acessos indevidos, alterações não autorizadas, exposição de
+        informações e interrupções, com medidas proporcionais ao recurso e aos
+        dados envolvidos.
+      </p>
+      <p>
+        Esta página explica nossas diretrizes e os canais para relatar
+        problemas. A
+        <a href="https://www.lcv.dev/privacy/">Política de Privacidade</a>
+        explica o tratamento de dados pessoais; os
+        <a href="/tos/">Termos dos Serviços</a> tratam das condições do serviço.
+        Segurança não elimina todos os riscos nem substitui esses direitos.
+      </p>
+      <p>
+        Nossa diretriz é considerar a proteção dos dados pessoais desde a
+        concepção do serviço e durante sua utilização, com medidas técnicas e
+        administrativas adequadas, conforme os
+        <a
+          href="https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709compilado.htm"
+          >artigos 46 a 49 da LGPD</a
+        >.
+      </p>
+      <h2 id="desenvolvimento-e-mudancas">2. Desenvolvimento e mudanças</h2>
+      <p>
+        Nos repositórios protegidos, as mudanças na base principal do código
+        passam por propostas de alteração e verificações automatizadas, com
+        registro do que foi modificado. As proteções incluem assinatura dos
+        registros de mudança, restrições à exclusão e à substituição forçada do
+        histórico e resolução das discussões de revisão antes da incorporação.
+      </p>
+      <p>
+        Usamos recursos de análise de código, dependências e possíveis
+        credenciais expostas para apoiar a identificação de problemas. Esses
+        recursos têm limites: encontrar um alerta exige avaliação, e não
+        encontrar alertas não comprova ausência de vulnerabilidades. Uma
+        verificação automatizada também não equivale a aprovação humana
+        independente ou certificação de segurança.
+      </p>
+      <p>
+        Na avaliação de uma mudança, consideramos o comportamento afetado, os
+        dados e permissões envolvidos e as verificações pertinentes à
+        plataforma. Atualizações de bibliotecas e serviços precisam considerar
+        compatibilidade, correções disponíveis e condições de uso. A origem
+        oficial de um componente ajuda a verificar sua procedência, mas não
+        dispensa essa avaliação.
+      </p>
+      <h2 id="protecao-conforme-o-recurso">3. Proteção conforme o recurso</h2>
+      <p>
+        Um cálculo local, uma função de navegador e um pedido enviado a um
+        servidor têm necessidades diferentes. A proteção deve considerar onde a
+        informação é processada, quem pode recebê-la e o que acontece com as
+        cópias.
+      </p>
+      <p>
+        Os mecanismos do sistema operacional, da loja e dos serviços contratados
+        fazem parte dessa proteção. Isolamento entre aplicativos, permissões,
+        armazenamento de credenciais e autenticação precisam ser utilizados
+        conforme a plataforma e a finalidade. A existência desses mecanismos não
+        significa que toda edição de um produto tenha as mesmas características.
+      </p>
+      <p>
+        Proteção da conexão é diferente de criptografia de ponta a ponta. Quando
+        um serviço precisa ler o conteúdo para processá-lo, proteger o
+        transporte não impede esse acesso pelo destinatário. Não apresentamos
+        esta página como garantia de criptografia de ponta a ponta,
+        impossibilidade de acesso humano ou ausência de processamento em
+        servidores para todos os recursos.
+      </p>
+      <p>
+        As informações de cada recurso devem esclarecer suas proteções e limites
+        relevantes antes do uso. Exportar ou compartilhar pode criar cópias fora
+        do aplicativo, inclusive em serviços de nuvem escolhidos por você.
+        Excluir a origem não elimina automaticamente essas cópias.
+      </p>
+      <h2 id="acesso-credenciais-e-fornecedores">
+        4. Acesso, credenciais e fornecedores
+      </h2>
+      <p>
+        O acesso a informações e funções administrativas deve ser limitado ao
+        necessário para desenvolver, operar, proteger e atender o serviço.
+        Credenciais não devem ser incluídas em código público, relatórios
+        compartilhados ou mensagens de atendimento. Permissões e acessos
+        precisam ser revistos quando sua finalidade muda ou deixa de existir.
+      </p>
+      <p>
+        Na escolha e configuração de um fornecedor, consideramos os dados
+        necessários, sua finalidade, os mecanismos de autenticação e acesso, a
+        conservação das informações e as opções de exclusão. Um fornecedor pode
+        receber dados para executar uma função mesmo quando o histórico
+        apresentado a você permanece no dispositivo. A Política de Privacidade e
+        as informações do recurso identificam esses fluxos.
+      </p>
+      <p>
+        O atendimento também envolve processamento de mensagens e anexos pelas
+        pessoas responsáveis e pelos fornecedores utilizados para organizá-lo.
+        Por isso, solicitamos apenas o necessário e orientamos a retirada de
+        informações alheias ao problema. Não solicitamos sua senha, códigos de
+        acesso ou dados completos de cartão por e-mail.
+      </p>
+      <h2 id="como-relatar-uma-vulnerabilidade">
+        5. Como relatar uma vulnerabilidade
+      </h2>
+      <p>
+        Envie relatos de possíveis falhas de segurança para
+        <a href="mailto:security@lcv.dev"><strong>security@lcv.dev</strong></a
+        >. Se possível, informe o serviço ou endereço afetado, o que observou, o
+        impacto esperado e os passos mínimos para compreender o problema. A
+        versão e o sistema utilizado podem ajudar, quando conhecidos.
+      </p>
+      <p>
+        Você pode fazer o contato inicial sem comprovante de compra, documento
+        de identidade ou captura de tela. Não envie senhas, chaves, códigos de
+        confirmação, dados de outras pessoas ou uma cópia completa de bases e
+        registros. Se uma evidência exigir informação sensível, descreva
+        primeiro o que possui para combinarmos a forma adequada de
+        encaminhamento.
+      </p>
+      <p>
+        Pedimos divulgação coordenada: comunique o problema de forma reservada e
+        permita a avaliação de uma correção antes de expor detalhes que
+        facilitem abuso. Esta página não autoriza acesso a contas de terceiros,
+        extração de dados, interrupção de serviços ou testes fora de um escopo
+        expressamente autorizado. Um relato feito de boa-fé não exige essas
+        ações.
+      </p>
+      <h2 id="avaliacao-e-resposta">6. Avaliação e resposta</h2>
+      <p>
+        O tratamento de um relato envolve verificar o serviço afetado,
+        compreender seu alcance e priorizar as providências conforme o risco. As
+        medidas podem incluir restringir uma função, revogar uma credencial,
+        corrigir o software ou a configuração e verificar o resultado da
+        correção. A investigação deve preservar somente as evidências
+        necessárias, com acesso compatível com sua finalidade.
+      </p>
+      <p>
+        Uma confirmação de recebimento não significa que a falha foi confirmada
+        ou corrigida. Quando forem necessárias informações adicionais ou houver
+        uma orientação aplicável ao relato, a comunicação será feita pelo canal
+        de atendimento. O tempo de correção depende do alcance, da gravidade e
+        dos serviços envolvidos; esta página não estabelece recompensa, plantão
+        permanente ou prazo único de resolução.
+      </p>
+      <p>
+        Incidentes com dados pessoais devem ser avaliados segundo o
+        <a
+          href="https://www.gov.br/anpd/pt-br/canais_atendimento/agente-de-tratamento/comunicado-de-incidente-de-seguranca-cis"
+          >artigo 48 da LGPD e as regras da ANPD</a
+        >. Quando houver risco ou dano relevante, aplicam-se os deveres de
+        comunicação à autoridade e às pessoas afetadas, com os critérios e
+        prazos legais. Uma falha técnica não é automaticamente um incidente
+        comunicável, e a investigação não pode ser usada para afastar obrigações
+        legais.
+      </p>
+      <h2 id="atualizacoes-e-cuidados-de-uso">
+        7. Atualizações e cuidados de uso
+      </h2>
+      <p>
+        Mantenha o sistema e o aplicativo atualizados por seus canais oficiais e
+        confira o destino antes de compartilhar um arquivo. Em dispositivos
+        compartilhados, considere quem pode acessar o armazenamento e as contas
+        conectadas. Essas medidas complementam nossas responsabilidades; não
+        transferem a você a obrigação de corrigir falhas do serviço.
+      </p>
+      <p>
+        Mudanças relevantes nas proteções ou no tratamento de dados devem ser
+        explicadas nas informações do recurso e nos documentos aplicáveis. Uma
+        atualização desta página, por si só, não comprova que uma mudança
+        técnica foi implementada.
+      </p>
+      <h2 id="outros-assuntos">8. Outros assuntos</h2>
+      <p>
+        Para problemas de uso, compras ou entrega, escreva para
+        <a href="mailto:suporte@lcv.dev"><strong>suporte@lcv.dev</strong></a
+        >. Para privacidade e direitos sobre dados pessoais, use
+        <a href="mailto:privacy@lcv.dev"><strong>privacy@lcv.dev</strong></a
+        >. Para outros assuntos gerais, escreva para
+        <a href="mailto:contato@lcv.dev"><strong>contato@lcv.dev</strong></a
+        ><strong>.</strong>
+      </p>
+      <p>
+        Esses canais não restringem o acesso às lojas, às autoridades ou aos
+        meios legais de proteção dos seus direitos.
+      </p>
+    </main>
+
+    <footer class="footer">
+      <div class="footer__row">
+        <a
+          href="https://github.com/LCV-Ideas-Software"
+          target="_blank"
+          rel="noopener noreferrer"
+          >GitHub</a
+        >
+        <a href="mailto:contato@lcv.dev" aria-label="Contato por email"
+          >Contato</a
+        >
+        <a href="/sponsor/">Apoiar</a>
+        <a href="/privacy/">Privacidade</a>
+        <a href="/tos/">Termos dos Serviços</a>
+        <a href="/security/">Segurança</a>
+        <a href="/OCTICONS-LICENSE.txt">Licença dos ícones GitHub</a>
+      </div>
+      <div class="footer__legal">
+        <span class="footer__brand"
+          >Copyright © <span id="year">2026</span> LCV Ideas &amp;
+          Software</span
+        >
+        LEONARDO CARDOZO VARGAS TECNOLOGIA DA INFORMACAO LTDA<br />Rua Pais
+        Leme, 215 Conj 1713&nbsp;&nbsp;- Pinheiros<br />São Paulo - SP - CEP
+        05424-150<br />CNPJ: 66.584.678/0001-77 - IM: 3039854 - D‑U‑N‑S®
+        583149431
+      </div>
+      <div class="footer__row">
+        <a href="mailto:suporte@lcv.dev">Suporte</a>
+        <a href="mailto:privacy@lcv.dev">Privacidade</a>
+        <a href="mailto:security@lcv.dev">Segurança</a>
+        <a href="mailto:contato@lcv.dev">Contato geral</a>
+      </div>
+      <div class="footer__store">
+        <a
+          href="https://play.google.com/store/apps/dev?id=8615566246127797211"
+          target="_blank"
+          rel="noopener noreferrer"
+          ><img
+            src="/assets/google-play-oficial.png"
+            alt="Disponível no Google Play"
+            height="56"
+        /></a>
+      </div>
+    </footer>
+  </body>
+</html>

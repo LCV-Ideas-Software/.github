@@ -291,7 +291,7 @@
       </h1>
       <p class="publication-date">
         <strong
-          >Versão 1.13 — vigente a partir de 26 de outubro de 2026.</strong
+          >Versão 1.14 — vigente a partir de 30 de outubro de 2026.</strong
         >
       </p>
       <hr />
@@ -611,8 +611,10 @@
           href="https://www.planalto.gov.br/ccivil_03/_ato2011-2014/2014/lei/l12965.htm"
           >artigo 15 do Marco Civil da Internet</a
         >, a guarda de seis meses refere-se a registros de acesso, sob sigilo e
-        controle, e não a todos os mapas, textos ou relatórios. Preservações
-        legais e divulgação obedecem também aos artigos 10 e 22.
+        controle, e não a todos os mapas, textos ou relatórios. O prazo de seis
+        meses da biblioteca da análise paga (seção 11.1) é outro prazo, com
+        outra finalidade. Preservações legais e divulgação obedecem também aos
+        artigos 10 e 22.
       </p>
       <p>
         Ao solicitar envio de um relatório por e-mail, você entrega o endereço
@@ -745,13 +747,17 @@
         separadamente os dados necessários para vincular a compra, impedir uso
         duplicado e tratar sua entrega. A existência de um pedido não constitui
         backup do conteúdo local. Recursos web com gravação remota seguem também
-        a seção 7.
+        a seção 7. A exceção é a análise completa entregue, que fica na
+        biblioteca da conta pelo prazo da seção 11.1; mapas gratuitos não são
+        enviados nem guardados pelo serviço.
       </p>
       <p>
-        Os provedores dessa modalidade incluem o <strong>Google</strong>, por
-        meio do Vertex AI, e, conforme as alternativas habilitadas e informadas
-        para o recurso, a <strong>Anthropic</strong>, também por meio do Google
-        Cloud, e a <strong>OpenAI</strong>. A identificação do serviço precisa
+        Os provedores dessa modalidade são, nesta ordem, o
+        <strong>Google</strong> (Gemini, por meio do Vertex AI), a
+        <strong>Anthropic</strong> (Claude, por meio da API da própria
+        Anthropic) e a <strong>OpenAI</strong>. Cada pedido é executado por um
+        provedor; se ele falhar, o pedido passa ao seguinte, que recebe
+        novamente as informações necessárias. A identificação do serviço precisa
         distinguir o Google Vertex AI da interface Gemini para desenvolvedores,
         pois suas regras não são equivalentes. A lista aplicável deve ser
         apresentada antes do compartilhamento; esta política não autoriza envio
@@ -803,13 +809,6 @@
               <a
                 href="https://privacy.claude.com/en/articles/15425996-data-retention-practices-for-covered-models"
                 >regras dos modelos abrangidos</a
-              >. Quando o modelo é acessado por meio do Google Cloud, as
-              entradas e respostas ficam guardadas por até trinta dias para
-              monitoramento de abuso e são disponibilizadas à Anthropic,
-              conforme as
-              <a
-                href="https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/fable-5-1"
-                >regras do Google Cloud para os modelos Claude</a
               >.
             </td>
           </tr>
@@ -934,6 +933,14 @@
         também ficam os registros de pedidos no Cloud Firestore.
       </p>
       <p>
+        Na edição web do Oráculo Celestial, o pagamento é processado pelo
+        <strong>Mercado Pago</strong>, que recebe os dados necessários ao
+        pagamento segundo suas próprias regras; nosso servidor recebe do Mercado
+        Pago apenas o identificador, o estado e o valor do pedido, sem dados de
+        cartão. Compras feitas na web e pelo Google Play entram na mesma
+        biblioteca da conta.
+      </p>
+      <p>
         A loja ou o processador apresentado na contratação também trata dados
         segundo suas próprias regras. Login Google não significa, por si só,
         pagamento pelo Google Play; as regras de uma loja não descrevem
@@ -978,7 +985,13 @@
         a cada pedido e grava somente um resumo criptográfico irreversível
         (SHA-256) do identificador da conta, associado aos registros de pedido
         no Cloud Firestore. E-mail, nome e foto não são gravados nesses
-        registros.
+        registros. A análise completa entregue é guardada na biblioteca da sua
+        conta, em arquivo privado no Google Cloud (região us-central1), cifrado
+        com chave gerenciada pela LCV Ideas &amp; Software, associado ao mesmo
+        resumo criptográfico do identificador da conta. O aplicativo não acessa
+        esse arquivo diretamente: todo acesso passa pelo servidor, autenticado.
+        A guarda dura seis meses a contar do primeiro envio, sem renovação por
+        reabertura ou nova exportação.
       </p>
       <p>
         <strong>Transferência e divulgação.</strong> Os dados de usuário do
@@ -988,10 +1001,28 @@
         análise descrito na seção 9.
       </p>
       <p>
+        Recebem o conteúdo da análise: o nome que você deu ao perfil, a data, a
+        hora e o local de nascimento, e o mapa calculado. Se não quiser que o
+        nome da pessoa chegue ao provedor, use no perfil um apelido ou as
+        iniciais; a numerologia do nome será calculada sobre o que você digitar.
+      </p>
+      <p>
+        <strong>Notificações.</strong> Para avisar que a análise está sendo
+        preparada ou ficou pronta, o aplicativo registra no nosso servidor um
+        identificador de instalação do Firebase Cloud Messaging, vinculado ao
+        resumo do identificador da conta. As notificações não contêm o conteúdo
+        da análise. Esse identificador é removido quando a instalação deixa de
+        existir, após 30 dias sem renovação ou com a exclusão da conta.
+      </p>
+      <p>
         <strong>Proteção.</strong> As comunicações usam conexões cifradas
         (HTTPS). Cada pedido ao servidor exige uma comprovação de autenticação
         válida, verificada inclusive quanto à revogação. O acesso administrativo
-        aos sistemas é restrito à responsável.
+        aos sistemas é restrito à responsável. Antes de atender um pedido, o
+        servidor verifica, pelo Firebase App Check com Play Integrity, que a
+        chamada vem de uma instalação legítima do aplicativo; essa verificação
+        envia ao Google informações técnicas do aparelho e da instalação, sem
+        identificar a conta.
       </p>
       <p>
         <strong>Retenção e exclusão.</strong> Os dados permanecem enquanto a
@@ -1274,14 +1305,19 @@
           Google Cloud, nos Estados Unidos (região us-central1). Ele recebe o
           conteúdo da análise pedida, a comprovação de login e os dados da
           compra para executar a análise, verificar a compra e entregar o
-          resultado. O serviço não grava mapas, instruções nem relatórios: eles
-          passam por ele apenas durante a execução do pedido. Os registros de
-          pedido ficam no Cloud Firestore, na mesma região, com um resumo
-          criptográfico do identificador da conta e sem e-mail, nome ou foto,
-          pelo tempo necessário para vincular a compra, impedir uso duplicado e
-          tratar sua entrega; depois, apenas os registros financeiros mínimos
-          exigidos por obrigações legais são mantidos, conforme as seções 11.1 e
-          13.
+          resultado. O serviço guarda a análise completa entregue na biblioteca
+          da sua conta, em armazenamento privado no Google Cloud, pelo prazo de
+          seis meses contado do primeiro envio ao servidor, para que você a abra
+          em qualquer aparelho em que entre com a mesma conta. Mapas, instruções
+          e dados intermediários passam pelo serviço apenas durante a execução.
+          Ao fim do prazo, ou quando você exclui a conta de acesso, a análise é
+          removida da biblioteca; a cópia em PDF que você salvar permanece com
+          você. Os registros de pedido ficam no Cloud Firestore, na mesma
+          região, com um resumo criptográfico do identificador da conta e sem
+          e-mail, nome ou foto, pelo tempo necessário para vincular a compra,
+          impedir uso duplicado e tratar sua entrega; depois, apenas os
+          registros financeiros mínimos exigidos por obrigações legais são
+          mantidos, conforme as seções 11.1 e 13.
         </li>
         <li>
           <strong>Login Google.</strong> O identificador da conta Google, o
@@ -1294,15 +1330,14 @@
           <strong>Produção da análise por inteligência artificial.</strong> O
           conteúdo da análise segue do nosso serviço para o provedor usado no
           pedido, sem e-mail, nome, foto ou identificador da conta. No Google
-          Vertex AI, inclusive quando o modelo da Anthropic é usado por meio do
-          Google Cloud, o tratamento pode ocorrer em qualquer país onde o Google
-          ou seus subcontratados mantêm instalações, pelos prazos de cache e de
-          monitoramento de abuso descritos na seção 10. Nos modelos da Anthropic
-          em que o Google Cloud exige monitoramento de abuso, entradas e
-          respostas são guardadas por até trinta dias e disponibilizadas à
-          Anthropic. Na OpenAI, o tratamento ocorre nos países indicados nos
-          termos e na lista de subcontratados publicados por ela, pelos prazos
-          descritos na seção 10.
+          Vertex AI, o tratamento pode ocorrer em qualquer país onde o Google ou
+          seus subcontratados mantêm instalações, pelos prazos de cache e de
+          monitoramento de abuso descritos na seção 10. Na Anthropic, o
+          tratamento segue o acordo de tratamento de dados e a lista de
+          subcontratados publicados por ela, pelos prazos da seção 10. Na
+          OpenAI, o tratamento ocorre nos países indicados nos termos e na lista
+          de subcontratados publicados por ela, pelos prazos descritos na seção
+          10.
         </li>
         <li>
           <strong>Verificação de compras.</strong> O Google Play confirma a
@@ -1381,14 +1416,14 @@
         desempenho. O Google Play atua como controlador independente. O Linear e
         o Resend atuam como operadores, conforme os seus acordos de tratamento
         de dados; a OpenAI atua conforme o seu acordo de tratamento de dados; e
-        a Anthropic recebe os dados por meio do Google Cloud, conforme as regras
-        do Google Cloud para os modelos da Anthropic. As comunicações usam
-        conexões cifradas (HTTPS), e cada pedido ao nosso serviço exige
-        comprovação de autenticação válida, verificada inclusive quanto à
-        revogação. Os dados guardados pelo serviço de processamento dos recursos
-        pagos e os registros de pedidos no Google Cloud são cifrados com chaves
-        de criptografia gerenciadas pela LCV Ideas &amp; Software. Não vendemos
-        dados pessoais.
+        a Anthropic atua conforme o acordo de tratamento de dados e a lista de
+        subcontratados publicados por ela, pelos prazos da seção 10. As
+        comunicações usam conexões cifradas (HTTPS), e cada pedido ao nosso
+        serviço exige comprovação de autenticação válida, verificada inclusive
+        quanto à revogação. Os dados guardados pelo serviço de processamento dos
+        recursos pagos e os registros de pedidos no Google Cloud são cifrados
+        com chaves de criptografia gerenciadas pela LCV Ideas &amp; Software.
+        Não vendemos dados pessoais.
       </p>
       <p><strong>Transferências posteriores</strong></p>
       <p>
@@ -1442,17 +1477,24 @@
     </main>
     <aside class="publication-note" aria-label="Publicação e histórico">
       <p>
-        <strong>O que mudou na versão 1.13.</strong> A nova
-        <a href="#transferencias-internacionais">seção 15.1</a> reúne as
-        informações sobre as transferências internacionais de dados pessoais dos
-        aplicativos, conforme o Regulamento aprovado pela Resolução CD/ANPD nº
-        19/2024, e a seção 15 passa a remeter a ela. Nas seções 7.1 e 7.2, a
-        descrição do envio automático dos relatórios foi ajustada, sem mudança
-        no funcionamento. As demais seções não mudam. A versão 1.12 permanece
+        <strong>O que mudou na versão 1.14.</strong> As seções 7, 9, 11, 11.1 e
+        15.1 passam a descrever a biblioteca da conta dos recursos pagos do
+        Oráculo Celestial: a análise completa entregue fica guardada por seis
+        meses em armazenamento privado no Google Cloud, cifrada com chave
+        gerenciada pela LCV Ideas &amp; Software, e é removida ao fim do prazo
+        ou com a exclusão da conta de acesso. A seção 11.1 passa a informar o
+        conteúdo do perfil enviado aos provedores de IA, o registro de
+        notificações (Firebase Cloud Messaging) e a verificação de integridade
+        do aplicativo (Firebase App Check com Play Integrity). A seção 11 passa
+        a citar o Mercado Pago como processador de pagamento da edição web. As
+        seções 9, 10 e 15.1 atualizam a ordem e a forma de acesso aos provedores
+        de IA: Google (Gemini, pelo Vertex AI), Anthropic (pela API da própria
+        Anthropic) e OpenAI. As demais seções não mudam. A versão 1.13 permanece
         arquivada.
       </p>
       <p><strong>Versões anteriores:</strong></p>
       <ul>
+        <li><a href="/privacy/1.13/">Versão 1.13</a></li>
         <li><a href="/privacy/1.12/">Versão 1.12</a></li>
         <li><a href="/privacy/1.11/">Versão 1.11</a></li>
         <li><a href="/privacy/1.10/">Versão 1.10</a></li>
