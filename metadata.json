@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.12.2-lcv.windows-console.1+idle-fallback.2",
+  "checkpoint_id": "01M65Y939CC31MY04MMZ90MDZT",
+  "strategy": "manual-commit",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6,
+    "cache_creation_tokens": 850530,
+    "cache_read_tokens": 1833349,
+    "output_tokens": 1048,
+    "api_call_count": 3,
+    "subagent_tokens": {
+      "input_tokens": 96408,
+      "cache_creation_tokens": 118654651,
+      "cache_read_tokens": 2550827709,
+      "output_tokens": 18219081,
+      "api_call_count": 16027
+    }
+  },
+  "redaction": {
+    "replacements": 4196,
+    "layers": {
+      "betterleaks": 1389,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 76,
+      "credentialed_uri": 6,
+      "entropy": 14846,
+      "key_context": 68,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "linked_commits": [
+    {
+      "sha": "17d9137f0d56e4a8cb03df874567445025d2baa1",
+      "repo": "gh/LCV-Ideas-Software/.github"
+    }
+  ]
+}
