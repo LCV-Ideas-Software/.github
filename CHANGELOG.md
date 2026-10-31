@@ -17,7 +17,8 @@ presentation rule this organization applies to text meant for people
 - Publish privacy policy 1.15 (`site/privacy/`, in force from 31/10/2026; version 1.14 archived at
   `site/privacy/1.14/`): section 11.1 describes Oráculo Celestial account and data deletion on request
   only, through privacy@lcv.dev, as decided by the operator on 22/10/2026; the app has no option that
-  deletes the account directly (removed on 27/10/2026). The other sections do not change. `site/` is
+  deletes the account directly (removed on 27/10/2026). Section 13 states how Oráculo Celestial meets the
+  in-app and external deletion request paths. The other sections do not change. `site/` is
   identical in `.github-private` and `.github`.
 
 - Publish privacy policy 1.14, Terms of Services 1.1 and Security 1.1 (`site/privacy/`, `site/tos/`,
