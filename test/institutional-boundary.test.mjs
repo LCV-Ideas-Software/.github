@@ -68,6 +68,7 @@ const retainedPublicPaths = [
   "site/tos/index.html",
   "site/tos/1.0/index.html",
   "site/security/index.html",
+  "site/account-deletion/index.html",
   "site/security/1.0/index.html",
   "CHANGELOG.md",
   "CODE_OF_CONDUCT.md",

@@ -14,6 +14,11 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Add `site/account-deletion/` (`https://www.lcv.dev/account-deletion/`), the universal account and data deletion
+  page for every LCV Ideas & Software app, current and future, on Android, iOS and the web (operator decision of
+  31/10/2026): requests go to privacy@lcv.dev and start inside apps that have an account through a link to this
+  page; it is checked by `test/institutional-boundary.test.mjs`.
+
 - Publish privacy policy 1.15 (`site/privacy/`, in force from 31/10/2026; version 1.14 archived at
   `site/privacy/1.14/`): section 11.1 describes Oráculo Celestial account and data deletion on request
   only, through privacy@lcv.dev, as decided by the operator on 22/10/2026; the app has no option that
