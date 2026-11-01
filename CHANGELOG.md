@@ -37,8 +37,8 @@ presentation rule this organization applies to text meant for people
   (LCV-464).
 
 - Update the official Linear Release Action to v0.18.2 and Claude Code Action
-  to v1.0.265 at their complete immutable release commit SHAs, preserving the
-  existing workflow inputs and official Linear CLI v0.18.0 (LCV-488).
+  to v1.0.266 at their complete immutable release commit SHAs, preserving the
+  existing workflow inputs and official Linear CLI v0.18.0 (LCV-488; LCV-518).
 
 - Enable native Google Antigravity CLI (`agy`) hooks in `.agents/hooks.json` and
   document the Antigravity integration and MCP configuration in `docs/entire.md`
