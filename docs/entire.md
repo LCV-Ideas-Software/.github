@@ -51,11 +51,11 @@ GitHub continues enforcing signatures, resolved review conversations, security, 
 - **Not yet proved for this delivery:** capture of a repository-scoped session that changes a real file, a signed commit with an Entire-Checkpoint trailer, its normal push, and remote retrieval of that checkpoint. Prove this during real work; never import another repository's conversation or manufacture a test-only change.
 - **Separate verification:** a successful gate configuration readback is not an approved Trail, passing CI, successful merge or application deployment.
 
-After a real captured change, inspect its signed commit and use `entire checkpoint explain <checkpoint-id> --repo gh/LCV-Ideas-Software/.github --json` to retrieve the actual remote checkpoint. Record the commit, checkpoint and Trail evidence in LCV-477. Never publish credentials, customer data or unredacted images in session history.
+After a real captured change, inspect its signed commit and use `entire checkpoint explain <checkpoint-id> --repo gh/LCV-Ideas-Software/.github --json` to retrieve the actual remote checkpoint. Run it from a clone of another repository and keep the hook's lines in the squash message, as steps 6 and 7 below describe. Record the commit, checkpoint and Trail evidence in LCV-477. Never publish credentials, customer data or unredacted images in session history.
 
-## Windows console limitation
+## Windows background-worker correction
 
-Entire subprocesses can create visible terminal windows on this Windows host. A read-only reproduction recorded a Git console even when the parent was started without a window. A PowerShell `-WindowStyle Hidden` wrapper did not eliminate the observed windows. No hook workaround has been applied or validated. Track the diagnosis in LCV-477; preserve hook input/output, exit codes and capture when evaluating an official fix. This is separate from configuration and hosted-memory synchronization.
+The installed CLI is `0.12.2-lcv.roadmap.1`, a strictly local build of upstream v0.12.2 (`c4f103d8`) recorded in LCV-500. It carries the Windows console fix of [upstream issue #2926](https://github.com/entireio/cli/issues/2926), so hook workers keep a headless console and open no visible windows. It does not resolve [upstream issue #2980](https://github.com/entireio/cli/issues/2980). Reinstalling Entire from Scoop replaces it with the upstream build. LCV-500 records the build evidence; LCV-477 records the earlier `0.12.2-lcv.windows-console.1` build.
 
 ## Official references
 
@@ -91,12 +91,20 @@ the commit is pushed. Work recorded in only one of them is incomplete.
    editor, and never with `--no-verify`, so that Entire's Git hooks run.
    `.entire/settings.json` sets `"commit_linking": "always"`, so commits link to
    the captured session without a prompt.
-5. Never write the `Entire-Checkpoint` trailer by hand. The hook writes it; if it
-   is missing, investigate instead of adding it.
-6. Push with `git push`, then prove that the checkpoint reached GitHub:
+5. The hook writes the `Entire-Checkpoint` trailer when the commit is made. Never
+   invent a checkpoint ID the tool did not create.
+6. Push with `git push`, then prove that the checkpoint reached GitHub and Entire:
    `git ls-remote origin 'refs/entire/*'` lists the ID from the commit trailer,
-   and `entire checkpoint explain <id> --repo gh/<owner>/<repo> --json` answers.
-7. Once per pull request, after it is merged, generate a remote dispatch:
+   and `entire checkpoint explain <id> --repo gh/<owner>/<repo> --json` answers
+   when run from a clone of another repository. Inside this repository's own
+   clone the command reads the local copy and answers even when Entire never
+   received the checkpoint.
+7. Merge with squash. A squash merge makes a new commit on `main` without the
+   branch commits' trailers, and the dispatch reads only `main`: end the squash
+   commit message with the `Entire-Checkpoint` lines the hook wrote on the pull
+   request's commits, copied as they are, one per checkpoint proven in step 6
+   (operator decision of 2 November 2026).
+8. Once per pull request, after it is merged, generate a remote dispatch:
    `entire dispatch --repos gh/<owner>/<repo> --since <author time of the PR's first commit> --voice neutral`.
    Take that time from `gh pr view <number> --json commits -q '.commits[0].authoredDate'`:
    checkpoints are created at commit time, before the PR exists. The window can
@@ -114,7 +122,10 @@ the commit is pushed. Work recorded in only one of them is incomplete.
    Post the dispatch title and markdown as a comment on the pull request, with
    the PR's checkpoint IDs read from its commit trailers; the dispatch must cover
    them. Entire allows one generation per minute per account: after a rate-limit
-   answer, wait 60 seconds and retry once. "No checkpoints" for this window means
-   step 6 failed; never create an artificial commit to fill a dispatch.
-8. Report configuration, executed-and-proven evidence, and pending items
+   answer, wait 60 seconds and retry once. Write `<owner>/<repo>` exactly as GitHub
+   spells it: a different case answers that the repository was not found.
+   "No checkpoints" for this window means the squash message lacks the trailer
+   lines of step 7 or step 6 failed; never create an artificial commit to fill a
+   dispatch.
+9. Report configuration, executed-and-proven evidence, and pending items
    separately.
