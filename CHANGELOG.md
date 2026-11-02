@@ -14,6 +14,20 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Correct steps 5, 6 and 7 of the Entire and GitHub agent instructions in
+  `CLAUDE.md`, `AGENTS.md` and `docs/entire.md`, matching the admin-app text.
+  Step 5 no longer carries a rule the operator never gave: the hook writes the
+  `Entire-Checkpoint` trailer at commit time, no checkpoint ID is invented, and
+  a squash merge ends its message with the hook-written trailer lines, one per
+  checkpoint proven in step 6 (operator decision of 02/11/2026). Step 6 runs
+  `entire checkpoint explain` from a clone of another repository, because inside
+  this repository's own clone it reads the local copy and answers even when
+  Entire never received the checkpoint. Step 7 asks for `<owner>/<repo>` exactly
+  as GitHub spells it and names both causes of "No checkpoints". `docs/entire.md`
+  replaces the outdated Windows console limitation with the installed local CLI
+  build `0.12.2-lcv.roadmap.1` (LCV-500), which does not resolve upstream
+  entireio/cli#2980 (LCV-537).
+
 - Add `site/account-deletion/` (`https://www.lcv.dev/account-deletion/`), the universal account and data deletion
   page for every LCV Ideas & Software app, current and future, on Android, iOS and the web (operator decision of
   31/10/2026): requests go to privacy@lcv.dev and start inside apps that have an account through a link to this

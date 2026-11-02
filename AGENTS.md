@@ -27,11 +27,18 @@ the commit is pushed. Work recorded in only one of them is incomplete.
    editor, and never with `--no-verify`, so that Entire's Git hooks run.
    `.entire/settings.json` sets `"commit_linking": "always"`, so commits link to
    the captured session without a prompt.
-5. Never write the `Entire-Checkpoint` trailer by hand. The hook writes it; if it
-   is missing, investigate instead of adding it.
-6. Push with `git push`, then prove that the checkpoint reached GitHub:
+5. The hook writes the `Entire-Checkpoint` trailer when the commit is made. Never
+   invent a checkpoint ID the tool did not create. A squash merge makes a new
+   commit on `main` without the branch commits' trailers, and the dispatch reads
+   only `main`: end the squash commit message with the `Entire-Checkpoint` lines
+   the hook wrote on the pull request's commits, copied as they are, one per
+   checkpoint proven in step 6 (operator decision of 02/11/2026).
+6. Push with `git push`, then prove that the checkpoint reached GitHub and Entire:
    `git ls-remote origin 'refs/entire/*'` lists the ID from the commit trailer,
-   and `entire checkpoint explain <id> --repo gh/<owner>/<repo> --json` answers.
+   and `entire checkpoint explain <id> --repo gh/<owner>/<repo> --json` answers
+   when run from a clone of another repository. Inside this repository's own
+   clone the command reads the local copy and answers even when Entire never
+   received the checkpoint.
 7. Once per pull request, after it is merged, generate a remote dispatch:
    `entire dispatch --repos gh/<owner>/<repo> --since <author time of the PR's first commit> --voice neutral`.
    Take that time from `gh pr view <number> --json commits -q '.commits[0].authoredDate'`:
@@ -50,7 +57,10 @@ the commit is pushed. Work recorded in only one of them is incomplete.
    Post the dispatch title and markdown as a comment on the pull request, with
    the PR's checkpoint IDs read from its commit trailers; the dispatch must cover
    them. Entire allows one generation per minute per account: after a rate-limit
-   answer, wait 60 seconds and retry once. "No checkpoints" for this window means
-   step 6 failed; never create an artificial commit to fill a dispatch.
+   answer, wait 60 seconds and retry once. Write `<owner>/<repo>` exactly as GitHub
+   spells it: a different case answers that the repository was not found.
+   "No checkpoints" for this window means the squash message lacks the trailer
+   lines of step 5 or step 6 failed; never create an artificial commit to fill a
+   dispatch.
 8. Report configuration, executed-and-proven evidence, and pending items
    separately.
