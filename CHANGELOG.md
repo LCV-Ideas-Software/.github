@@ -14,7 +14,7 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
-- Correct steps 5, 6 and 7 of the Entire and GitHub agent instructions in
+- Correct steps 5 through 8 of the Entire and GitHub agent instructions in
   `CLAUDE.md`, `AGENTS.md` and `docs/entire.md`, matching the admin-app text.
   Step 5 no longer carries a rule the operator never gave: the hook writes the
   `Entire-Checkpoint` trailer at commit time, no checkpoint ID is invented, and
@@ -22,8 +22,10 @@ presentation rule this organization applies to text meant for people
   checkpoint proven in step 6 (operator decision of 02/11/2026). Step 6 runs
   `entire checkpoint explain` from a clone of another repository, because inside
   this repository's own clone it reads the local copy and answers even when
-  Entire never received the checkpoint. Step 7 asks for `<owner>/<repo>` exactly
-  as GitHub spells it and names both causes of "No checkpoints". `docs/entire.md`
+  Entire never received the checkpoint. The new step 7 defines the squash-merge
+  requirement; the former steps 7 and 8 are now steps 8 and 9. Step 8 asks for
+  `<owner>/<repo>` exactly as GitHub spells it and names both causes of "No
+  checkpoints". `docs/entire.md`
   replaces the outdated Windows console limitation with the installed local CLI
   build `0.12.2-lcv.roadmap.1` (LCV-500), which does not resolve upstream
   entireio/cli#2980 (LCV-537).
