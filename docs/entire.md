@@ -51,11 +51,11 @@ GitHub continues enforcing signatures, resolved review conversations, security, 
 - **Not yet proved for this delivery:** capture of a repository-scoped session that changes a real file, a signed commit with an Entire-Checkpoint trailer, its normal push, and remote retrieval of that checkpoint. Prove this during real work; never import another repository's conversation or manufacture a test-only change.
 - **Separate verification:** a successful gate configuration readback is not an approved Trail, passing CI, successful merge or application deployment.
 
-After a real captured change, inspect its signed commit and use `entire checkpoint explain <checkpoint-id> --repo gh/LCV-Ideas-Software/.github --json` to retrieve the actual remote checkpoint. Run it from a clone of another repository: inside this repository's own clone the command reads the local copy and answers even when Entire never received the checkpoint (measured on 2 November 2026, ADMIAPP-54). When the pull request is merged with squash, end the squash message with the `Entire-Checkpoint` lines the hook wrote, as the agent instructions describe. Record the commit, checkpoint and Trail evidence in LCV-477. Never publish credentials, customer data or unredacted images in session history.
+After a real captured change, inspect its signed commit and use `entire checkpoint explain <checkpoint-id> --repo gh/LCV-Ideas-Software/.github --json` to retrieve the actual remote checkpoint. Run it from a clone of another repository and keep the hook's lines in the squash message, as steps 6 and 7 below describe. Record the commit, checkpoint and Trail evidence in LCV-477. Never publish credentials, customer data or unredacted images in session history.
 
 ## Windows background-worker correction
 
-The Windows background-worker issue was reproduced and corrected locally on 27 October 2026, with explicit operator authorization, in the build `0.12.2-lcv.windows-console.1`, based on upstream v0.12.2. Since 30 October 2026 the installed CLI is `0.12.2-lcv.roadmap.1`, a strictly local build of v0.12.2 (`c4f103d8`) made by Codex and recorded in LCV-500: the Windows console fix (#2926/#2972), the worktree attribution hardening (#2979), the Windows test and lock parts of #2754, local fixes to the push queue, logging, transcript limits, redaction and personal data, and a reproducible build with SBOM and licenses. It does not resolve [upstream issue #2980](https://github.com/entireio/cli/issues/2980), whose cause LCV-500 left inconclusive. Workers now retain a headless console that Git children inherit; no hook-hiding wrapper was added. The regression failed before the patch and passed afterward, the execx package passed, and both the built CLI and installed shim completed the observed status command with zero visible windows. The operator confirmed that the interruptions stopped. [Upstream issue #2926](https://github.com/entireio/cli/issues/2926) contains the full patch, context and limits. This is a local correction, not an official release or proof of the full upstream test suite; a reinstall can replace it. LCV-477 records the installed binary hash and operator confirmation.
+The installed CLI is `0.12.2-lcv.roadmap.1`, a strictly local build of upstream v0.12.2 (`c4f103d8`) recorded in LCV-500. It carries the Windows console fix of [upstream issue #2926](https://github.com/entireio/cli/issues/2926), so hook workers keep a headless console and open no visible windows. It does not resolve [upstream issue #2980](https://github.com/entireio/cli/issues/2980). Reinstalling Entire from Scoop replaces it with the upstream build. LCV-500 records the build evidence; LCV-477 records the earlier `0.12.2-lcv.windows-console.1` build.
 
 ## Official references
 
@@ -92,18 +92,19 @@ the commit is pushed. Work recorded in only one of them is incomplete.
    `.entire/settings.json` sets `"commit_linking": "always"`, so commits link to
    the captured session without a prompt.
 5. The hook writes the `Entire-Checkpoint` trailer when the commit is made. Never
-   invent a checkpoint ID the tool did not create. A squash merge makes a new
-   commit on `main` without the branch commits' trailers, and the dispatch reads
-   only `main`: end the squash commit message with the `Entire-Checkpoint` lines
-   the hook wrote on the pull request's commits, copied as they are, one per
-   checkpoint proven in step 6 (operator decision of 02/11/2026).
+   invent a checkpoint ID the tool did not create.
 6. Push with `git push`, then prove that the checkpoint reached GitHub and Entire:
    `git ls-remote origin 'refs/entire/*'` lists the ID from the commit trailer,
    and `entire checkpoint explain <id> --repo gh/<owner>/<repo> --json` answers
    when run from a clone of another repository. Inside this repository's own
    clone the command reads the local copy and answers even when Entire never
    received the checkpoint.
-7. Once per pull request, after it is merged, generate a remote dispatch:
+7. Merge with squash. A squash merge makes a new commit on `main` without the
+   branch commits' trailers, and the dispatch reads only `main`: end the squash
+   commit message with the `Entire-Checkpoint` lines the hook wrote on the pull
+   request's commits, copied as they are, one per checkpoint proven in step 6
+   (operator decision of 2 November 2026).
+8. Once per pull request, after it is merged, generate a remote dispatch:
    `entire dispatch --repos gh/<owner>/<repo> --since <author time of the PR's first commit> --voice neutral`.
    Take that time from `gh pr view <number> --json commits -q '.commits[0].authoredDate'`:
    checkpoints are created at commit time, before the PR exists. The window can
@@ -124,7 +125,7 @@ the commit is pushed. Work recorded in only one of them is incomplete.
    answer, wait 60 seconds and retry once. Write `<owner>/<repo>` exactly as GitHub
    spells it: a different case answers that the repository was not found.
    "No checkpoints" for this window means the squash message lacks the trailer
-   lines of step 5 or step 6 failed; never create an artificial commit to fill a
+   lines of step 7 or step 6 failed; never create an artificial commit to fill a
    dispatch.
-8. Report configuration, executed-and-proven evidence, and pending items
+9. Report configuration, executed-and-proven evidence, and pending items
    separately.
