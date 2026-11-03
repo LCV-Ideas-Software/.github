@@ -1,0 +1,7 @@
+# Context from my IDE setup:
+
+## Open tabs:
+- zizmor.yml: .worktrees/ultrabrain-mcp-zizmor-081-20261103/.github/workflows/zizmor.yml
+
+## My request:
+Limpe restos de emulador e compilação.

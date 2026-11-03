@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.12.2-lcv.roadmap.1",
+  "checkpoint_id": "01M6GDMAGX3536YN2SPWQ8TS12",
+  "strategy": "manual-commit",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 53414,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 14386048,
+    "output_tokens": 25054,
+    "api_call_count": 70,
+    "subagent_tokens_complete": false
+  },
+  "redaction": {
+    "replacements": 902,
+    "layers": {
+      "betterleaks": 16,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 6,
+      "credentialed_uri": 0,
+      "entropy": 909,
+      "key_context": 3,
+      "provider_token": 1,
+      "shell_stdin": 0
+    }
+  },
+  "linked_commits": [
+    {
+      "sha": "5b0970f4199659c8b5ebbcd756af99c3b4a26ca4",
+      "repo": "gh/LCV-Ideas-Software/.github"
+    }
+  ]
+}
