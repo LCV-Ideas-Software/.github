@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.12.2-lcv.roadmap.1",
+  "checkpoint_id": "01M6GCXTBNN8036EAVD5FQ9EHP",
+  "session_id": "01a1a0b2-741b-7802-91fa-63c4c8e42a84",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-03T09:47:58.1177485Z",
+  "checkpoints_count": 7,
+  "files_touched": null,
+  "agent": "Codex",
+  "model": "",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 519936,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 43245312,
+    "output_tokens": 116592,
+    "api_call_count": 290
+  },
+  "redaction": {
+    "replacements": 824,
+    "layers": {
+      "betterleaks": 15,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 6,
+      "credentialed_uri": 0,
+      "entropy": 831,
+      "key_context": 3,
+      "provider_token": 1,
+      "shell_stdin": 0
+    }
+  }
+}
