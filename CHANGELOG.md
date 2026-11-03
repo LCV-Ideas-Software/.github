@@ -14,6 +14,9 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update the official Zizmor Action to v0.8.1 and its explicitly selected
+  analyzer to 1.32.0 at their immutable release coordinates (LCV-542).
+
 - Correct steps 5 through 8 of the Entire and GitHub agent instructions in
   `CLAUDE.md`, `AGENTS.md` and `docs/entire.md`, matching the admin-app text.
   Step 5 no longer carries a rule the operator never gave: the hook writes the
