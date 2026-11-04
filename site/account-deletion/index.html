@@ -371,6 +371,26 @@
           informe os dados obrigatórios para registrar o pedido de exclusão ou
           consulte um pedido existente pelo protocolo recebido.
         </p>
+        <p>
+          A confirmação do link de e-mail usa Google Firebase App Check com
+          reCAPTCHA Enterprise para proteção contra abuso. As bibliotecas são
+          carregadas sob demanda nessa fase. O Google processa sinais técnicos
+          para análise de risco, e o reCAPTCHA usa um cookie necessário a essa
+          análise. Consulte a
+          <a href="/privacy/#confirmacao-do-email-no-formulario"
+            >explicação na nossa Política de Privacidade</a
+          >, as
+          <a href="https://firebase.google.com/support/privacy"
+            >informações de privacidade do Firebase</a
+          >, o
+          <a href="https://cloud.google.com/terms/data-processing-addendum"
+            >adendo de tratamento de dados</a
+          >
+          e os
+          <a href="https://cloud.google.com/terms/service-terms"
+            >termos específicos do Google Cloud</a
+          >.
+        </p>
         <p id="flow-message" role="status" aria-live="polite" tabindex="-1">
           Carregando o formulário. O canal privacy@lcv.dev continua disponível.
         </p>
@@ -419,6 +439,11 @@
         </form>
         <div id="verified-session" hidden>
           <p id="verified-email"></p>
+          <form id="session-recovery-form" method="post" hidden>
+            <fieldset id="session-recovery-fields">
+              <button type="submit">Enviar novo link de confirmação</button>
+            </fieldset>
+          </form>
           <form id="request-form" method="post" hidden>
             <fieldset id="request-fields">
               <legend>2. Registrar o pedido de exclusão</legend>
@@ -606,10 +631,12 @@
           "Não foi possível concluir esta etapa. Tente novamente mais tarde.";
         const confirmationUnavailable =
           "A confirmação do e-mail está indisponível no momento. Tente confirmar novamente em instantes. Se o problema persistir, solicite atendimento por privacy@lcv.dev.";
+        const sessionRecoveryMessage =
+          "A confirmação do e-mail não está mais ativa. Envie um novo link de confirmação para continuar.";
         const apiErrors = Object.freeze({
           INVALID_REQUEST: "Confira os dados informados e tente novamente.",
-          SESSION_REQUIRED: "Confirme seu e-mail para continuar.",
-          SESSION_EXPIRED: "Confirme seu e-mail para continuar.",
+          SESSION_REQUIRED: sessionRecoveryMessage,
+          SESSION_EXPIRED: sessionRecoveryMessage,
           EMAIL_CONFIRMATION_INVALID:
             "O link não é válido. Solicite uma nova confirmação de e-mail.",
           REGISTRY_NOT_CONFIRMED:
@@ -656,6 +683,7 @@
         let apiBase;
         let callback;
         let session;
+        let sessionAuthorized = false;
         let appCheckSettings;
         let appCheckClient;
         let working = false;
@@ -765,6 +793,19 @@
               record(payload.error) &&
               text(payload.error.code) &&
               Object.hasOwn(apiErrors, payload.error.code);
+            if (
+              knownCode &&
+              session &&
+              (path === "/requests" || path.startsWith("/requests/")) &&
+              ["SESSION_REQUIRED", "SESSION_EXPIRED"].includes(
+                payload.error.code,
+              )
+            ) {
+              sessionAuthorized = false;
+              element("request-fields").disabled = true;
+              element("status-fields").disabled = true;
+              element("session-recovery-form").hidden = false;
+            }
             throw new FlowError(
               knownCode ? apiErrors[payload.error.code] : genericError,
             );
@@ -793,7 +834,9 @@
             );
             element("flow-message").focus();
           } finally {
-            fieldset.disabled = false;
+            fieldset.disabled =
+              !sessionAuthorized &&
+              ["request-fields", "status-fields"].includes(fields);
             working = false;
           }
         }
@@ -880,10 +923,14 @@
             );
           }
           session = payload;
+          sessionAuthorized = true;
           callback = undefined;
           element("email-form").hidden = true;
           element("confirmation-form").hidden = true;
           element("verified-session").hidden = false;
+          element("session-recovery-form").hidden = true;
+          element("request-fields").disabled = false;
+          element("status-fields").disabled = false;
           element("request-form").hidden = session.purpose !== "request";
           element("verified-email").textContent =
             "E-mail confirmado: " + session.email;
@@ -894,20 +941,25 @@
           );
         }
 
+        async function sendConfirmation(email, applicationId, purpose) {
+          const payload = await callApi("/sessions", {
+            email,
+            applicationId,
+            purpose,
+          });
+          if (!text(payload.state) || !text(payload.expiresAt))
+            throw new FlowError(
+              "Não foi possível iniciar a confirmação. Tente novamente.",
+            );
+        }
+
         element("email-form").addEventListener("submit", (event) =>
           submit(event, "email-fields", async () => {
-            const email = element("account-email").value.trim();
-            const applicationId = element("application").value;
-            const purpose = element("purpose").value;
-            const payload = await callApi("/sessions", {
-              email,
-              applicationId,
-              purpose,
-            });
-            if (!text(payload.state) || !text(payload.expiresAt))
-              throw new FlowError(
-                "Não foi possível iniciar a confirmação. Tente novamente.",
-              );
+            await sendConfirmation(
+              element("account-email").value.trim(),
+              element("application").value,
+              element("purpose").value,
+            );
             message(
               "Abra o link enviado ao seu e-mail para continuar. Confira também a pasta de spam.",
             );
@@ -924,6 +976,7 @@
 
         function restart() {
           session = undefined;
+          sessionAuthorized = false;
           callback = undefined;
           element("request-form").reset();
           element("status-form").reset();
@@ -941,9 +994,31 @@
           }),
         );
 
+        element("session-recovery-form").addEventListener("submit", (event) =>
+          submit(event, "session-recovery-fields", async () => {
+            if (!session || sessionAuthorized)
+              throw new FlowError(
+                "Use o link de confirmação recebido para continuar.",
+              );
+            await sendConfirmation(
+              session.email,
+              session.applicationId,
+              session.purpose,
+            );
+            element("request-form").reset();
+            message(
+              "Abra o novo link enviado ao e-mail confirmado para continuar em uma nova página. " +
+                (session.purpose === "request"
+                  ? "Preencha novamente os dados pessoais para registrar o pedido."
+                  : "Informe na nova página o protocolo conservado nesta página para consultar o pedido.") +
+                " Os campos pessoais desta página foram limpos.",
+            );
+          }),
+        );
+
         element("request-form").addEventListener("submit", (event) =>
           submit(event, "request-fields", async () => {
-            if (!session || session.purpose !== "request")
+            if (!session || !sessionAuthorized || session.purpose !== "request")
               throw new FlowError(
                 "Confirme o e-mail antes de solicitar a exclusão.",
               );
@@ -993,7 +1068,7 @@
 
         element("status-form").addEventListener("submit", (event) =>
           submit(event, "status-fields", async () => {
-            if (!session)
+            if (!session || !sessionAuthorized)
               throw new FlowError(
                 "Confirme o e-mail antes de consultar o pedido.",
               );
@@ -1038,7 +1113,6 @@
 
         async function loadApplications() {
           const payload = await callApi("/config");
-          appCheckSettings = payload.appCheck;
           if (
             !Array.isArray(payload.applications) ||
             payload.applications.length === 0

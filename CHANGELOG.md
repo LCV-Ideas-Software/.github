@@ -17,7 +17,16 @@ presentation rule this organization applies to text meant for people
 - Confirm account-deletion email links automatically, including when opened in
   another browser, without asking for the email again. Keep the confirmed email
   visible and read-only while collecting the required personal details, and
-  allow retrying a temporarily unavailable confirmation.
+  allow retrying a temporarily unavailable confirmation. If the session expires,
+  offer a new confirmation link for the same email while preserving any issued
+  protocol and lookup value. Clear the four personal fields only after a
+  successful resend; keep them on failure. Explain that the new page requires
+  the personal details or protocol again.
+
+- Publish Privacy Policy 1.16, effective 04/11/2026, explaining Firebase App Check
+  and reCAPTCHA Enterprise during email-link confirmation, including technical
+  signals, the necessary cookie and Google's privacy and data-processing
+  references. Retain version 1.15 at its permanent archive address.
 
 - Require WhatsApp alongside full name, CPF and date of birth after account
   email confirmation in the account-deletion form. Always send the normalized

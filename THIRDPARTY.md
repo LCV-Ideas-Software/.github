@@ -70,6 +70,25 @@ the Action is separately governed by the
 [GitHub CodeQL Terms and Conditions](https://github.com/github/codeql-cli-binaries/blob/main/LICENSE.md)
 and the Enterprise GitHub Code Security entitlement.
 
+## Externally hosted SDK — account-deletion confirmation
+
+The account-deletion page imports Firebase JS SDK **13.2.0** on demand from
+`https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js` and
+`https://www.gstatic.com/firebasejs/13.2.0/firebase-app-check.js`. The SDK is
+Apache-2.0 licensed and is not vendored. Its official
+[release notes](https://firebase.google.com/support/release-notes/js) and
+[CDN setup](https://firebase.google.com/docs/web/alt-setup) document the SDK
+and its versioned CDN modules. App Check uses the official
+[reCAPTCHA Enterprise provider](https://firebase.google.com/docs/app-check/web/recaptcha-enterprise-provider),
+whose hosted browser service is governed by Google's terms. The provider loads
+`https://www.google.com/recaptcha/enterprise.js`; no copy is hosted here.
+
+Only email-link confirmation loads these libraries. The configuration contains
+public web-app identifiers and a dedicated public web API key; no backend key or
+debug provider is included. The page sends the native App Check token only in
+the confirmation request header, following the
+[custom backend guidance](https://firebase.google.com/docs/app-check/web/custom-resource).
+
 ## Vendored GitHub brand asset — inline `mark-github-16`
 
 The two inline SVG paths in `site/index.html` are byte-for-byte copies of the

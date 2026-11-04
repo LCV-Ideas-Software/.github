@@ -1,7 +1,7 @@
 {
   "files": {
     ".nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "account-deletion/index.html": "7a5a2e370aa9364d8dd4fd3ce2f8b4cd3f68fe1c0f4205eb8c44ccf25ec457c0",
+    "account-deletion/index.html": "4d5263f5ed495bcc33fd9721f424699b3313077c4041570defef7d273df51f35",
     "app.js": "4e279b3b0ad520c0656f33ff0bd8532ee97a2fdd47a26f07aab058fa7c0116c7",
     "assets/google-play-oficial.png": "e1ad5e03f636d94b05448c1f156e39b012b9e1d772b730d9e27d066695531a6b",
     "assets/lcv-ideas-software-logo.svg": "70631f32e8b4c01d794a3af5016484dd09d51beb0c26abf3a80a9355db179f27",
@@ -15,6 +15,7 @@
     "privacy/1.12/index.html": "4d2f19164baab34959fcd744cafbd3ec50b41a40545b08c9adf2bfb4ee17e4d1",
     "privacy/1.13/index.html": "88e235f9d69013e71f04324280224c2747428bcdbd726dace834cf3607839ffa",
     "privacy/1.14/index.html": "ab4c80abbe325a741dacd84af00efd228bf74039d3cc2596b93797192220d3cb",
+    "privacy/1.15/index.html": "ae03e64d5441d97841e9a72d7a506d3d7e282cdef075167227ac150c90b2452e",
     "privacy/1.2/index.html": "bf3e5b0cf3a76d3799ddf6e1b82e34c40373d9ba3ec9a8713ae6abbc69d7a1bf",
     "privacy/1.3/index.html": "1e54d6b8dd5ff4f6424e0905338dda6799c3bb9474047faaeeae08d7c0e83068",
     "privacy/1.4/index.html": "731ed62fe5dbc96eed63b6dd980dfcad94ff977827f11422aa6f1310f65a5c65",
@@ -23,7 +24,7 @@
     "privacy/1.7/index.html": "b51216d091923a96f0eb6e69ebec0c16ce1273017d807362b92eade0573499fb",
     "privacy/1.8/index.html": "b0f322abd9648fd8a3465b95c32ad5c4e1e2d3257e9e3202c5ceab0953dde661",
     "privacy/1.9/index.html": "d0568a77e12dae1479849133a33bfb58d5ac929b25dfe44084f5da21fdf533ea",
-    "privacy/index.html": "df7a90dd17b4d81c2a46c5a33622d34ea4527152b5425ed57ec512a60866a6fe",
+    "privacy/index.html": "c1294253f496a8832bcc777a4be6e0ce850db629eef6d2992c786b6a122cc6bb",
     "security/1.0/index.html": "816573e238f79f7f7a18531a253677af701785d3090268e361357c70bc5cfb3f",
     "security/index.html": "c63d541c43013399e145ffd15392f3ba7d5011fc2ca7fbd23d573f42f3b2620c",
     "sponsor/assets/mercadopago-oficial.png": "863719a51c238ef136f6ad53b9c25e3589846e06930bce6c6df5282cd4c1340f",
