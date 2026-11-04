@@ -1,6 +1,7 @@
 #!/bin/sh
 # Reports one deploy to Cursor Rollouts. Entry points: bootstrap, start, finish.
 # A failure to report names the cause and returns success so the deploy continues.
+# The token exchange is stored in RUNNER_TEMP, so the calls in one job exchange once.
 
 rollouts_stopped=0
 rollouts_temps=""
@@ -39,7 +40,6 @@ rollouts_state_dir="${RUNNER_TEMP:-/tmp}"
 rollouts_state_key="$(printf '%s' "${CHANGE_MONITOR_ENV:-}-${CHANGE_MONITOR_SERVICE:-}" | tr -c 'A-Za-z0-9._-' '_')"
 rollouts_state_file="${rollouts_state_dir}/rollouts-${rollouts_state_key}.json"
 rollouts_token_cache="${rollouts_state_dir}/rollouts-access-token"
-rollouts_catalog_marker="${rollouts_state_dir}/rollouts-catalog-${rollouts_state_key}"
 
 rollouts_unavailable() {
   rollouts_note "Rollouts API unavailable, deploy not reported"
@@ -55,23 +55,6 @@ rollouts_json() {
     return 1
   fi
   return 0
-}
-
-rollouts_list_body() {
-  rollouts_json "ListDeployments" \
-    --arg source "$CHANGE_MONITOR_SOURCE" \
-    --arg env "$CHANGE_MONITOR_ENV" \
-    --arg version "$DEPLOY_VERSION" \
-    --arg service "$CHANGE_MONITOR_SERVICE" \
-    '{deploySourceUri:$source,filter:("environment = \"environments/"+$env+"\" AND deploy_version = \""+$version+"\" AND service = \"services/"+$service+"\""),pageSize:100,readMask:"events"}'
-}
-
-rollouts_actor_finished() {
-  jq -r --arg actor "$CHANGE_MONITOR_ACTOR" --arg name "$1" '
-    [ .deployments[]? | select(.name == $name) | .events[]?
-      | select(.actor == $actor and ((.completed != null) or (.aborted != null))) ]
-    | if length > 0 then "true" else "false" end
-  ' "$2" 2>/dev/null || echo false
 }
 
 rollouts_exchange() {
@@ -100,7 +83,7 @@ rollouts_exchange() {
       ;;
   esac
   TOKEN="$(jq -r '.accessToken // empty' "$exchange_body" 2>/dev/null || true)"
-  if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+  if [ -z "$TOKEN" ]; then
     rollouts_note "the token exchange response did not include an access token. The deploy was not reported."
     rollouts_halt
     return 0
@@ -149,9 +132,8 @@ if [ "${1:-}" = "finish" ]; then
     exit 0
   fi
   rollouts_was_stopped="$(jq -r 'if .stopped == true then "true" else "false" end' "$rollouts_state_file" 2>/dev/null || true)"
-  rollouts_already="$(jq -r 'if .alreadyCompleted == true then "true" else "false" end' "$rollouts_state_file" 2>/dev/null || true)"
   rollouts_saved="$(jq -r '.deployment // empty' "$rollouts_state_file" 2>/dev/null || true)"
-  if [ "$rollouts_was_stopped" = "true" ] || [ "$rollouts_already" = "true" ] || [ -z "$rollouts_saved" ]; then
+  if [ "$rollouts_was_stopped" = "true" ] || [ -z "$rollouts_saved" ]; then
     exit 0
   fi
 fi
@@ -182,10 +164,6 @@ if [ -n "$rollouts_missing" ]; then
   exit 0
 fi
 
-if [ "${1:-}" = "bootstrap" ] && [ -f "$rollouts_catalog_marker" ]; then
-  exit 0
-fi
-
 case "${1:-}" in
   bootstrap|start|finish)
     rollouts_exchange
@@ -206,77 +184,50 @@ case "${1:-}" in
       rollouts_post CreateService https://api.cursor.com/factory.v1.DeploymentsService/CreateService \
         "$rollouts_value" allow409
     fi
-    if [ "$rollouts_stopped" -eq 0 ]; then
-      : > "$rollouts_catalog_marker"
-    fi
     ;;
   start)
     DEPLOYMENT=""
-    already="false"
-    if rollouts_list_body; then
-      rollouts_new_temp list_body
-      rollouts_post ListDeployments https://api.cursor.com/factory.v1.DeploymentsService/ListDeployments \
-        "$rollouts_value" 
+    if [ "$rollouts_stopped" -eq 0 ] && rollouts_json "CreateDeployment" \
+      --arg source "$CHANGE_MONITOR_SOURCE" \
+      --arg env "$CHANGE_MONITOR_ENV" \
+      --arg version "$DEPLOY_VERSION" \
+      --arg service "$CHANGE_MONITOR_SERVICE" \
+      --arg actor "$CHANGE_MONITOR_ACTOR" \
+      '{deployment:{deploySourceUri:$source,environment:("environments/"+$env),deployVersion:$version,service:("services/"+$service)},event:{started:{},actor:$actor}}'; then
+      rollouts_post CreateDeployment https://api.cursor.com/factory.v1.DeploymentsService/CreateDeployment \
+        "$rollouts_value"
       if [ "$rollouts_stopped" -eq 0 ]; then
-        cp "$rollouts_last_body" "$list_body"
-        DEPLOYMENT="$(jq -r --arg actor "$CHANGE_MONITOR_ACTOR" '
-          [ .deployments[]? | select(any(.events[]?; .actor == $actor)) ][0].name // empty
-        ' "$list_body" 2>/dev/null || true)"
-        if [ -n "$DEPLOYMENT" ] && [ "$DEPLOYMENT" != "null" ]; then
-          already="$(rollouts_actor_finished "$DEPLOYMENT" "$list_body")"
-        else
-          DEPLOYMENT=""
+        DEPLOYMENT="$(jq -r '.deployment.name // empty' "$rollouts_last_body" 2>/dev/null || true)"
+        if [ -z "$DEPLOYMENT" ]; then
+          rollouts_unavailable
         fi
       fi
     fi
-    if [ "$rollouts_stopped" -eq 0 ] && [ -z "$DEPLOYMENT" ]; then
-      if rollouts_json "CreateDeployment" \
-        --arg source "$CHANGE_MONITOR_SOURCE" \
-        --arg env "$CHANGE_MONITOR_ENV" \
-        --arg version "$DEPLOY_VERSION" \
-        --arg service "$CHANGE_MONITOR_SERVICE" \
-        --arg actor "$CHANGE_MONITOR_ACTOR" \
-        '{deployment:{deploySourceUri:$source,environment:("environments/"+$env),deployVersion:$version,service:("services/"+$service)},event:{started:{},actor:$actor}}'; then
-        rollouts_post CreateDeployment https://api.cursor.com/factory.v1.DeploymentsService/CreateDeployment \
-          "$rollouts_value"
-        if [ "$rollouts_stopped" -eq 0 ]; then
-          DEPLOYMENT="$(jq -r '.deployment.name // empty' "$rollouts_last_body" 2>/dev/null || true)"
-          if [ -z "$DEPLOYMENT" ] || [ "$DEPLOYMENT" = "null" ]; then
-            rollouts_unavailable
-          fi
-        fi
-      fi
-    fi
-    if [ "$rollouts_stopped" -eq 1 ] || [ -z "$DEPLOYMENT" ] || [ "$DEPLOYMENT" = "null" ]; then
+    if [ "$rollouts_stopped" -eq 1 ] || [ -z "$DEPLOYMENT" ]; then
       rollouts_write_state '{stopped:true}'
     else
-      rollouts_write_state --arg deployment "$DEPLOYMENT" --argjson alreadyCompleted "$([ "$already" = "true" ] && echo true || echo false)" \
-        '{deployment:$deployment, alreadyCompleted:$alreadyCompleted}'
+      rollouts_write_state --arg deployment "$DEPLOYMENT" '{deployment:$deployment}'
     fi
     ;;
   finish)
     case "${ROLLOUTS_OUTCOME:-}" in
       success) kind="succeeded" ;;
       cancelled) kind="aborted" ;;
-      skipped) kind="aborted" ;;
       *) kind="failed" ;;
     esac
     if [ "$kind" = "succeeded" ]; then
       rollouts_json "AppendDeploymentEvent" --arg name "$rollouts_saved" --arg actor "$CHANGE_MONITOR_ACTOR" \
-        '{name:$name,event:{completed:{succeeded:{}},actor:$actor}}' || true
+        '{name:$name,event:{completed:{succeeded:{}},actor:$actor}}'
     elif [ "$kind" = "aborted" ]; then
       rollouts_json "AppendDeploymentEvent" --arg name "$rollouts_saved" --arg actor "$CHANGE_MONITOR_ACTOR" \
-        '{name:$name,event:{aborted:{},actor:$actor}}' || true
+        '{name:$name,event:{aborted:{},actor:$actor}}'
     else
       rollouts_json "AppendDeploymentEvent" --arg name "$rollouts_saved" --arg actor "$CHANGE_MONITOR_ACTOR" --arg message "Deploy step failed" \
-        '{name:$name,event:{completed:{failed:{message:$message}},actor:$actor}}' || true
+        '{name:$name,event:{completed:{failed:{message:$message}},actor:$actor}}'
     fi
     if [ "$rollouts_stopped" -eq 0 ]; then
       rollouts_post AppendDeploymentEvent https://api.cursor.com/factory.v1.DeploymentsService/AppendDeploymentEvent \
         "$rollouts_value"
-    fi
-    if [ "$rollouts_stopped" -eq 0 ]; then
-      rollouts_write_state --arg deployment "$rollouts_saved" '{deployment:$deployment, alreadyCompleted:true}'
     fi
     ;;
 esac

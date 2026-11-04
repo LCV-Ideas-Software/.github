@@ -96,7 +96,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     env:
-      CURSOR_API_KEY: "${{ secrets.CURSOR_API_KEY }}"
       CHANGE_MONITOR_ENV: "github-pages"
       CHANGE_MONITOR_SOURCE: "https://github.com/${{ github.repository }}"
       DEPLOY_VERSION: "${{ github.sha }}"
@@ -111,6 +110,7 @@ jobs:
       - name: Report Rollouts deploy start
         shell: bash
         env:
+          CURSOR_API_KEY: "${{ secrets.CURSOR_API_KEY }}"
           CHANGE_MONITOR_SERVICE: "dot-github-pages"
         run: |
           ./.github/scripts/rollouts-reporter.sh bootstrap
@@ -122,6 +122,8 @@ jobs:
         if: always()
         shell: bash
         env:
-          ROLLOUTS_OUTCOME: "${{ steps.deployment.outcome }}"
+          CURSOR_API_KEY: "${{ secrets.CURSOR_API_KEY }}"
+          CHANGE_MONITOR_SERVICE: "dot-github-pages"
+          ROLLOUTS_OUTCOME: "${{ steps.deployment.outcome == 'skipped' && 'cancelled' || steps.deployment.outcome }}"
         run: |
           ./.github/scripts/rollouts-reporter.sh finish
