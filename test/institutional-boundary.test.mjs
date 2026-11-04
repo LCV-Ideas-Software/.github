@@ -103,15 +103,19 @@ test("main retains the public institutional surface", () => {
   }
 });
 
-test("every published page loads the Google tag the inventory records", () => {
-  const googleTag = "https://www.googletagmanager.com/gtag/js?id=AW-18511303830";
+test("published pages retain inventoried tracking except the private-data form", () => {
+  const googleTag =
+    "https://www.googletagmanager.com/gtag/js?id=AW-18511303830";
   const googleTagConfig = 'gtag("config", "AW-18511303830");';
   const analyticsConfig = 'gtag("config", "G-PK09C40XL5");';
   const gtmLoader = '"https://www.googletagmanager.com/gtm.js?id="';
   const gtmContainer = '"script", "dataLayer", "GTM-5W9M8KRM")';
   const gtmNoscript =
     "https://www.googletagmanager.com/ns.html?id=GTM-5W9M8KRM";
-  const thirdParty = readFileSync(join(repositoryRoot, "THIRDPARTY.md"), "utf8");
+  const thirdParty = readFileSync(
+    join(repositoryRoot, "THIRDPARTY.md"),
+    "utf8",
+  );
   assert.ok(thirdParty.includes(googleTag), `${googleTag} must be inventoried`);
   for (const source of [
     "https://www.googletagmanager.com/gtm.js?id=GTM-5W9M8KRM",
@@ -125,20 +129,41 @@ test("every published page loads the Google tag the inventory records", () => {
   );
   for (const page of pages) {
     const html = readFileSync(join(repositoryRoot, page), "utf8");
-    assert.ok(html.includes(googleTag), `${page} is expected to load the Google tag`);
-    assert.ok(
-      html.includes(googleTagConfig),
-      `${page} is expected to configure the Google tag`,
-    );
-    assert.ok(
-      html.includes(analyticsConfig),
-      `${page} is expected to configure Google Analytics`,
-    );
-    for (const snippet of [gtmLoader, gtmContainer, gtmNoscript]) {
+    if (page === "site/account-deletion/index.html") {
+      for (const tracking of [
+        "googletagmanager.com",
+        "google-analytics.com",
+        "gtag(",
+        "dataLayer",
+        "GTM-5W9M8KRM",
+        "AW-18511303830",
+        "G-PK09C40XL5",
+      ]) {
+        assert.equal(
+          html.includes(tracking),
+          false,
+          `${page} must not expose personal data to tracking`,
+        );
+      }
+    } else {
       assert.ok(
-        html.includes(snippet),
-        `${page} is expected to install the Tag Manager container`,
+        html.includes(googleTag),
+        `${page} is expected to load the Google tag`,
       );
+      assert.ok(
+        html.includes(googleTagConfig),
+        `${page} is expected to configure the Google tag`,
+      );
+      assert.ok(
+        html.includes(analyticsConfig),
+        `${page} is expected to configure Google Analytics`,
+      );
+      for (const snippet of [gtmLoader, gtmContainer, gtmNoscript]) {
+        assert.ok(
+          html.includes(snippet),
+          `${page} is expected to install the Tag Manager container`,
+        );
+      }
     }
     // The HTML standard requires the encoding declaration within the first 1024 bytes.
     const charset = Buffer.from(html).indexOf('<meta charset="utf-8" />');
