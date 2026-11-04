@@ -14,6 +14,11 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Record `LCV-Ideas-Software/.github-private` as the checkpoint destination in
+  versioned `.entire/settings.json`, making the existing private route available
+  to Entire's server-side discovery. Checkpoint ingestion and Dispatch coverage
+  require separate server-side verification after publication.
+
 - Upgrade the repository Node.js toolchain to official 26.13.0 LTS and read the
   same `.node-version` pin in the existing Pages and Site Parity workflows.
 
