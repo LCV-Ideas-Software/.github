@@ -31,20 +31,32 @@ The approved account-deletion form at <https://www.lcv.dev/account-deletion/>
 uses the public HTTPS API base <https://privacy-api.lcv.dev>, configured in the
 `account-deletion-api` meta element of `site/account-deletion/index.html`.
 `privacy@lcv.dev` remains available. The API implements `GET /config`,
-`POST /sessions`, `POST /sessions/confirm`, `POST /requests` and
+`POST /sessions`, `POST /sessions/confirm`, `POST /sessions/renew`, `POST /requests` and
 `GET /requests/{identifier}`. It owns email verification, HttpOnly session cookies,
 internal registry annotations and the native Linear protocol. The page sends credentials with
 requests, removes confirmation parameters from the URL, and confirms email links
 automatically with Firebase App Check without storing the pending email or state
-in browser storage. It contains no analytics or advertising tags. Backend
-implementation remains in `github-operations`.
+in browser storage. The confirmed email stays visible and read-only. Each tab
+keeps its own session context in memory and sends `X-Deletion-Context` when
+registering or looking up a request; a cookie from another confirmation cannot
+authorize the original tab. It contains no analytics or advertising tags.
+Backend implementation remains in `github-operations`.
 
 The page requires the account email to be confirmed first, then full name
 (up to 200 characters), an 11-digit normalized CPF, date of birth in
-`YYYY-MM-DD` format and WhatsApp in international format. It sends `fullName`,
+`YYYY-MM-DD` format and an 11-digit Brazilian mobile WhatsApp number containing
+only the area code and number, without a country code. It sends `fullName`,
 `cpf`, `dateOfBirth` and normalized `whatsapp` in the request JSON; the email
 remains associated with the confirmed session. A successful response must
-contain a valid `identifier`, which the page displays as the protocol.
+contain a valid `identifier`, which the page displays as the protocol. Both
+`source=form` and `source=email` use these four fields. Email invitations keep
+the original request and protocol, and registration must return that same
+identifier. An unavailable asynchronous BigDataCorp check does not prevent
+registration of the protocol. Email-session renewal uses only the original
+renewal capability and a stable operation identifier through `/sessions/renew`;
+it never starts a new form request. Personal fields are cleared only after the
+service accepts the renewal, while the protocol is preserved. A new Google
+confirmation link is required to authorize the new page.
 Cross-origin API access is allowed only from `https://www.lcv.dev`. Whenever the
 page changes, synchronize both copies and regenerate both site manifests.
 

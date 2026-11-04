@@ -14,6 +14,17 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Unify the account-deletion form and email-invitation flows, preserving the
+  original email request and protocol. Keep the confirmed email visible and
+  read-only, require all four personal fields, and bind registration and lookup
+  to the original tab's session context. Collect and send WhatsApp as an
+  11-digit Brazilian area code and mobile number without adding a country code.
+  Renew email invitations through the original capability and operation, clear
+  personal fields only after accepted renewal, and retain the protocol while
+  requiring a new Google confirmation link. Asynchronous BigDataCorp checks do
+  not prevent protocol registration. Synchronize the public site and manifest
+  with the counterpart copy; preserve Privacy Policy 1.16 (LCV-563).
+
 - Confirm account-deletion email links automatically, including when opened in
   another browser, without asking for the email again. Keep the confirmed email
   visible and read-only while collecting the required personal details, and
