@@ -55,7 +55,7 @@ rollouts_exchange() {
     return 0
   fi
   exchange_body="$(mktemp)"
-  exchange_status="$(curl -sS -o "$exchange_body" -w "%{http_code}" -X POST https://api2.cursor.sh/auth/exchange_user_api_key \
+  exchange_status="$(curl -sS --connect-timeout 10 --max-time 20 -o "$exchange_body" -w "%{http_code}" -X POST https://api2.cursor.sh/auth/exchange_user_api_key \
     -H "Authorization: Bearer ${CURSOR_API_KEY}" -H "Content-Type: application/json" -d '{}')" || {
     echo "Rollouts reporter: Rollouts API unavailable, deploy not reported" >&2
     rollouts_halt
@@ -94,7 +94,7 @@ rollouts_post() {
   body="$3"
   allow409="${4:-}"
   response="$(mktemp)"
-  status="$(curl -sS -o "$response" -w "%{http_code}" -X POST "$url" \
+  status="$(curl -sS --connect-timeout 10 --max-time 20 -o "$response" -w "%{http_code}" -X POST "$url" \
     -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" -H "Connect-Protocol-Version: 1" \
     -d "$body")" || {
     echo "Rollouts reporter: ${call} failed before a response. The deploy continues." >&2

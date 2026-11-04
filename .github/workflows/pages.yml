@@ -109,7 +109,7 @@ jobs:
           CHANGE_MONITOR_ENV: "github-pages"
           CHANGE_MONITOR_SOURCE: "https://github.com/${{ github.repository }}"
           DEPLOY_VERSION: "${{ github.sha }}"
-          CHANGE_MONITOR_ACTOR: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          CHANGE_MONITOR_ACTOR: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}"
         run: |
           for service in dot-github-pages; do
             CHANGE_MONITOR_SERVICE="$service" bash .github/scripts/rollouts-reporter.sh bootstrap
@@ -127,7 +127,7 @@ jobs:
           CHANGE_MONITOR_ENV: "github-pages"
           CHANGE_MONITOR_SOURCE: "https://github.com/${{ github.repository }}"
           DEPLOY_VERSION: "${{ github.sha }}"
-          CHANGE_MONITOR_ACTOR: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          CHANGE_MONITOR_ACTOR: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}"
           ROLLOUTS_OUTCOME: "${{ steps.deployment.outcome }}"
         run: |
           for service in dot-github-pages; do
