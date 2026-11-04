@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.12.2-lcv.roadmap.1",
+  "checkpoint_id": "01M6J5ZGHKDJF3H2ZD3E7PRVEP",
+  "strategy": "manual-commit",
+  "branch": "codex/lcv-554-codeql-claude-actions",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".github/workflows/scorecard.yml",
+    "CHANGELOG.md",
+    "THIRDPARTY.md",
+    "workflow-templates/claude.yml",
+    "workflow-templates/scorecard.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 65420,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1348480,
+    "output_tokens": 12754,
+    "api_call_count": 21,
+    "subagent_tokens_complete": false
+  },
+  "redaction": {
+    "replacements": 9,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 2,
+      "credentialed_uri": 0,
+      "entropy": 7,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
