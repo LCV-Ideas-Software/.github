@@ -33,13 +33,17 @@ uses the public HTTPS API base <https://privacy-api.lcv.dev>, configured in the
 `privacy@lcv.dev` remains available. The API implements `GET /config`,
 `POST /sessions`, `POST /sessions/confirm`, `POST /requests` and
 `GET /requests/{identifier}`. It owns email verification, HttpOnly session cookies,
-identity checks and the native Linear protocol. The page sends credentials with
+internal registry annotations and the native Linear protocol. The page sends credentials with
 requests, removes confirmation parameters from the URL, stores only the pending
 email and state in session storage, and contains no analytics or advertising
 tags. Backend implementation remains in `github-operations`.
 
-Loading the form does not require civil identity validation to be configured;
-the service rejects new deletion requests when that validation is missing.
+The page requires the account email to be confirmed first, then full name
+(up to 200 characters), an 11-digit normalized CPF, date of birth in
+`YYYY-MM-DD` format and WhatsApp in international format. It sends `fullName`,
+`cpf`, `dateOfBirth` and normalized `whatsapp` in the request JSON; the email
+remains associated with the confirmed session. A successful response must
+contain a valid `identifier`, which the page displays as the protocol.
 Cross-origin API access is allowed only from `https://www.lcv.dev`. Whenever the
 page changes, synchronize both copies and regenerate both site manifests.
 

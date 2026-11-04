@@ -368,8 +368,8 @@
         <h2 id="form-title">Solicitar ou acompanhar pelo formulário</h2>
         <p>
           Primeiro, confirme o acesso ao mesmo e-mail usado na conta. Depois,
-          informe os dados necessários para solicitar a exclusão ou consulte um
-          pedido existente pelo protocolo recebido.
+          informe os dados obrigatórios para registrar o pedido de exclusão ou
+          consulte um pedido existente pelo protocolo recebido.
         </p>
         <p id="flow-message" role="status" aria-live="polite" tabindex="-1">
           Carregando o formulário. O canal privacy@lcv.dev continua disponível.
@@ -437,7 +437,7 @@
           </button>
           <form id="request-form" method="post" hidden>
             <fieldset id="request-fields">
-              <legend>2. Solicitar a exclusão</legend>
+              <legend>2. Registrar o pedido de exclusão</legend>
               <label for="full-name">Nome completo</label>
               <input
                 id="full-name"
@@ -467,7 +467,7 @@
                 autocomplete="bday"
                 required
               />
-              <label for="whatsapp">WhatsApp para contato (opcional)</label>
+              <label for="whatsapp">WhatsApp para contato</label>
               <input
                 id="whatsapp"
                 name="whatsapp"
@@ -475,17 +475,20 @@
                 autocomplete="tel"
                 maxlength="25"
                 aria-describedby="whatsapp-help"
+                required
               />
               <small id="whatsapp-help"
                 >Inclua o código do país e o DDD, por exemplo: +55 11
                 99999-9999.</small
               >
               <p>
-                Conferiremos os dados cadastrais informados para proteger sua
-                conta. Não envie documento, foto ou senha.
+                Seu e-mail já foi confirmado. Preencha nome completo, CPF, data
+                de nascimento e WhatsApp para registrar o pedido e receber o
+                protocolo de acompanhamento. O registro não exclui a conta
+                imediatamente. Não envie documento, foto ou senha.
               </p>
               <button type="submit">
-                Solicitar exclusão da conta e dos dados
+                Registrar pedido de exclusão da conta e dos dados
               </button>
             </fieldset>
           </form>
@@ -624,11 +627,11 @@
           EMAIL_CONFIRMATION_INVALID:
             "O link não é válido. Solicite uma nova confirmação de e-mail.",
           REGISTRY_NOT_CONFIRMED:
-            "Não foi possível confirmar a correspondência entre CPF, nome completo e data de nascimento.",
+            "Não foi possível registrar o pedido. Solicite atendimento por privacy@lcv.dev.",
           REGISTRY_RESULT_UNKNOWN:
-            "A consulta anterior não teve um resultado confirmado. Clique em Confirmar outro e-mail e solicite um novo link para o mesmo endereço antes de tentar de novo.",
+            "Não foi possível registrar o pedido. Solicite atendimento por privacy@lcv.dev.",
           IDENTITY_ATTEMPTS_EXCEEDED:
-            "Aguarde antes de tentar outros dados cadastrais novamente. Uma nova confirmação não elimina esse intervalo de segurança.",
+            "Não foi possível registrar o pedido. Solicite atendimento por privacy@lcv.dev.",
           ACCOUNT_UNAVAILABLE:
             "Não foi possível preparar o pedido para essa conta.",
           ACCOUNT_CHANGED:
@@ -839,7 +842,7 @@
             "E-mail confirmado: " + session.email;
           message(
             (session.purpose === "request"
-              ? "E-mail confirmado. Preencha os dados para solicitar a exclusão."
+              ? "E-mail confirmado. Preencha os quatro campos obrigatórios para registrar o pedido de exclusão."
               : "E-mail confirmado. Informe o protocolo para acompanhar seu pedido.") +
               (cleanupNotice ? " " + cleanupNotice : ""),
           );
@@ -920,7 +923,9 @@
               throw new FlowError("Informe um CPF com 11 dígitos.");
             if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(dateOfBirth))
               throw new FlowError("Informe sua data de nascimento.");
-            if (phoneInput && !/^\+[1-9][0-9]{7,14}$/.test(whatsapp))
+            if (!phoneInput)
+              throw new FlowError("Informe seu WhatsApp para contato.");
+            if (!/^\+[1-9][0-9]{7,14}$/.test(whatsapp))
               throw new FlowError(
                 "Informe o WhatsApp com +, código do país, DDD e número.",
               );
@@ -928,7 +933,7 @@
               fullName,
               cpf,
               dateOfBirth,
-              ...(phoneInput ? { whatsapp } : {}),
+              whatsapp,
             });
             if (
               !text(payload.identifier) ||

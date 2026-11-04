@@ -14,6 +14,14 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Require WhatsApp alongside full name, CPF and date of birth after account
+  email confirmation in the account-deletion form. Always send the normalized
+  WhatsApp in the existing request JSON, explain registration and display the
+  protocol returned in the response. Keep neutral privacy-support messages for
+  legacy registry errors without asking for civil-data corrections, email
+  reconfirmation or waiting. Preserve session, callback and status lookup
+  contracts; regenerate the shared site manifest.
+
 - Report the GitHub Pages deployment to Cursor Rollouts. The Pages job reads
   the team secret `CURSOR_API_KEY` and calls `api2.cursor.sh` and
   `api.cursor.com`. Reporting fails open and does not publish the site.
