@@ -26,17 +26,21 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - Pull requests reach `main` only through squash, under the Enterprise rulesets. Dependabot pull requests receive GitHub's native auto-merge from `.github/workflows/dependabot-auto-merge.yml`, a repository-local workflow that runs no Action and uses a fine-grained personal access token stored as the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`; GitHub performs the merge only once every rule and check is satisfied. There is no merge queue, GitHub App, or organization-wide controller.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
 
-The approved account-deletion form in `site/account-deletion/index.html` uses the
-public HTTPS API base from its `account-deletion-api` meta element. Its empty
-value intentionally keeps the form unavailable until the real service is
-configured; `privacy@lcv.dev` remains available. The API implements `GET /config`,
+The approved account-deletion form at <https://www.lcv.dev/account-deletion/>
+uses the public HTTPS API base <https://privacy-api.lcv.dev>, configured in the
+`account-deletion-api` meta element of `site/account-deletion/index.html`.
+`privacy@lcv.dev` remains available. The API implements `GET /config`,
 `POST /sessions`, `POST /sessions/confirm`, `POST /requests` and
 `GET /requests/{identifier}`. It owns email verification, HttpOnly session cookies,
 identity checks and the native Linear protocol. The page sends credentials with
 requests, removes confirmation parameters from the URL, stores only the pending
 email and state in session storage, and contains no analytics or advertising
-tags. Backend implementation remains in `github-operations`. Synchronize the
-page and regenerate both manifests after configuring the real base URL.
+tags. Backend implementation remains in `github-operations`.
+
+Loading the form does not require civil identity validation to be configured;
+the service rejects new deletion requests when that validation is missing.
+Cross-origin API access is allowed only from `https://www.lcv.dev`. Whenever the
+page changes, synchronize both copies and regenerate both site manifests.
 
 Organization-wide operational systems, reusable actions, controllers, schedulers, canaries, and
 private runbooks are intentionally absent from this public institutional repository. Their
