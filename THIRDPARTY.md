@@ -19,6 +19,19 @@ has no parallel scanner, pin auditor, containerized Zizmor runtime, or policy wr
 Licenses below were read from each package's own published manifest or from its upstream
 repository, not inferred.
 
+## Operational integrations
+
+The Pages workflow reports its deployment through the repository-owned script
+`.github/scripts/rollouts-reporter.sh`. That script is not an npm dependency.
+It calls two Cursor HTTPS endpoints with the team secret `CURSOR_API_KEY`:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `https://api2.cursor.sh/auth/exchange_user_api_key` | Exchange `CURSOR_API_KEY` for a short-lived access token |
+| `https://api.cursor.com/factory.v1.DeploymentsService/` | Record the GitHub Pages environment, service, deployment and outcome |
+
+The key is a GitHub Actions secret. It is not committed.
+
 ## Repository root — `package.json`
 
 | Component  | License           | Scope       | Source                                   |

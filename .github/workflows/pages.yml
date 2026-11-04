@@ -86,6 +86,7 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     permissions:
+      contents: read # Read the Rollouts reporter script.
       id-token: write # Issues the OIDC token consumed by deploy-pages.
       pages: write # Creates and monitors the GitHub Pages deployment.
     name: Deploy GitHub Pages
@@ -94,7 +95,35 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      CHANGE_MONITOR_ENV: "github-pages"
+      CHANGE_MONITOR_SOURCE: "https://github.com/${{ github.repository }}"
+      DEPLOY_VERSION: "${{ github.sha }}"
+      CHANGE_MONITOR_ACTOR: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}"
     steps:
+      - name: Check out Rollouts reporter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/rollouts-reporter.sh
+          sparse-checkout-cone-mode: false
+      - name: Report Rollouts deploy start
+        shell: bash
+        env:
+          CURSOR_API_KEY: "${{ secrets.CURSOR_API_KEY }}"
+          CHANGE_MONITOR_SERVICE: "dot-github-pages"
+        run: |
+          ./.github/scripts/rollouts-reporter.sh bootstrap
+          ./.github/scripts/rollouts-reporter.sh start
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - name: Report Rollouts deploy result
+        if: always()
+        shell: bash
+        env:
+          CURSOR_API_KEY: "${{ secrets.CURSOR_API_KEY }}"
+          CHANGE_MONITOR_SERVICE: "dot-github-pages"
+          ROLLOUTS_OUTCOME: "${{ steps.deployment.outcome == 'skipped' && 'cancelled' || steps.deployment.outcome }}"
+        run: |
+          ./.github/scripts/rollouts-reporter.sh finish
