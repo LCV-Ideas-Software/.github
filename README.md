@@ -37,16 +37,12 @@ requests, removes confirmation parameters from the URL, stores only the pending
 email and state in session storage, and contains no analytics or advertising
 tags. Backend implementation remains in `github-operations`.
 
-The registration contract requires the account email to be confirmed first,
-then full name (up to 200 characters), an 11-digit normalized CPF, date of birth
-in `YYYY-MM-DD` format and WhatsApp in international format. All five data items
-are required, counting the confirmed email, which comes from the session rather
-than the request body. Registration returns the real issue identifier regardless
-of an absent, unavailable, inconclusive or divergent registry lookup. Registry
-results are internal annotations; registration neither deletes the account
-immediately nor proves civil identity. The page adds no phone confirmation,
-registry retries or waiting requirement to receive a protocol. Backend rollout
-and live provider validation require separate evidence from these static files.
+The page requires the account email to be confirmed first, then full name
+(up to 200 characters), an 11-digit normalized CPF, date of birth in
+`YYYY-MM-DD` format and WhatsApp in international format. It sends `fullName`,
+`cpf`, `dateOfBirth` and normalized `whatsapp` in the request JSON; the email
+remains associated with the confirmed session. A successful response must
+contain a valid `identifier`, which the page displays as the protocol.
 Cross-origin API access is allowed only from `https://www.lcv.dev`. Whenever the
 page changes, synchronize both copies and regenerate both site manifests.
 
