@@ -14,6 +14,11 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Confirm account-deletion email links automatically, including when opened in
+  another browser, without asking for the email again. Keep the confirmed email
+  visible and read-only while collecting the required personal details, and
+  allow retrying a temporarily unavailable confirmation.
+
 - Require WhatsApp alongside full name, CPF and date of birth after account
   email confirmation in the account-deletion form. Always send the normalized
   WhatsApp in the existing request JSON, explain registration and display the

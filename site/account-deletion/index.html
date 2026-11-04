@@ -411,20 +411,7 @@
         <form id="confirmation-form" method="post" hidden>
           <fieldset id="confirmation-fields">
             <legend>Confirmar o link recebido</legend>
-            <label for="confirmation-email">E-mail que recebeu o link</label>
-            <input
-              id="confirmation-email"
-              name="email"
-              type="email"
-              autocomplete="email"
-              maxlength="254"
-              required
-            />
-            <small
-              >Se abriu o link em outro dispositivo, informe o mesmo e-mail
-              usado para solicitar a confirmação.</small
-            >
-            <button type="submit">Confirmar e continuar</button>
+            <button type="submit">Tentar confirmar novamente</button>
             <button id="restart-confirmation" type="button">
               Solicitar um novo link
             </button>
@@ -432,9 +419,6 @@
         </form>
         <div id="verified-session" hidden>
           <p id="verified-email"></p>
-          <button id="change-email" type="button">
-            Confirmar outro e-mail
-          </button>
           <form id="request-form" method="post" hidden>
             <fieldset id="request-fields">
               <legend>2. Registrar o pedido de exclusão</legend>
@@ -620,6 +604,8 @@
         class FlowError extends Error {}
         const genericError =
           "Não foi possível concluir esta etapa. Tente novamente mais tarde.";
+        const confirmationUnavailable =
+          "A confirmação do e-mail está indisponível no momento. Tente confirmar novamente em instantes. Se o problema persistir, solicite atendimento por privacy@lcv.dev.";
         const apiErrors = Object.freeze({
           INVALID_REQUEST: "Confira os dados informados e tente novamente.",
           SESSION_REQUIRED: "Confirme seu e-mail para continuar.",
@@ -646,10 +632,13 @@
             "O atendimento está indisponível no momento. Tente novamente mais tarde.",
           CONFIGURATION_MISSING:
             "O atendimento está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
-          GOOGLE_CONFIGURATION_MISSING:
-            "O atendimento está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+          APP_CHECK_REQUIRED: confirmationUnavailable,
+          APP_CHECK_INVALID: confirmationUnavailable,
+          APP_CHECK_UNAVAILABLE: confirmationUnavailable,
+          GOOGLE_CONFIGURATION_MISSING: confirmationUnavailable,
+          GOOGLE_UNAVAILABLE: confirmationUnavailable,
+          GOOGLE_INVALID_RESPONSE: confirmationUnavailable,
         });
-        const pendingKey = "lcv.account-deletion.pending";
         const element = (id) => {
           const node = document.getElementById(id);
           if (!node)
@@ -667,6 +656,8 @@
         let apiBase;
         let callback;
         let session;
+        let appCheckSettings;
+        let appCheckClient;
         let working = false;
         const parameters = new URLSearchParams(window.location.search);
         const hasCallback =
@@ -735,7 +726,7 @@
           return { state, oobCode };
         }
 
-        async function callApi(path, body) {
+        async function callApi(path, body, appCheckToken) {
           let response;
           try {
             response = await fetch(apiBase + path, {
@@ -749,6 +740,9 @@
                   : {
                       accept: "application/json",
                       "content-type": "application/json",
+                      ...(path === "/sessions/confirm" && appCheckToken
+                        ? { "X-Firebase-AppCheck": appCheckToken }
+                        : {}),
                     },
               ...(body === undefined ? {} : { body: JSON.stringify(body) }),
             });
@@ -788,7 +782,6 @@
           if (fieldset.disabled || working) return;
           working = true;
           fieldset.disabled = true;
-          element("change-email").disabled = true;
           try {
             await action();
           } catch (error) {
@@ -801,26 +794,81 @@
             element("flow-message").focus();
           } finally {
             fieldset.disabled = false;
-            element("change-email").disabled = false;
             working = false;
           }
         }
 
-        function clearPending() {
+        async function confirmationToken() {
+          let timeout;
           try {
-            window.sessionStorage.removeItem(pendingKey);
-            return "";
+            return await Promise.race([
+              (async () => {
+                if (!appCheckSettings) {
+                  const configuration = await callApi("/config");
+                  appCheckSettings = configuration.appCheck;
+                }
+                if (
+                  !record(appCheckSettings) ||
+                  !["projectId", "appId", "apiKey", "recaptchaSiteKey"].every(
+                    (key) =>
+                      text(appCheckSettings[key]) &&
+                      appCheckSettings[key].trim() === appCheckSettings[key],
+                  )
+                ) {
+                  appCheckSettings = undefined;
+                  throw new FlowError(confirmationUnavailable);
+                }
+                const [firebase, appCheck] = await Promise.all([
+                  import("https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js"),
+                  import("https://www.gstatic.com/firebasejs/13.2.0/firebase-app-check.js"),
+                ]);
+                if (!appCheckClient) {
+                  const app = firebase.initializeApp(
+                    {
+                      projectId: appCheckSettings.projectId,
+                      appId: appCheckSettings.appId,
+                      apiKey: appCheckSettings.apiKey,
+                    },
+                    "account-deletion",
+                  );
+                  appCheckClient = appCheck.initializeAppCheck(app, {
+                    provider: new appCheck.ReCaptchaEnterpriseProvider(
+                      appCheckSettings.recaptchaSiteKey,
+                    ),
+                    isTokenAutoRefreshEnabled: false,
+                  });
+                }
+                // A retry must not reuse an attestation rejected by the backend.
+                const result = await appCheck.getToken(appCheckClient, true);
+                if (!text(result.token) || result.token.length > 8192)
+                  throw new FlowError(confirmationUnavailable);
+                return result.token;
+              })(),
+              new Promise((_, reject) => {
+                timeout = window.setTimeout(
+                  () => reject(new FlowError(confirmationUnavailable)),
+                  20000,
+                );
+              }),
+            ]);
           } catch {
-            return "O navegador não permitiu limpar a confirmação local; feche esta página ao terminar.";
+            throw new FlowError(confirmationUnavailable);
+          } finally {
+            window.clearTimeout(timeout);
           }
         }
 
-        async function confirm(email) {
-          const payload = await callApi("/sessions/confirm", {
-            email,
-            oobCode: callback.oobCode,
-            state: callback.state,
-          });
+        async function confirm() {
+          message("Confirmando seu e-mail. Aguarde.");
+          const token = await confirmationToken();
+          const payload = await callApi(
+            "/sessions/confirm",
+            {
+              oobCode: callback.oobCode,
+              state: callback.state,
+            },
+            token,
+          );
           if (
             !text(payload.email) ||
             !text(payload.applicationId) ||
@@ -833,7 +881,6 @@
           }
           session = payload;
           callback = undefined;
-          const cleanupNotice = clearPending();
           element("email-form").hidden = true;
           element("confirmation-form").hidden = true;
           element("verified-session").hidden = false;
@@ -841,10 +888,9 @@
           element("verified-email").textContent =
             "E-mail confirmado: " + session.email;
           message(
-            (session.purpose === "request"
+            session.purpose === "request"
               ? "E-mail confirmado. Preencha os quatro campos obrigatórios para registrar o pedido de exclusão."
-              : "E-mail confirmado. Informe o protocolo para acompanhar seu pedido.") +
-              (cleanupNotice ? " " + cleanupNotice : ""),
+              : "E-mail confirmado. Informe o protocolo para acompanhar seu pedido.",
           );
         }
 
@@ -862,19 +908,9 @@
               throw new FlowError(
                 "Não foi possível iniciar a confirmação. Tente novamente.",
               );
-            try {
-              window.sessionStorage.setItem(
-                pendingKey,
-                JSON.stringify({ email, state: payload.state }),
-              );
-              message(
-                "Abra o link enviado ao seu e-mail para continuar. Confira também a pasta de spam.",
-              );
-            } catch {
-              message(
-                "Abra o link enviado ao seu e-mail. Ao voltar, informe novamente seu e-mail, pois o armazenamento deste navegador está indisponível.",
-              );
-            }
+            message(
+              "Abra o link enviado ao seu e-mail para continuar. Confira também a pasta de spam.",
+            );
           }),
         );
 
@@ -882,29 +918,28 @@
           submit(event, "confirmation-fields", async () => {
             if (!callback)
               throw new FlowError("Solicite um novo link de confirmação.");
-            await confirm(element("confirmation-email").value.trim());
+            await confirm();
           }),
         );
 
         function restart() {
-          if (working) return;
           session = undefined;
           callback = undefined;
-          const cleanupNotice = clearPending();
           element("request-form").reset();
           element("status-form").reset();
           element("confirmation-form").hidden = true;
           element("verified-session").hidden = true;
           element("request-result").hidden = true;
           element("email-form").hidden = false;
-          message(
-            "Confirme o e-mail para solicitar ou acompanhar um pedido." +
-              (cleanupNotice ? " " + cleanupNotice : ""),
-          );
+          message("Confirme o e-mail para solicitar ou acompanhar um pedido.");
           element("account-email").focus();
         }
-        element("change-email").addEventListener("click", restart);
-        element("restart-confirmation").addEventListener("click", restart);
+        element("restart-confirmation").addEventListener("click", (event) =>
+          submit(event, "confirmation-fields", async () => {
+            await loadApplications();
+            restart();
+          }),
+        );
 
         element("request-form").addEventListener("submit", (event) =>
           submit(event, "request-fields", async () => {
@@ -1001,6 +1036,39 @@
           }),
         );
 
+        async function loadApplications() {
+          const payload = await callApi("/config");
+          appCheckSettings = payload.appCheck;
+          if (
+            !Array.isArray(payload.applications) ||
+            payload.applications.length === 0
+          )
+            throw new FlowError(
+              "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+            );
+          const ids = new Set();
+          const options = [];
+          for (const application of payload.applications) {
+            if (
+              !record(application) ||
+              !text(application.id) ||
+              !text(application.name) ||
+              ids.has(application.id)
+            )
+              throw new FlowError(
+                "Não foi possível carregar os aplicativos. Tente novamente mais tarde.",
+              );
+            ids.add(application.id);
+            const option = document.createElement("option");
+            option.value = application.id;
+            option.textContent = application.name;
+            options.push(option);
+          }
+          const placeholder = element("application").firstElementChild;
+          element("application").replaceChildren(placeholder, ...options);
+          element("email-fields").disabled = false;
+        }
+
         async function initialize() {
           const setting = document.querySelector(
             'meta[name="account-deletion-api"]',
@@ -1028,60 +1096,22 @@
               "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
             );
           apiBase = url.href.replace(/\/$/, "");
-          const payload = await callApi("/config");
-          if (
-            !Array.isArray(payload.applications) ||
-            payload.applications.length === 0
-          )
-            throw new FlowError(
-              "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
-            );
-          const ids = new Set();
-          for (const application of payload.applications) {
-            if (
-              !record(application) ||
-              !text(application.id) ||
-              !text(application.name) ||
-              ids.has(application.id)
-            )
-              throw new FlowError(
-                "Não foi possível carregar os aplicativos. Tente novamente mais tarde.",
-              );
-            ids.add(application.id);
-            const option = document.createElement("option");
-            option.value = application.id;
-            option.textContent = application.name;
-            element("application").append(option);
-          }
-          element("email-fields").disabled = false;
-          message("Confirme o e-mail para solicitar ou acompanhar um pedido.");
-          if (!hasCallback) return;
-          callback = readCallback();
-          element("email-form").hidden = true;
-          element("confirmation-form").hidden = false;
-          message("Confirme o e-mail que recebeu este link para continuar.");
-          let pending;
-          try {
-            const stored = window.sessionStorage.getItem(pendingKey);
-            pending = stored === null ? undefined : JSON.parse(stored);
-          } catch {
-            message(
-              "Informe o e-mail que recebeu este link. Os dados da confirmação não estão disponíveis neste navegador.",
-            );
-          }
-          if (
-            record(pending) &&
-            pending.state === callback.state &&
-            text(pending.email)
-          ) {
-            element("confirmation-email").value = pending.email;
+          if (hasCallback) {
+            element("email-form").hidden = true;
+            element("confirmation-form").hidden = false;
+            callback = readCallback();
+            working = true;
             element("confirmation-fields").disabled = true;
             try {
-              await confirm(pending.email);
+              await confirm();
             } finally {
+              working = false;
               element("confirmation-fields").disabled = false;
             }
+            return;
           }
+          await loadApplications();
+          message("Confirme o e-mail para solicitar ou acompanhar um pedido.");
         }
         initialize().catch((error) => {
           message(
