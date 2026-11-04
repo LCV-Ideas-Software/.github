@@ -291,7 +291,7 @@
       </h1>
       <p class="publication-date">
         <strong
-          >Versão 1.15 — vigente a partir de 31 de outubro de 2026.</strong
+          >Versão 1.16 — vigente a partir de 4 de novembro de 2026.</strong
         >
       </p>
       <hr />
@@ -1211,6 +1211,37 @@
         as responsabilidades legais da LCV Ideas &amp; Software por suas
         próprias decisões.
       </p>
+      <h3 id="confirmacao-do-email-no-formulario">
+        14.1. Confirmação do e-mail no formulário
+      </h3>
+      <p>
+        Na confirmação do link de e-mail do
+        <a href="/account-deletion/"
+          >formulário público de exclusão e acompanhamento</a
+        >, usamos Google Firebase App Check com reCAPTCHA Enterprise para
+        proteção contra abuso. As bibliotecas desses serviços são carregadas sob
+        demanda apenas nessa fase. O primeiro envio do link não carrega essas
+        bibliotecas.
+      </p>
+      <p>
+        Nessa verificação, o Google processa sinais técnicos para avaliar o
+        risco da interação, e o reCAPTCHA utiliza um cookie necessário a essa
+        análise. Consulte as
+        <a href="https://firebase.google.com/support/privacy"
+          >informações de privacidade do Firebase</a
+        >, a
+        <a
+          href="https://docs.cloud.google.com/recaptcha/docs/faq#does-recaptcha-use-cookies"
+          >documentação de cookies do reCAPTCHA</a
+        >, o
+        <a href="https://cloud.google.com/terms/data-processing-addendum"
+          >Adendo de tratamento de dados do Google Cloud</a
+        >
+        e os
+        <a href="https://cloud.google.com/terms/service-terms"
+          >termos específicos do serviço</a
+        >.
+      </p>
       <h2 id="seguranca-transferencias-e-pessoas-menores-de-idade">
         15. Segurança, transferências e pessoas menores de idade
       </h2>
@@ -1484,15 +1515,16 @@
     </main>
     <aside class="publication-note" aria-label="Publicação e histórico">
       <p>
-        <strong>O que mudou na versão 1.15.</strong> A seção 11.1 passa a
-        descrever a exclusão da conta e dos dados do Oráculo Celestial somente a
-        pedido, por privacy@lcv.dev: o app não tem uma opção que exclua a conta
-        diretamente. A seção 13 passa a dizer como o Oráculo Celestial atende ao
-        pedido de exclusão no aplicativo e pela página externa. As demais seções
-        não mudam. A versão 1.14 permanece arquivada.
+        <strong>O que mudou na versão 1.16.</strong> A seção 14.1 explica o uso
+        do Firebase App Check com reCAPTCHA Enterprise na confirmação do link de
+        e-mail do formulário público: carregamento sob demanda, sinais técnicos
+        para análise de risco, cookie necessário e referências de privacidade e
+        tratamento de dados do Google. As demais seções não mudam. A versão 1.15
+        permanece arquivada.
       </p>
       <p><strong>Versões anteriores:</strong></p>
       <ul>
+        <li><a href="/privacy/1.15/">Versão 1.15</a></li>
         <li><a href="/privacy/1.14/">Versão 1.14</a></li>
         <li><a href="/privacy/1.13/">Versão 1.13</a></li>
         <li><a href="/privacy/1.12/">Versão 1.12</a></li>

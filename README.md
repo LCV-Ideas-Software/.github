@@ -34,9 +34,10 @@ uses the public HTTPS API base <https://privacy-api.lcv.dev>, configured in the
 `POST /sessions`, `POST /sessions/confirm`, `POST /requests` and
 `GET /requests/{identifier}`. It owns email verification, HttpOnly session cookies,
 internal registry annotations and the native Linear protocol. The page sends credentials with
-requests, removes confirmation parameters from the URL, stores only the pending
-email and state in session storage, and contains no analytics or advertising
-tags. Backend implementation remains in `github-operations`.
+requests, removes confirmation parameters from the URL, and confirms email links
+automatically with Firebase App Check without storing the pending email or state
+in browser storage. It contains no analytics or advertising tags. Backend
+implementation remains in `github-operations`.
 
 The page requires the account email to be confirmed first, then full name
 (up to 200 characters), an 11-digit normalized CPF, date of birth in
