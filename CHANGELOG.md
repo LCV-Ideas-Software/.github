@@ -14,8 +14,8 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
-- Conecta o formulário público de exclusão à API https://privacy-api.lcv.dev
-  (LCV-563).
+- Configure the public account-deletion form with the HTTPS API base
+  https://privacy-api.lcv.dev (LCV-563).
 
 - Record `LCV-Ideas-Software/.github-private` as the checkpoint destination in
   versioned `.entire/settings.json`, making the existing private route available
