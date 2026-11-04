@@ -14,6 +14,10 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Report the GitHub Pages deployment to Cursor Rollouts. The Pages job reads
+  the team secret `CURSOR_API_KEY` and calls `api2.cursor.sh` and
+  `api.cursor.com`. Reporting fails open and does not publish the site.
+
 - Configure the public account-deletion form with the HTTPS API base
   https://privacy-api.lcv.dev (LCV-563).
 
