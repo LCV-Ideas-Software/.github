@@ -2,35 +2,8 @@
 <html lang="pt-BR">
   <head>
     <meta charset="utf-8" />
-    <!-- Google Tag Manager -->
-    <script>
-      (function (w, d, s, l, i) {
-        w[l] = w[l] || [];
-        w[l].push({ "gtm.start": new Date().getTime(), event: "gtm.js" });
-        var f = d.getElementsByTagName(s)[0],
-          j = d.createElement(s),
-          dl = l != "dataLayer" ? "&l=" + l : "";
-        j.async = true;
-        j.src = "https://www.googletagmanager.com/gtm.js?id=" + i + dl;
-        f.parentNode.insertBefore(j, f);
-      })(window, document, "script", "dataLayer", "GTM-5W9M8KRM");
-    </script>
-    <!-- End Google Tag Manager -->
-    <!-- Google tag (gtag.js) -->
-    <script
-      async
-      src="https://www.googletagmanager.com/gtag/js?id=AW-18511303830"
-    ></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag() {
-        dataLayer.push(arguments);
-      }
-      gtag("js", new Date());
-
-      gtag("config", "AW-18511303830");
-      gtag("config", "G-PK09C40XL5");
-    </script>
+    <meta name="referrer" content="no-referrer" />
+    <meta name="account-deletion-api" content="" />
     <meta name="color-scheme" content="dark" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
@@ -203,6 +176,75 @@
       .nav__links a[aria-current="page"] {
         color: var(--fg);
       }
+      .request-flow {
+        margin-block: 2rem;
+        padding: 1.4rem;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .request-flow h2 {
+        margin-top: 0;
+        padding-top: 0;
+        border: 0;
+      }
+      .request-flow p {
+        text-align: start;
+        text-indent: 0;
+      }
+      .request-flow fieldset {
+        display: grid;
+        gap: 0.7rem;
+        min-width: 0;
+        padding: 0;
+        margin: 1rem 0;
+        border: 0;
+      }
+      .request-flow legend {
+        padding: 0 0 0.8rem;
+        font-weight: 600;
+      }
+      .request-flow label {
+        font-weight: 500;
+      }
+      .request-flow input,
+      .request-flow select,
+      .request-flow button {
+        width: 100%;
+        min-height: 2.9rem;
+        padding: 0.7rem;
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        font: inherit;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      .request-flow button {
+        cursor: pointer;
+        font-weight: 600;
+        background: var(--panel);
+      }
+      .request-flow :disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .request-flow :focus-visible {
+        outline: 2px solid var(--sky);
+        outline-offset: 3px;
+      }
+      .request-flow [hidden] {
+        display: none;
+      }
+      .request-flow small {
+        color: var(--fg-soft);
+      }
+      #flow-message {
+        border-left: 3px solid var(--sky);
+        padding-left: 0.8rem;
+      }
+      #flow-message[data-error="true"] {
+        border-left-color: #ffb4ab;
+      }
       @media (max-width: 640px) {
         .legal table {
           display: block;
@@ -260,16 +302,6 @@
     </style>
   </head>
   <body>
-    <!-- Google Tag Manager (noscript) -->
-    <noscript
-      ><iframe
-        src="https://www.googletagmanager.com/ns.html?id=GTM-5W9M8KRM"
-        height="0"
-        width="0"
-        style="display: none; visibility: hidden"
-      ></iframe
-    ></noscript>
-    <!-- End Google Tag Manager (noscript) -->
     <a class="skip-link" href="#conteudo">Ir para o conteúdo</a>
 
     <header class="nav" id="top">
@@ -332,6 +364,155 @@
         identidade para proteger sua conta, explicaremos quais informações
         mínimas são necessárias.
       </p>
+      <section class="request-flow" aria-labelledby="form-title">
+        <h2 id="form-title">Solicitar ou acompanhar pelo formulário</h2>
+        <p>
+          Primeiro, confirme o acesso ao mesmo e-mail usado na conta. Depois,
+          informe os dados necessários para solicitar a exclusão ou consulte um
+          pedido existente pelo protocolo recebido.
+        </p>
+        <p id="flow-message" role="status" aria-live="polite" tabindex="-1">
+          Carregando o formulário. O canal privacy@lcv.dev continua disponível.
+        </p>
+        <noscript>
+          <p>
+            Ative o JavaScript para usar o formulário ou solicite atendimento
+            por <a href="mailto:privacy@lcv.dev">privacy@lcv.dev</a>.
+          </p>
+        </noscript>
+        <form id="email-form" method="post">
+          <fieldset id="email-fields" disabled>
+            <legend>1. Confirmar o e-mail</legend>
+            <label for="purpose">O que deseja fazer?</label>
+            <select id="purpose" name="purpose" required>
+              <option value="request">Solicitar a exclusão da conta</option>
+              <option value="status">Acompanhar um pedido existente</option>
+            </select>
+            <label for="application">Aplicativo</label>
+            <select id="application" name="applicationId" required>
+              <option value="">Selecione o aplicativo</option>
+            </select>
+            <label for="account-email">E-mail da conta</label>
+            <input
+              id="account-email"
+              name="email"
+              type="email"
+              autocomplete="email"
+              maxlength="254"
+              required
+            />
+            <small>
+              Enviaremos um link para confirmar seu acesso a esse e-mail.
+              Escolher acompanhamento não inicia um pedido de exclusão.
+            </small>
+            <button type="submit">Enviar link de confirmação</button>
+          </fieldset>
+        </form>
+        <form id="confirmation-form" method="post" hidden>
+          <fieldset id="confirmation-fields">
+            <legend>Confirmar o link recebido</legend>
+            <label for="confirmation-email">E-mail que recebeu o link</label>
+            <input
+              id="confirmation-email"
+              name="email"
+              type="email"
+              autocomplete="email"
+              maxlength="254"
+              required
+            />
+            <small
+              >Se abriu o link em outro dispositivo, informe o mesmo e-mail
+              usado para solicitar a confirmação.</small
+            >
+            <button type="submit">Confirmar e continuar</button>
+            <button id="restart-confirmation" type="button">
+              Solicitar um novo link
+            </button>
+          </fieldset>
+        </form>
+        <div id="verified-session" hidden>
+          <p id="verified-email"></p>
+          <button id="change-email" type="button">
+            Confirmar outro e-mail
+          </button>
+          <form id="request-form" method="post" hidden>
+            <fieldset id="request-fields">
+              <legend>2. Solicitar a exclusão</legend>
+              <label for="full-name">Nome completo</label>
+              <input
+                id="full-name"
+                name="fullName"
+                autocomplete="name"
+                maxlength="200"
+                required
+              />
+              <label for="cpf">CPF</label>
+              <input
+                id="cpf"
+                name="cpf"
+                inputmode="numeric"
+                autocomplete="off"
+                maxlength="14"
+                aria-describedby="cpf-help"
+                required
+              />
+              <small id="cpf-help"
+                >Informe os 11 dígitos, com ou sem pontuação.</small
+              >
+              <label for="birth-date">Data de nascimento</label>
+              <input
+                id="birth-date"
+                name="dateOfBirth"
+                type="date"
+                autocomplete="bday"
+                required
+              />
+              <label for="whatsapp">WhatsApp para contato (opcional)</label>
+              <input
+                id="whatsapp"
+                name="whatsapp"
+                type="tel"
+                autocomplete="tel"
+                maxlength="25"
+                aria-describedby="whatsapp-help"
+              />
+              <small id="whatsapp-help"
+                >Inclua o código do país e o DDD, por exemplo: +55 11
+                99999-9999.</small
+              >
+              <p>
+                Conferiremos os dados cadastrais informados para proteger sua
+                conta. Não envie documento, foto ou senha.
+              </p>
+              <button type="submit">
+                Solicitar exclusão da conta e dos dados
+              </button>
+            </fieldset>
+          </form>
+          <form id="status-form" method="post">
+            <fieldset id="status-fields">
+              <legend>Acompanhar um pedido</legend>
+              <label for="identifier">Protocolo recebido</label>
+              <input
+                id="identifier"
+                name="identifier"
+                autocomplete="off"
+                maxlength="100"
+                required
+              />
+              <small
+                >Use o protocolo informado na confirmação do pedido. O acesso
+                depende da confirmação do e-mail associado.</small
+              >
+              <button type="submit">Consultar andamento</button>
+            </fieldset>
+          </form>
+          <div id="request-result" hidden>
+            <p><strong id="protocol"></strong></p>
+            <p id="request-status"></p>
+          </div>
+        </div>
+      </section>
       <h2 id="o-que-e-excluido">O Que É Excluído</h2>
       <p>
         A exclusão é feita por nós, a pedido; os aplicativos não têm uma opção
@@ -430,5 +611,482 @@
         /></a>
       </div>
     </footer>
+    <script>
+      (() => {
+        "use strict";
+        class FlowError extends Error {}
+        const genericError =
+          "Não foi possível concluir esta etapa. Tente novamente mais tarde.";
+        const apiErrors = Object.freeze({
+          INVALID_REQUEST: "Confira os dados informados e tente novamente.",
+          SESSION_REQUIRED: "Confirme seu e-mail para continuar.",
+          SESSION_EXPIRED: "Confirme seu e-mail para continuar.",
+          EMAIL_CONFIRMATION_INVALID:
+            "O link não é válido. Solicite uma nova confirmação de e-mail.",
+          REGISTRY_NOT_CONFIRMED:
+            "Não foi possível confirmar a correspondência entre CPF, nome completo e data de nascimento.",
+          REGISTRY_RESULT_UNKNOWN:
+            "A consulta anterior não teve um resultado confirmado. Clique em Confirmar outro e-mail e solicite um novo link para o mesmo endereço antes de tentar de novo.",
+          IDENTITY_ATTEMPTS_EXCEEDED:
+            "Aguarde antes de tentar outros dados cadastrais novamente. Uma nova confirmação não elimina esse intervalo de segurança.",
+          ACCOUNT_UNAVAILABLE:
+            "Não foi possível preparar o pedido para essa conta.",
+          ACCOUNT_CHANGED:
+            "A conta mudou após a confirmação. Inicie um novo pedido.",
+          REQUEST_IN_PROGRESS:
+            "O pedido está sendo registrado. Aguarde e tente novamente.",
+          REQUEST_CONFLICT:
+            "O pedido não corresponde à confirmação atual. Inicie uma nova confirmação.",
+          NOT_FOUND: "Pedido não encontrado para este e-mail.",
+          FORBIDDEN: "Acesso não autorizado.",
+          SERVICE_UNAVAILABLE:
+            "O atendimento está indisponível no momento. Tente novamente mais tarde.",
+          CONFIGURATION_MISSING:
+            "O atendimento está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+          GOOGLE_CONFIGURATION_MISSING:
+            "O atendimento está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+        });
+        const pendingKey = "lcv.account-deletion.pending";
+        const element = (id) => {
+          const node = document.getElementById(id);
+          if (!node)
+            throw new FlowError("O formulário não pôde ser carregado.");
+          return node;
+        };
+        const message = (text, error = false) => {
+          const node = element("flow-message");
+          node.textContent = text;
+          node.dataset.error = String(error);
+        };
+        const record = (value) =>
+          value !== null && typeof value === "object" && !Array.isArray(value);
+        const text = (value) => typeof value === "string" && value.length > 0;
+        let apiBase;
+        let callback;
+        let session;
+        let working = false;
+        const parameters = new URLSearchParams(window.location.search);
+        const hasCallback =
+          parameters.has("oobCode") ||
+          parameters.has("state") ||
+          parameters.has("continueUrl");
+
+        // Remove one-time credentials before requests or navigation can disclose them.
+        if (window.location.search) {
+          window.history.replaceState(
+            null,
+            "",
+            window.location.pathname + window.location.hash,
+          );
+        }
+
+        function readCallback() {
+          for (const key of ["oobCode", "state", "continueUrl", "mode"]) {
+            if (parameters.getAll(key).length > 1)
+              throw new FlowError(
+                "O link de confirmação é inválido. Solicite um novo link.",
+              );
+          }
+          let state = parameters.get("state");
+          const continuation = parameters.get("continueUrl");
+          if (continuation) {
+            let url;
+            try {
+              url = new URL(continuation);
+            } catch {
+              throw new FlowError(
+                "O link de confirmação é inválido. Solicite um novo link.",
+              );
+            }
+            if (
+              url.origin !== window.location.origin ||
+              url.pathname !== window.location.pathname ||
+              url.username ||
+              url.password ||
+              url.searchParams.getAll("state").length !== 1
+            ) {
+              throw new FlowError(
+                "O link de confirmação é inválido. Solicite um novo link.",
+              );
+            }
+            const nestedState = url.searchParams.get("state");
+            if (state && state !== nestedState)
+              throw new FlowError(
+                "O link de confirmação é inválido. Solicite um novo link.",
+              );
+            state = nestedState;
+          }
+          const oobCode = parameters.get("oobCode");
+          const mode = parameters.get("mode");
+          if (
+            !text(state) ||
+            state.length > 1024 ||
+            !text(oobCode) ||
+            oobCode.length > 4096 ||
+            (mode && mode !== "signIn")
+          ) {
+            throw new FlowError(
+              "O link de confirmação é inválido. Solicite um novo link.",
+            );
+          }
+          return { state, oobCode };
+        }
+
+        async function callApi(path, body) {
+          let response;
+          try {
+            response = await fetch(apiBase + path, {
+              method: body === undefined ? "GET" : "POST",
+              credentials: "include",
+              cache: "no-store",
+              redirect: "error",
+              headers:
+                body === undefined
+                  ? { accept: "application/json" }
+                  : {
+                      accept: "application/json",
+                      "content-type": "application/json",
+                    },
+              ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            });
+          } catch {
+            throw new FlowError(
+              "Não foi possível acessar o atendimento. Verifique sua conexão e tente novamente.",
+            );
+          }
+          let payload;
+          try {
+            payload = await response.json();
+          } catch {
+            throw new FlowError(
+              "O atendimento retornou uma resposta inválida. Tente novamente mais tarde.",
+            );
+          }
+          if (!response.ok) {
+            const knownCode =
+              record(payload) &&
+              record(payload.error) &&
+              text(payload.error.code) &&
+              Object.hasOwn(apiErrors, payload.error.code);
+            throw new FlowError(
+              knownCode ? apiErrors[payload.error.code] : genericError,
+            );
+          }
+          if (!record(payload))
+            throw new FlowError(
+              "O atendimento retornou uma resposta inválida. Tente novamente mais tarde.",
+            );
+          return payload;
+        }
+
+        async function submit(event, fields, action) {
+          event.preventDefault();
+          const fieldset = element(fields);
+          if (fieldset.disabled || working) return;
+          working = true;
+          fieldset.disabled = true;
+          element("change-email").disabled = true;
+          try {
+            await action();
+          } catch (error) {
+            message(
+              error instanceof FlowError
+                ? error.message
+                : "Não foi possível concluir esta etapa.",
+              true,
+            );
+            element("flow-message").focus();
+          } finally {
+            fieldset.disabled = false;
+            element("change-email").disabled = false;
+            working = false;
+          }
+        }
+
+        function clearPending() {
+          try {
+            window.sessionStorage.removeItem(pendingKey);
+            return "";
+          } catch {
+            return "O navegador não permitiu limpar a confirmação local; feche esta página ao terminar.";
+          }
+        }
+
+        async function confirm(email) {
+          const payload = await callApi("/sessions/confirm", {
+            email,
+            oobCode: callback.oobCode,
+            state: callback.state,
+          });
+          if (
+            !text(payload.email) ||
+            !text(payload.applicationId) ||
+            !["request", "status"].includes(payload.purpose) ||
+            !text(payload.expiresAt)
+          ) {
+            throw new FlowError(
+              "Não foi possível confirmar a sessão. Solicite um novo link.",
+            );
+          }
+          session = payload;
+          callback = undefined;
+          const cleanupNotice = clearPending();
+          element("email-form").hidden = true;
+          element("confirmation-form").hidden = true;
+          element("verified-session").hidden = false;
+          element("request-form").hidden = session.purpose !== "request";
+          element("verified-email").textContent =
+            "E-mail confirmado: " + session.email;
+          message(
+            (session.purpose === "request"
+              ? "E-mail confirmado. Preencha os dados para solicitar a exclusão."
+              : "E-mail confirmado. Informe o protocolo para acompanhar seu pedido.") +
+              (cleanupNotice ? " " + cleanupNotice : ""),
+          );
+        }
+
+        element("email-form").addEventListener("submit", (event) =>
+          submit(event, "email-fields", async () => {
+            const email = element("account-email").value.trim();
+            const applicationId = element("application").value;
+            const purpose = element("purpose").value;
+            const payload = await callApi("/sessions", {
+              email,
+              applicationId,
+              purpose,
+            });
+            if (!text(payload.state) || !text(payload.expiresAt))
+              throw new FlowError(
+                "Não foi possível iniciar a confirmação. Tente novamente.",
+              );
+            try {
+              window.sessionStorage.setItem(
+                pendingKey,
+                JSON.stringify({ email, state: payload.state }),
+              );
+              message(
+                "Abra o link enviado ao seu e-mail para continuar. Confira também a pasta de spam.",
+              );
+            } catch {
+              message(
+                "Abra o link enviado ao seu e-mail. Ao voltar, informe novamente seu e-mail, pois o armazenamento deste navegador está indisponível.",
+              );
+            }
+          }),
+        );
+
+        element("confirmation-form").addEventListener("submit", (event) =>
+          submit(event, "confirmation-fields", async () => {
+            if (!callback)
+              throw new FlowError("Solicite um novo link de confirmação.");
+            await confirm(element("confirmation-email").value.trim());
+          }),
+        );
+
+        function restart() {
+          if (working) return;
+          session = undefined;
+          callback = undefined;
+          const cleanupNotice = clearPending();
+          element("request-form").reset();
+          element("status-form").reset();
+          element("confirmation-form").hidden = true;
+          element("verified-session").hidden = true;
+          element("request-result").hidden = true;
+          element("email-form").hidden = false;
+          message(
+            "Confirme o e-mail para solicitar ou acompanhar um pedido." +
+              (cleanupNotice ? " " + cleanupNotice : ""),
+          );
+          element("account-email").focus();
+        }
+        element("change-email").addEventListener("click", restart);
+        element("restart-confirmation").addEventListener("click", restart);
+
+        element("request-form").addEventListener("submit", (event) =>
+          submit(event, "request-fields", async () => {
+            if (!session || session.purpose !== "request")
+              throw new FlowError(
+                "Confirme o e-mail antes de solicitar a exclusão.",
+              );
+            const fullName = element("full-name").value.trim();
+            const cpfInput = element("cpf").value.trim();
+            const cpf = cpfInput.replace(/[.\-\s]/g, "");
+            const dateOfBirth = element("birth-date").value;
+            const phoneInput = element("whatsapp").value.trim();
+            const whatsapp = phoneInput.replace(/[()\-\s]/g, "");
+            if (!fullName) throw new FlowError("Informe seu nome completo.");
+            if (!/^[0-9]{11}$/.test(cpf))
+              throw new FlowError("Informe um CPF com 11 dígitos.");
+            if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(dateOfBirth))
+              throw new FlowError("Informe sua data de nascimento.");
+            if (phoneInput && !/^\+[1-9][0-9]{7,14}$/.test(whatsapp))
+              throw new FlowError(
+                "Informe o WhatsApp com +, código do país, DDD e número.",
+              );
+            const payload = await callApi("/requests", {
+              fullName,
+              cpf,
+              dateOfBirth,
+              ...(phoneInput ? { whatsapp } : {}),
+            });
+            if (
+              !text(payload.identifier) ||
+              !/^[A-Z][A-Z0-9]*-[0-9]+$/.test(payload.identifier)
+            )
+              throw new FlowError(
+                "O atendimento não retornou um protocolo válido. Consulte privacy@lcv.dev antes de reenviar.",
+              );
+            element("request-form").reset();
+            element("request-form").hidden = true;
+            element("identifier").value = payload.identifier;
+            element("protocol").textContent =
+              "Protocolo: " + payload.identifier;
+            element("request-status").textContent =
+              "Guarde este protocolo para consultar o andamento com o e-mail confirmado.";
+            element("request-result").hidden = false;
+            message(
+              "Solicitação registrada. O envio do pedido não exclui a conta imediatamente.",
+            );
+          }),
+        );
+
+        element("status-form").addEventListener("submit", (event) =>
+          submit(event, "status-fields", async () => {
+            if (!session)
+              throw new FlowError(
+                "Confirme o e-mail antes de consultar o pedido.",
+              );
+            const identifier = element("identifier").value.trim().toUpperCase();
+            if (!/^[A-Z][A-Z0-9]*-[0-9]+$/.test(identifier))
+              throw new FlowError(
+                "Informe o protocolo recebido na confirmação do pedido.",
+              );
+            const payload = await callApi(
+              "/requests/" + encodeURIComponent(identifier),
+            );
+            const statuses = {
+              received: "Recebido",
+              processing: "Em atendimento",
+              completed: "Concluído",
+              canceled: "Cancelado",
+            };
+            if (
+              payload.identifier !== identifier ||
+              !Object.hasOwn(statuses, payload.status) ||
+              !text(payload.updatedAt) ||
+              !Number.isFinite(Date.parse(payload.updatedAt))
+            )
+              throw new FlowError(
+                "O atendimento retornou um andamento inválido. Tente novamente mais tarde.",
+              );
+            element("protocol").textContent =
+              "Protocolo: " + payload.identifier;
+            element("request-status").textContent =
+              "Situação: " +
+              statuses[payload.status] +
+              ". Atualizado em " +
+              new Intl.DateTimeFormat("pt-BR", {
+                dateStyle: "short",
+                timeStyle: "short",
+              }).format(new Date(payload.updatedAt)) +
+              ".";
+            element("request-result").hidden = false;
+            message("Andamento consultado para o e-mail confirmado.");
+          }),
+        );
+
+        async function initialize() {
+          const setting = document.querySelector(
+            'meta[name="account-deletion-api"]',
+          );
+          if (!setting || !setting.content.trim())
+            throw new FlowError(
+              "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+            );
+          let url;
+          try {
+            url = new URL(setting.content);
+          } catch {
+            throw new FlowError(
+              "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+            );
+          }
+          if (
+            url.protocol !== "https:" ||
+            url.username ||
+            url.password ||
+            url.search ||
+            url.hash
+          )
+            throw new FlowError(
+              "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+            );
+          apiBase = url.href.replace(/\/$/, "");
+          const payload = await callApi("/config");
+          if (
+            !Array.isArray(payload.applications) ||
+            payload.applications.length === 0
+          )
+            throw new FlowError(
+              "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+            );
+          const ids = new Set();
+          for (const application of payload.applications) {
+            if (
+              !record(application) ||
+              !text(application.id) ||
+              !text(application.name) ||
+              ids.has(application.id)
+            )
+              throw new FlowError(
+                "Não foi possível carregar os aplicativos. Tente novamente mais tarde.",
+              );
+            ids.add(application.id);
+            const option = document.createElement("option");
+            option.value = application.id;
+            option.textContent = application.name;
+            element("application").append(option);
+          }
+          element("email-fields").disabled = false;
+          message("Confirme o e-mail para solicitar ou acompanhar um pedido.");
+          if (!hasCallback) return;
+          callback = readCallback();
+          element("email-form").hidden = true;
+          element("confirmation-form").hidden = false;
+          message("Confirme o e-mail que recebeu este link para continuar.");
+          let pending;
+          try {
+            const stored = window.sessionStorage.getItem(pendingKey);
+            pending = stored === null ? undefined : JSON.parse(stored);
+          } catch {
+            message(
+              "Informe o e-mail que recebeu este link. Os dados da confirmação não estão disponíveis neste navegador.",
+            );
+          }
+          if (
+            record(pending) &&
+            pending.state === callback.state &&
+            text(pending.email)
+          ) {
+            element("confirmation-email").value = pending.email;
+            element("confirmation-fields").disabled = true;
+            try {
+              await confirm(pending.email);
+            } finally {
+              element("confirmation-fields").disabled = false;
+            }
+          }
+        }
+        initialize().catch((error) => {
+          message(
+            error instanceof FlowError
+              ? error.message
+              : "O formulário está indisponível no momento. Solicite atendimento por privacy@lcv.dev.",
+            true,
+          );
+        });
+      })();
+    </script>
   </body>
 </html>

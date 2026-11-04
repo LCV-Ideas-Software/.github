@@ -14,6 +14,7 @@ on:
       - "test/site-parity.test.mjs"
       - "site/**"
       - ".github/workflows/site-parity.yml"
+      - ".node-version"
   schedule:
     - cron: "23 10 * * *" # daily, 07:23 in Brasília, after both Pages deploys
   workflow_dispatch:
@@ -38,7 +39,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .node-version
           check-latest: true
           package-manager-cache: false
 

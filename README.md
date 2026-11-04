@@ -20,11 +20,23 @@ This repository hosts the **organization profile** rendered at <https://github.c
 - The approved [Privacy Policy](./site/privacy/), [Terms of Services](./site/tos/) and [Security](./site/security/) pages apply to the products and resources that adopt them. Their canonical addresses are <https://www.lcv.dev/privacy/>, <https://www.lcv.dev/tos/> and <https://www.lcv.dev/security/>. Prior privacy versions remain under `site/privacy/<version>/`. These pages are served from the counterpart repository; this copy is the one the parity gate holds it to.
 - The sponsor landing page lives in [`site/sponsor/`](./site/sponsor/) and renders MercadoPago.js V2 Card Payment Brick secure fields backed by the dedicated `sponsor-motor` Worker at `https://sponsor-motor.lcv.app.br`.
 - Dependabot checks GitHub Actions and npm every day at 05h (UTC−03:00), including weekends, groups minor and patch version updates and security updates separately per ecosystem, and automatically rebases its pull requests. Official Actions under `actions/*` and `github/*` are evaluated immediately; third-party GitHub Actions and npm apply a seven-day cooldown to ordinary version updates. The cooldown does not apply to security updates.
-- The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build.
+- The Pages workflow uses GitHub's official Pages Actions and includes the public-site formatting, npm provenance-signature, and advisory checks in its artifact build. Pages and Site Parity select the repository's Node.js 26 toolchain from [`.node-version`](./.node-version).
 - CodeQL runs through GitHub's code scanning default setup, without a workflow file. Dependency Review, Zizmor, and OpenSSF Scorecard invoke their official Actions directly, pinned by full commit SHA. Repository-owned SARIF gates, policy manifests, lockfiles, workflow-contract validators, and scanner wrappers are intentionally absent.
 - Linear Release uses Linear's official Action, pinned to the immutable commit of `v0.18.2`, with CLI `v0.18.0` selected explicitly, to mirror every `main` commit into the continuous `.github-org` pipeline. This does not introduce a numbered artifact or an organization-wide controller; it records only this repository's own releases. The upstream installer verifies the downloaded CLI against a published SHA-256 checksum before executing it.
 - Pull requests reach `main` only through squash, under the Enterprise rulesets. Dependabot pull requests receive GitHub's native auto-merge from `.github/workflows/dependabot-auto-merge.yml`, a repository-local workflow that runs no Action and uses a fine-grained personal access token stored as the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`; GitHub performs the merge only once every rule and check is satisfied. There is no merge queue, GitHub App, or organization-wide controller.
 - Per-repository community health files (e.g. `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`) defined here apply org-wide unless the individual repository overrides them.
+
+The approved account-deletion form in `site/account-deletion/index.html` uses the
+public HTTPS API base from its `account-deletion-api` meta element. Its empty
+value intentionally keeps the form unavailable until the real service is
+configured; `privacy@lcv.dev` remains available. The API implements `GET /config`,
+`POST /sessions`, `POST /sessions/confirm`, `POST /requests` and
+`GET /requests/{identifier}`. It owns email verification, HttpOnly session cookies,
+identity checks and the native Linear protocol. The page sends credentials with
+requests, removes confirmation parameters from the URL, stores only the pending
+email and state in session storage, and contains no analytics or advertising
+tags. Backend implementation remains in `github-operations`. Synchronize the
+page and regenerate both manifests after configuring the real base URL.
 
 Organization-wide operational systems, reusable actions, controllers, schedulers, canaries, and
 private runbooks are intentionally absent from this public institutional repository. Their

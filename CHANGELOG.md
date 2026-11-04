@@ -14,6 +14,15 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Upgrade the repository Node.js toolchain to official 26.13.0 LTS and read the
+  same `.node-version` pin in the existing Pages and Site Parity workflows.
+
+- Add the approved public account-deletion form with email verification,
+  required identity fields and lookup by the native Linear issue identifier;
+  keep the email channel, remove tracking only from this form page and
+  regenerate the identical site manifests. The HTTPS API base must be
+  configured before enabling the form (ADMIAPP-59).
+
 - Remove the English translation and language link from the account-deletion
   page, retaining the Portuguese request channel and all legal and license
   texts; regenerate the shared site manifest in both governance repositories

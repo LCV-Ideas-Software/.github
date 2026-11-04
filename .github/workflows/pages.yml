@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths:
       - ".github/workflows/pages.yml"
+      - ".node-version"
       - ".npmrc"
       - "package-lock.json"
       - "package.json"
@@ -46,10 +47,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup latest Node.js 24
+      - name: Set up repository Node.js version
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .node-version
           check-latest: true
           cache: npm
 
