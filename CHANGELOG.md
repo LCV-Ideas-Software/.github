@@ -14,6 +14,15 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Require WhatsApp alongside full name, CPF and date of birth after account
+  email confirmation in the account-deletion form. Always send the normalized
+  WhatsApp in the existing request JSON, explain registration and its real
+  protocol, and remove registry-result instructions to reconfirm email or wait.
+  Document that registry annotations do not gate registration and that neither
+  registration nor email confirmation proves civil identity or deletes the
+  account immediately. Preserve session, callback and status lookup contracts;
+  regenerate the shared site manifest.
+
 - Configure the public account-deletion form with the HTTPS API base
   https://privacy-api.lcv.dev (LCV-563).
 

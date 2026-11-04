@@ -32,13 +32,21 @@ uses the public HTTPS API base <https://privacy-api.lcv.dev>, configured in the
 `privacy@lcv.dev` remains available. The API implements `GET /config`,
 `POST /sessions`, `POST /sessions/confirm`, `POST /requests` and
 `GET /requests/{identifier}`. It owns email verification, HttpOnly session cookies,
-identity checks and the native Linear protocol. The page sends credentials with
+internal registry annotations and the native Linear protocol. The page sends credentials with
 requests, removes confirmation parameters from the URL, stores only the pending
 email and state in session storage, and contains no analytics or advertising
 tags. Backend implementation remains in `github-operations`.
 
-Loading the form does not require civil identity validation to be configured;
-the service rejects new deletion requests when that validation is missing.
+The registration contract requires the account email to be confirmed first,
+then full name (up to 200 characters), an 11-digit normalized CPF, date of birth
+in `YYYY-MM-DD` format and WhatsApp in international format. All five data items
+are required, counting the confirmed email, which comes from the session rather
+than the request body. Registration returns the real issue identifier regardless
+of an absent, unavailable, inconclusive or divergent registry lookup. Registry
+results are internal annotations; registration neither deletes the account
+immediately nor proves civil identity. The page adds no phone confirmation,
+registry retries or waiting requirement to receive a protocol. Backend rollout
+and live provider validation require separate evidence from these static files.
 Cross-origin API access is allowed only from `https://www.lcv.dev`. Whenever the
 page changes, synchronize both copies and regenerate both site manifests.
 
