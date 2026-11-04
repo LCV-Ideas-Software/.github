@@ -2,6 +2,12 @@
   "enabled": true,
   "telemetry": true,
   "commit_linking": "always",
+  "strategy_options": {
+    "checkpoint_remote": {
+      "provider": "github",
+      "repo": "LCV-Ideas-Software/.github-private"
+    }
+  },
   "checkpoints": {
     "primary": {
       "type": "git-refs"
