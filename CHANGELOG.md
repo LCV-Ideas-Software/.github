@@ -14,6 +14,11 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Remove the English translation and language link from the account-deletion
+  page, retaining the Portuguese request channel and all legal and license
+  texts; regenerate the shared site manifest in both governance repositories
+  (operator decision of 03/11/2026).
+
 - Update the official Zizmor Action to v0.8.1 and its explicitly selected
   analyzer to 1.32.0 at their immutable release coordinates (LCV-542).
 
@@ -56,7 +61,7 @@ presentation rule this organization applies to text meant for people
   (LCV-464).
 
 - Update the official Linear Release Action to v0.18.2 and Claude Code Action
-  to v1.0.266 at their complete immutable release commit SHAs, preserving the
+  to v1.0.268 at their complete immutable release commit SHAs, preserving the
   existing workflow inputs and official Linear CLI v0.18.0 (LCV-488; LCV-518).
 
 - Enable native Google Antigravity CLI (`agy`) hooks in `.agents/hooks.json` and
@@ -96,7 +101,7 @@ presentation rule this organization applies to text meant for people
 
 - Reconcile the current inventory to 1 public, 2 internal and 18 private repositories; identify private product repositories and preserve identical public site content in both governance repositories. Update current Android product and license descriptions to the verified 12 October 2026 releases, distinguishing production from internal testing and preserving third-party rights and prior grants. Identify the four private, empty iOS repositories as future work without claiming implemented applications or licenses (LCV-358).
 
-- Update the official CodeQL SARIF upload Action to v4.39.1 and Zizmor Action to v0.8.0 in local and starter workflows, using their complete stable release commit SHAs (LCV-438).
+- Update the official CodeQL SARIF upload Action to v4.39.2 and Zizmor Action to v0.8.0 in local and starter workflows, using their complete stable release commit SHAs (LCV-438).
 
 - Publish privacy policy 1.6 (`site/privacy/index.html`, in force from 11/10/2026): the Maestro is now published on Google Play, so its row in the section 2 table points to section 6 of the policy, like the Calculadora's, instead of saying it is under review there; and version 1.5 stays available unchanged at its permanent address, `site/privacy/1.5/` (LCV-351).
 - Publish privacy policy 1.5 (`site/privacy/index.html`, in force from 08/10/2026): the Calculadora's Google Play target audience is now adults only (18 and over), with Google Play's minor access restriction, as the Maestro's already was; the Yahoo privacy policy link now opens the policy itself instead of Yahoo's general legal page; and version 1.4 stays available unchanged at its permanent address, `site/privacy/1.4/` (LCV-340).
