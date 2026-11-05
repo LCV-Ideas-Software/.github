@@ -22,7 +22,11 @@ presentation rule this organization applies to text meant for people
   Renew email invitations through the original capability and operation, clear
   personal fields only after accepted renewal, and retain the protocol while
   requiring a new Google confirmation link. Asynchronous BigDataCorp checks do
-  not prevent protocol registration. Synchronize the public site and manifest
+  not prevent protocol registration. Before confirmation, offer a clean form
+  in a new tab after a failed link while preserving the original page and
+  directing Central invitations to a new invitation for the same request.
+  Terminal invitation errors keep renewal disabled and direct the requester
+  to Central. Synchronize the public site and manifest
   with the counterpart copy; preserve Privacy Policy 1.16 (LCV-563).
 
 - Confirm account-deletion email links automatically, including when opened in

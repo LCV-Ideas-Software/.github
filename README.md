@@ -57,6 +57,14 @@ renewal capability and a stable operation identifier through `/sessions/renew`;
 it never starts a new form request. Personal fields are cleared only after the
 service accepts the renewal, while the protocol is preserved. A new Google
 confirmation link is required to authorize the new page.
+Before confirmation succeeds, a failed link offers an explicit way to open
+`/account-deletion/` without parameters in a new tab. The original page stays
+open and retains its confirmation attempt. The new form receives no email,
+protocol or personal data from that attempt and requires a new Google
+confirmation. A Central invitation must be renewed through Central to preserve
+the original email request; opening a separate form does not renew that
+invitation. Terminal invitation errors keep renewal disabled and direct the
+requester to Central.
 Cross-origin API access is allowed only from `https://www.lcv.dev`. Whenever the
 page changes, synchronize both copies and regenerate both site manifests.
 

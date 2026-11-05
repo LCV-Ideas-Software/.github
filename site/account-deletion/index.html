@@ -434,10 +434,20 @@
           <fieldset id="confirmation-fields">
             <legend>Confirmar o link recebido</legend>
             <button type="submit">Tentar confirmar novamente</button>
-            <small>
-              Se o link não puder mais ser confirmado, solicite outro à Central
-              pelo canal privacy@lcv.dev para preservar o pedido original.
+            <small id="confirmation-recovery-help">
+              Se você começou pelo formulário, abra outro para receber um novo
+              link. Se recebeu um convite da Central para completar um pedido
+              por e-mail, peça um novo convite à Central por privacy@lcv.dev
+              para conservar o protocolo. Esta página permanece aberta.
             </small>
+            <a
+              id="open-new-form"
+              href="/account-deletion/"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-describedby="confirmation-recovery-help"
+              >Abrir novo formulário</a
+            >
           </fieldset>
         </form>
         <div id="verified-session" hidden>
@@ -647,17 +657,26 @@
           "Esta aba perdeu a autorização porque outra confirmação está ativa no navegador. O e-mail e o pedido mostrados aqui não foram trocados. Solicite um novo link nesta página para confirmar novamente o contexto original; esta aba continuará bloqueada.";
         const centralInvitationMessage =
           "Não é possível renovar este convite. Solicite um novo convite à Central pelo canal privacy@lcv.dev para completar o pedido original. Os dados preenchidos e o protocolo foram conservados.";
+        const terminalRenewalCodes = Object.freeze([
+          "RENEWAL_EXPIRED",
+          "REQUEST_EXPIRED",
+          "CONFIRMATION_EXPIRED",
+          "EMAIL_SOURCE_CONFLICT",
+          "ISSUE_CLOSED",
+          "CONFIRMATION_OPERATION_CONFLICT",
+          "REQUEST_CONFLICT",
+        ]);
         const apiErrors = Object.freeze({
+          ...Object.fromEntries(
+            terminalRenewalCodes.map((code) => [
+              code,
+              centralInvitationMessage,
+            ]),
+          ),
           INVALID_REQUEST: "Confira os dados informados e tente novamente.",
           SESSION_REQUIRED: sessionRecoveryMessage,
           SESSION_EXPIRED: sessionRecoveryMessage,
           SESSION_CONTEXT_MISMATCH: originalContextMessage,
-          RENEWAL_EXPIRED: centralInvitationMessage,
-          REQUEST_EXPIRED: centralInvitationMessage,
-          CONFIRMATION_EXPIRED: centralInvitationMessage,
-          EMAIL_SOURCE_CONFLICT: centralInvitationMessage,
-          ISSUE_CLOSED: centralInvitationMessage,
-          CONFIRMATION_OPERATION_CONFLICT: centralInvitationMessage,
           EMAIL_COOLDOWN:
             "O intervalo para pedir outro link ainda não terminou. Aguarde e tente novamente. Nenhum novo envio foi confirmado.",
           CONFIRMATION_IN_PROGRESS:
@@ -666,16 +685,8 @@
             "Não foi possível confirmar a aceitação do envio do link. Tente novamente para verificar a mesma solicitação. Se persistir, procure a Central por privacy@lcv.dev.",
           EMAIL_CONFIRMATION_INVALID:
             "O link não é válido. Solicite uma nova confirmação de e-mail.",
-          REGISTRY_NOT_CONFIRMED:
-            "Não foi possível registrar o pedido. Solicite atendimento por privacy@lcv.dev.",
-          REGISTRY_RESULT_UNKNOWN:
-            "Não foi possível registrar o pedido. Solicite atendimento por privacy@lcv.dev.",
-          IDENTITY_ATTEMPTS_EXCEEDED:
-            "Não foi possível registrar o pedido. Solicite atendimento por privacy@lcv.dev.",
           ACCOUNT_UNAVAILABLE:
             "Não foi possível preparar o pedido para essa conta.",
-          ACCOUNT_CHANGED:
-            "A conta mudou após a confirmação. Inicie um novo pedido.",
           REQUEST_IN_PROGRESS:
             "O pedido está sendo registrado. Aguarde e tente novamente.",
           REQUEST_CONFLICT:
@@ -872,9 +883,7 @@
             throw new FlowError(
               knownCode
                 ? session?.source === "email" &&
-                  ["ACCOUNT_CHANGED", "REQUEST_CONFLICT"].includes(
-                    payload.error.code,
-                  )
+                  terminalRenewalCodes.includes(payload.error.code)
                   ? centralInvitationMessage
                   : apiErrors[payload.error.code]
                 : genericError,
@@ -1017,7 +1026,7 @@
               ].some((key) => Object.hasOwn(payload, key)))
           ) {
             throw new FlowError(
-              "A resposta de confirmação não contém um contexto válido. Nenhum dado foi autorizado. Solicite um novo link à Central por privacy@lcv.dev.",
+              "Não foi possível confirmar o acesso. Use as opções abaixo para receber um novo link.",
             );
           }
           session = Object.freeze(payload);
@@ -1129,15 +1138,7 @@
               } catch (error) {
                 if (
                   error instanceof FlowError &&
-                  [
-                    "RENEWAL_EXPIRED",
-                    "REQUEST_EXPIRED",
-                    "CONFIRMATION_EXPIRED",
-                    "EMAIL_SOURCE_CONFLICT",
-                    "ISSUE_CLOSED",
-                    "CONFIRMATION_OPERATION_CONFLICT",
-                    "REQUEST_CONFLICT",
-                  ].includes(error.code)
+                  terminalRenewalCodes.includes(error.code)
                 )
                   recoveryUnavailable = true;
                 throw error;
