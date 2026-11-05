@@ -14,6 +14,10 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Align the Scorecard starter workflow and the inventory license link with the
+  official CodeQL SARIF upload Action v4.39.3 at its immutable release commit
+  SHA, matching the versioned Scorecard workflow (LCV-574).
+
 - Unify the account-deletion form and email-invitation flows, preserving the
   original email request and protocol. Keep the confirmed email visible and
   read-only, require all four personal fields, and bind registration and lookup
