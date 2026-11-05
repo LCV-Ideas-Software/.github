@@ -437,10 +437,11 @@ Evaluate the net diff (`<base_sha>...<head_sha>`, the same merge-base diff as Se
    * It has real impact on correctness, data integrity, security, performance, or maintainability, and is one discrete, fixable issue.
    * You can name the exact input, state, or sequence that triggers it. When that depends on code outside the finding's own lines (a caller, a guard, a config value), cite that code's exact file and line; never infer behavior from a function or variable name alone.
    * It is not an intended behavior change explicitly stated in the PR/Trail title/description or mandated by an operator directive in Section 5.
+   * Fixing it asks no more rigor than the surrounding code holds itself to, and the author would fix it if they knew.
    * Confidence is at least `0.5` (`High` $\ge 0.9$ when the full triggering path is traced in the code; `Medium` $0.7\text{--}0.89$ with strong evidence and one assumption left; `0.5–0.69` when one condition could not be confirmed; **never report anything below `0.5`**).
    * An earlier finding is considered `"fixed"` only when the code at its location changed or the path that triggered it is gone; a commit elsewhere is not a fix.
 3. **Do NOT Report:**
-   * Style-only nits, naming/formatting preferences, generic best-practice reminders, refactors/alternative designs, or anything a linter, type checker, or CI already enforces.
+   * Style-only nits, naming/formatting preferences, documentation, generic best-practice reminders, refactors/alternative designs, missing tests (unless a repository rule requires them: Section 6.F does for new behavior), or anything a linter, type checker, or CI already enforces.
    * Duplicate manifestations of the same root cause: if the same defect appears in several places, report it **once**, anchored at the changed line that causes it, and name the other affected locations in the body.
    * Generated, lock, or vendored files, code explicitly allowed by a repository rule or suppression comment, problems under inputs the code can never receive, speculative hardening without a concrete exploit path, or praise.
 
