@@ -1,0 +1,1 @@
+Ah! Entendi. Então prossiga. MAs antes de prosseguir, faça a faxina no workspace: limpe todas as branchs/worktrees já sem serventia, sincronize local e remoto em main.
