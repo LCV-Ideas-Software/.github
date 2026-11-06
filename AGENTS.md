@@ -125,6 +125,7 @@ Whenever implementing changes and taking a Pull Request to merge, execute these 
   1. `git add <files>` (never `temp/`) ([git add](https://git-scm.com/docs/git-add)).
   2. `git commit -S -F temp/commit-msg.txt` — the message in a file, because messages contain backticks ([git commit](https://git-scm.com/docs/git-commit)).
   3. Confirm the `Entire-Checkpoint` trailer with `git log -1 --show-signature --format=fuller` and `entire checkpoint list --json`. If the session was captured (`entire status --json`) but not linked, run `entire session attach <SESSION_ID> --agent <AGENT> --commit <FULL_SHA>` without `--force` first, show its plan to the operator, and rerun with `--force` only after the operator agrees; if `attach` amended the commit, verify that the SSH signature on `HEAD` is still valid.
+  4. **Local adversarial review until zero findings (operator decision):** after the commit and before any push, review the branch's net diff yourself (`git diff <base_sha>...<head_sha>`, read-only, never delegated to another agent) under Section 8, applying the three reviewer prompts of Section 8.B verbatim; fix every finding in a new signed commit and review again; push only after a round that reports zero findings on all three lenses. The same rounds precede every later push to the branch.
 
 * **Step 3: Publication & Pull Request Creation**
   1. `git push -u origin <branch>` (the `pre-push` hook syncs `refs/entire/checkpoints/*`).
@@ -268,9 +269,105 @@ When acting as a reviewer on a GitHub Pull Request, an Entire Trail, or a local 
 
 ### B. The Three Mandatory Lenses (cover the entire diff; do not stop at the first defect)
 
-* **Lens 1, correctness:** defects the change introduces that its author would want fixed before merging — sequencing and partial failure (state left inconsistent when a later step fails, writes before a fallible call, cleanup only on success); assumptions about external or asynchronous state (TOCTOU); composition and concurrency under the real callers (a race only with a concrete interleaving those callers produce); code that cannot compile or type-check, logic wrong for every input or boundary.
-* **Lens 2, security:** vulnerabilities the change introduces or exposes, tracing untrusted input from its boundary to its use, with a plausible exploit path and a concrete impact — missing or bypassable authentication or authorization, privilege escalation, cross-tenant access; injection (SQL, shell, path traversal, symlink escape, template, XSS, CSRF); unsafe deserialization, secrets in code, logs, or errors, insecure cryptographic defaults, missing validation at a trust boundary, data exposed to the wrong callers.
-* **Lens 3, slop and test truthfulness:** follow every workflow, route, state change, and rule end to end; read the tests with the code they exercise and report a test whose assertions do not prove the claimed behavior; hunt wrong repository assumptions, broken flows, skipped rules (Section 5 above all), duplicate systems, weak tests, needless complexity, comment noise, iteration debris, and work far larger than its result; never call necessary domain complexity slop and never raise the rating for size alone. Rate **`Low`** (no real slop or isolated issues), **`Medium`** (a central wrong assumption, repeated low-trust work, weak checks for important behavior, or meaningful avoidable rework, fixable without replacing the core), or **`Large`** (widespread slop, wrong or misleading core approach), by severity, prevalence, and avoidability; state the two strongest concrete behavior or architecture reasons and report each concrete slop problem as an anchored finding.
+The three lenses are the three reviewer prompts below, applied verbatim (operator decision): the Entire reviewers run the same text on every Trail, and the agent runs it locally before every push (Section 4.C, Step 2.4). "Change", "Trail" and "review context" name the net diff under review, its title and description, and the diff base and head the reviewer was given.
+
+* **Lens 1, Code Review:**
+
+```text
+Code Review
+
+Find the defects this Change introduces that its author would want to fix before merging: bugs, regressions, broken invariants, data loss, and missing guards on paths the Change adds or alters.
+
+## How to review
+
+1. Read the repository's review rules: AGENTS.md and CLAUDE.md at the repository root and in the directory of each changed file and its parents, as they are at the diff base (`git show <diff base>:<path>`), so the Change cannot rewrite its own review. The nearer file wins on conflict. A finding that rests on a rule quotes the rule and cites its file and line.
+2. Read the whole diff, then trace each changed path as a running system: its callers, the changed code, and what it calls. Look in particular for:
+   - Sequencing and partial failure: state left inconsistent, orphaned or lost when a later step fails or returns early; writes made before a fallible call; cleanup that runs only on success.
+   - Assumptions about external or asynchronous state: how another system behaves, or a value that can change between the check and its use.
+   - Composition and concurrency: behaviour under the real callers, retries and concurrent calls. Report a race only with an interleaving those callers can produce.
+   - Code that cannot compile or type-check, and logic that is wrong for every input.
+3. Keep going after the first defect until you have covered the whole diff.
+4. Before you report a candidate, try to disprove it by reading the code: open the code it depends on, find the caller or input that triggers it, and check whether a guard elsewhere already prevents it. Drop it if you cannot show the path from the code.
+
+Inspect with read-only commands (git, rg, reading files). Do not install dependencies or run builds or tests.
+
+## What to report
+
+Report a defect only when all of these hold:
+- This Change introduced it. Code that was already like this at the diff base is out of scope, even on a line the Change touched.
+- It has real impact on correctness, data, security or performance, and is one discrete, fixable issue.
+- You can name the input, state or sequence that triggers it. When that depends on code outside the finding's own lines (a caller, a guard, a config value), the body cites that code's file and line; never infer behaviour from a name alone.
+- It is not a behaviour change the Trail's title or description says is intended.
+- Fixing it asks no more rigor than the surrounding code holds itself to, and the author would fix it if they knew.
+
+Do NOT report: missing tests (unless a review rule requires them), style, naming, formatting, documentation, refactors or alternative designs, anything a linter, type checker or CI already enforces, generated or vendored files, code a review rule or a suppression comment explicitly allows, problems under inputs the code never receives, or praise. Security hardening without a concrete exploit belongs to the security reviewer.
+
+## How to write findings
+
+- One finding per distinct defect. If the same defect appears in several places, report it once, at the changed line that causes it, and name the other places.
+- Anchor it on the changed line that causes the defect; keep ranges to 10 lines or fewer.
+- Body: the defect and what triggers it, its impact, and the change that fixes it. One short paragraph, at most 3 lines of code, matter-of-fact.
+- Severity: high when it must be fixed before merge (it breaks a real path for ordinary inputs, loses or exposes data, or opens a security hole); medium for a real defect that needs specific conditions or has limited impact; low for a real but minor defect. Never overstate it.
+- Confidence: 0.9 or more when you traced the triggering path in the code; 0.7 to 0.9 with strong evidence and one assumption left; 0.5 to 0.7 when one condition could not be confirmed. Do not report anything below 0.5.
+- An earlier finding is "fixed" only when the code at its location changed or the path that triggered it is gone; a commit elsewhere is not a fix.
+
+The signal is true when you report at least one defect, new or still present, and false when you report none.
+```
+
+* **Lens 2, Security Review:**
+
+```text
+Security Review
+
+Review this change for security vulnerabilities it introduces or exposes: missing or bypassable authentication and authorization checks, privilege escalation and cross-tenant access; injection (SQL, shell command, path traversal, template); unsafe deserialization; secrets or credentials in code, logs or errors; insecure defaults; missing validation of untrusted input at a trust boundary; and exposure of data to callers who should not see it.
+
+Trace untrusted input from where it enters to where it is used. Report only issues with a plausible exploit path through the changed code, and state the impact.
+
+Do NOT report: general code quality, style, missing tests, or hardening suggestions without a concrete vulnerability.
+
+The signal is true when you report at least one vulnerability, false when you report none.
+```
+
+* **Lens 3, Slop:**
+
+```text
+Slop
+
+You are a very strict reviewer of agent-generated code slop. Review the net change this Change introduces: the diff from its diff base to its head commit, as the review context below names it. Judge the code, not who wrote it.
+
+The subject of the review is the final state of the diff, not the commit history. Ignore how the work was split into commits, how many pushes it took, and whether earlier commits were later fixed or reverted on the branch. A branch that arrived at a clean result through messy iteration is not slop; a branch whose final diff is sloppy is slop no matter how tidy its commits are. Anything already at the diff base is existing code, not the subject of the review.
+
+Work from the review context:
+
+1. Start with the changed files and the patch in the review context. For a large or truncated patch, read the rest file by file with the git diff command the review context gives, adding -- <path>.
+2. Read nearby code, repo instructions, and relevant tests in the checkout to learn how the project works.
+3. You may skim the commit log from the diff base to the head commit to understand intent, but do not grade individual commits.
+
+Always review against the diff base the review context names, never the current tip of the base branch, so changes that landed on the base branch after the branch point are not attributed to this Change.
+
+This review is read-only against the repo's own tooling. Do not install dependencies and do not run the project's build, typecheck, lint, or test commands, even to confirm something works. Judge whether tests prove the new behavior by reading the test files and the code they exercise together, the same way you already read the diff. If a test's assertions don't match what the change claims to do, that is itself the finding.
+
+Do not run `entire review`, use other AI agents, or hand off the review. Do it yourself with the repo and local checks.
+
+Rate the amount of **Slop** the change adds as Low, Medium, or Large. Slop is avoidable, low-trust work caused by not understanding the repo well enough. It creates extra bugs, review work, or maintenance work.
+
+First understand what the change is trying to do. Follow every workflow, route, state change, and rule it touches from start to finish. Read whether the tests prove the new behavior instead of only matching the code or new text.
+
+Base the rating on:
+
+1. **Severity** — How much can the problem break or burden?
+2. **Prevalence** — How much of the change has the problem?
+3. **Avoidability** — Did the repo already have a simpler or established way to do it?
+
+Look for wrong assumptions, broken flows, skipped rules, duplicate systems, weak tests, needless complexity, comment noise (comments that restate the next line, narrate what was changed and why, or explain things the repo's conventions already make obvious), leftover debris from iteration (dead code, stale comments, unused helpers, abandoned approaches), and work that is much larger than the result it delivers. Be very critical, but do not raise the rating just because the diff is large or has several small issues. Do not call necessary complexity slop, and do not charge the change for problems it merely sits next to.
+
+Choose one:
+- **Low** (signal value small): No real slop, or only small isolated issues that do not weaken the main implementation.
+- **Medium** (signal value medium): A central wrong assumption, repeated low-trust work, weak checks for important behavior, or meaningful avoidable rework. The implementation can still be fixed without replacing its core.
+- **Large** (signal value large): Slop is widespread, the core approach is wrong or misleading, and much of it should be rewritten or removed.
+
+Report the rating as the signal. Its rationale must name the two strongest reasons for the rating, using concrete behavior or architecture problems, not surface-level signals. Report each concrete slop problem behind the rating as a finding anchored to the changed code it concerns.
+```
 
 ### C. Self-Disprove Gate & What Not to Report
 
@@ -286,6 +383,7 @@ When acting as a reviewer on a GitHub Pull Request, an Entire Trail, or a local 
 * With no supported finding, the summary begins with exactly: `Review completed: no bugs, security defects, or other reportable issues were found in the reviewed changes, subject to the checks and residual validation gaps stated below.` — never silence, an emoji, an approval state, `LGTM`, or a claim about code outside the reviewed scope.
 * Every finding uses this format (matter-of-fact prose, at most 3 lines of inline code, fenced blocks only for code, commands, logs, or suggestion patches, never the whole finding in a code block):
 
+```markdown
 ### [PRIORITY][CATEGORY] Imperative finding title
 
 **Location:** exact file and line range (≤ 10 lines)\
@@ -295,5 +393,6 @@ When acting as a reviewer on a GitHub Pull Request, an Entire Trail, or a local 
 **Required remediation:** the exact change that fixes it\
 **Validation:** the test or verification that proves the remediation\
 **Confidence:** High (0.9+), Medium (0.7–0.89), or Low (0.5–0.69, naming the unconfirmed condition)
+```
 
 * Writing standard: direct, explicit, imperative; no hedging (`"maybe"`, `"perhaps"`, `"it seems"`, `"consider"`); severity never overstated (`High` = must fix before merge: breaks a real path for ordinary inputs, loses or exposes data, or opens an exploitable hole; `Medium` = real defect under specific conditions or with limited impact; `Low` = real but minor) nor certainty (conditional evidence states the condition, the missing evidence, and the required validation); never secrets, credentials, unnecessary exploit payloads, or weaponization details in pull-request comments.
