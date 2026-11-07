@@ -268,7 +268,7 @@ When acting as a reviewer on a GitHub Pull Request, an Entire Trail, or a local 
 
 ### B. The Three Mandatory Lenses
 
-Apply the three reviewer prompts below verbatim (operator decision). Review context: full base and head SHAs (before the push, `git merge-base origin/main HEAD` and `HEAD`), changed files `git diff --name-only <base>...<head>`, patch `git diff <base>...<head>`, the PR title and body (before the push, the planned title and `temp/pr-body.md`) as the Trail's, and earlier disproofs. Findings follow 8.C, or Step 2.4 before the push.
+Apply the three reviewer prompts below verbatim (operator decision). Review context: full base and head SHAs (before the push, `git merge-base origin/main HEAD` and `HEAD`), changed files `git diff --name-only <base>...<head>`, patch `git diff <base>...<head>`, the PR title and body (before the PR exists, the planned title and `temp/pr-body.md`) as the Trail's, and earlier disproofs. Findings follow 8.C, or Step 2.4 before the push.
 
 * **Lens 1, Code Review:**
 
