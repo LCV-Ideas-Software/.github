@@ -57,7 +57,7 @@ versioned workflows or by the starter workflows in `workflow-templates/`.
 | `actions/upload-artifact`          | [MIT](https://github.com/actions/upload-artifact/blob/main/LICENSE)                  | https://github.com/actions/upload-artifact          | Retain the Scorecard SARIF artifact                                       |
 | `ossf/scorecard-action`            | [Apache-2.0](https://github.com/ossf/scorecard-action/blob/main/LICENSE)             | https://github.com/ossf/scorecard-action            | Assess supply-chain posture                                               |
 | `zizmorcore/zizmor-action`         | [MIT](https://github.com/zizmorcore/zizmor-action/blob/45d7276c9ca790aabd705e31ca99c6185c3e76dd/LICENSE) | https://github.com/zizmorcore/zizmor-action         | Audit GitHub Actions and upload SARIF                                     |
-| `anthropics/claude-code-action`    | [MIT](https://github.com/anthropics/claude-code-action/blob/c0949c50a78c1ec8ce2647db36629b870e715d0c/LICENSE) | https://github.com/anthropics/claude-code-action    | Run Claude Code on `@claude` mentions (starter workflow only)             |
+| `anthropics/claude-code-action`    | [MIT](https://github.com/anthropics/claude-code-action/blob/61a9c274fa7110a66dfafc1bbbced03833eb25fe/LICENSE) | https://github.com/anthropics/claude-code-action    | Run Claude Code on `@claude` mentions (starter workflow only)             |
 
 `anthropics/claude-code-action` appears only in the starter workflow
 `workflow-templates/claude.yml`, which this repository does not run and whose

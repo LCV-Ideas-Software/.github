@@ -14,6 +14,13 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update the official `anthropics/claude-code-action` from v1.0.268 to v1.0.269
+  (commit `61a9c274fa7110a66dfafc1bbbced03833eb25fe`) in
+  `workflow-templates/claude.yml`, and exclude every dependency from the
+  Dependabot cooldown: the `cooldown` stays configured, but with `exclude: ["*"]`
+  inside each `package-ecosystem` block every update is proposed immediately
+  (LCV-596).
+
 - Align the Scorecard starter workflow and the inventory license link with the
   official CodeQL SARIF upload Action v4.39.3 at its immutable release commit
   SHA, matching the versioned Scorecard workflow (LCV-574).
