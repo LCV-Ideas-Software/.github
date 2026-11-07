@@ -13,6 +13,11 @@ presentation rule this organization applies to text meant for people
 ([`.github/WORK-TRACKING.md`](./.github/WORK-TRACKING.md)).
 
 ## Unreleased
+- Atualiza a Action oficial anthropics/claude-code-action de v1.0.268 para
+  v1.0.269 (commit 61a9c274fa7110a66dfafc1bbbced03833eb25fe) em workflow-templates/claude.yml, e
+  exclui todas as dependências em uso do cooldown do Dependabot: a
+  configuração permanece, mas com "exclude: ["*"]" cada atualização é
+  proposta imediatamente (LCV-596).
 
 - Align the Scorecard starter workflow and the inventory license link with the
   official CodeQL SARIF upload Action v4.39.3 at its immutable release commit
