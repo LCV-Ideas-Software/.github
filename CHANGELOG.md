@@ -16,7 +16,7 @@ presentation rule this organization applies to text meant for people
 
 - Update the official `anthropics/claude-code-action` from v1.0.268 to v1.0.269
   (commit `61a9c274fa7110a66dfafc1bbbced03833eb25fe`) in
-  `.github/workflows/claude.yml`, and exclude every dependency from the
+  `workflow-templates/claude.yml`, and exclude every dependency from the
   Dependabot cooldown: the `cooldown` stays configured, but with `exclude: ["*"]`
   inside each `package-ecosystem` block every update is proposed immediately
   (LCV-596).
