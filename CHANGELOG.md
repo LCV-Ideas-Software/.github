@@ -15,21 +15,12 @@ presentation rule this organization applies to text meant for people
 ## Unreleased
 
 - Fix two sponsor page defects reported by code scanning (sponsor-motor #75,
-  `.github-private` #29, LCV-644): the amount parser in
-  `site/sponsor/index.html` now accepts only a dot-decimal value ("10.50") or a
-  pt-BR value ("1.234,56") and rejects anything else, so "10.50" is no longer
-  read as R$ 1.050,00; the order request sends the parsed amount in canonical
-  pt-BR form, the `?amount=` link value goes through the same parser, and the
-  3DS challenge URL returned by the order API is loaded only when it is an
-  absolute `https:` URL. Because the order already exists when that URL is
-  rejected, the page keeps the order reference, tells the donor the order was
-  registered, that the bank verification could not be opened, not to submit
-  again (no retry prompt that would create a duplicate pending order) and to
-  wait for the Mercado Pago confirmation, showing the order reference. It does
-  not promise an automatic screen update, because the order stays in
-  `action_required` and the status poller only reacts to approved, failed or
-  cancelled orders (Entire finding 01M794AYHPF0CCKQSYZCJ6ZGZA). `site/` stays
-  byte-identical with `.github-private`.
+  `.github-private` #29, LCV-644): an amount typed as "10.50" is no longer
+  charged as R$ 1.050,00 (only dot-decimal or pt-BR amounts are accepted), and
+  the bank verification (3DS) page loads only from an `https:` address; when it
+  cannot be opened, the donor is told the order was registered and not to
+  submit it again.
+  `site/` stays byte-identical with `.github-private`.
 
 - Update the official `anthropics/claude-code-action` from v1.0.268 to v1.0.269
   (commit `61a9c274fa7110a66dfafc1bbbced03833eb25fe`) in
