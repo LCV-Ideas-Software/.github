@@ -1459,10 +1459,20 @@
 
           if (data.challengeUrl) {
             var challengeUrl = httpsUrl(data.challengeUrl);
-            if (!challengeUrl)
-              throw new Error(
-                "Não foi possível abrir a autenticação do banco. Tente novamente.",
+            if (!challengeUrl) {
+              // The order already exists here; a retry would create a duplicate.
+              challengeBox.hidden = true;
+              challengeFrame.removeAttribute("src");
+              status(
+                "Seu pedido de apoio foi registrado, mas não foi possível abrir a autenticação do banco. Não envie o pagamento novamente." +
+                  (currentReference
+                    ? " Esta tela será atualizada automaticamente com a situação do pedido."
+                    : ""),
+                "error",
               );
+              if (currentReference) refreshPaymentStatus(currentReference, 0);
+              return;
+            }
             challengeFrame.src = challengeUrl;
             challengeBox.hidden = false;
             status(

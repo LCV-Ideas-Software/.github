@@ -21,8 +21,12 @@ presentation rule this organization applies to text meant for people
   read as R$ 1.050,00; the order request sends the parsed amount in canonical
   pt-BR form, the `?amount=` link value goes through the same parser, and the
   3DS challenge URL returned by the order API is loaded only when it is an
-  absolute `https:` URL, otherwise the order fails through the page's error
-  status. `site/` stays byte-identical with `.github-private`.
+  absolute `https:` URL. Because the order already exists when that URL is
+  rejected, the page keeps the order reference, tells the donor the order was
+  registered and not to submit again (no retry prompt that would create a
+  duplicate pending order), and keeps polling the order status (Entire finding
+  01M794AYHPF0CCKQSYZCJ6ZGZA). `site/` stays byte-identical with
+  `.github-private`.
 
 - Update the official `anthropics/claude-code-action` from v1.0.268 to v1.0.269
   (commit `61a9c274fa7110a66dfafc1bbbced03833eb25fe`) in
