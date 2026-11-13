@@ -1464,9 +1464,9 @@
               challengeBox.hidden = true;
               challengeFrame.removeAttribute("src");
               status(
-                "Seu pedido de apoio foi registrado, mas não foi possível abrir a autenticação do banco. Não envie o pagamento novamente." +
+                "Seu pedido de apoio foi registrado, mas não foi possível abrir a verificação do banco. Não envie o pagamento novamente; aguarde a confirmação do Mercado Pago." +
                   (currentReference
-                    ? " Esta tela será atualizada automaticamente com a situação do pedido."
+                    ? " Referência do pedido: " + currentReference + "."
                     : ""),
                 "error",
               );

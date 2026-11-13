@@ -23,10 +23,13 @@ presentation rule this organization applies to text meant for people
   3DS challenge URL returned by the order API is loaded only when it is an
   absolute `https:` URL. Because the order already exists when that URL is
   rejected, the page keeps the order reference, tells the donor the order was
-  registered and not to submit again (no retry prompt that would create a
-  duplicate pending order), and keeps polling the order status (Entire finding
-  01M794AYHPF0CCKQSYZCJ6ZGZA). `site/` stays byte-identical with
-  `.github-private`.
+  registered, that the bank verification could not be opened, not to submit
+  again (no retry prompt that would create a duplicate pending order) and to
+  wait for the Mercado Pago confirmation, showing the order reference. It does
+  not promise an automatic screen update, because the order stays in
+  `action_required` and the status poller only reacts to approved, failed or
+  cancelled orders (Entire finding 01M794AYHPF0CCKQSYZCJ6ZGZA). `site/` stays
+  byte-identical with `.github-private`.
 
 - Update the official `anthropics/claude-code-action` from v1.0.268 to v1.0.269
   (commit `61a9c274fa7110a66dfafc1bbbced03833eb25fe`) in
