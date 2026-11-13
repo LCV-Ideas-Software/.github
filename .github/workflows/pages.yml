@@ -86,7 +86,6 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     permissions:
-      contents: read
       id-token: write # Issues the OIDC token consumed by deploy-pages.
       pages: write # Creates and monitors the GitHub Pages deployment.
     name: Deploy GitHub Pages
