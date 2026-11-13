@@ -14,6 +14,14 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Fix two sponsor page defects reported by code scanning (sponsor-motor #75,
+  `.github-private` #29, LCV-644): an amount typed as "10.50" is no longer
+  charged as R$ 1.050,00 (only dot-decimal or pt-BR amounts are accepted), and
+  the bank verification (3DS) page loads only from an `https:` address; when it
+  cannot be opened, the donor is told the order was registered and not to
+  submit it again.
+  `site/` stays byte-identical with `.github-private`.
+
 - Update the official `anthropics/claude-code-action` from v1.0.268 to v1.0.269
   (commit `61a9c274fa7110a66dfafc1bbbced03833eb25fe`) in
   `workflow-templates/claude.yml`, and exclude every dependency from the
