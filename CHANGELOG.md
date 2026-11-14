@@ -14,6 +14,10 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Bring the master text in `AGENTS.md` and `CLAUDE.md` to the operator's current version (LCV-653):
+  only the operator edits it, GitHub Copilot CLI joins the supported agents, and the `op run`
+  terminal and 1Password MCP rules are removed.
+
 - Publish Privacy Policy 1.17, effective 14/11/2026 (LCV-644): section 14.1 and the notice above the
   account-deletion form state that the Firebase App Check verification with reCAPTCHA Enterprise
   also runs when the confirmation link is requested, not only when it is confirmed, and the page's
