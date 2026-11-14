@@ -14,6 +14,11 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Refuse framing of the sponsor page by other sites (code scanning `.github-private` #27, CWE-1021,
+  LCV-644): `site/_headers` sends `X-Frame-Options: DENY` and
+  `Content-Security-Policy: frame-ancestors 'none'` for `/sponsor/*` on Cloudflare Pages; GitHub
+  Pages ignores the file. `site/` stays byte-identical with `.github-private`.
+
 - Fix the sponsor page interrupting an amount that is still being typed (LCV-644): a value ending in
   a separator ("10," or "10.") no longer shows the range error or reloads the card form while the
   donor types; leaving the field and paying still validate the amount strictly.
