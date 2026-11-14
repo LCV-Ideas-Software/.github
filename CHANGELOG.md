@@ -14,11 +14,6 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
-- Stop reporting the GitHub Pages deployment to Cursor Rollouts. The Pages job
-  no longer reads the team secret `CURSOR_API_KEY` and no longer calls
-  `api2.cursor.sh` or `api.cursor.com`. `.github/scripts/rollouts-reporter.sh`
-  is removed. The Pages deploy itself is unchanged.
-
 - Fix two sponsor page defects reported by code scanning (sponsor-motor #75,
   `.github-private` #29, LCV-644): an amount typed as "10.50" is no longer
   charged as R$ 1.050,00 (only dot-decimal or pt-BR amounts are accepted), and
@@ -74,10 +69,6 @@ presentation rule this organization applies to text meant for people
   legacy registry errors without asking for civil-data corrections, email
   reconfirmation or waiting. Preserve session, callback and status lookup
   contracts; regenerate the shared site manifest.
-
-- Report the GitHub Pages deployment to Cursor Rollouts. The Pages job reads
-  the team secret `CURSOR_API_KEY` and calls `api2.cursor.sh` and
-  `api.cursor.com`. Reporting fails open and does not publish the site.
 
 - Configure the public account-deletion form with the HTTPS API base
   https://privacy-api.lcv.dev (LCV-563).
