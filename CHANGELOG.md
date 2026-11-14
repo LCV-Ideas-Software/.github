@@ -14,6 +14,18 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish Privacy Policy 1.17, effective 14/11/2026 (LCV-644): section 14.1 and the notice above the
+  account-deletion form state that the Firebase App Check verification with reCAPTCHA Enterprise
+  also runs when the confirmation link is requested, not only when it is confirmed, and the page's
+  unavailable-confirmation message fits both phases. Retain version 1.16 at its permanent archive
+  address. `site/` stays byte-identical with `.github-private`.
+
+- Send the Firebase App Check token when the account-deletion page requests the sign-in link
+  (code scanning `github-operations` #46, LCV-644): `POST /sessions` now carries
+  `X-Firebase-AppCheck` like `POST /sessions/confirm`, and the page shows its existing confirmation
+  error instead of calling the service when no token is obtained. `site/` stays byte-identical with
+  `.github-private`.
+
 - Refuse framing of the sponsor page by other sites (code scanning `.github-private` #27, CWE-1021,
   LCV-644): `site/_headers` sends `X-Frame-Options: DENY` and
   `Content-Security-Policy: frame-ancestors 'none'` for `/sponsor/*` on Cloudflare Pages; GitHub

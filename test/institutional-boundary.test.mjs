@@ -66,6 +66,7 @@ const retainedPublicPaths = [
   "site/privacy/1.13/index.html",
   "site/privacy/1.14/index.html",
   "site/privacy/1.15/index.html",
+  "site/privacy/1.16/index.html",
   "site/tos/index.html",
   "site/tos/1.0/index.html",
   "site/security/index.html",

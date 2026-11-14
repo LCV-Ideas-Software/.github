@@ -374,11 +374,11 @@
           link abre os mesmos quatro campos e conserva o protocolo original.
         </p>
         <p>
-          A confirmação do link de e-mail usa Google Firebase App Check com
-          reCAPTCHA Enterprise para proteção contra abuso. As bibliotecas são
-          carregadas sob demanda nessa fase. O Google processa sinais técnicos
-          para análise de risco, e o reCAPTCHA usa um cookie necessário a essa
-          análise. Consulte a
+          O pedido do link de confirmação por e-mail e a confirmação desse link
+          usam Google Firebase App Check com reCAPTCHA Enterprise para proteção
+          contra abuso. As bibliotecas são carregadas sob demanda nessas duas
+          fases. O Google processa sinais técnicos para análise de risco, e o
+          reCAPTCHA usa um cookie necessário a essa análise. Consulte a
           <a href="/privacy/#confirmacao-do-email-no-formulario"
             >explicação na nossa Política de Privacidade</a
           >, as
@@ -650,7 +650,7 @@
         const genericError =
           "Não foi possível concluir esta etapa. Tente novamente mais tarde.";
         const confirmationUnavailable =
-          "A confirmação do e-mail está indisponível no momento. Tente confirmar novamente em instantes. Se o problema persistir, solicite atendimento por privacy@lcv.dev.";
+          "A confirmação do e-mail está indisponível no momento. Tente novamente em instantes. Se o problema persistir, solicite atendimento por privacy@lcv.dev.";
         const sessionRecoveryMessage =
           "A confirmação do e-mail não está mais ativa. Envie um novo link de confirmação para continuar.";
         const originalContextMessage =
@@ -840,7 +840,7 @@
                 ...(body === undefined
                   ? {}
                   : { "content-type": "application/json" }),
-                ...(path === "/sessions/confirm" && appCheckToken
+                ...(appCheckToken
                   ? { "X-Firebase-AppCheck": appCheckToken }
                   : {}),
                 ...(protectedRoute
@@ -1069,6 +1069,8 @@
         }
 
         async function sendConfirmation(email, applicationId, purpose) {
+          message("Preparando o envio do link de confirmação. Aguarde.");
+          const token = await confirmationToken();
           const payload = await callApi(
             "/sessions",
             {
@@ -1076,7 +1078,7 @@
               applicationId,
               purpose,
             },
-            undefined,
+            token,
             [202],
           );
           if (!opaqueToken(payload.state) || !timestampValid(payload.expiresAt))
