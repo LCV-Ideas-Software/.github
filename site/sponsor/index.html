@@ -1286,6 +1286,8 @@
 
         function scheduleCardFormMount() {
           window.clearTimeout(renderTimer);
+          // "10," is an amount still being typed: blur and submit validate it.
+          if (/^\d+(\.\d+)*[.,]$/.test(amountInput.value.trim())) return;
           renderTimer = window.setTimeout(function () {
             mountCardForm(true);
           }, 500);

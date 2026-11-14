@@ -14,6 +14,11 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Fix the sponsor page interrupting an amount that is still being typed (LCV-644): a value ending in
+  a separator ("10," or "10.") no longer shows the range error or reloads the card form while the
+  donor types; leaving the field and paying still validate the amount strictly.
+  `site/` stays byte-identical with `.github-private`.
+
 - Fix two sponsor page defects reported by code scanning (sponsor-motor #75,
   `.github-private` #29, LCV-644): an amount typed as "10.50" is no longer
   charged as R$ 1.050,00 (only dot-decimal or pt-BR amounts are accepted), and
