@@ -33,9 +33,10 @@ uses the public HTTPS API base <https://privacy-api.lcv.dev>, configured in the
 `POST /sessions`, `POST /sessions/confirm`, `POST /sessions/renew`, `POST /requests` and
 `GET /requests/{identifier}`. It owns email verification, HttpOnly session cookies,
 internal registry annotations and the native Linear protocol. The page sends credentials with
-requests, removes confirmation parameters from the URL, and confirms email links
-automatically with Firebase App Check without storing the pending email or state
-in browser storage. The confirmed email stays visible and read-only. Each tab
+requests, removes confirmation parameters from the URL, and passes Firebase App
+Check both when it requests the confirmation link and when it confirms that link
+automatically, without storing the pending email or state in browser storage.
+The confirmed email stays visible and read-only. Each tab
 keeps its own session context in memory and sends `X-Deletion-Context` when
 registering or looking up a request; a cookie from another confirmation cannot
 authorize the original tab. It contains no analytics or advertising tags.
