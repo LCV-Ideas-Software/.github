@@ -147,7 +147,7 @@ The two are not interchangeable and are not equally required. `MercadoPago.js V2
 builds the Card Payment Brick secure fields and, as a side effect of constructing
 `new MercadoPago(publicKey, ...)`, sets `window.MP_DEVICE_SESSION_ID` automatically. `security.js`
 is loaded with `output="deviceId"` and only populates `window.deviceId`, which the page uses as the
-**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1373-1375`,
+**fallback** device identifier — the precedence is explicit at `site/sponsor/index.html:1380-1382`,
 where `window.MP_DEVICE_SESSION_ID` wins and the manual value is used only when it is absent.
 
 | Component                  | Version               | License                    | Scope   | Source                                     |
