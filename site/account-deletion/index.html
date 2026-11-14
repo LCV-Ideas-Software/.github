@@ -840,7 +840,7 @@
                 ...(body === undefined
                   ? {}
                   : { "content-type": "application/json" }),
-                ...(path === "/sessions/confirm" && appCheckToken
+                ...(appCheckToken
                   ? { "X-Firebase-AppCheck": appCheckToken }
                   : {}),
                 ...(protectedRoute
@@ -1069,6 +1069,7 @@
         }
 
         async function sendConfirmation(email, applicationId, purpose) {
+          const token = await confirmationToken();
           const payload = await callApi(
             "/sessions",
             {
@@ -1076,7 +1077,7 @@
               applicationId,
               purpose,
             },
-            undefined,
+            token,
             [202],
           );
           if (!opaqueToken(payload.state) || !timestampValid(payload.expiresAt))

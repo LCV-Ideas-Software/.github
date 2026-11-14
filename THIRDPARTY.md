@@ -70,10 +70,10 @@ and its versioned CDN modules. App Check uses the official
 whose hosted browser service is governed by Google's terms. The provider loads
 `https://www.google.com/recaptcha/enterprise.js`; no copy is hosted here.
 
-Only email-link confirmation loads these libraries. The configuration contains
-public web-app identifiers and a dedicated public web API key; no backend key or
-debug provider is included. The page sends the native App Check token only in
-the confirmation request header, following the
+Only the email-link request and its confirmation load these libraries. The
+configuration contains public web-app identifiers and a dedicated public web API
+key; no backend key or debug provider is included. The page sends the native App
+Check token only in the link request and confirmation request headers, following the
 [custom backend guidance](https://firebase.google.com/docs/app-check/web/custom-resource).
 
 ## Vendored GitHub brand asset — inline `mark-github-16`
