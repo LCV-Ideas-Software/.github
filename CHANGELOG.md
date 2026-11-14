@@ -14,6 +14,10 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Bring `AGENTS.md` and `CLAUDE.md` to the operator's final master text (LCV-653): the rule against
+  running code neither the operator nor the agent wrote becomes a top-level item, and the Entire
+  diagnosis and stale-session steps say the agent's shell is non-interactive.
+
 - Bring the master text in `AGENTS.md` and `CLAUDE.md` to the operator's current version (LCV-653):
   only the operator edits it, GitHub Copilot CLI joins the supported agents, and the `op run`
   terminal and 1Password MCP rules are removed.
