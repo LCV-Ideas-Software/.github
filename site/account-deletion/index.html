@@ -1069,6 +1069,7 @@
         }
 
         async function sendConfirmation(email, applicationId, purpose) {
+          message("Preparando o envio do link de confirmação. Aguarde.");
           const token = await confirmationToken();
           const payload = await callApi(
             "/sessions",
