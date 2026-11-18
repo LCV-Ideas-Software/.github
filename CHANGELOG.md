@@ -14,6 +14,9 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update `actions/dependency-review-action` from v5.0.0 to v5.0.1 in the repository workflow
+  and starter template, retaining full-SHA pins and the existing review settings (LCV-666).
+
 - Bring `AGENTS.md` and `CLAUDE.md` to the operator's final master text (LCV-653): the rule against
   running code neither the operator nor the agent wrote becomes a top-level item, and the Entire
   diagnosis and stale-session steps say the agent's shell is non-interactive.
