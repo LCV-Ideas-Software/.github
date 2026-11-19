@@ -126,6 +126,10 @@ jobs:
                   $failures += "invalid pull request number '$candidate' returned by GitHub."
                   continue candidate
               }
+              # REST reads and the async verification can also throw; isolate
+              # every candidate so one failing PR never aborts the others
+              # (PR #486 review, Codex threads of 19/11/2026).
+              try {
               $path = "repos/$repository/pulls/$number"
               for ($attempt = 1; $attempt -le 3; $attempt++) {
                   if ($attempt -gt 1) { Start-Sleep -Seconds 2 }
@@ -200,11 +204,46 @@ jobs:
               $commitFilter = '{sha, verified: .verification.verified, parents: [.parents[].sha]}'
               $commit = Read-GitHubRest "repos/$repository/git/commits/$newHead" @('--jq', $commitFilter) | ConvertFrom-Json
               if ($commit.sha -cne $newHead -or $commit.verified -ne $true -or
-                  $commit.parents.Count -ne 2 -or $commit.parents[0] -cne $head -or $commit.parents[1] -cne $base) {
-                  $failures += "PR #$number head $newHead did not prove a verified merge of $base into $head."
+                  $commit.parents.Count -ne 2 -or $commit.parents[0] -cne $head) {
+                  $failures += "PR #$number head $newHead did not prove a verified merge of main into $head."
                   continue candidate
               }
-              Write-Host "PR #$number updated to verified head $newHead with parents $head and $base."
+              # The endpoint merges the newest base head; main can advance
+              # legitimately between the comparison and the update, so accept
+              # the compared base or any descendant of it as second parent.
+              $secondParent = $commit.parents[1]
+              if ($secondParent -cnotmatch '\A[0-9a-f]{40}\z') {
+                  $failures += "PR #$number second parent $secondParent is not a full commit SHA."
+                  continue candidate
+              }
+              if ($secondParent -cne $base) {
+                  $lineage = Read-GitHubRest "repos/$repository/compare/$base...$secondParent" @('--jq', '.status')
+                  if ($lineage -cnotin @('ahead', 'identical')) {
+                      $failures += "PR #$number second parent $secondParent does not descend from the compared base $base (compare status '$lineage')."
+                      continue candidate
+                  }
+              }
+              Write-Host "PR #$number updated to verified head $newHead with parents $head and $secondParent."
+              # An App-initiated synchronization event receives Actions
+              # secrets, not Dependabot secrets, so the arming workflow skips
+              # it; arm the new head here with the App token instead of
+              # leaving the pull request un-armed after a successful update.
+              $armToken = $env:GH_TOKEN
+              try {
+                  $env:GH_TOKEN = $writeToken
+                  $armOut = & gh pr merge --repo $repository --auto --squash --match-head-commit $newHead $number 2>&1
+                  $armExit = $LASTEXITCODE
+              } finally {
+                  $env:GH_TOKEN = $armToken
+              }
+              if ($armExit -ne 0) {
+                  $failures += "PR #$number was updated but auto-merge re-arm failed for head $newHead (exit $armExit): $armOut"
+                  continue candidate
+              }
+              Write-Host "PR #$number auto-merge re-armed for head $newHead."
+              } catch {
+                  $failures += "PR #$number failed: $($_.Exception.Message)"
+              }
           }
 
           # Fail the job once, after every candidate had its own turn.

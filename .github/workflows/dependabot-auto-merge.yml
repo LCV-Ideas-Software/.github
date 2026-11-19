@@ -46,7 +46,12 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOMERGE_TOKEN }}
+          SENDER_ID: ${{ github.event.sender.id }}
         run: |
+          if [ "${SENDER_ID:-}" = "358816651" ]; then
+            echo "App-initiated synchronization: the Dependabot branch-update workflow re-arms auto-merge with the App token. Skipping here."
+            exit 0
+          fi
           if [ -z "$GH_TOKEN" ]; then
             echo "::error::DEPENDABOT_AUTOMERGE_TOKEN is not available in this run: either the Dependabot secret is not configured, or this event was initiated by a person and received Actions secrets (a manual re-run of a Dependabot-initiated run keeps that run's Dependabot secrets, so the re-run reaches this message only when the secret is not configured). Auto-merge is armed again on the next Dependabot synchronization or after '@dependabot recreate'."
             exit 1
