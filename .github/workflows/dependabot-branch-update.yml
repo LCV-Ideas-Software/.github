@@ -1,0 +1,214 @@
+name: Dependabot branch update
+
+# Runs in every repository that sets the repository variable
+# DEPENDABOT_BRANCH_UPDATE_ENABLED to 'true'. On each push to main it finds
+# open Dependabot pull requests of this repository that are behind main and
+# updates their branches through the official update-branch endpoint, using a
+# short-lived token minted by the lcv-dependabot-branch-updater GitHub App.
+# The App identity and credentials are organization-level Actions
+# configuration inherited by every repository: APP_CLIENT_ID (variable) and
+# APP_PRIVATE_KEY (secret). The token is minted for this installation and this
+# repository only, and expires with the job. Reads use the built-in workflow
+# token; only the update-branch call uses the App token. A manual
+# workflow_dispatch run is a read-only preview and never needs the App.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: dependabot-branch-update-main
+  queue: max
+
+jobs:
+  update-branches:
+    name: Check Dependabot branches against main
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # Compare revisions and read the resulting Git commit object.
+      pull-requests: read # Enumerate open PRs and recheck the exact head before and after an update.
+    steps:
+      - name: Create GitHub App installation token for branch updates
+        id: app-token
+        if: github.event_name == 'push' && vars.DEPENDABOT_BRANCH_UPDATE_ENABLED == 'true'
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.repository }}
+          # Pin the minted token to the permissions the update-branch call
+          # needs instead of inheriting the installation's full grant
+          # (zizmor unpinned-app-token). workflows: write covers Dependabot PRs
+          # whose branch update merges main changes that touched
+          # .github/workflows (operator decision, 19/11/2026, PR #486).
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Preview or update eligible branches
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_UPDATE_ENABLED: ${{ vars.DEPENDABOT_BRANCH_UPDATE_ENABLED }}
+          BRANCH_UPDATE_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $preview = $env:GITHUB_EVENT_NAME -ceq 'workflow_dispatch'
+          if ($env:GITHUB_REF -cne 'refs/heads/main' -or (-not $preview -and $env:GITHUB_EVENT_NAME -cne 'push')) {
+              throw 'Expected a push to main or a manual preview on main.'
+          }
+          if (-not $preview -and $env:BRANCH_UPDATE_ENABLED -cne 'true') {
+              Write-Host 'Dependabot branch updates are disabled.'
+              return
+          }
+
+          $writeToken = $env:BRANCH_UPDATE_TOKEN
+          Remove-Item -LiteralPath Env:BRANCH_UPDATE_TOKEN -ErrorAction SilentlyContinue
+          if (-not $preview -and [string]::IsNullOrWhiteSpace($writeToken)) {
+              throw 'Branch updates are enabled but the GitHub App token was not issued: check the APP_CLIENT_ID variable, the APP_PRIVATE_KEY secret and the lcv-dependabot-branch-updater installation.'
+          }
+
+          $repository = $env:GITHUB_REPOSITORY
+          $owner, $repo = $repository -split '/', 2
+          $restHeaders = @('--header', 'X-GitHub-Api-Version: 2026-03-10', '--header', 'Accept: application/vnd.github+json')
+          $compareQuery = @'
+          query($owner: String!, $repo: String!, $head: String!) {
+            repository(owner: $owner, name: $repo) {
+              ref(qualifiedName: "refs/heads/main") {
+                compare(headRef: $head) {
+                  baseTarget { oid }
+                  headTarget { oid }
+                  behindBy
+                }
+              }
+            }
+          }
+          '@
+
+          function Read-GitHubRest {
+              param([string] $Path, [string[]] $Options = @())
+              $result = & gh api --method GET @restHeaders $Path @Options 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                  throw "GitHub GET $Path failed (gh exit $LASTEXITCODE)."
+              }
+              $result
+          }
+
+          function Test-EligiblePullRequest {
+              param($Pull, [int] $Number)
+              return (
+                  $Pull.number -eq $Number -and $Pull.state -ceq 'open' -and
+                  $Pull.draft -is [bool] -and -not $Pull.draft -and
+                  $Pull.user.id -eq 49699333 -and $Pull.user.login -ceq 'dependabot[bot]' -and $Pull.user.type -ceq 'Bot' -and
+                  $Pull.base.repo.full_name -ceq $repository -and $Pull.base.ref -ceq 'main' -and
+                  $Pull.head.repo.full_name -ceq $repository -and -not [string]::IsNullOrWhiteSpace($Pull.head.ref) -and
+                  $Pull.head.sha -cmatch '\A[0-9a-f]{40}\z'
+              )
+          }
+
+          $listFilter = '.[] | select(.user.id == 49699333 and .user.login == "dependabot[bot]" and .user.type == "Bot") | .number'
+          $candidates = Read-GitHubRest "repos/$repository/pulls?state=open&base=main&sort=created&direction=asc&per_page=100" @('--paginate', '--jq', $listFilter)
+          # One failing pull request must not stop the others: every known
+          # failure site records the error, continues with the next candidate,
+          # and the job fails at the end with the full list (PR #486 review).
+          $failures = @()
+          :candidate foreach ($candidate in ($candidates | Select-Object -Unique)) {
+              $number = [int] $candidate
+              if ($number -le 0) {
+                  $failures += "invalid pull request number '$candidate' returned by GitHub."
+                  continue candidate
+              }
+              $path = "repos/$repository/pulls/$number"
+              for ($attempt = 1; $attempt -le 3; $attempt++) {
+                  if ($attempt -gt 1) { Start-Sleep -Seconds 2 }
+                  $pr = Read-GitHubRest $path | ConvertFrom-Json
+                  if (-not (Test-EligiblePullRequest $pr $number) -or $pr.mergeable -eq $false) {
+                      Write-Host "PR #$number skipped because it is ineligible or cannot merge."
+                      continue candidate
+                  }
+                  if ($pr.mergeable -ne $true) { continue }
+
+                  $head = $pr.head.sha
+                  $comparisonJson = & gh api graphql -f "query=$compareQuery" -f "owner=$owner" -f "repo=$repo" -f "head=refs/heads/$($pr.head.ref)" 2>$null
+                  if ($LASTEXITCODE -ne 0) {
+                      $failures += "PR #$number comparison failed (gh exit $LASTEXITCODE)."
+                      continue candidate
+                  }
+                  $comparison = ($comparisonJson | ConvertFrom-Json).data.repository.ref.compare
+                  # The PR's REST base SHA can lag the live main ref used in this comparison.
+                  $base = $comparison.baseTarget.oid
+                  if ($base -cnotmatch '\A[0-9a-f]{40}\z' -or $comparison.headTarget.oid -cne $head -or
+                      $comparison.behindBy -isnot [long] -or $comparison.behindBy -lt 0) { continue }
+                  if ($comparison.behindBy -eq 0 -or $base -ceq $head) {
+                      Write-Host "PR #$number skipped because the head is current."
+                      continue candidate
+                  }
+                  if ($preview) {
+                      Write-Host "Preview PR #$number would update head $head with main $base."
+                      continue candidate
+                  }
+
+                  $latest = Read-GitHubRest $path | ConvertFrom-Json
+                  if (-not (Test-EligiblePullRequest $latest $number) -or $latest.mergeable -eq $false) {
+                      Write-Host "PR #$number skipped because it is ineligible or cannot merge."
+                      continue candidate
+                  }
+                  if ($latest.head.sha -cne $head -or $latest.head.ref -cne $pr.head.ref -or $latest.mergeable -ne $true) { continue }
+                  break
+              }
+              if ($attempt -gt 3) {
+                  Write-Host "PR #$number skipped because mergeability or matching revisions were not confirmed within three attempts."
+                  continue
+              }
+
+              $readToken = $env:GH_TOKEN
+              try {
+                  $env:GH_TOKEN = $writeToken
+                  $response = & gh api --method PUT @restHeaders "$path/update-branch" -f "expected_head_sha=$head" --include --silent 2>&1
+                  $writeExit = $LASTEXITCODE
+              } finally {
+                  $env:GH_TOKEN = $readToken
+              }
+              $http = $response | Select-String -Pattern '^HTTP/\S+ (\d{3})(?:\s|$)' | Select-Object -Last 1
+              $status = if ($http) { $http.Matches[0].Groups[1].Value } else { 'unavailable' }
+              if ($writeExit -ne 0 -or $status -ne '202') {
+                  $failures += "PR #$number update has no confirmed acceptance (HTTP $status, gh exit $writeExit). The request was not retried."
+                  continue candidate
+              }
+
+              # HTTP 202 confirms acceptance. Check the actual head produced by the asynchronous operation.
+              for ($read = 1; $read -le 6; $read++) {
+                  $updated = Read-GitHubRest $path | ConvertFrom-Json
+                  if ($updated.head.sha -cne $head) { break }
+                  if ($read -lt 6) { Start-Sleep -Seconds 5 }
+              }
+              $newHead = $updated.head.sha
+              if ($updated.number -ne $number -or $updated.head.repo.full_name -cne $repository -or
+                  $updated.head.ref -cne $pr.head.ref -or $newHead -ceq $head -or $newHead -cnotmatch '\A[0-9a-f]{40}\z') {
+                  $failures += "PR #$number accepted the update, but a new head was not confirmed within the verification window."
+                  continue candidate
+              }
+
+              $commitFilter = '{sha, verified: .verification.verified, parents: [.parents[].sha]}'
+              $commit = Read-GitHubRest "repos/$repository/git/commits/$newHead" @('--jq', $commitFilter) | ConvertFrom-Json
+              if ($commit.sha -cne $newHead -or $commit.verified -ne $true -or
+                  $commit.parents.Count -ne 2 -or $commit.parents[0] -cne $head -or $commit.parents[1] -cne $base) {
+                  $failures += "PR #$number head $newHead did not prove a verified merge of $base into $head."
+                  continue candidate
+              }
+              Write-Host "PR #$number updated to verified head $newHead with parents $head and $base."
+          }
+
+          # Fail the job once, after every candidate had its own turn.
+          if ($failures.Count -gt 0) {
+              foreach ($failure in $failures) { Write-Host "::error::$failure" }
+              throw "$($failures.Count) pull request(s) failed; each error is listed above. Already-updated pull requests stay updated."
+          }
