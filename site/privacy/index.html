@@ -730,9 +730,12 @@
         Esses dados são enviados ao Google para medir quantas pessoas usam cada
         aplicativo, com que frequência e em quais telas, e para orientar
         correções e melhorias. Os dados no nível do evento e do usuário, isto é,
-        os eventos e o identificador associado, são conservados pelo prazo de
-        retenção definido na propriedade do Google Analytics vinculada aos
-        aplicativos e, ao fim dele, excluídos automaticamente pelo Google. Esse
+        os eventos e o identificador associado, são conservados por dois meses,
+        prazo definido na propriedade do Google Analytics vinculada aos
+        aplicativos. Ao fim desse prazo, os eventos são excluídos
+        automaticamente pelo Google no processo mensal de exclusão seguinte. O
+        prazo do identificador recomeça a cada novo uso do aplicativo; assim,
+        ele é excluído no processo mensal seguinte a dois meses sem uso. Esse
         prazo não se aplica aos relatórios agregados padrão do Google Analytics,
         conforme a página de
         <a href="https://support.google.com/analytics/answer/7667196"
@@ -1458,7 +1461,7 @@
           eventos e o identificador da seção 7.3 vão para o Google Analytics for
           Firebase, para medir o uso dos aplicativos, e podem ser tratados em
           qualquer país onde o Google ou seus subcontratados mantêm instalações,
-          pelo prazo de retenção indicado nessa seção.
+          por dois meses, nas condições indicadas nessa seção.
         </li>
         <li>
           <strong>Atendimento.</strong> As mensagens enviadas aos endereços de
