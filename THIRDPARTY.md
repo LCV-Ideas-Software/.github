@@ -43,7 +43,7 @@ versioned workflows or by the starter workflows in `workflow-templates/`.
 | `actions/upload-pages-artifact`    | [MIT](https://github.com/actions/upload-pages-artifact/blob/main/LICENSE)            | https://github.com/actions/upload-pages-artifact    | Package and upload the public-site artifact                               |
 | `actions/upload-artifact`          | [MIT](https://github.com/actions/upload-artifact/blob/main/LICENSE)                  | https://github.com/actions/upload-artifact          | Retain the Scorecard SARIF artifact                                       |
 | `ossf/scorecard-action`            | [Apache-2.0](https://github.com/ossf/scorecard-action/blob/main/LICENSE)             | https://github.com/ossf/scorecard-action            | Assess supply-chain posture                                               |
-| `zizmorcore/zizmor-action`         | [MIT](https://github.com/zizmorcore/zizmor-action/blob/45d7276c9ca790aabd705e31ca99c6185c3e76dd/LICENSE) | https://github.com/zizmorcore/zizmor-action         | Audit GitHub Actions and upload SARIF                                     |
+| `zizmorcore/zizmor-action`         | [MIT](https://github.com/zizmorcore/zizmor-action/blob/1b4550e929643b8b26a62303c6bd64814271a4f1/LICENSE) | https://github.com/zizmorcore/zizmor-action         | Audit GitHub Actions and upload SARIF                                     |
 | `anthropics/claude-code-action`    | [MIT](https://github.com/anthropics/claude-code-action/blob/61a9c274fa7110a66dfafc1bbbced03833eb25fe/LICENSE) | https://github.com/anthropics/claude-code-action    | Run Claude Code on `@claude` mentions (starter workflow only)             |
 
 `anthropics/claude-code-action` appears only in the starter workflow

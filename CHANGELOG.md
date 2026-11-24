@@ -14,6 +14,10 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update the Zizmor Action in the `zizmor` starter workflow from v0.8.1 to v0.9.2 and the
+  OpenSSF Scorecard Action in the `scorecard` starter workflow from v2.5.0 to v2.6.0, keeping
+  the full commit-SHA pins, the existing permissions, inputs and scanner selection.
+
 - Update the official CodeQL SARIF upload Action to v4.39.5 (commit
   `915412ff23e8b7659517e607487dbeae018f2934`) and the official Linear Release
   Action to v0.18.3 (commit `cfd42077dccdc0c26a38589934e2aa11046f57b7`) in the
