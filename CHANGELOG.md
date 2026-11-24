@@ -14,6 +14,17 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish Privacy Policy 1.18, effective 24/11/2026 (PANDROI-60, PANDROI-61): the new section 7.3
+  describes the automatic usage events, device and app details, IP-derived country or region and
+  the app-instance identifier that the Android apps send to Google through Google Analytics for
+  Firebase under the Google Ads Data Processing Terms, and states that the apps turn off sending the
+  Android advertising identifier through the official Firebase setting; sections 3, 15 and 15.1 add
+  these usage statistics, and section 4 states that the transfer to an iPhone during device
+  migration follows the same rule as backup and device-to-device transfer. The homepage card and
+  the organization profile entry of the Calculadora Android no longer claim the app has no
+  tracking. Retain version 1.17 at its permanent archive address. `site/` stays byte-identical with
+  `.github-private`.
+
 - Update `actions/dependency-review-action` from v5.0.0 to v5.0.1 in the repository workflow
   and starter template, retaining full-SHA pins and the existing review settings (LCV-666).
 
