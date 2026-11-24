@@ -14,6 +14,13 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update the official CodeQL SARIF upload Action to v4.39.5 (commit
+  `915412ff23e8b7659517e607487dbeae018f2934`) and the official Linear Release
+  Action to v0.18.3 (commit `cfd42077dccdc0c26a38589934e2aa11046f57b7`) in the
+  repository workflows and starter templates, retaining the explicitly selected
+  Linear CLI v0.18.0 and its upstream checksum verification; point the
+  inventory license link to the new CodeQL Action commit (LCV-693).
+
 - Publish Privacy Policy 1.18, effective 24/11/2026 (PANDROI-60, PANDROI-61): the new section 7.3
   describes the automatic usage events, device and app details, IP-derived country or region and
   the app-instance identifier that the Android apps send to Google through Google Analytics for

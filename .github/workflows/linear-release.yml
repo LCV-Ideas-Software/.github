@@ -30,12 +30,12 @@ jobs:
       # Fail-closed mirror: a Linear outage fails this workflow so post-merge
       # verification and the normal workflow alerting surface the interruption.
       #
-      # Official Linear action, pinned to the release commit of v0.18.2, with
+      # Official Linear action, pinned to the release commit of v0.18.3, with
       # the CLI version selected explicitly. The installer verifies the
       # downloaded CLI against a published SHA-256 checksum before executing it.
       - name: Create Linear release with the official action
         id: linear_release
-        uses: linear/linear-release-action@dd4fc407f860b9460d2cf0b3fb1edd8985cf443f # v0.18.2
+        uses: linear/linear-release-action@cfd42077dccdc0c26a38589934e2aa11046f57b7 # v0.18.3
         with:
           access_key: ${{ secrets.LINEAR_ACCESS_KEY }}
           cli_version: v0.18.0
