@@ -14,9 +14,14 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
-- Update the Zizmor Action in the `zizmor` starter workflow from v0.8.1 to v0.9.2 and the
-  OpenSSF Scorecard Action in the `scorecard` starter workflow from v2.5.0 to v2.6.0, keeping
-  the full commit-SHA pins, the existing permissions, inputs and scanner selection.
+- Update the Zizmor Action in the `zizmor` starter workflow from v0.8.1 to v0.9.2, the
+  OpenSSF Scorecard Action in the `scorecard` starter workflow from v2.5.0 to v2.6.0, and the
+  Claude Code Action in the `claude` starter workflow from v1.0.269 to v1.0.289, keeping the
+  full commit-SHA pins, the existing permissions, inputs and scanner selection. The `claude`
+  starter now also states the organization's review defaults explicitly: fork pull requests
+  are never handled, untrusted pull-request authors are restricted, and the permission mode is
+  `acceptEdits`. A new repository gets them when it chooses this workflow; a repository that
+  already has a copy keeps its own file until it is updated there.
 
 - Update the official CodeQL SARIF upload Action to v4.39.5 (commit
   `915412ff23e8b7659517e607487dbeae018f2934`) and the official Linear Release
