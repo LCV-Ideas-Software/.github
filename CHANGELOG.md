@@ -14,6 +14,15 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Serve a real 404 page (LCV-711). Without a top-level `404.html`, Cloudflare Pages treats the
+  project as a single-page application and answered every missing path of `www.lcv.dev`,
+  including `/robots.txt` and `/sitemap.xml`, with the homepage and HTTP 200; GitHub Pages
+  answered `org.lcv.dev` and `enterprise.lcv.dev` with its generic 404. The new `site/404.html`
+  keeps the site's header, footer and Google tags, is marked `noindex`, has no canonical link and
+  uses root-relative URLs so it renders at any depth. The institutional boundary test retains it
+  and applies the tag and charset checks to every retained site page, not only to `index.html`
+  files. `site/` stays byte-identical with `.github-private`.
+
 - Publish privacy policy 1.19 and terms of service 1.2, dated 24/11/2026, and retain 1.18 and 1.1
   at their archive URLs, added to the institutional boundary test's retained public paths
   (LCV-711). Section 9 of the policy names the seven providers that can run the Oráculo Celestial

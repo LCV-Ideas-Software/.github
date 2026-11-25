@@ -45,6 +45,7 @@ const retainedPublicPaths = [
   "profile/README.md",
   "quality/code-quality-probe.js",
   "site/index.html",
+  "site/404.html",
   "site/site-manifest.json",
   "scripts/site-manifest.mjs",
   "scripts/site-parity-check.mjs",
@@ -130,7 +131,7 @@ test("published pages retain inventoried tracking except the private-data form",
   }
 
   const pages = retainedPublicPaths.filter(
-    (path) => path.startsWith("site/") && path.endsWith("index.html"),
+    (path) => path.startsWith("site/") && path.endsWith(".html"),
   );
   for (const page of pages) {
     const html = readFileSync(join(repositoryRoot, page), "utf8");
