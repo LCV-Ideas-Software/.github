@@ -1,6 +1,6 @@
 {
   "files": {
-    "_headers": "9be45a5dbe57c83095fc2ec32ec130855c96811adac16855f487a498694a69ef",
+    "_headers": "95b701a45f588d9bcd0d0ff2fe4f707b67e2e0db387778cdad79b301829e6df5",
     ".nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "404.html": "ad0d8b32a50a75becc6405cac8c6cfdb5615a934bdd5dbb6fd6e3bbbfd9a469a",
     "account-deletion/index.html": "f60e5b67bfa76371f0551eb37e1644c51c731a83268222e9bc18dc87097fa075",
@@ -39,6 +39,6 @@
     "styles.css": "95af6f951c2378ce13a5a9710fd0537172a0307df8898b4b9b139c72ed0f3c6a",
     "tos/1.0/index.html": "c3f34f1b44c460128f2e11d126a64a2e408d214fe39a546abf45d04091a8d8d0",
     "tos/1.1/index.html": "68807fdb4f3da7c28f98b916a7e1e4fdfcf5732c37d72217acd590992cf3cb58",
-    "tos/index.html": "9a547f8f0f6a76f4880bc8781e5f113a86c2f648a0ba5f4388cb31f4989372df"
+    "tos/index.html": "ff3eb1629b64767150da5d217b0bc8a6617061eac0ec4295a6fea84b363466db"
   }
 }

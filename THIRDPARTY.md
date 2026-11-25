@@ -321,8 +321,8 @@ footer layouts:
 - **Address text, then `.footer-store`** — 1 page: `/sponsor/`. Measured: 22.4 px above and 85.5
   to 85.9 px below.
 
-Every measurement exceeds the 14 px minimum. On the two
-Markdown surfaces the badge occupies its own centred paragraph and receives GitHub's default
+Every measurement exceeds the 14 px minimum. On the two Markdown surfaces (`profile/README.md`
+and `README.md`) the badge occupies its own centred paragraph and receives GitHub's default
 paragraph spacing, which exceeds the 14 px minimum.
 
 ### The badge leads to published apps

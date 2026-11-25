@@ -26,8 +26,8 @@ presentation rule this organization applies to text meant for people
   international transfers of the paid analysis, with their locations, legal basis, roles and
   onward transfers. Section 4 of the terms states that the apps are free on every platform, that
   this does not include the Oráculo Celestial AI analysis, a separate paid service, and that it
-  does not set the prices of other LCV Ideas & Software services. `site/` stays byte-identical
-  with `.github-private`.
+  does not set the prices of other LCV Ideas & Software services; section 9 no longer speaks of
+  paying for an app. `site/` stays byte-identical with `.github-private`.
 
 - Update the organization profile, the shared homepage and `THIRDPARTY.md` to the state verified
   on 24/11/2026 (LCV-711). Every AI provider list names the nine providers in product use —
@@ -75,6 +75,13 @@ presentation rule this organization applies to text meant for people
   page's canonical and `og:url` move to `/sponsor/`, the URL that `/sponsor` redirects to, and the
   homepage links there directly. The institutional boundary test retains the three new files and
   applies its tag and charset checks to every retained site page, not only to `index.html` files.
+  `site/_headers` now sends `X-Frame-Options: DENY` and
+  `Content-Security-Policy: frame-ancestors 'none'` for every path (`/*`) instead of only
+  `/sponsor/*`, so no page of `www.lcv.dev`, including the account-deletion form, can be embedded
+  by another site (LCV-714); the `/sponsor/*` rule is removed rather than kept, because Cloudflare
+  Pages joins a header applied by two matching rules. The rule takes effect only on the Cloudflare
+  Pages deployment of `www.lcv.dev`: GitHub Pages, which serves this copy at `org.lcv.dev`, does
+  not read `_headers`.
 
 - Activate the updated `Claude Code` workflow locally as
   `.github/workflows/claude.yml`, a copy of the starter template body with the
