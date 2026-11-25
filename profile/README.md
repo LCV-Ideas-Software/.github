@@ -44,7 +44,7 @@ surface:
   public_repositories: 1
   live_products: 4 web apps + 3 Android apps in production + 3 operator services + 3 developer tools
   android_portfolio: 3 apps published in Google Play production
-  ios_portfolio: 3 native editions; Calculadora in active development, none on the App Store yet
+  ios_portfolio: 3 native editions, one at a time; Calculadora in active development, none on the App Store yet
 stack:
   languages: [TypeScript, JavaScript, Kotlin, Swift, Rust, Python, SQL]
   frontend: [React 19, Vite 8, TipTap, PWA/Workbox, DOMPurify]

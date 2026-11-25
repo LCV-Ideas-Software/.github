@@ -299,13 +299,17 @@ partnership, or affiliation is implied or claimed.
 | Digital badge height must be at least 28 px                     | Partner Marketing Hub | rendered at `height="56"` on every surface that carries it                            |
 | Do not change the badge colour                                  | Partner Marketing Hub | file byte-identical; no `filter`, `opacity`, or colour rule applies to it             |
 | Do not remove, rearrange, or otherwise adjust the badge         | Partner Marketing Hub | file byte-identical; scaling is uniform, `width: auto` against the fixed height       |
-| Clear space of at least one quarter of the badge height (14 px) | Partner Marketing Hub | site 22.4 px above and 40 px below; sponsor page 20 px above and 24 px below          |
+| Clear space of at least one quarter of the badge height (14 px) | Partner Marketing Hub | measured: `/`, `/404.html` and `/privacy/` 25.6 px above and 46.6–47.6 px below; `/sponsor/` 22.4 px above and 85.6–85.8 px below |
 | Always use current artwork from Partner Marketing Hub           | Partner Marketing Hub | downloaded 16 September 2026; digest recorded above                                   |
 
 Byte identity settles the stored artwork, not what the browser paints. The colour and clear-space
 rows are therefore evidenced from the pages' own rules: `.footer__store` and `.footer-store` carry
 only margin and sizing, and each badge is the sole element of a centred block, so the horizontal
-clear space is the remaining width of a footer far wider than the rendered 145 px. On the two
+clear space is the remaining width of a footer far wider than the rendered 145 px. The vertical
+clear space was measured in headless Edge on 25 November 2026, at 1250 and 504 px wide, from the
+rendered boxes: above, from the bottom of the content before the badge's block (the contact row on
+the site pages, the last line of the address on the sponsor page) to the top of the badge; below,
+from the bottom of the badge to the end of the page, where nothing follows it. On the two
 Markdown surfaces the badge occupies its own centred paragraph and receives GitHub's default
 paragraph spacing, which exceeds the 14 px minimum.
 
