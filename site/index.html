@@ -152,9 +152,10 @@
             </p>
             <p class="hero__lede">
               Aplicações públicas e ferramentas com repositórios de código
-              privados. Deploys cross-reviewed pelo sexteto de AI antes de tocar
-              a edge da Cloudflare. Da ideia ao produto em produção — com
-              portões que recusam a dúvida.
+              privados. Toda mudança que escrevemos passa por revisão
+              adversarial antes do push e pela revisão do pull request antes de
+              chegar à produção. Da ideia ao produto em produção — com portões
+              que recusam a dúvida.
             </p>
             <div class="hero__actions">
               <a class="btn btn--primary" href="#products">Explorar produtos</a>
@@ -179,16 +180,16 @@
                 <dd id="stat-repos" data-count="1">0</dd>
               </div>
               <div class="stat">
-                <dt>serviços em produção</dt>
-                <dd data-count="6">0</dd>
+                <dt>aplicações publicadas</dt>
+                <dd data-count="7">0</dd>
               </div>
               <div class="stat">
                 <dt>pacotes no npm</dt>
                 <dd data-count="2">0</dd>
               </div>
               <div class="stat">
-                <dt>agentes de AI por review</dt>
-                <dd data-count="6">0</dd>
+                <dt>provedores de AI integrados</dt>
+                <dd data-count="9">0</dd>
               </div>
             </dl>
             <p class="hero__live mono">
@@ -255,7 +256,11 @@
           <p class="section__note">
             Aplicações web na Cloudflare e aplicativos Android nativos.
             Calculadora, Maestro e Oráculo Celestial estão publicados na Google
-            Play.
+            Play. Os aplicativos são gratuitos; só a análise por IA do Oráculo
+            Celestial é paga. As edições nativas para iOS estão em
+            desenvolvimento, um app por vez: primeiro a Calculadora, depois o
+            Maestro e, por último, o Oráculo Celestial. Nenhuma está na App
+            Store ainda.
           </p>
         </div>
         <div class="cards">
@@ -299,7 +304,7 @@
             </p>
             <div class="card__links">
               <a
-                href="https://mapa-astral.lcv.app.br"
+                href="https://oraculo-celestial.app"
                 target="_blank"
                 rel="noopener noreferrer"
                 >Visitar ↗</a
@@ -358,7 +363,7 @@
           <article class="card reveal" style="--accent: var(--emerald)">
             <div class="card__badges">
               <span class="chip chip--blue">App Android</span>
-              <span class="chip chip--green">v1.0.12 na Google Play</span>
+              <span class="chip chip--green">v1.0.18 na Google Play</span>
               <span class="chip chip--muted">Kotlin · Compose</span>
             </div>
             <h3>Calculadora Android</h3>
@@ -371,20 +376,29 @@
               Versão publicada em produção.
             </p>
             <div class="card__links">
+              <a
+                href="https://calculadora-android.lcv.dev/"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Página do projeto ↗</a
+              >
               <span>Repositório privado</span>
             </div>
           </article>
           <article class="card reveal" style="--accent: var(--amber)">
             <div class="card__badges">
               <span class="chip chip--blue">App Android</span>
-              <span class="chip chip--green">v1.0.11 na Google Play</span>
+              <span class="chip chip--green">v1.2.1 na Google Play</span>
               <span class="chip chip--muted">Kotlin · Compose</span>
             </div>
             <h3>Maestro Android</h3>
             <p class="card__repo">maestro-android</p>
             <p>
-              Edição Android nativa do Maestro AI. A versão 1.0.11 está
-              publicada em produção na Google Play.
+              Edição Android nativa do Maestro AI: escrita com vários agentes de
+              AI, usando as chaves do próprio usuário para nove provedores —
+              OpenAI, Anthropic (Claude), Google (Gemini), DeepSeek, xAI (Grok),
+              Perplexity, Moonshot (Kimi), Z.ai (GLM) e Alibaba Cloud (Qwen). A
+              versão 1.2.1 está publicada em produção na Google Play.
             </p>
             <div class="card__links">
               <a
@@ -399,7 +413,7 @@
           <article class="card reveal" style="--accent: var(--sky)">
             <div class="card__badges">
               <span class="chip chip--blue">App Android</span>
-              <span class="chip chip--green">v1.0.0 na Google Play</span>
+              <span class="chip chip--green">v1.0.6 na Google Play</span>
               <span class="chip chip--muted">Kotlin · Compose</span>
             </div>
             <h3>Oráculo Celestial</h3>
@@ -451,8 +465,10 @@
             <p class="card__repo">admin-app</p>
             <p>
               Painel único do operador para a frota multi-app: moderação, editor
-              de posts, seleção de modelo de AI, DNS, ciclo de vida de Pages e
-              Workers, MTA-STS, TLS-RPT e telemetria operacional.
+              de posts, seleção de modelo de AI, Maestro AI com nove provedores,
+              ordem dos provedores da análise do Oráculo Celestial, DNS, ciclo
+              de vida de Pages e Workers, MTA-STS, TLS-RPT e telemetria
+              operacional.
             </p>
           </article>
 
@@ -565,16 +581,17 @@
             <p class="card__repo">maestro-app</p>
             <p>
               Bancada editorial portátil para Windows com modelo estilo
-              tribunal: quem redige não vota como revisor. Seis pares editoriais
-              de AI, citações ABNT estruturadas, auditoria de links e
-              verificação de evidências web antes do texto final.
+              tribunal: quem redige não vota como revisor. Nove provedores de AI
+              — OpenAI, Anthropic, Google, DeepSeek, xAI, Perplexity, Moonshot,
+              Z.ai e Alibaba Cloud —, citações ABNT estruturadas, auditoria de
+              links e verificação de evidências web antes do texto final.
             </p>
             <div class="card__links">
               <a
                 href="https://maestro-app.lcv.dev"
                 target="_blank"
                 rel="noopener noreferrer"
-                >Site ↗</a
+                >Página de apoio ↗</a
               >
               <span>Repositório privado</span>
             </div>
@@ -616,6 +633,17 @@
               <li style="--dot: #02303a">Gradle</li>
             </ul>
           </div>
+          <div class="stackrow reveal" style="--accent: var(--sky)">
+            <h3 class="stackrow__label mono">mobile (ios)</h3>
+            <ul class="chips">
+              <li style="--dot: #f05138">Swift</li>
+              <li style="--dot: #0a84ff">SwiftUI</li>
+              <li style="--dot: #147efb">Xcode</li>
+              <li style="--dot: #f05138">Swift Package</li>
+              <li style="--dot: #44a8e0">SQLite</li>
+              <li style="--dot: #ffca28">Firebase</li>
+            </ul>
+          </div>
           <div class="stackrow reveal" style="--accent: var(--amber)">
             <h3 class="stackrow__label mono">runtime &amp; dados</h3>
             <ul class="chips">
@@ -643,12 +671,17 @@
               <li style="--dot: #4d6bfe">DeepSeek</li>
               <li style="--dot: #f1f5fb">Grok</li>
               <li style="--dot: #1fb8cd">Perplexity</li>
+              <li style="--dot: #f1f5fb">Kimi (Moonshot)</li>
+              <li style="--dot: #2d6cdf">GLM (Z.ai)</li>
+              <li style="--dot: #615ced">Qwen (Alibaba Cloud)</li>
             </ul>
           </div>
           <div class="stackrow reveal" style="--accent: var(--blue)">
             <h3 class="stackrow__label mono">integrações</h3>
             <ul class="chips">
               <li style="--dot: #00b1ea">Mercado Pago Orders API</li>
+              <li style="--dot: #00b1ea">Mercado Pago Checkout Pro</li>
+              <li style="--dot: #3ddc84">Google Play Billing</li>
               <li style="--dot: #f1f5fb">Resend</li>
               <li style="--dot: #e01e5a">Slack</li>
               <li style="--dot: #5e6ad2">Linear</li>
@@ -701,8 +734,8 @@
             pull request mergeado em main
           </p>
           <p role="listitem">
-            <span class="terminal__n">5</span>Seis modelos de AI discutem cada
-            mudança — unanimidade ou não mergeia
+            <span class="terminal__n">5</span>Revisão adversarial em três lentes
+            antes de cada push nosso — achado aberto não mergeia
           </p>
           <p role="listitem">
             <span class="terminal__n">6</span>Evidência acima de narrativa:
@@ -905,6 +938,12 @@
         Leme, 215 Conj 1713&nbsp;&nbsp;- Pinheiros<br />São Paulo - SP - CEP
         05424-150<br />CNPJ: 66.584.678/0001-77 - IM: 3039854 - D‑U‑N‑S®
         583149431
+      </div>
+      <div class="footer__row">
+        <a href="mailto:suporte@lcv.dev">Suporte</a>
+        <a href="mailto:privacy@lcv.dev">Privacidade</a>
+        <a href="mailto:security@lcv.dev">Segurança</a>
+        <a href="mailto:contato@lcv.dev">Contato geral</a>
       </div>
       <div class="footer__store">
         <a
