@@ -51,7 +51,11 @@ This repository follows the LCV Ideas & Software single-operator security baseli
   permission, binds the arming request to the exact event head, fails visibly when the run carries no
   Dependabot secret (the secret is not configured, or the event was initiated by a person), and
   runs no Action, checkout, cache, artifact, or pull-request-controlled command. Fork and
-  non-Dependabot pull requests never run it;
+  non-Dependabot pull requests never run it. These protected-environment and Dependabot-secret
+  arrangements govern stored external credentials; the Claude Code review workflow
+  `.github/workflows/claude.yml` is distinct: it authenticates through the official Claude
+  GitHub App and short-lived Anthropic workload identity federation via GitHub OIDC and
+  holds no stored key or secret;
 - pull requests, squash-only merges, resolved conversations, and required checks enforced by the effective Enterprise and repository rulesets;
 - no long-lived secrets in source control.
 
@@ -59,7 +63,7 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 
 Dependabot checks every supported ecosystem every day at 05h (UTC−03:00), including weekends, groups minor and patch version updates and security updates separately per ecosystem, automatically rebases its pull requests, and relies on GitHub's post-merge branch deletion. A `cooldown` stays configured in `.github/dependabot.yml`, but every dependency is excluded from it (`*` inside each `package-ecosystem` block), so version updates are proposed immediately; re-enabling a delay is a deliberate `exclude` edit (LCV-596). Dependabot security updates are exempt from any delay. Required security and quality checks are never bypassed.
 
-Dependabot pull requests are the only automatically admitted change. The repository-local workflow `.github/workflows/dependabot-auto-merge.yml` runs on Dependabot's own `pull_request` events with no `GITHUB_TOKEN` permission, no Action, and no checkout, and enables GitHub's native auto-merge (squash) on the pull request with a fine-grained personal access token stored as the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`. GitHub performs the merge only after every rule of the effective rulesets and every required check is satisfied; the workflow cannot bypass rules, merge directly, update branches, repair lockfiles, or process forks or any other author. There is no GitHub App, merge queue, organization-wide controller, or scheduler.
+Dependabot pull requests are the only automatically admitted change. The repository-local workflow `.github/workflows/dependabot-auto-merge.yml` runs on Dependabot's own `pull_request` events with no `GITHUB_TOKEN` permission, no Action, and no checkout, and enables GitHub's native auto-merge (squash) on the pull request with a fine-grained personal access token stored as the Dependabot secret `DEPENDABOT_AUTOMERGE_TOKEN`. GitHub performs the merge only after every rule of the effective rulesets and every required check is satisfied; the workflow cannot bypass rules, merge directly, update branches, repair lockfiles, or process forks or any other author. That auto-merge path has no GitHub App, merge queue, organization-wide controller, or scheduler.
 
 Repository-local workflows may secure and publish only this repository's own institutional surfaces. Enterprise or organization rules, settings, applications, and secrets require separate explicit operator consent before any change.
 
