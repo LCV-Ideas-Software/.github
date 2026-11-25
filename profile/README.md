@@ -197,19 +197,19 @@ The organization maintains **1 active public repository**, including its institu
 <table>
 <tr>
   <td align="center" width="105">
-    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/swift/swift-original.svg" width="46" height="46" alt="Swift" />
+    <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square" alt="Swift" />
     <br><sub><b>Swift</b></sub>
   </td>
   <td align="center" width="105">
-    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/apple/apple-original.svg" width="46" height="46" alt="iOS" />
+    <img src="https://img.shields.io/badge/iOS-000000?style=flat-square" alt="iOS" />
     <br><sub><b>iOS</b></sub>
   </td>
   <td align="center" width="105">
-    <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/xcode/xcode-original.svg" width="46" height="46" alt="Xcode" />
+    <img src="https://img.shields.io/badge/Xcode-147EFB?style=flat-square" alt="Xcode" />
     <br><sub><b>Xcode</b></sub>
   </td>
   <td align="center" width="105">
-    <img src="https://img.shields.io/badge/Swift_Package-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift Package" />
+    <img src="https://img.shields.io/badge/Swift_Package-F05138?style=flat-square" alt="Swift Package" />
     <br><sub><b>Swift Package</b></sub>
   </td>
 </tr>
