@@ -41,9 +41,6 @@ presentation rule this organization applies to text meant for people
   `AGENTS.md` and `CLAUDE.md`, the `README.md` governance and action-pinning bullets, and
   `THIRDPARTY.md` — and `.github/workflows/actions.lock` is now committed, never hand-edited
   (LCV-719).
-- Added `copilot-memories.jsonl` to `.gitignore` and `.prettierignore`. The file is created at the
-  repository root by an unknown process and reappears after deletion, which left the checkout dirty;
-  ignoring it keeps it out of `git status` and out of the Prettier check without deleting it.
 - Publish privacy policy 1.19 and terms of service 1.2, in force from 25/11/2026, and retain 1.18
   and 1.1 at their archive URLs, which the institutional boundary test retains (LCV-711).
   Section 9 of the policy names the seven providers that can run the Oráculo Celestial paid

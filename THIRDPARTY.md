@@ -33,7 +33,9 @@ repository, not inferred.
 ## GitHub Actions
 
 The table lists each external Action repository invoked directly by the
-versioned workflows or by the starter workflows in `workflow-templates/`.
+versioned workflows or by the starter workflows in `workflow-templates/`, plus
+any Action that reaches this repository only as a dependency of another Action
+and is recorded in `.github/workflows/actions.lock`.
 
 | Component                          | License                                                                              | Source                                              | Purpose                                                                   |
 | ---------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -49,6 +51,7 @@ versioned workflows or by the starter workflows in `workflow-templates/`.
 | `ossf/scorecard-action`            | [Apache-2.0](https://github.com/ossf/scorecard-action/blob/main/LICENSE)             | https://github.com/ossf/scorecard-action            | Assess supply-chain posture                                               |
 | `zizmorcore/zizmor-action`         | [MIT](https://github.com/zizmorcore/zizmor-action/blob/1b4550e929643b8b26a62303c6bd64814271a4f1/LICENSE) | https://github.com/zizmorcore/zizmor-action         | Audit GitHub Actions and upload SARIF                                     |
 | `anthropics/claude-code-action`    | [MIT](https://github.com/anthropics/claude-code-action/blob/eb56b6666facdbd501035f4a0269d8caee2e7a8b/LICENSE) | https://github.com/anthropics/claude-code-action    | Run Claude Code on `@claude` mentions (repository and starter workflow)   |
+| `oven-sh/setup-bun`                | [MIT](https://github.com/oven-sh/setup-bun/blob/main/LICENSE)                          | https://github.com/oven-sh/setup-bun                | Transitive only: runtime setup inside `anthropics/claude-code-action`      |
 
 `anthropics/claude-code-action` runs in this repository's own
 `.github/workflows/claude.yml` and also appears in the starter workflow
