@@ -24,9 +24,10 @@ presentation rule this organization applies to text meant for people
   scope, which decides where inference runs, and limits the retention policy's no-training
   promise to zero data retention. Section 15.1 adds DeepSeek and the three new providers to the
   international transfers of the paid analysis, with their locations, legal basis, roles and
-  onward transfers. Section 4 of the terms states that the apps are free on every platform and
-  that only the Oráculo Celestial AI analysis is paid. `site/` stays byte-identical with
-  `.github-private`.
+  onward transfers. Section 4 of the terms states that the apps are free on every platform, that
+  this does not include the Oráculo Celestial AI analysis, a separate paid service, and that it
+  does not set the prices of other LCV Ideas & Software services. `site/` stays byte-identical
+  with `.github-private`.
 
 - Update the organization profile, the shared homepage and `THIRDPARTY.md` to the state verified
   on 24/11/2026 (LCV-711). Every AI provider list names the nine providers in product use —

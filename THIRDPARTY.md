@@ -299,7 +299,7 @@ partnership, or affiliation is implied or claimed.
 | Digital badge height must be at least 28 px                     | Partner Marketing Hub | rendered at `height="56"` on every surface that carries it                            |
 | Do not change the badge colour                                  | Partner Marketing Hub | file byte-identical; no `filter`, `opacity`, or colour rule applies to it             |
 | Do not remove, rearrange, or otherwise adjust the badge         | Partner Marketing Hub | file byte-identical; scaling is uniform, `width: auto` against the fixed height       |
-| Clear space of at least one quarter of the badge height (14 px) | Partner Marketing Hub | measured: `/`, `/404.html` and `/privacy/` 25.6 px above and 46.6–47.6 px below; `/sponsor/` 22.4 px above and 85.6–85.8 px below |
+| Clear space of at least one quarter of the badge height (14 px) | Partner Marketing Hub | measured on each of the three footer layouts below: after the contact row, 25.6 px above and 46.6–47.6 px below; after the legal block, 22.4 px above and 46.9–47.6 px below; on `/sponsor/`, 22.4 px above and 85.5–85.9 px below |
 | Always use current artwork from Partner Marketing Hub           | Partner Marketing Hub | downloaded 16 September 2026; digest recorded above                                   |
 
 Byte identity settles the stored artwork, not what the browser paints. The colour and clear-space
@@ -307,9 +307,21 @@ rows are therefore evidenced from the pages' own rules: `.footer__store` and `.f
 only margin and sizing, and each badge is the sole element of a centred block, so the horizontal
 clear space is the remaining width of a footer far wider than the rendered 145 px. The vertical
 clear space was measured in headless Edge on 25 November 2026, at 1250 and 504 px wide, from the
-rendered boxes: above, from the bottom of the content before the badge's block (the contact row on
-the site pages, the last line of the address on the sponsor page) to the top of the badge; below,
-from the bottom of the badge to the end of the page, where nothing follows it. On the two
+rendered boxes: above, from the bottom of the content just before the badge's block to the top of
+the badge; below, from the bottom of the badge to the end of the page. On every page the badge is
+the last element of the footer, and nothing rendered follows it. The 29 site pages fall into three
+footer layouts:
+
+- **Contact row, then badge** — 20 pages: `/`, `/404.html`, `/account-deletion/`, `/privacy/`,
+  `/privacy/1.8/` to `/privacy/1.18/`, `/security/`, `/security/1.0/`, `/tos/`, `/tos/1.0/` and
+  `/tos/1.1/`. Measured on `/`, `/404.html`, `/privacy/`, `/tos/` and `/account-deletion/`: 25.6 px
+  above and 46.6 to 47.6 px below.
+- **Legal block, then badge, with no contact row** — 8 pages: `/privacy/1.0/` to `/privacy/1.7/`.
+  Measured on `/privacy/1.0/` and `/privacy/1.4/`: 22.4 px above and 46.9 to 47.6 px below.
+- **Address text, then `.footer-store`** — 1 page: `/sponsor/`. Measured: 22.4 px above and 85.5
+  to 85.9 px below.
+
+Every measurement exceeds the 14 px minimum. On the two
 Markdown surfaces the badge occupies its own centred paragraph and receives GitHub's default
 paragraph spacing, which exceeds the 14 px minimum.
 
