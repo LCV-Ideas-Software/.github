@@ -14,6 +14,24 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish privacy policy 1.19 and terms of service 1.2, dated 24/11/2026, and retain 1.18 and 1.1
+  at their archive URLs, added to the institutional boundary test's retained public paths
+  (LCV-711). Section 9 of the policy names the seven providers that can run the Oráculo Celestial
+  paid analysis, whose active set and order LCV Ideas & Software defines; section 10 adds the
+  published rules of Moonshot AI (Kimi), Z.ai (GLM) and Alibaba Cloud (Qwen); section 15.1 adds
+  DeepSeek and these three providers to the international transfers of the paid analysis.
+  Section 4 of the terms states that the apps are free on every platform and that only the
+  Oráculo Celestial AI analysis is paid. The homepage lists the nine AI providers, the iOS start
+  one app at a time, the current Android versions and the `oraculo-celestial.app` link; it counts
+  its seven published applications instead of an unsourced service count, limits its review
+  claims to the changes the studio writes, and labels the Maestro Editorial AI support page as
+  such. The homepage and sponsor page footers list the support, privacy, security and general
+  contact addresses. `site/` stays byte-identical with `.github-private`. The organization profile
+  labels the support pages and the `sponsor-motor` service endpoint, limits its review claims to
+  the changes the studio and its agents write, adds the iOS repositories' Dependabot-lineage
+  rulesets and the SwiftUI and SQLite parts of the iOS stack, and the `THIRDPARTY.md` Play badge
+  section records that the developer page now lists the three apps.
+
 - Update the organization profile to the state verified on 24/11/2026 (LCV-711). Every AI
   provider list now names the nine providers in product use — OpenAI, Anthropic (Claude),
   Google (Gemini), DeepSeek, xAI (Grok), Perplexity, Moonshot (Kimi), Z.ai (GLM) and Alibaba

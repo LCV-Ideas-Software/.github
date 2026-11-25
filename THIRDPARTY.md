@@ -309,13 +309,12 @@ clear space is the remaining width of a footer far wider than the rendered 145 p
 Markdown surfaces the badge occupies its own centred paragraph and receives GitHub's default
 paragraph spacing, which exceeds the 14 px minimum.
 
-### One published rule is not yet satisfied
+### The badge leads to published apps
 
-The badge exists to drive downloads or pre-registration on Google Play. At this SHA the developer
-page carries the organization profile but lists no application, because the Android editions are
-still at the governance baseline stage, so the badge resolves to a catalogue with nothing yet to
-download or pre-register. This is recorded rather than claimed as compliant; it resolves itself
-when the first Android edition publishes.
+The badge exists to drive downloads or pre-registration on Google Play. The developer page it links
+to lists the three published Android editions — Calculadora Financeira, Maestro AI and Oráculo
+Celestial (verified 24 November 2026), so the rule that was recorded here as not yet satisfied,
+while the page listed no application, is now met.
 
 Google Play and the Google Play logo are trademarks of Google LLC. The mark belongs to its owner;
 nothing in this repository transfers, licenses, or sublicenses it.
