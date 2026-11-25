@@ -14,6 +14,32 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Update the organization profile to the state verified on 24/11/2026 (LCV-711). Every AI
+  provider list now names the nine providers in product use — OpenAI, Anthropic (Claude),
+  Google (Gemini), DeepSeek, xAI (Grok), Perplexity, Moonshot (Kimi), Z.ai (GLM) and Alibaba
+  Cloud (Qwen) — for Maestro Editorial AI, Maestro AI on Android and the Admin Maestro AI
+  module; the Oráculo Celestial paid analysis is described as the server's operator-ordered
+  cascade of seven providers, and `cross-review` keeps its six peers. The Android versions move
+  to Calculadora Financeira 1.0.18, Maestro AI 1.2.1 and Oráculo Celestial 1.0.6, and
+  `programa-android` gets its own row. The iOS section records that iOS development started
+  after Apple confirmed the Apple Developer Program enrollment on 23/11/2026, one app at a time
+  (Calculadora Financeira, then Maestro AI, then Oráculo Celestial): `calculadora-ios` is in
+  active development, no app is on the App Store yet, and all four iOS repositories carry a
+  proprietary `LICENSE`. The stack adds Swift, Xcode and the iOS toolchain, plus Mercado Pago
+  Checkout Pro and Google Play Billing. The Oráculo Celestial web row links
+  `oraculo-celestial.app` instead of `mapa-astral.lcv.app.br`, which no longer resolves, and describes
+  its Google and Apple accounts. `mainsite-app` and `astrologo-app` move to the proprietary
+  licensing row with the iOS repositories and `programa-android`. The process claims now match
+  the live rules and the review practice: a separate reviewer session reviews every push and
+  Codex reviews every pull-request head, `cross-review` is reserved for complex anomalies,
+  CodeQL runs on every repository through default setup or, in the three Android app
+  repositories and `calculadora-ios`, the official CodeQL Action, and the claims of an extra
+  approval for unattributed changes and of Copilot code review are removed because the
+  effective rules carry neither. The contact list adds the support, privacy and security
+  addresses already published on the site. The App Store badge is not added: no app of the
+  organization is public on the App Store yet, so no store page exists to link it to. The
+  Google Play badge inventory in `THIRDPARTY.md` now names every surface that carries it.
+
 - Activate the updated `Claude Code` workflow locally as
   `.github/workflows/claude.yml`, a copy of the starter template body with the
   starter-specific header omitted, so this repository's own `@claude` reviews run

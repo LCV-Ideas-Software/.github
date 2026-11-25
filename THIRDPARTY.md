@@ -272,7 +272,7 @@ governed by the mark owner's own brand terms, recorded below.
 
 | Component         | Variant                       | Terms                                       | Scope                                                                            | Immutable source                                                                           |
 | ----------------- | ----------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Google Play badge | `pt-br_badge_web_generic.png` | Proprietary — Google Play badge guidelines | published in the organization profile, this repository's README, and both site pages | https://play.google.com/intl/pt-BR/badges/static/images/badges/pt-br_badge_web_generic.png |
+| Google Play badge | `pt-br_badge_web_generic.png` | Proprietary — Google Play badge guidelines | published in the organization profile, this repository's README, and the store footer of every page of the shared `site/` | https://play.google.com/intl/pt-BR/badges/static/images/badges/pt-br_badge_web_generic.png |
 
 ### Provenance is proven, not asserted
 
@@ -296,7 +296,7 @@ partnership, or affiliation is implied or claimed.
 
 | Rule                                                            | Source               | State at this SHA                                                                     |
 | --------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------- |
-| Digital badge height must be at least 28 px                     | Partner Marketing Hub | rendered at `height="56"` on all four surfaces                                        |
+| Digital badge height must be at least 28 px                     | Partner Marketing Hub | rendered at `height="56"` on every surface that carries it                            |
 | Do not change the badge colour                                  | Partner Marketing Hub | file byte-identical; no `filter`, `opacity`, or colour rule applies to it             |
 | Do not remove, rearrange, or otherwise adjust the badge         | Partner Marketing Hub | file byte-identical; scaling is uniform, `width: auto` against the fixed height       |
 | Clear space of at least one quarter of the badge height (14 px) | Partner Marketing Hub | site 22.4 px above and 40 px below; sponsor page 20 px above and 24 px below          |
