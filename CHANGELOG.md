@@ -26,7 +26,9 @@ presentation rule this organization applies to text meant for people
   workflow is active and that it runs on an eligible pull request; nothing
   installs or runs centrally. Update the inventory so the Action is recorded as
   running in this repository and in the starter, with its active pin now
-  maintained by Dependabot.
+  maintained by Dependabot. The issue-assigned event is dropped from both the
+  workflow and the starter: the Action never starts Claude for it without an
+  assignee configuration, so it only dispatched idle runners.
 
 - Update the Zizmor Action in the `zizmor` starter workflow from v0.8.1 to v0.9.2, the
   OpenSSF Scorecard Action in the `scorecard` starter workflow from v2.5.0 to v2.6.0, and the
