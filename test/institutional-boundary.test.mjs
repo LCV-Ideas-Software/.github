@@ -47,6 +47,8 @@ const retainedPublicPaths = [
   "site/index.html",
   "site/404.html",
   "site/site-manifest.json",
+  "site/sitemap.xml",
+  "site/robots.txt",
   "scripts/site-manifest.mjs",
   "scripts/site-parity-check.mjs",
   "site/sponsor/index.html",

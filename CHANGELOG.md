@@ -14,6 +14,16 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish `site/sitemap.xml` and `site/robots.txt` for `www.lcv.dev` (LCV-711). Google Search
+  Console reported an error on the submitted sitemap because the file never existed and the host
+  answered with the homepage. The sitemap lists the 28 self-canonical, indexable pages on
+  `https://www.lcv.dev`, including the policy archives, with `<lastmod>` only for the current
+  privacy policy, terms and security pages, whose effective dates the pages state. `robots.txt`
+  allows every path and points to the sitemap. The sponsor page's canonical and `og:url` move to
+  `/sponsor/`, the URL that `/sponsor` redirects to, and the homepage links there directly. Both
+  new files are retained public paths in the institutional boundary test. `site/` stays
+  byte-identical with `.github-private`.
+
 - Serve a real 404 page (LCV-711). Without a top-level `404.html`, Cloudflare Pages treats the
   project as a single-page application and answered every missing path of `www.lcv.dev`,
   including `/robots.txt` and `/sitemap.xml`, with the homepage and HTTP 200; GitHub Pages
