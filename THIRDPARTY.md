@@ -48,10 +48,12 @@ versioned workflows or by the starter workflows in `workflow-templates/`.
 
 `anthropics/claude-code-action` runs in this repository's own
 `.github/workflows/claude.yml` and also appears in the starter workflow
-`workflow-templates/claude.yml`. Dependabot maintains the active-workflow pin,
+`workflow-templates/claude.yml`. Dependabot tracks the active-workflow pin,
 because the `github-actions` entry in `.github/dependabot.yml` uses
-`directory: "/"` and covers `.github/workflows`; the starter copy is outside
-that scope, so its pin is updated by hand together with the active one.
+`directory: "/"` and covers `.github/workflows`. The starter pin sits outside
+that configured directory, so it is checked and updated manually when a
+reviewed upstream release warrants it; the automatic and the manual pin
+updates are independent and never synchronized automatically.
 
 `github/codeql-action` is MIT-licensed, while the CodeQL CLI bundle selected by
 the Action is separately governed by the
