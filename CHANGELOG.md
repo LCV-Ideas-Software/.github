@@ -14,6 +14,29 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Activate the updated `Claude Code` workflow locally as
+  `.github/workflows/claude.yml`, a copy of the starter template body with the
+  starter-specific header omitted, so this repository's own `@claude` reviews run
+  with fork pull requests denied, untrusted pull-request authors restricted and the
+  `acceptEdits` permission mode explicit. Document the onboarding rule in the
+  README: each new repository commits its own `.github/workflows/claude.yml`
+  copy of the template through that repository's standard pull request process,
+  with the Claude GitHub App installed and the organization's Anthropic workload
+  identity federation rule covering it, and after merge verifies that the
+  workflow is active and that it runs on an eligible pull request; nothing
+  installs or runs centrally. Update the inventory so the Action is recorded as
+  running in this repository and in the starter, with its active pin now
+  maintained by Dependabot.
+
+- Update the Zizmor Action in the `zizmor` starter workflow from v0.8.1 to v0.9.2, the
+  OpenSSF Scorecard Action in the `scorecard` starter workflow from v2.5.0 to v2.6.0, and the
+  Claude Code Action in the `claude` starter workflow from v1.0.269 to v1.0.289, keeping the
+  full commit-SHA pins, the existing permissions, inputs and scanner selection. The `claude`
+  starter now also states the organization's review defaults explicitly: fork pull requests
+  are never handled, untrusted pull-request authors are restricted, and the permission mode is
+  `acceptEdits`. A new repository gets them when it chooses this workflow; a repository that
+  already has a copy keeps its own file until it is updated there.
+
 - Update the official CodeQL SARIF upload Action to v4.39.5 (commit
   `915412ff23e8b7659517e607487dbeae018f2934`) and the official Linear Release
   Action to v0.18.3 (commit `cfd42077dccdc0c26a38589934e2aa11046f57b7`) in the

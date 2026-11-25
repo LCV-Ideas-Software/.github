@@ -99,6 +99,7 @@ service access and existing license terms remain governed separately.
 - **Sponsorship**: see this repository's `Sponsor` button or [central sponsor page](https://www.lcv.dev/sponsor/).
 - **Action pinning**: all external GitHub Actions are pinned by full commit SHA per supply-chain hardening baseline.
 - **Code owners**: [.github/CODEOWNERS](.github/CODEOWNERS).
+- **Claude Code onboarding.** In each new repository, adopt the `Claude Code (LCV Ideas & Software)` template in `.github/workflows/claude.yml` through the repository's standard pull request process. Selecting **Configure** opens the workflow editor. Confirm that the official Claude GitHub App is installed and that the Anthropic workload identity federation rule covers the repository. After merge, verify that the workflow is active and that it runs on an eligible pull request. [Using workflow templates](https://docs.github.com/en/actions/how-tos/write-workflows/use-workflow-templates#choosing-and-using-a-workflow-template)
 
 ## Links
 
