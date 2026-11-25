@@ -45,7 +45,10 @@ const retainedPublicPaths = [
   "profile/README.md",
   "quality/code-quality-probe.js",
   "site/index.html",
+  "site/404.html",
   "site/site-manifest.json",
+  "site/sitemap.xml",
+  "site/robots.txt",
   "scripts/site-manifest.mjs",
   "scripts/site-parity-check.mjs",
   "site/sponsor/index.html",
@@ -68,8 +71,10 @@ const retainedPublicPaths = [
   "site/privacy/1.15/index.html",
   "site/privacy/1.16/index.html",
   "site/privacy/1.17/index.html",
+  "site/privacy/1.18/index.html",
   "site/tos/index.html",
   "site/tos/1.0/index.html",
+  "site/tos/1.1/index.html",
   "site/security/index.html",
   "site/account-deletion/index.html",
   "site/security/1.0/index.html",
@@ -128,7 +133,7 @@ test("published pages retain inventoried tracking except the private-data form",
   }
 
   const pages = retainedPublicPaths.filter(
-    (path) => path.startsWith("site/") && path.endsWith("index.html"),
+    (path) => path.startsWith("site/") && path.endsWith(".html"),
   );
   for (const page of pages) {
     const html = readFileSync(join(repositoryRoot, page), "utf8");

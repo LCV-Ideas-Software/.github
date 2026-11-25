@@ -19,11 +19,14 @@
     [[P, "  - "], [T, "cross-review"], [P, " "], [A, "→"], [S, " revisão por 6 AIs "], [P, "["], [T, "npm"], [P, "]"]],
     [[P, "  - "], [T, "Ultrabrain MCP"], [P, " "], [A, "→"], [S, " raciocínio estruturado "], [P, "["], [T, "npm"], [P, "]"]],
     [[P, "  - "], [T, "Maestro"], [P, " "], [A, "→"], [S, " bancada editorial "], [P, "["], [T, "Shipping"], [P, "]"]],
+    [[P, "  - "], [T, "Apps Android"], [P, " "], [A, "→"], [S, " Calculadora, Maestro AI, Oráculo Celestial "], [P, "["], [T, "Google Play"], [P, "]"]],
+    [[P, "  - "], [T, "Apps iOS"], [P, " "], [A, "→"], [S, " Calculadora primeiro, um app por vez "], [P, "["], [T, "em desenvolvimento"], [P, "]"]],
     [[K, "plataforma"], [P, ":"]],
     [[P, "  "], [K, "edge"], [P, ":  ["], [S, "CF Pages, Workers, D1, R2, Access"], [P, "]"]],
     [[P, "  "], [K, "front"], [P, ": ["], [S, "React 19, Vite 8, TypeScript"], [P, "]"]],
-    [[P, "  "], [K, "ai"], [P, ":    ["], [S, "6 modelos independentes em review"], [P, "]"]],
-    [[P, "  "], [K, "gates"], [P, ": ["], [S, "unanimidade, rulesets, SHA pins"], [P, "]"]],
+    [[P, "  "], [K, "mobile"], [P, ": ["], [S, "Kotlin + Compose, Swift + SwiftUI"], [P, "]"]],
+    [[P, "  "], [K, "ai"], [P, ":    ["], [S, "9 provedores de AI integrados"], [P, "]"]],
+    [[P, "  "], [K, "gates"], [P, ": ["], [S, "revisão adversarial, rulesets, SHA pins"], [P, "]"]],
     [[K, "lema"], [P, ": >-"]],
     [[P, "  "], [S, "\"Fail closed, test first, ship through pull requests.\""]],
   ];
@@ -116,7 +119,7 @@
   const ROLES = [
     "Transformando Ideias em Software",
     "React 19 • Cloudflare Edge • Rust/Tauri",
-    "6 agentes de AI revisam cada deploy",
+    "Revisão adversarial antes de cada push nosso",
     "Fail closed, test first, ship through pull requests",
   ];
   const roleEl = document.getElementById("role-type");

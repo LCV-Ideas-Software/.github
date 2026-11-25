@@ -14,6 +14,75 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish privacy policy 1.19 and terms of service 1.2, in force from 25/11/2026, and retain 1.18
+  and 1.1 at their archive URLs, which the institutional boundary test retains (LCV-711).
+  Section 9 of the policy names the seven providers that can run the Oráculo Celestial paid
+  analysis, whose active set and order LCV Ideas & Software defines. Section 10 adds the
+  published rules of Moonshot AI (Kimi), Z.ai (GLM) and Alibaba Cloud (Qwen) and states, for
+  DeepSeek, the data-use rules that apply to the paid analysis made with the company's account;
+  the Alibaba row separates the region, which decides where data is stored, from the deployment
+  scope, which decides where inference runs, and limits the retention policy's no-training
+  promise to zero data retention. Section 15.1 adds DeepSeek and the three new providers to the
+  international transfers of the paid analysis, with their locations, legal basis, roles and
+  onward transfers. Section 4 of the terms states that the apps are free on every platform, that
+  this does not include the Oráculo Celestial AI analysis, a separate paid service, and that it
+  does not set the prices of other LCV Ideas & Software services; section 9 no longer speaks of
+  paying for an app. `site/` stays byte-identical with `.github-private`.
+
+- Update the organization profile, the shared homepage and `THIRDPARTY.md` to the state verified
+  on 24/11/2026 (LCV-711). Every AI provider list names the nine providers in product use —
+  OpenAI, Anthropic (Claude), Google (Gemini), DeepSeek, xAI (Grok), Perplexity,
+  Moonshot (Kimi), Z.ai (GLM) and Alibaba Cloud (Qwen) — for Maestro Editorial AI, Maestro AI on
+  Android and the Admin Maestro AI module; the Oráculo Celestial paid analysis is described as
+  the server's operator-ordered cascade of seven providers, and `cross-review` keeps its six
+  peers. The Android versions move to Calculadora Financeira 1.0.18, Maestro AI 1.2.1 and Oráculo
+  Celestial 1.0.6, and `programa-android` gets its own profile row. The iOS sections record that
+  iOS development started after Apple confirmed the Apple Developer Program enrollment on
+  23/11/2026, one app at a time (Calculadora Financeira, then Maestro AI, then Oráculo
+  Celestial): `calculadora-ios` is in active development, no app is on the App Store yet, and all
+  four iOS repositories carry a proprietary `LICENSE`; the App Store badge is not added, because
+  no store page exists to link it to. The stack adds Swift, SwiftUI, Xcode, Swift packages,
+  SQLite and the Firebase Apple SDK, plus Mercado Pago Checkout Pro and Google Play Billing. The
+  Oráculo Celestial web link moves to `oraculo-celestial.app`, since `mapa-astral.lcv.app.br` no
+  longer resolves, and the profile describes its Google and Apple accounts. `mainsite-app` and
+  `astrologo-app` move to the proprietary licensing row with the iOS repositories and
+  `programa-android`. The process claims match the live rules and the review practice: every
+  change the studio and its agents write gets a separate reviewer session before it is pushed and
+  a Codex review of each pull-request head, `cross-review` is reserved for complex anomalies, the
+  profile's review badges show the independent review and the Codex review instead of a
+  six-model panel, and the site no longer says that six models review every change; CodeQL runs
+  on every repository through default setup or, in the three Android app repositories and
+  `calculadora-ios`, the official CodeQL Action; the claims of an extra approval for unattributed changes and of Copilot
+  code review are removed because the effective rules carry neither, and the profile adds the iOS
+  repositories' Dependabot-lineage rulesets. The profile labels the support pages and the
+  `sponsor-motor` service endpoint, the homepage labels the Maestro Editorial AI support page as
+  such and counts its seven published applications instead of an unsourced service count, and
+  the profile, the homepage footer and the sponsor page footer list the support, privacy,
+  security and general contact addresses. In `THIRDPARTY.md`, the Google Play badge inventory
+  names every surface that carries the badge and records that the developer page now lists the
+  three apps.
+
+- Serve a real 404 page and publish `site/sitemap.xml` and `site/robots.txt` for `www.lcv.dev`
+  (LCV-711). Without a top-level `404.html`, Cloudflare Pages treated the project as a
+  single-page application and answered every missing path, including `/robots.txt` and
+  `/sitemap.xml`, with the homepage and HTTP 200, so Google Search Console reported an error on
+  the submitted sitemap; GitHub Pages answered `org.lcv.dev` and `enterprise.lcv.dev` with its
+  generic 404. The new `404.html` keeps the site's header, footer and Google tags, is marked
+  `noindex`, has no canonical link and uses root-relative URLs. The sitemap lists the 28
+  self-canonical, indexable pages on `https://www.lcv.dev`, including the policy archives, with
+  `<lastmod>` only for the current privacy policy, terms and security pages, whose effective
+  dates the pages state; `robots.txt` allows every path and points to the sitemap. The sponsor
+  page's canonical and `og:url` move to `/sponsor/`, the URL that `/sponsor` redirects to, and the
+  homepage links there directly. The institutional boundary test retains the three new files and
+  applies its tag and charset checks to every retained site page, not only to `index.html` files.
+  `site/_headers` now sends `X-Frame-Options: DENY` and
+  `Content-Security-Policy: frame-ancestors 'none'` for every path (`/*`) instead of only
+  `/sponsor/*`, so no page of `www.lcv.dev`, including the account-deletion form, can be embedded
+  by another site (LCV-714); the `/sponsor/*` rule is removed rather than kept, because Cloudflare
+  Pages joins a header applied by two matching rules. The rule takes effect only on the Cloudflare
+  Pages deployment of `www.lcv.dev`: GitHub Pages, which serves this copy at `org.lcv.dev`, does
+  not read `_headers`.
+
 - Activate the updated `Claude Code` workflow locally as
   `.github/workflows/claude.yml`, a copy of the starter template body with the
   starter-specific header omitted, so this repository's own `@claude` reviews run
