@@ -14,6 +14,18 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Serve Apple account-driven enrollment service discovery for `lcv.dev` (LCV-735). The new
+  `site/.well-known/com.apple.remotemanagement` answers the request an iPhone makes when a person
+  signs in with a Managed Apple Account of that domain, and names Google endpoint management as the
+  device management service: one `Servers` entry with `Version` `mdm-byod` (User Enrollment) and
+  `BaseURL` `https://ios-mdm.google.com/userenrollment/enroll`, the values Step 4 of Google's iOS
+  set-up instructions prescribes. `site/_headers` adds a rule for that exact path that sends
+  `Content-Type: application/json`, which Google and Apple require and which the extensionless file
+  would not get on its own; the `/*` rule still applies to the path, and the two rules set different
+  headers, so Cloudflare Pages joins nothing. The file and the rule take effect on the Cloudflare
+  Pages deployment that `lcv.dev` reaches; GitHub Pages, which serves this copy at `org.lcv.dev`,
+  does not read `_headers`, and `pages.yml` uploads `site/` without hidden entries, so `org.lcv.dev`
+  does not serve `.well-known/`. `site/` stays byte-identical with `.github-private`.
 - Publish privacy policy 1.19 and terms of service 1.2, in force from 25/11/2026, and retain 1.18
   and 1.1 at their archive URLs, which the institutional boundary test retains (LCV-711).
   Section 9 of the policy names the seven providers that can run the Oráculo Celestial paid

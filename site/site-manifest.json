@@ -1,7 +1,8 @@
 {
   "files": {
-    "_headers": "95b701a45f588d9bcd0d0ff2fe4f707b67e2e0db387778cdad79b301829e6df5",
+    "_headers": "8642f55718287cefba380dbb061d64b612672ffa75f97db4bc822c25d159aed3",
     ".nojekyll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ".well-known/com.apple.remotemanagement": "9b4896bfb2db2e96c012cedf374c9ecea4575dfc89707d2978275320deebde6a",
     "404.html": "ad0d8b32a50a75becc6405cac8c6cfdb5615a934bdd5dbb6fd6e3bbbfd9a469a",
     "account-deletion/index.html": "f60e5b67bfa76371f0551eb37e1644c51c731a83268222e9bc18dc87097fa075",
     "app.js": "88a0e89189ac2a41358c1d6adb58e496dcb726f90f1cfa13d8e0af58ffd4a777",
