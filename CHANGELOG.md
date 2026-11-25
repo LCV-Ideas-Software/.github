@@ -29,8 +29,8 @@ presentation rule this organization applies to text meant for people
   `.github-private`.
 
 - Update the organization profile, the shared homepage and `THIRDPARTY.md` to the state verified
-  on 24/11/2026 and 25/11/2026 (LCV-711). Every AI provider list names the nine providers in
-  product use — OpenAI, Anthropic (Claude), Google (Gemini), DeepSeek, xAI (Grok), Perplexity,
+  on 24/11/2026 (LCV-711). Every AI provider list names the nine providers in product use —
+  OpenAI, Anthropic (Claude), Google (Gemini), DeepSeek, xAI (Grok), Perplexity,
   Moonshot (Kimi), Z.ai (GLM) and Alibaba Cloud (Qwen) — for Maestro Editorial AI, Maestro AI on
   Android and the Admin Maestro AI module; the Oráculo Celestial paid analysis is described as
   the server's operator-ordered cascade of seven providers, and `cross-review` keeps its six
@@ -47,10 +47,11 @@ presentation rule this organization applies to text meant for people
   `astrologo-app` move to the proprietary licensing row with the iOS repositories and
   `programa-android`. The process claims match the live rules and the review practice: every
   change the studio and its agents write gets a separate reviewer session before it is pushed and
-  a Codex review of each pull-request head, `cross-review` is reserved for complex anomalies, and
-  the site no longer says that six models review every change; CodeQL runs on every repository
-  through default setup or, in the three Android app repositories and `calculadora-ios`, the
-  official CodeQL Action; the claims of an extra approval for unattributed changes and of Copilot
+  a Codex review of each pull-request head, `cross-review` is reserved for complex anomalies, the
+  profile's review badges show the independent review and the Codex review instead of a
+  six-model panel, and the site no longer says that six models review every change; CodeQL runs
+  on every repository through default setup or, in the three Android app repositories and
+  `calculadora-ios`, the official CodeQL Action; the claims of an extra approval for unattributed changes and of Copilot
   code review are removed because the effective rules carry neither, and the profile adds the iOS
   repositories' Dependabot-lineage rulesets. The profile labels the support pages and the
   `sponsor-motor` service endpoint, the homepage labels the Maestro Editorial AI support page as

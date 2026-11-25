@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/location-Brazil-34d399.svg?style=flat-square" alt="Brazil">
   <img src="https://img.shields.io/badge/repos-1%20public-7dd3fc.svg?style=flat-square" alt="1 public repository">
   <img src="https://img.shields.io/badge/edge-Cloudflare%20Pages%20%2B%20Workers-f59e0b.svg?style=flat-square" alt="Cloudflare Pages and Workers">
-  <img src="https://img.shields.io/badge/AI-6%20model%20review%20panel-34d399.svg?style=flat-square" alt="Six-model review panel">
+  <img src="https://img.shields.io/badge/AI-independent%20review%20before%20push-34d399.svg?style=flat-square" alt="Independent review before push">
 </p>
 
 <p align="center">
@@ -224,8 +224,8 @@ The organization maintains **1 active public repository**, including its institu
     <br><sub><b>MCP servers</b></sub>
   </td>
   <td align="center" width="105">
-    <img src="https://img.shields.io/badge/6--model-panel-34d399?style=flat-square" alt="Six-model panel" />
-    <br><sub><b>Review panel</b></sub>
+    <img src="https://img.shields.io/badge/review-independent%20%2B%20Codex-34d399?style=flat-square" alt="Independent review and Codex review" />
+    <br><sub><b>Review</b></sub>
   </td>
   <td align="center" width="105">
     <img src="https://raw.githubusercontent.com/devicons/devicon/master/icons/vitest/vitest-original.svg" width="46" height="46" alt="Vitest" />
