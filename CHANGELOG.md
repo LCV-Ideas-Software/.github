@@ -30,8 +30,11 @@ presentation rule this organization applies to text meant for people
   iOS Calculadora in the diagnostics and usage rows and the attestation material in the
   fraud-prevention row; section 4 states that its local database under Application Support is
   excluded from backups and that the OS data-transfer extension imports no file; sections 15 and
-  15.1 extend the Firebase transfers to the iOS app and add the integrity verification. `site/`
-  stays byte-identical with `.github-private`.
+  15.1 extend the Firebase transfers to the iOS app and add the integrity verification. The
+  `THIRDPARTY.md` badge clear-space inventory now counts 30 site pages, 21 of them in the
+  "contact row, then badge" footer layout, with the archive range `/privacy/1.8/` to
+  `/privacy/1.19/`; the measurements are unchanged. `site/` stays byte-identical with
+  `.github-private`.
 - Run the official `verify-lockfile` workflow on every pull request (LCV-738).
   `.github/workflows/verify-lockfile.yml` invokes `github/gh-actions-lock`
   (`verify/v0.5.1`, `5fa07d19c267d19e29f4341f10fdf7f516375038`, MIT), GitHub's official
