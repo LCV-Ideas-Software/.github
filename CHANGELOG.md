@@ -14,6 +14,14 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Run the official `verify-lockfile` workflow on every pull request (LCV-738).
+  `.github/workflows/verify-lockfile.yml` invokes `github/gh-actions-lock`
+  (`verify/v0.5.1`, `5fa07d19c267d19e29f4341f10fdf7f516375038`, MIT), GitHub's official
+  "Verify actions.lock" action, which fails when `.github/workflows/actions.lock` is out of
+  sync with the workflows or a locked pin no longer verifies upstream. The new workflow and
+  its two Action dependencies are onboarded in `actions.lock` with
+  `gh actions-lock --no-narrow`. The check reports and does not block, because it is not a
+  required check; `README.md`, `SECURITY.md`, and the `THIRDPARTY.md` Actions table name it.
 - Serve Apple account-driven enrollment service discovery for `lcv.dev` (LCV-735). The new
   `site/.well-known/com.apple.remotemanagement` answers the request an iPhone makes when a person
   signs in with a Managed Apple Account of that domain, and names Google endpoint management as the
@@ -34,13 +42,31 @@ presentation rule this organization applies to text meant for people
   Every workflow `uses:` reference keeps its full-length commit SHA and version comment unchanged;
   the lockfile adds pinning for the three transitive dependencies no workflow file references
   (`oven-sh/setup-bun` v2.2.0, `actions/upload-artifact` v7.0.0 and `github/codeql-action` v4.39.3).
-  The `Require lockfile` policy stays off
+  The `Require lockfile` policy runs in **Evaluate** mode at the enterprise
   ([governing workflow execution](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution)).
   `dependabot-auto-merge.yml` runs no Action, so it holds an empty entry. Corrected the master-text
   passages that declared the lockfile nonexistent or retired — Section 6.E item 2 and Section 7.A in
   `AGENTS.md` and `CLAUDE.md`, the `README.md` governance and action-pinning bullets, and
   `THIRDPARTY.md` — and `.github/workflows/actions.lock` is now committed, never hand-edited
   (LCV-719).
+- Reconciled the `THIRDPARTY.md` GitHub Actions inventory with what the workflows and
+  `.github/workflows/actions.lock` actually run (LCV-719). Corrected the
+  `anthropics/claude-code-action` license link to resolve at the live workflow pin
+  `4411a9e9b0283becf4b924f7bce360fd7756c78c` (v1.0.290); the starter workflow
+  `workflow-templates/claude.yml` keeps its manually reviewed pin
+  `eb56b6666facdbd501035f4a0269d8caee2e7a8b` (v1.0.289), and the paragraph below the table
+  describes the two paths. Named the transitive revisions the lockfile resolves, each at its exact commit
+  with a license link verified at that commit: `actions/upload-artifact` v7.0.0
+  (`bbbca2ddaa5d8feaa63e36b76fdaad77386f024f`, same MIT text as the direct v7.0.2 pin), pulled in
+  by `actions/upload-pages-artifact`; `github/codeql-action` v4.39.3
+  (`33d7b85da1a04171e211befe2c739303b9a4c066`, same MIT text as the direct v4.39.5 pin), pulled in
+  by `zizmorcore/zizmor-action`; and `oven-sh/setup-bun` v2.2.0
+  (`0c5077e51419868618aeaa5fe8019c62421857d6`), pulled in by `anthropics/claude-code-action`,
+  whose license link now also resolves at that exact commit. No inventory row was stale: every
+  listed Action is pinned by a workflow or recorded by the lockfile. The rule text of Section 6.E
+  item 2 and Section 7.A in `AGENTS.md` and `CLAUDE.md` now carries the operator-approved master
+  wording, applied verbatim by script; the two files stay byte-identical.
+- Ignore `copilot-memories.jsonl` in `.gitignore` (after `/temp/`) and `.prettierignore` (after `*.bkp.html`), by operator order (LCV-719). The file stays untracked.
 - Publish privacy policy 1.19 and terms of service 1.2, in force from 25/11/2026, and retain 1.18
   and 1.1 at their archive URLs, which the institutional boundary test retains (LCV-711).
   Section 9 of the policy names the seven providers that can run the Oráculo Celestial paid
