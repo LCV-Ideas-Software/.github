@@ -41,6 +41,28 @@ presentation rule this organization applies to text meant for people
   `AGENTS.md` and `CLAUDE.md`, the `README.md` governance and action-pinning bullets, and
   `THIRDPARTY.md` — and `.github/workflows/actions.lock` is now committed, never hand-edited
   (LCV-719).
+- Reconciled the `THIRDPARTY.md` GitHub Actions inventory with what the workflows and
+  `.github/workflows/actions.lock` actually run (LCV-719). Corrected the
+  `anthropics/claude-code-action` license link to resolve at the live workflow pin
+  `4411a9e9b0283becf4b924f7bce360fd7756c78c` (v1.0.290); the starter workflow
+  `workflow-templates/claude.yml` keeps its manually reviewed pin
+  `eb56b6666facdbd501035f4a0269d8caee2e7a8b` (v1.0.289), and the paragraph below the table
+  describes the two paths. Named the transitive revisions the lockfile resolves, each at its exact commit
+  with a license link verified at that commit: `actions/upload-artifact` v7.0.0
+  (`bbbca2ddaa5d8feaa63e36b76fdaad77386f024f`, same MIT text as the direct v7.0.2 pin), pulled in
+  by `actions/upload-pages-artifact`; `github/codeql-action` v4.39.3
+  (`33d7b85da1a04171e211befe2c739303b9a4c066`, same MIT text as the direct v4.39.5 pin), pulled in
+  by `zizmorcore/zizmor-action`; and `oven-sh/setup-bun` v2.2.0
+  (`0c5077e51419868618aeaa5fe8019c62421857d6`), pulled in by `anthropics/claude-code-action`,
+  whose license link now also resolves at that exact commit. No inventory row was stale: every
+  listed Action is pinned by a workflow or recorded by the lockfile. The rule text of Section 6.E
+  item 2 and Section 7.A in `AGENTS.md` and `CLAUDE.md` now carries the operator-approved master
+  wording, applied verbatim by script; the two files stay byte-identical.
+- Ignore `copilot-memories.jsonl` in `.gitignore` (after `/temp/`) and `.prettierignore` (after
+  `*.bkp.html`) (LCV-719). The file is created at the repository root by a process not yet
+  identified and reappears after deletion; ignoring it keeps it out of `git status` and out of the
+  Prettier check. The file itself stays untracked, and the local workaround line in
+  `.git/info/exclude` was removed because the tracked ignore replaces it.
 - Publish privacy policy 1.19 and terms of service 1.2, in force from 25/11/2026, and retain 1.18
   and 1.1 at their archive URLs, which the institutional boundary test retains (LCV-711).
   Section 9 of the policy names the seven providers that can run the Oráculo Celestial paid
