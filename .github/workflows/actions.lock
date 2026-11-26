@@ -27,6 +27,9 @@ workflows:
     '.github/workflows/site-parity.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
+    '.github/workflows/verify-lockfile.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'github/gh-actions-lock@5fa07d19c267d19e29f4341f10fdf7f516375038'
     '.github/workflows/zizmor.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'zizmorcore/zizmor-action@1b4550e929643b8b26a62303c6bd64814271a4f1'
@@ -90,6 +93,11 @@ dependencies:
         commit: 'sha1-915412ff23e8b7659517e607487dbeae018f2934'
         owner_id: 9919
         repo_id: 259445878
+    'github/gh-actions-lock@5fa07d19c267d19e29f4341f10fdf7f516375038':
+        ref: 'verify/v0.5.1'
+        commit: 'sha1-5fa07d19c267d19e29f4341f10fdf7f516375038'
+        owner_id: 9919
+        repo_id: 1217640442
     'linear/linear-release-action@cfd42077dccdc0c26a38589934e2aa11046f57b7':
         ref: 'v0.18.3'
         commit: 'sha1-cfd42077dccdc0c26a38589934e2aa11046f57b7'

@@ -14,6 +14,14 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Run the official `verify-lockfile` workflow on every pull request (LCV-738).
+  `.github/workflows/verify-lockfile.yml` invokes `github/gh-actions-lock`
+  (`verify/v0.5.1`, `5fa07d19c267d19e29f4341f10fdf7f516375038`, MIT), GitHub's official
+  "Verify actions.lock" action, which fails when `.github/workflows/actions.lock` is out of
+  sync with the workflows or a locked pin no longer verifies upstream. The new workflow and
+  its two Action dependencies are onboarded in `actions.lock` with
+  `gh actions-lock --no-narrow`. The check reports and does not block, because it is not a
+  required check; `README.md`, `SECURITY.md`, and the `THIRDPARTY.md` Actions table name it.
 - Serve Apple account-driven enrollment service discovery for `lcv.dev` (LCV-735). The new
   `site/.well-known/com.apple.remotemanagement` answers the request an iPhone makes when a person
   signs in with a Managed Apple Account of that domain, and names Google endpoint management as the
@@ -34,7 +42,7 @@ presentation rule this organization applies to text meant for people
   Every workflow `uses:` reference keeps its full-length commit SHA and version comment unchanged;
   the lockfile adds pinning for the three transitive dependencies no workflow file references
   (`oven-sh/setup-bun` v2.2.0, `actions/upload-artifact` v7.0.0 and `github/codeql-action` v4.39.3).
-  The `Require lockfile` policy stays off
+  The `Require lockfile` policy runs in **Evaluate** mode at the enterprise
   ([governing workflow execution](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution)).
   `dependabot-auto-merge.yml` runs no Action, so it holds an empty entry. Corrected the master-text
   passages that declared the lockfile nonexistent or retired — Section 6.E item 2 and Section 7.A in
