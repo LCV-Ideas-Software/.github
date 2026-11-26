@@ -37,9 +37,13 @@ This repository follows the LCV Ideas & Software single-operator security baseli
 - GitHub secret scanning and push protection;
 - Dependabot alerts and security updates;
 - GitHub code scanning default setup for CodeQL with the extended query suite;
-- external GitHub Actions pinned by full commit SHA;
+- external GitHub Actions pinned by full commit SHA with a version comment in every `uses:`. Beyond the
+  committed npm lockfile, `.github/workflows/actions.lock` records each action's exact commit, the source
+  repository identity and the transitive dependencies no workflow file references. It is generated with
+  `gh actions-lock --no-narrow`, never hand-edited, and refreshed by Dependabot in the same pull request
+  ([workflow dependency lockfiles](https://docs.github.com/en/actions/concepts/security/workflow-dependency-lockfiles));
 - workflow-level `permissions: {}` with the least `GITHUB_TOKEN` grant required by each job;
-- direct, SHA-pinned official Dependency Review, Zizmor, and OpenSSF Scorecard Actions. CodeQL default setup remains the native merge-protection signal; Zizmor and Scorecard publish SARIF for stateful security visibility without repository-owned gates, baselines, wrappers, lockfiles, or workflow-contract validators;
+- direct, SHA-pinned official Dependency Review, Zizmor, and OpenSSF Scorecard Actions. CodeQL default setup remains the native merge-protection signal; Zizmor and Scorecard publish SARIF for stateful security visibility without repository-owned gates, baselines, wrappers, or workflow-contract validators. The native Actions lockfile above is GitHub's own mechanism, not a repository-owned gate;
 - the official Zizmor Action does not yet expose `--strict-collection` ([upstream #141](https://github.com/zizmorcore/zizmor-action/issues/141)), so collection syntax or schema errors can remain warnings. This accepted upstream limitation is tracked without adding a repository-owned executor or gate;
 - external credentials assigned by purpose to protected environments restricted to `main`, with one
   documented exception: the Dependabot auto-merge workflow reads a fine-grained personal access
