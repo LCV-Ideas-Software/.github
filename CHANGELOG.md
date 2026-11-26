@@ -66,11 +66,7 @@ presentation rule this organization applies to text meant for people
   listed Action is pinned by a workflow or recorded by the lockfile. The rule text of Section 6.E
   item 2 and Section 7.A in `AGENTS.md` and `CLAUDE.md` now carries the operator-approved master
   wording, applied verbatim by script; the two files stay byte-identical.
-- Ignore `copilot-memories.jsonl` in `.gitignore` (after `/temp/`) and `.prettierignore` (after
-  `*.bkp.html`) (LCV-719). The file is created at the repository root by a process not yet
-  identified and reappears after deletion; ignoring it keeps it out of `git status` and out of the
-  Prettier check. The file itself stays untracked, and the local workaround line in
-  `.git/info/exclude` was removed because the tracked ignore replaces it.
+- Ignore `copilot-memories.jsonl` in `.gitignore` (after `/temp/`) and `.prettierignore` (after `*.bkp.html`), by operator order (LCV-719). The file stays untracked.
 - Publish privacy policy 1.19 and terms of service 1.2, in force from 25/11/2026, and retain 1.18
   and 1.1 at their archive URLs, which the institutional boundary test retains (LCV-711).
   Section 9 of the policy names the seven providers that can run the Oráculo Celestial paid
