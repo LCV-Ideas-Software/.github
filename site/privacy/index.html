@@ -291,7 +291,7 @@
       </h1>
       <p class="publication-date">
         <strong
-          >Versão 1.19 — vigente a partir de 25 de novembro de 2026.</strong
+          >Versão 1.20 — vigente a partir de 26 de novembro de 2026.</strong
         >
       </p>
       <hr />
@@ -404,7 +404,10 @@
           </tr>
           <tr>
             <td>Prevenir fraude e proteger o serviço</td>
-            <td>Registros técnicos e de transação proporcionais</td>
+            <td>
+              Registros técnicos e de transação proporcionais e o material de
+              atestado da integridade do aplicativo (seção 7.4)
+            </td>
             <td>
               Legítimo interesse, quando cabível e após avaliação dos direitos
               afetados, ou outra hipótese legal específica.
@@ -413,7 +416,7 @@
           <tr>
             <td>
               Diagnosticar falhas e melhorar a estabilidade e o desempenho dos
-              apps Android
+              apps Android e da Calculadora Financeira para iOS
             </td>
             <td>
               Relatórios de falhas, métricas de desempenho e rede e
@@ -425,7 +428,9 @@
             </td>
           </tr>
           <tr>
-            <td>Medir o uso dos apps Android</td>
+            <td>
+              Medir o uso dos apps Android e da Calculadora Financeira para iOS
+            </td>
             <td>
               Eventos de uso, informações do aparelho e do aplicativo, país ou
               região estimados e identificador da instância do aplicativo
@@ -506,6 +511,18 @@
         existia ali. Essa configuração não deve ser presumida para uma edição de
         navegador, computador ou outro sistema; os controles aplicáveis precisam
         ser informados no recurso correspondente.
+      </p>
+      <p>
+        Na Calculadora Financeira para iOS, o cache de cotações, o
+        acompanhamento local da calibragem e os parâmetros personalizados ficam
+        em um banco de dados local, em uma pasta própria do aplicativo que ele
+        marca, pelo recurso do sistema para isso, como excluída dos backups. A
+        extensão de transferência de dados do sistema, que o iOS executa ao
+        migrar de um aparelho Android, não grava nenhum arquivo: ela aceita
+        apenas uma transferência vinda da Calculadora Financeira para Android,
+        instalada pela Google Play, e a recusa se ela contiver qualquer arquivo;
+        o aplicativo começa sem histórico, como em uma instalação nova. Também
+        nesse caso não existe cópia recuperável pela LCV Ideas &amp; Software.
       </p>
       <h2 id="exportacao-compartilhamento-e-publicacao">
         5. Exportação, compartilhamento e publicação
@@ -639,7 +656,7 @@
         >.
       </p>
       <h3 id="diagnosticos-android">
-        7.1 Diagnósticos de falhas nos aplicativos Android
+        7.1 Diagnósticos de falhas nos aplicativos
       </h3>
       <p>
         Nas versões Android da Calculadora Financeira, do Maestro AI e do
@@ -672,8 +689,28 @@
         >. As regras sobre direitos e pedidos de exclusão desta política também
         se aplicam a esses dados.
       </p>
+      <p>
+        Na versão para iOS da Calculadora Financeira, que integra o Firebase
+        Crashlytics para plataformas Apple, o envio de relatórios de falhas e
+        dos erros não fatais registrados pelo aplicativo é automático. O serviço
+        recebe a sequência de chamadas do programa e o estado relevante do
+        aplicativo no momento da falha, informações do aparelho e do sistema, a
+        identificação e a versão do aplicativo, os identificadores da instalação
+        (<strong>Crashlytics Installation UUID</strong> e
+        <strong>Firebase Installation ID</strong>) e, porque o aplicativo também
+        integra o Google Analytics for Firebase, os registros das ações feitas
+        no aplicativo imediatamente antes da falha. O único erro não fatal que
+        esse aplicativo registra é a falha de leitura do seu armazenamento local
+        de parâmetros, informada apenas pelo tipo do erro, sem mensagem. Esses
+        dados são enviados ao Google para identificar e corrigir falhas e são
+        conservados pelo mesmo prazo de noventa dias indicado acima. Consulte os
+        <a
+          href="https://firebase.google.com/docs/ios/app-store-data-collection#firebasecrashlytics"
+          >dados registrados pelo Crashlytics nas plataformas Apple</a
+        >.
+      </p>
       <h3 id="desempenho-android">
-        7.2 Métricas de desempenho dos aplicativos Android
+        7.2 Métricas de desempenho dos aplicativos
       </h3>
       <p>
         Nas versões Android desses três aplicativos que integram o
@@ -705,7 +742,27 @@
         >. Esses registros não devem ser presumidos anônimos; os direitos e
         canais desta política também se aplicam a eles.
       </p>
-      <h3 id="uso-android">7.3 Estatísticas de uso dos aplicativos Android</h3>
+      <p>
+        Na versão para iOS da Calculadora Financeira, que integra o Firebase
+        Performance Monitoring, são registrados e enviados automaticamente o
+        tempo de inicialização do aplicativo, o tempo em primeiro e em segundo
+        plano, a renderização de cada tela, com a proporção de quadros lentos e
+        congelados, e as requisições de rede do aplicativo, como as consultas de
+        cotações e de parâmetros, com o endereço da requisição sem seus
+        parâmetros e sem o conteúdo enviado ou recebido, o código de resposta,
+        os tamanhos em bytes e o tempo de resposta. Os registros incluem o
+        endereço IP, que o Google usa para estimar o país, o uso de CPU e
+        memória, informações do aparelho, do sistema e do aplicativo e os
+        identificadores de instalação e de sessão do Firebase. Esses dados são
+        enviados ao Google para identificar lentidão e falhas de conexão, pelos
+        prazos de trinta e sessenta dias indicados acima. Consulte os
+        <a
+          href="https://firebase.google.com/docs/ios/app-store-data-collection#firebaseperformance"
+          >dados registrados pelo Performance Monitoring nas plataformas
+          Apple</a
+        >.
+      </p>
+      <h3 id="uso-android">7.3 Estatísticas de uso dos aplicativos</h3>
       <p>
         Nas versões Android desses três aplicativos que integram o
         <strong>Google Analytics for Firebase</strong>, são registrados e
@@ -756,6 +813,66 @@
           >eventos registrados automaticamente</a
         >. Esses registros não devem ser presumidos anônimos; os direitos e
         canais desta política também se aplicam a eles.
+      </p>
+      <p>
+        Na versão para iOS da Calculadora Financeira, que integra o Google
+        Analytics for Firebase pela biblioteca instalada sem a capacidade de
+        usar o identificador de publicidade, são registrados e enviados
+        automaticamente ao Google os eventos de uso definidos pelo próprio
+        Google, como a primeira abertura do aplicativo, o início de uma sessão,
+        a exibição de uma tela, o tempo de uso em primeiro plano e a atualização
+        do aplicativo ou do sistema; não há compras nesse aplicativo. Os
+        registros incluem o sistema operacional, o modelo do aparelho, a
+        localização geográfica estimada, o identificador da instância do
+        aplicativo e o identificador de fornecedor do iOS (IDFV), que o Google
+        informa registrar quando o identificador de publicidade não está
+        disponível; esses identificadores não são dados anônimos. O aplicativo
+        não inclui as bibliotecas do sistema que dão acesso ao identificador de
+        publicidade (IDFA) nem pede a permissão de rastreamento do iOS, e esse
+        identificador não é enviado ao Google. Os eventos e os identificadores
+        vão para a propriedade do Google Analytics vinculada ao mesmo projeto do
+        Firebase dos aplicativos Android e seguem a finalidade, o prazo de dois
+        meses, os termos e as referências descritos acima. Consulte também a
+        <a
+          href="https://firebase.google.com/docs/analytics/configure-data-collection?platform=ios"
+          >configuração de dados do Analytics nas plataformas Apple</a
+        >.
+      </p>
+      <h3 id="integridade-do-aplicativo">
+        7.4 Verificação da integridade do aplicativo
+      </h3>
+      <p>
+        Na versão para iOS da Calculadora Financeira, o
+        <strong>Google Firebase App Check</strong> está configurado com o
+        provedor <strong>App Attest</strong>, da Apple, no ambiente de produção,
+        para comprovar aos serviços do Firebase que os pedidos vêm de uma
+        instalação legítima do aplicativo. Quando essa comprovação é feita, o
+        App Check recebe o objeto de atestado e o objeto de asserção gerados
+        pelo App Attest no aparelho e os envia à Apple para validação; aceita a
+        validação, o Google emite um token do App Check, que acompanha os
+        pedidos aos serviços do Firebase que o exigem. O Google informa que o
+        App Check não conserva o material de atestado, que fica sujeito às
+        regras da Apple quando enviado a ela, e que os tokens valem pelo prazo
+        configurado, nunca superior a sete dias. Essa verificação não envia o
+        conteúdo das simulações e não exige conta. No Oráculo Celestial para
+        Android, a verificação equivalente, feita com o Play Integrity, está
+        descrita na seção 11.1. Consulte os
+        <a
+          href="https://firebase.google.com/docs/ios/app-store-data-collection#firebaseappcheck"
+          >dados registrados pelo App Check nas plataformas Apple</a
+        >, a
+        <a href="https://firebase.google.com/support/privacy"
+          >privacidade e segurança do Firebase</a
+        >, a
+        <a
+          href="https://firebase.google.com/docs/app-check/ios/app-attest-provider"
+          >documentação do App Attest no Firebase</a
+        >
+        e a
+        <a
+          href="https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity"
+          >documentação do App Attest da Apple</a
+        >.
       </p>
       <h2 id="inteligencia-artificial-com-suas-proprias-chaves">
         8. Inteligência artificial com suas próprias chaves
@@ -1489,12 +1606,12 @@
       </p>
       <p>
         Fornecedores de infraestrutura, autenticação, verificação de compras,
-        diagnóstico, medição de uso, atendimento, envio de e-mail e IA tratam
-        dados em outros países. Os dados recebidos pelo serviço de processamento
-        dos recursos pagos do Oráculo Celestial para Android e os registros de
-        pedidos são tratados no Google Cloud, nos Estados Unidos, conforme a
-        seção 11. As transferências internacionais, seus fundamentos e suas
-        garantias estão descritos na
+        diagnóstico, medição de uso, verificação da integridade do aplicativo,
+        atendimento, envio de e-mail e IA tratam dados em outros países. Os
+        dados recebidos pelo serviço de processamento dos recursos pagos do
+        Oráculo Celestial para Android e os registros de pedidos são tratados no
+        Google Cloud, nos Estados Unidos, conforme a seção 11. As transferências
+        internacionais, seus fundamentos e suas garantias estão descritos na
         <a href="#transferencias-internacionais">seção 15.1</a>.
       </p>
       <h3 id="transferencias-internacionais">
@@ -1579,18 +1696,29 @@
           próprias regras e prazos.
         </li>
         <li>
-          <strong>Diagnósticos e desempenho dos aplicativos Android.</strong> Os
-          relatórios das seções 7.1 e 7.2 vão para o Google Firebase, para
+          <strong>Diagnósticos e desempenho dos aplicativos.</strong> Os
+          relatórios das seções 7.1 e 7.2, dos aplicativos Android e da
+          Calculadora Financeira para iOS, vão para o Google Firebase, para
           identificar e corrigir falhas e problemas de desempenho, e podem ser
           tratados em qualquer país onde o Google ou seus subcontratados mantêm
           instalações, pelos prazos indicados nessas seções.
         </li>
         <li>
-          <strong>Estatísticas de uso dos aplicativos Android.</strong> Os
-          eventos e o identificador da seção 7.3 vão para o Google Analytics for
-          Firebase, para medir o uso dos aplicativos, e podem ser tratados em
-          qualquer país onde o Google ou seus subcontratados mantêm instalações,
-          pelos prazos indicados nessa seção.
+          <strong>Estatísticas de uso dos aplicativos.</strong> Os eventos e os
+          identificadores da seção 7.3, dos aplicativos Android e da Calculadora
+          Financeira para iOS, vão para o Google Analytics for Firebase, para
+          medir o uso dos aplicativos, e podem ser tratados em qualquer país
+          onde o Google ou seus subcontratados mantêm instalações, pelos prazos
+          indicados nessa seção.
+        </li>
+        <li>
+          <strong>Verificação da integridade do aplicativo.</strong> Na
+          Calculadora Financeira para iOS, o material de atestado da seção 7.4
+          vai para o Google Firebase App Check, que o envia à Apple para
+          validação, para comprovar que os pedidos vêm de uma instalação
+          legítima do aplicativo. O Google informa que não o conserva; a Apple o
+          trata segundo as suas próprias regras. Os tokens resultantes valem por
+          até sete dias.
         </li>
         <li>
           <strong>Atendimento.</strong> As mensagens enviadas aos endereços de
@@ -1608,16 +1736,16 @@
       <p><strong>Como cada transferência é feita</strong></p>
       <ul>
         <li>
-          Nos serviços do Google Cloud, incluídos o Firebase Authentication e o
-          Vertex AI, a Google Cloud Brasil Computação e Serviços de Dados Ltda.
-          atua como operadora, isto é, trata os dados em nome da LCV Ideas &amp;
-          Software e segundo as suas instruções. Ela transfere os dados à Google
-          LLC com base nas cláusulas-padrão contratuais (o contrato-modelo
-          aprovado pela Agência Nacional de Proteção de Dados, ANPD)
-          incorporadas ao Adendo de Tratamento de Dados do Google Cloud. Essa
-          transferência ocorre entre empresas do próprio Google que prestam o
-          serviço à LCV Ideas &amp; Software e não é repasse dos dados a
-          terceiros.
+          Nos serviços do Google Cloud, incluídos o Firebase Authentication, o
+          Firebase App Check e o Vertex AI, a Google Cloud Brasil Computação e
+          Serviços de Dados Ltda. atua como operadora, isto é, trata os dados em
+          nome da LCV Ideas &amp; Software e segundo as suas instruções. Ela
+          transfere os dados à Google LLC com base nas cláusulas-padrão
+          contratuais (o contrato-modelo aprovado pela Agência Nacional de
+          Proteção de Dados, ANPD) incorporadas ao Adendo de Tratamento de Dados
+          do Google Cloud. Essa transferência ocorre entre empresas do próprio
+          Google que prestam o serviço à LCV Ideas &amp; Software e não é
+          repasse dos dados a terceiros.
         </li>
         <li>
           No Google Play, a transferência segue as cláusulas-padrão contratuais
@@ -1659,21 +1787,23 @@
         Google LLC atuam como operadoras nos serviços do Google Cloud, e o
         Google atua conforme os termos do Firebase nos diagnósticos e no
         desempenho e como operador, conforme os termos de tratamento de dados do
-        Google Ads, nas estatísticas de uso. O Google Play atua como controlador
-        independente. O Linear e o Resend atuam como operadores, conforme os
-        seus acordos de tratamento de dados; a OpenAI atua conforme o seu acordo
-        de tratamento de dados; a Anthropic atua conforme o acordo de tratamento
-        de dados e a lista de subcontratados publicados por ela, pelos prazos da
-        seção 10; a Z.ai atua conforme o adendo de tratamento de dados da sua
-        API; a Alibaba Cloud atua conforme o contrato de adesão e a política de
-        privacidade do seu site internacional; e a DeepSeek e a Moonshot AI
-        atuam conforme os seus termos e as suas políticas de privacidade,
-        descritos na seção 10. As comunicações usam conexões cifradas (HTTPS), e
-        cada pedido ao nosso serviço exige comprovação de autenticação válida,
-        verificada inclusive quanto à revogação. Os dados guardados pelo serviço
-        de processamento dos recursos pagos e os registros de pedidos no Google
-        Cloud são cifrados com chaves de criptografia gerenciadas pela LCV Ideas
-        &amp; Software. Não vendemos dados pessoais.
+        Google Ads, nas estatísticas de uso. A Apple trata o material de
+        atestado do App Attest segundo as suas próprias regras. O Google Play
+        atua como controlador independente. O Linear e o Resend atuam como
+        operadores, conforme os seus acordos de tratamento de dados; a OpenAI
+        atua conforme o seu acordo de tratamento de dados; a Anthropic atua
+        conforme o acordo de tratamento de dados e a lista de subcontratados
+        publicados por ela, pelos prazos da seção 10; a Z.ai atua conforme o
+        adendo de tratamento de dados da sua API; a Alibaba Cloud atua conforme
+        o contrato de adesão e a política de privacidade do seu site
+        internacional; e a DeepSeek e a Moonshot AI atuam conforme os seus
+        termos e as suas políticas de privacidade, descritos na seção 10. As
+        comunicações usam conexões cifradas (HTTPS), e cada pedido ao nosso
+        serviço exige comprovação de autenticação válida, verificada inclusive
+        quanto à revogação. Os dados guardados pelo serviço de processamento dos
+        recursos pagos e os registros de pedidos no Google Cloud são cifrados
+        com chaves de criptografia gerenciadas pela LCV Ideas &amp; Software.
+        Não vendemos dados pessoais.
       </p>
       <p><strong>Transferências posteriores</strong></p>
       <p>
@@ -1738,20 +1868,25 @@
     </main>
     <aside class="publication-note" aria-label="Publicação e histórico">
       <p>
-        <strong>O que mudou na versão 1.19.</strong> A seção 9 passa a indicar
-        os sete provedores que podem executar a análise paga do Oráculo
-        Celestial — Google, Anthropic, OpenAI, DeepSeek, Moonshot AI, Z.ai e
-        Alibaba Cloud —; a LCV Ideas &amp; Software define quais deles estão
-        ativos e em que ordem. A seção 10 acrescenta as regras da Moonshot AI
-        (Kimi), da Z.ai (GLM) e da Alibaba Cloud (Qwen), que também podem
-        receber os pedidos feitos com suas próprias chaves, e informa, para a
-        DeepSeek, as regras de uso dos dados que valem na análise paga, feita
-        com a conta da LCV Ideas &amp; Software. A seção 15.1 inclui esses
-        provedores e a DeepSeek nas transferências internacionais da análise
-        paga. As demais seções não mudam. A versão 1.18 permanece arquivada.
+        <strong>O que mudou na versão 1.20.</strong> A política passa a abranger
+        a versão para iOS da Calculadora Financeira, o primeiro aplicativo da
+        LCV Ideas &amp; Software para iOS. As seções 7.1, 7.2 e 7.3 passam a
+        tratar dos aplicativos em geral, mantêm o texto sobre os aplicativos
+        Android e acrescentam o que a Calculadora Financeira para iOS envia ao
+        Google pelo Firebase Crashlytics, pelo Firebase Performance Monitoring e
+        pelo Google Analytics for Firebase, sem identificador de publicidade. A
+        nova seção 7.4 descreve a verificação da integridade do aplicativo pelo
+        Firebase App Check com o App Attest, da Apple. A seção 3 inclui esse
+        aplicativo nas finalidades de diagnóstico e de medição de uso e o
+        material de atestado na prevenção de fraude; a seção 4 informa onde
+        ficam os dados locais dessa versão, sua exclusão dos backups e o
+        funcionamento da transferência de dados do sistema; as seções 15 e 15.1
+        incluem essas operações. As demais seções não mudam. A versão 1.19
+        permanece arquivada.
       </p>
       <p><strong>Versões anteriores:</strong></p>
       <ul>
+        <li><a href="/privacy/1.19/">Versão 1.19</a></li>
         <li><a href="/privacy/1.18/">Versão 1.18</a></li>
         <li><a href="/privacy/1.17/">Versão 1.17</a></li>
         <li><a href="/privacy/1.16/">Versão 1.16</a></li>

@@ -14,6 +14,27 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Publish privacy policy 1.20, in force from 26/11/2026, and retain 1.19 at its archive URL, which
+  the institutional boundary test retains (CALIOS-4). The policy now covers the iOS edition of
+  Calculadora Financeira (bundle `dev.lcv.calculadora`, in App Review), the first iOS app. Sections
+  7.1, 7.2 and 7.3 are titled for the apps in general, keep their Android text unchanged and each
+  add a paragraph on what the iOS Calculadora sends to Google: through Firebase Crashlytics, crash
+  and non-fatal error reports with the Crashlytics installation UUID and the Firebase installation
+  ID, kept for ninety days; through Firebase Performance Monitoring, app start, foreground and
+  background, screen rendering and network traces without URL parameters or payloads, kept for
+  thirty and sixty days; through Google Analytics for Firebase installed as `FirebaseAnalyticsCore`,
+  the automatic events, the app-instance identifier and the iOS vendor identifier, with no
+  advertising identifier and the same two-month property retention as the Android apps. The new
+  section 7.4 describes Firebase App Check with Apple's App Attest provider, whose attestation and
+  assertion objects reach Google and Apple and are not retained by App Check. Section 3 names the
+  iOS Calculadora in the diagnostics and usage rows and the attestation material in the
+  fraud-prevention row; section 4 states that its local database under Application Support is
+  excluded from backups and that the OS data-transfer extension imports no file; sections 15 and
+  15.1 extend the Firebase transfers to the iOS app and add the integrity verification. The
+  `THIRDPARTY.md` badge clear-space inventory now counts 30 site pages, 21 of them in the
+  "contact row, then badge" footer layout, with the archive range `/privacy/1.8/` to
+  `/privacy/1.19/`; the measurements are unchanged. `site/` stays byte-identical with
+  `.github-private`.
 - Run the official `verify-lockfile` workflow on every pull request (LCV-738).
   `.github/workflows/verify-lockfile.yml` invokes `github/gh-actions-lock`
   (`verify/v0.5.1`, `5fa07d19c267d19e29f4341f10fdf7f516375038`, MIT), GitHub's official

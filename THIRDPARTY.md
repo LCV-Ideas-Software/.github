@@ -317,11 +317,11 @@ clear space is the remaining width of a footer far wider than the rendered 145 p
 clear space was measured in headless Edge on 25 November 2026, at 1250 and 504 px wide, from the
 rendered boxes: above, from the bottom of the content just before the badge's block to the top of
 the badge; below, from the bottom of the badge to the end of the page. On every page the badge is
-the last element of the footer, and nothing rendered follows it. The 29 site pages fall into three
+the last element of the footer, and nothing rendered follows it. The 30 site pages fall into three
 footer layouts:
 
-- **Contact row, then badge** — 20 pages: `/`, `/404.html`, `/account-deletion/`, `/privacy/`,
-  `/privacy/1.8/` to `/privacy/1.18/`, `/security/`, `/security/1.0/`, `/tos/`, `/tos/1.0/` and
+- **Contact row, then badge** — 21 pages: `/`, `/404.html`, `/account-deletion/`, `/privacy/`,
+  `/privacy/1.8/` to `/privacy/1.19/`, `/security/`, `/security/1.0/`, `/tos/`, `/tos/1.0/` and
   `/tos/1.1/`. Measured on `/`, `/404.html`, `/privacy/`, `/tos/` and `/account-deletion/`: 25.6 px
   above and 46.6 to 47.6 px below.
 - **Legal block, then badge, with no contact row** — 8 pages: `/privacy/1.0/` to `/privacy/1.7/`.
