@@ -14,6 +14,19 @@ presentation rule this organization applies to text meant for people
 
 ## Unreleased
 
+- Synchronize `AGENTS.md` and `CLAUDE.md` to the operator's current workspace master text, applied
+  verbatim and byte-identical by the authorized Copilot CLI sync helper, with no repository-specific
+  suffix to preserve. The master now records the lockfile handling of Section 6.E (Dependabot
+  refreshes a covered entry in the same pull request; `gh actions-lock --verify` checks coverage;
+  the enterprise **Require lockfile** policy runs in **Evaluate** mode and moves to **Active** only
+  after every targeted repository passes that verification), the asynchronous native licensing flow
+  of Section 7.B (SBOM `generate-report` and `fetch-report/{sbom_uuid}` after the synchronous
+  endpoint ended after 13/11/2026, PURL package checks in batches of at most 40 at repository scope
+  only), the `pull_request_target` default block on public repositories from 02/12/2026, the
+  Dependabot reachability and dismissal-window signals, the agentic autofix and AI Scan fleet state,
+  and the Event Streams watch order for open pull requests. `README.md` documents the Evaluate-mode
+  lockfile onboarding and the asynchronous licensing flow in its governance bullets. No workflow,
+  action, hook, dependency, or repository setting changed.
 - Publish privacy policy 1.20, in force from 26/11/2026, and retain 1.19 at its archive URL, which
   the institutional boundary test retains (CALIOS-4). The policy now covers the iOS edition of
   Calculadora Financeira (bundle `dev.lcv.calculadora`, in App Review), the first iOS app. Sections
